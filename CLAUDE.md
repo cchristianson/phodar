@@ -107,10 +107,11 @@ comments, in this order:
 1. **Module split** (mechanical; run `npm test` after). **Math core: DONE** —
    extracted to `src/math/{geodesy,format,projection,triangulate,kinematics,
    astro}.js`, with the test scripts rewritten to import the real modules.
-   **Remaining seams** (the banner comments): `src/exif.js`, `src/shapes.js`,
-   `src/components/{MediaMeasure,SkyAimer,PinMap,...}.jsx`,
+   **exif.js and shapes.js: DONE** (pure modules; parseMediaMeta public,
+   shape system exports its solids/rotations/projector). **Remaining
+   seams**: `src/components/{MediaMeasure,SkyAimer,PinMap,...}.jsx`,
    `src/report/{html,share,zip}.js`, `src/wizard/*.jsx`. Keep behavior
-   identical.
+   identical — do these as the video work begins (video lives in SkyAimer).
 2. **Leaflet map: DONE** — `PinMap` now renders Leaflet tiles (Esri World
    Imagery default, OSM street toggle with a dark-inversion filter), same
    props and same drag-ground-under-fixed-pin interaction: the crosshair is a
