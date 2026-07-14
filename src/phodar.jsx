@@ -1864,7 +1864,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      No hard night cliff: a twilight limiting magnitude fades the sky in the
      way the real one does — Venus minutes after sunset, Sirius-class stars
      near −5° sun, the full mag-3.6 field by about −10°. */
-  const limMag = sun.alt > -1.5 ? -99 : clampN(-3.5 + (-sun.alt - 2) * 0.95, -4, 7);
+  const [starMode, setStarMode] = useState("auto"); // auto: real twilight fade · on: force full field · off: hidden
+  const limMagAuto = sun.alt > -1.5 ? -99 : clampN(-3.5 + (-sun.alt - 2) * 0.95, -4, 7);
+  const limMag = starMode === "on" ? 7 : starMode === "off" ? -99 : limMagAuto;
   const stars = useMemo(() => {
     if (limMag < -4) return [];
     return STARS.map(([ra, dec, mag, name]) => {
@@ -1877,7 +1879,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }).filter((s) => s.alt > -1 && s.mag <= limMag);
   }, [T, LAT, LNG, limMag]);
   const planets = useMemo(() => planetPositions(T, LAT, LNG).filter((p) => p.alt > -2), [T, LAT, LNG]);
-  const planetsVisible = sun.alt < -1;
+  const planetsVisible = starMode === "on" ? true : starMode === "off" ? false : sun.alt < -1;
   const gpath = (pts) => { let d = "", pen = false; for (const p of pts) { if (p.inFront && p.x > -0.6 && p.x < 1.6 && p.y > -0.6 && p.y < 1.6) { d += (pen ? " L " : " M ") + (p.x * 100).toFixed(2) + " " + (p.y * 100).toFixed(2); pen = true; } else pen = false; } return d; };
   const gridColor = cameraOn ? "rgba(255,255,255,0.30)" : (isNight ? "rgba(150,180,230,0.20)" : "rgba(255,255,255,0.28)");
   const ALTS = [15, 30, 45, 60, 75];
@@ -2387,6 +2389,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ⛰ {terrOn ? (terr?.els ? "ridge" : terr?.err ? "?" : "…") : "off"}
               </button>
             )}
+            <button className="btn sm" title="Stars & planets: auto follows real twilight; on forces the full field any time"
+              style={{ background: "rgba(15,23,42,.7)", color: starMode === "off" ? "var(--dim)" : (starMode === "on" || limMag > -4) ? "#dfe8ff" : "var(--dim)" }}
+              onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
+              ★ {starMode}
+            </button>
           </div>
           {acOn && acData?.ac && acData.hist && (
             <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
