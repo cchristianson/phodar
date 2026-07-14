@@ -259,12 +259,20 @@ const server = http.createServer(async (req, res) => {
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));
     if (!fp.startsWith(DIST)) { res.writeHead(403); return res.end(); }
     let st = await stat(fp).catch(() => null);
-    if (!st || st.isDirectory()) { fp = path.join(DIST, "index.html"); st = await stat(fp).catch(() => null); }
-    if (!st) { res.writeHead(404); return res.end("not found"); }
+    let isAsset = u.pathname.startsWith("/assets/");
+    if (!st || st.isDirectory()) {
+      /* NEVER fall back to index.html for hashed assets: mid-deploy, a stale
+         hash would get HTML served as JS — and the immutable cache header
+         would brick that browser for a year. 404 lets it retry/reload. */
+      if (isAsset) { res.writeHead(404, { "cache-control": "no-store" }); return res.end("not found"); }
+      fp = path.join(DIST, "index.html"); st = await stat(fp).catch(() => null);
+      isAsset = false;
+    }
+    if (!st) { res.writeHead(404, { "cache-control": "no-store" }); return res.end("not found"); }
     res.writeHead(200, {
       "content-type": MIME[path.extname(fp)] || "application/octet-stream",
       "content-length": st.size,
-      "cache-control": u.pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
+      "cache-control": isAsset ? "public, max-age=31536000, immutable" : "no-cache",
     });
     createReadStream(fp).pipe(res);
   } catch (e) {
