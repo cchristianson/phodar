@@ -2297,13 +2297,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   n++;
                   if (!p) return null;
                   const idx = n, sel = selPt === idx;
-                  const interior = wizard && idx > 0 && idx < (source?.track || []).length - 1;
+                  const tappable = wizard;
                   const col = sel ? "var(--amber)" : "var(--track)";
                   return (
                     <div key={"tj" + i}
-                      onPointerDown={interior ? (e) => e.stopPropagation() : undefined}
-                      onClick={interior ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); } : undefined}
-                      style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: interior ? "auto" : "none", cursor: interior ? "pointer" : "default", textAlign: "center", padding: 6 }}>
+                      onPointerDown={tappable ? (e) => e.stopPropagation() : undefined}
+                      onClick={tappable ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); } : undefined}
+                      style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: tappable ? "auto" : "none", cursor: tappable ? "pointer" : "default", textAlign: "center", padding: 6 }}>
                       <div style={{ width: 11, height: 11, borderRadius: "50%", border: `2px solid ${col}`, background: "rgba(7,11,20,.55)", margin: "0 auto" }} />
                       <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
                     </div>
@@ -2430,8 +2430,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm" onClick={() => { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }}>Reset</button>
                   </>
                 )}
-                <input type="range" min={0.25} max={1} step={0.05} value={phOp}
-                  onChange={(e) => setPhOp(+e.target.value)} style={{ width: 82 }} />
+                <span title="Photo opacity — fade the photo to line its ridges/stars up with the grid behind it"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>🖼</span>
+                  <input type="range" min={0.25} max={1} step={0.05} value={phOp}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onChange={(e) => setPhOp(+e.target.value)}
+                    style={{ width: 82, touchAction: "auto", pointerEvents: "auto" }} />
+                  <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "var(--dim)", minWidth: 26 }}>{Math.round(phOp * 100)}%</span>
+                </span>
                 {source.mediaKind === "video" && vidDur2 > 0 && (
                   <input type="range" min={0} max={vidDur2} step={0.033} value={vidT2}
                     onChange={(e) => { const t = +e.target.value; setVidT2(t); if (aimVidRef.current) aimVidRef.current.currentTime = t; }}
@@ -2505,22 +2513,31 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               );
             })()}
             {selPt != null && sortedTrack[selPt] && (() => {
+              const interior = selPt > 0 && selPt < sortedTrack.length - 1;
               const r = +(sortedTrack[selPt].r ?? 0);
               const setR = (v) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, r: v } : p)) });
+              const deletePt = () => { update(syncAB(sortedTrack.filter((_, i) => i !== selPt))); setSelPt(null); setSelSeg(null); };
               return (
                 <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 6 }}>
-                    Turn at point {selPt + 1} — how tight was it?
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: interior ? 6 : 0 }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", flex: 1 }}>
+                      Point {selPt + 1}{interior ? " — how tight was the turn?" : selPt === 0 ? " (path start)" : " (path end)"}
+                    </span>
+                    <button className="btn sm" style={{ color: "var(--red)", borderColor: "#5A2C24" }} onClick={deletePt}>🗑 Delete</button>
+                    <button className="btn sm teal" onClick={() => setSelPt(null)}>✓ Done</button>
                   </div>
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-                    {[["Hard corner", 0], ["Tight", 0.15], ["Normal", 0.3], ["Wide", 0.45]].map(([l, v]) => (
-                      <button key={l} className={"btn sm" + (Math.abs(r - v) < 0.03 ? " amber" : "")} onClick={() => setR(v)}>{l}</button>
-                    ))}
-                    <button className="btn sm teal" style={{ marginLeft: "auto" }} onClick={() => setSelPt(null)}>✓ Done</button>
-                  </div>
-                  <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 6, lineHeight: 1.5 }}>
-                    Real aircraft and birds fly arcs — a hard corner means an instantaneous direction change, which is itself an extraordinary claim. The arc feeds the g-load math.
-                  </div>
+                  {interior && (
+                    <>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                        {[["Hard corner", 0], ["Tight", 0.15], ["Normal", 0.3], ["Wide", 0.45]].map(([l, v]) => (
+                          <button key={l} className={"btn sm" + (Math.abs(r - v) < 0.03 ? " amber" : "")} onClick={() => setR(v)}>{l}</button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 6, lineHeight: 1.5 }}>
+                        Real aircraft and birds fly arcs — a hard corner means an instantaneous direction change, which is itself an extraordinary claim. The arc feeds the g-load math.
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })()}
