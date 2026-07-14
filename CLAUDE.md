@@ -42,13 +42,19 @@ comments, in this order:
    bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
 3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
-   pinch-zoom, loupe, auto-horizon), `PositionEditor` + `PinMap`,
+   pinch-zoom, loupe), `PositionEditor` + `PinMap` (Leaflet),
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt
-   chips, compare ghosts), `PlotBoard`, charts, `ResultsPanel`, Solo/Guide.
+   chips, compare ghosts, aircraft/star/terrain layers), `PlotBoard`,
+   charts, `ResultsPanel` (rendered inside `WizFinish`), `AdsbCheck`.
 4. **Wizard + reports** — `WizHome/WizStep/WizFinish/ReportView`,
    `packSources`, `reportHtml` (self-contained HTML w/ embedded data + photo
    exhibits + detail crops), `buildShareJson`, zip writer, import.
-5. **App shell** — wizard (default) / Lab (power users) branch.
+5. **App shell** — the guided wizard is the ONLY workflow. The Lab/advanced
+   mode, Solo mode, the demo loader, the auto-level-from-horizon detector,
+   and the manual "A/B from marks" buttons were all removed 2026-07
+   (user decision: one workflow to maintain). `commitPlacement` now derives
+   BOTH A and B sight-lines automatically from marked points when the
+   photo placement commits.
 
 ## Non-negotiable invariants (each one was a multi-hour bug hunt)
 1. **Never render user images through CSS `matrix3d`.** iOS Safari composes
@@ -85,8 +91,9 @@ comments, in this order:
   compass arbitration), per-ray-miss diagnostics in reports, and warnings.
 - Phone GPS **altitude** wobbles ±5 m → short-baseline alt-spread warning;
   the fix is "set observer elevations equal on level ground".
-- Mountain/tree skylines are not a true horizon → auto-level warns when
-  |pitch| > 6°.
+- Mountain/tree skylines are not a true horizon — the DEM terrain skyline
+  in the sky view is the calibration answer (the old auto-level-from-horizon
+  detector was removed with the Lab).
 - FOV pinch during sky placement overrides lens truth — the readout shows it;
   Reset restores lens FOV.
 
@@ -151,10 +158,11 @@ comments, in this order:
    7.12° vs 7.00° from an OpenTopoData ray-march. PositionEditor gained
    "⛰ Use terrain elevation" (per-observer; sets alt from `demElevation`) —
    the structural fix for GPS-altitude wobble.
-   **v2 remaining**: extend the auto-horizon detector to a full
-   photo-skyline polyline and cross-correlate against the DEM skyline over
-   azimuth shift → one-tap snap; "use DEM elevation for ALL observers" in
-   one tap; labeled peaks via OSM Overpass. Point-query fallbacks if
+   **v2 remaining**: detect the photo's skyline as a polyline (write a fresh
+   detector — the old auto-horizon one was removed with the Lab) and
+   cross-correlate against the DEM skyline over azimuth shift → one-tap
+   snap; "use DEM elevation for ALL observers" in one tap; labeled peaks
+   via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera

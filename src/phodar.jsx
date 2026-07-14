@@ -18,12 +18,10 @@ import { STARS } from "./math/starcat.js";
    (stereo sighting triangulator)
    Two observers + compass bearings + elevation angles
    -> 3D position fix, true size, altitude, speed & heading.
-   Single-observer "Solo" mode handles the size/distance
-   ambiguity with a slider + reference-object table.
    ============================================================ */
 
 
-/* ---------- reference objects for Solo mode ---------- */
+/* ---------- reference objects for size context ---------- */
 const REF_OBJECTS = [
   { name: "Mylar balloon", size: 0.5 },
   { name: "Bird (hawk)", size: 1.2 },
@@ -295,21 +293,6 @@ function Section({ title, right, children, collapsible, defaultOpen = true }) {
 }
 
 /* Checklist step inside an observer card: status dot + one-line summary */
-function SubStep({ title, done, summary, open, onToggle, children }) {
-  return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 10, marginTop: 8, overflow: "hidden" }}>
-      <button onClick={onToggle}
-        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", background: "var(--panel2)", border: "none", color: "var(--ink)", cursor: "pointer", textAlign: "left" }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: done ? "var(--teal)" : "#2A3A63", flex: "none" }} />
-        <span className="microlabel" style={{ margin: 0, color: "var(--ink)" }}>{title}</span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: done ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "52%" }}>
-          {summary} {open ? "▾" : "▸"}
-        </span>
-      </button>
-      {open && <div style={{ padding: 10 }}>{children}</div>}
-    </div>
-  );
-}
 
 /* ============================================================
    MEDIA METADATA — minimal EXIF/QuickTime readers (no libraries)
@@ -480,77 +463,6 @@ function MediaMeasure({ src, update, wizard }) {
     requestAnimationFrame(() => requestAnimationFrame(() => drawLoupe({ x: sf.cx, y: sf.cy }, sf)));
   };
 
-  /* --- auto-horizon: find the sky/ground line → camera pitch & roll → derive
-         the sight-line without ever opening the sky view. (EXIF gives azimuth
-         only; elevation must come from somewhere — this is the somewhere.) --- */
-  const [hzMsg, setHzMsg] = useState("");
-  const detectHorizon = () => {
-    const el = mediaRef.current;
-    if (!el || !natW) { setHzMsg("load a photo first"); return; }
-    try {
-      const DW = 640, kk = DW / natW, DH = Math.max(60, Math.round(natH * kk));
-      const cv = document.createElement("canvas");
-      cv.width = DW; cv.height = DH;
-      const ctx = cv.getContext("2d");
-      ctx.drawImage(el, 0, 0, DW, DH);
-      const im = ctx.getImageData(0, 0, DW, DH).data;
-      const lum = (x, y) => { const i = (y * DW + x) * 4; return im[i] * 0.299 + im[i + 1] * 0.587 + im[i + 2] * 0.114; };
-      const NCOL = 30;
-      let pts = [];
-      for (let ci = 0; ci < NCOL; ci++) {
-        const x = Math.round((0.06 + (0.88 * ci) / (NCOL - 1)) * (DW - 1));
-        let bestY = -1, bestG = 0;
-        for (let y = Math.round(DH * 0.1); y < Math.round(DH * 0.93); y++) {
-          let g = 0;
-          for (let dx = -1; dx <= 1; dx++) {
-            const xx = clampN(x + dx, 0, DW - 1);
-            g += Math.abs(lum(xx, Math.min(DH - 1, y + 2)) - lum(xx, Math.max(0, y - 2)));
-          }
-          if (g > bestG) { bestG = g; bestY = y; }
-        }
-        if (bestY > 0 && bestG > 42) pts.push({ x, y: bestY });
-      }
-      if (pts.length < 10) { setHzMsg("no clean horizon found — use the sky view instead"); return; }
-      let aF = 0, bF = 0;
-      for (let pass = 0; pass < 3; pass++) {
-        const n = pts.length;
-        let sx = 0, sy = 0, sxx = 0, sxy = 0;
-        for (const p of pts) { sx += p.x; sy += p.y; sxx += p.x * p.x; sxy += p.x * p.y; }
-        bF = (n * sxy - sx * sy) / Math.max(1e-9, n * sxx - sx * sx);
-        aF = (sy - bF * sx) / n;
-        const res = pts.map((p) => Math.abs(p.y - (aF + bF * p.x))).sort((u, v) => u - v);
-        const med = res[Math.floor(res.length / 2)];
-        const keep = pts.filter((p) => Math.abs(p.y - (aF + bF * p.x)) <= Math.max(3, med * 2.5));
-        if (keep.length === pts.length || keep.length < 10) { pts = keep; break; }
-        pts = keep;
-      }
-      const inlier = pts.length / NCOL;
-      const aN = aF / kk, bN = bF; // slope is scale-invariant
-      const fovUse = isNum(src.fovH) ? +src.fovH : 68;
-      const fpx = (natW / 2) / Math.tan((fovUse * D2R) / 2);
-      const roll = Math.atan(bN) * R2D;
-      const pyc = aN + bN * (natW / 2);
-      const pitch = Math.atan(((pyc - natH / 2) * Math.cos(roll * D2R)) / fpx) * R2D;
-      if (inlier < 0.4 || Math.abs(roll) > 25) { setHzMsg("horizon fit too uncertain — use the sky view instead"); return; }
-      const azBest = isNum(src.A?.az) ? +src.A.az
-        : src.meta && isNum(src.meta.az) ? +src.meta.az
-          : src.mediaAim && isNum(src.mediaAim.az) ? +src.mediaAim.az : null;
-      const patch = { horizonFit: { a: aN, b: bN, conf: +inlier.toFixed(2) } };
-      let derived = false;
-      if (azBest != null) {
-        patch.mediaAim = { az: +azBest.toFixed(2), el: +pitch.toFixed(2), roll: +roll.toFixed(2) };
-        const c = src.shapeFit ? { x: src.shapeFit.cx, y: src.shapeFit.cy }
-          : src.A?.p1 && src.A?.p2 ? { x: (src.A.p1.x + src.A.p2.x) / 2, y: (src.A.p1.y + src.A.p2.y) / 2 } : null;
-        if (c) {
-          const ae = dirToAzEl(pixelDirFromAnchor(c.x, c.y, 0, 0, 0, 0, natW, natH, fovUse, patch.mediaAim));
-          patch.A = { ...src.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) };
-          derived = true;
-        }
-      }
-      update(patch);
-      setHzMsg(`✓ horizon locked: pitch ${pitch.toFixed(1)}° · roll ${roll.toFixed(1)}°${derived ? " — bearing & elevation derived" : azBest == null ? " — needs a compass bearing to finish" : " — mark the object to finish"}${Math.abs(pitch) > 6 ? " · ⚠ hills/ridges aren't a true horizon — sun-anchor in the sky view if altitude matters" : ""}`);
-    } catch (e) { setHzMsg("horizon scan failed on this image"); }
-  };
   const rotRef = useRef(null);   // body-drag → 3D trackball
   const hDragRef = useRef(null); // center-grab → move
   /* sessions saved by the old 2D fitter lack sizeNat/rotM — upgrade in place */
@@ -1051,11 +963,6 @@ function MediaMeasure({ src, update, wizard }) {
               })()}
             </>
           )}
-          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-            <button className="btn sm teal" onClick={detectHorizon}>📏 Auto-level from horizon</button>
-            {src.horizonFit && <button className="btn sm" onClick={() => { update({ horizonFit: null }); setHzMsg(""); }}>✕</button>}
-            {hzMsg && <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: hzMsg.startsWith("✓") ? "var(--teal)" : "var(--red)" }}>{hzMsg}</span>}
-          </div>
           <div style={{ position: "relative", marginTop: 10 }}>
             <div ref={wrapRef}
               style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", touchAction: "none", height: dispH || "auto" }}
@@ -1125,16 +1032,6 @@ function MediaMeasure({ src, update, wizard }) {
                       <circle cx={sx} cy={sy} r={3.5} fill="var(--teal)" />
                       <circle cx={sx} cy={sy} r={8.5} fill="none" stroke="var(--teal)" strokeWidth="1" opacity="0.75" />
                     </g>
-                  </svg>
-                );
-              })()}
-              {scale > 0 && src.horizonFit && (() => {
-                const hf = src.horizonFit;
-                const [hx1, hy1] = TT(0, hf.a);
-                const [hx2, hy2] = TT(natW || 0, hf.a + hf.b * (natW || 0));
-                return (
-                  <svg style={{ position: "absolute", inset: 0, pointerEvents: "none" }} width="100%" height="100%">
-                    <line x1={hx1} y1={hy1} x2={hx2} y2={hy2} stroke="rgba(255,255,255,.85)" strokeWidth="1.4" strokeDasharray="7 5" />
                   </svg>
                 );
               })()}
@@ -1615,7 +1512,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return () => { dead = true; if (iv) clearInterval(iv); };
   }, [open, acOn, hasPos, LAT, LNG, wantHist, T]);
   /* persist the last snapshot onto the source when the aimer closes.
-     Lab flips `open`; the wizard UNMOUNTS the aimer on step change, so the
+     the wizard UNMOUNTS the aimer on step change, so the
      unmount cleanup must drain too (updateRef dodges the stale closure). */
   const updateRef = useRef(update); updateRef.current = update;
   const drainSnap = () => {
@@ -2022,31 +1919,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const commitPlacement = () => {
     if (!update || !photoOn) return;
     const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1) }, fovH: +fovM.toFixed(1) };
-    /* placement + a marked object fully determine the sight-line — derive it,
-       so the fix never dies for want of an elevation the user already gave us */
+    /* placement + marked points fully determine the sight-lines — derive
+       A (object marks / shape fit) and B (motion mark) automatically, so
+       the fix never dies for want of an elevation the user already gave us */
     if (source && !(source.track || []).length && source.natW) {
+      const fpx = (source.natW / 2) / Math.tan((fovM * D2R) / 2);
+      const bb = photoBasis(pAz, pEl, pRoll);
+      const dirAt = (px, py) => {
+        const x = (px - source.natW / 2) / fpx, y = (source.natH / 2 - py) / fpx;
+        return dirToAzEl(unit([bb.f[0] + bb.r[0] * x + bb.u[0] * y, bb.f[1] + bb.r[1] * x + bb.u[1] * y, bb.f[2] + bb.r[2] * x + bb.u[2] * y]));
+      };
       const c = source.shapeFit ? { x: source.shapeFit.cx, y: source.shapeFit.cy }
         : (source.A?.p1 && source.A?.p2 ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null);
-      if (c) {
-        const fpx = (source.natW / 2) / Math.tan((fovM * D2R) / 2);
-        const bb = photoBasis(pAz, pEl, pRoll);
-        const x = (c.x - source.natW / 2) / fpx, y = (source.natH / 2 - c.y) / fpx;
-        const ae = dirToAzEl(unit([bb.f[0] + bb.r[0] * x + bb.u[0] * y, bb.f[1] + bb.r[1] * x + bb.u[1] * y, bb.f[2] + bb.r[2] * x + bb.u[2] * y]));
-        patch.A = { ...source.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) };
-      }
+      if (c) { const ae = dirAt(c.x, c.y); patch.A = { ...source.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
+      if (source.B?.pb) { const ae = dirAt(source.B.pb.x, source.B.pb.y); patch.B = { ...source.B, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
     }
     update(patch);
-  };
-  const captureFromMarks = (wh) => {
-    if (!photo) return;
-    let px, py;
-    if (wh === "A" && source.A?.p1 && source.A?.p2) { px = (source.A.p1.x + source.A.p2.x) / 2; py = (source.A.p1.y + source.A.p2.y) / 2; }
-    else if (wh === "B" && source.B?.pb) { px = source.B.pb.x; py = source.B.pb.y; }
-    else return;
-    const { az, el } = dirToAzEl(pixDir(px, py));
-    commitPlacement();
-    onCapture(wh, az, el);
-    setFlash(wh === "A" ? "Moment A locked ✓ — sky view stays open; aim B or Close" : "Moment B locked ✓ — Close when done");
   };
   /* --- wizard trajectory: world-anchored points with per-segment Δt --- */
   const sortedTrack = source ? [...(source.track || [])].sort((x, y) => x.t - y.t) : [];
@@ -2432,12 +2320,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 )}
                 <input type="range" min={0.25} max={1} step={0.05} value={phOp}
                   onChange={(e) => setPhOp(+e.target.value)} style={{ width: 82 }} />
-                {source.A?.p1 && source.A?.p2 && (
-                  <button className="btn sm amber" onClick={() => captureFromMarks("A")}>⌖ A from marks</button>
-                )}
-                {source.B?.pb && (
-                  <button className="btn sm teal" onClick={() => captureFromMarks("B")}>⌖ B from mark</button>
-                )}
                 {source.mediaKind === "video" && vidDur2 > 0 && (
                   <input type="range" min={0} max={vidDur2} step={0.033} value={vidT2}
                     onChange={(e) => { const t = +e.target.value; setVidT2(t); if (aimVidRef.current) aimVidRef.current.currentTime = t; }}
@@ -2694,7 +2576,7 @@ function PinMap({ lat, lon, origin, others, onChange }) {
 }
 
 /* ============================================================
-   POSITION EDITOR — shared by the wizard's map step and the Lab card
+   POSITION EDITOR — the wizard's map step
    ============================================================ */
 function PositionEditor({ src, update, others }) {
   const [geoBusy, setGeoBusy] = useState(false);
@@ -2764,135 +2646,6 @@ function PositionEditor({ src, update, others }) {
                 onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
             )}
     </>
-  );
-}
-
-/* ============================================================
-   SOURCE CARD — stepped checklist per observer
-   ============================================================ */
-function SourceCard({ src, idx, update, remove, canRemove, others }) {
-  const [aimFor, setAimFor] = useState(null); // null | 'A' | 'B'
-  const [so, setSo] = useState({ pos: true, dir: true, med: true, b: false });
-  const tog = (k) => setSo((s) => ({ ...s, [k]: !s[k] }));
-
-  /* step status */
-  const angMeas = angSizeFromPoints(src.A.p1, src.A.p2, src.natW, src.natH, +src.fovH);
-  const ang = angMeas ?? (isNum(src.A.angManual) ? +src.A.angManual : null);
-  const trkN = (src.track || []).length;
-  const posDone = isNum(src.lat) && isNum(src.lon);
-  const dirDone = isNum(src.A.az) && isNum(src.A.el);
-  const sizeDone = ang != null;
-  const motDone = (isNum(src.B.az) && isNum(src.B.el)) || trkN >= 3;
-
-  const hasAim = src.mediaAim && isNum(src.mediaAim.az);
-  const deriveB = () => {
-    if (!src.B.pb || !src.natW || !isNum(src.fovH)) return;
-    let d;
-    if (hasAim) {
-      d = pixelDirFromAnchor(src.B.pb.x, src.B.pb.y, 0, 0, 0, 0, src.natW, src.natH, +src.fovH, src.mediaAim);
-    } else {
-      if (!src.A.p1 || !src.A.p2 || !isNum(src.A.az) || !isNum(src.A.el)) return;
-      const cA = { x: (src.A.p1.x + src.A.p2.x) / 2, y: (src.A.p1.y + src.A.p2.y) / 2 };
-      d = pixelDirFromAnchor(src.B.pb.x, src.B.pb.y, cA.x, cA.y, +src.A.az, +src.A.el, src.natW, src.natH, +src.fovH, null);
-    }
-    const ae = dirToAzEl(d);
-    update({ B: { ...src.B, az: ae.az.toFixed(2), el: ae.el.toFixed(2) } });
-  };
-  const canDeriveB = src.B.pb && src.natW && isNum(src.fovH) &&
-    (hasAim || (src.A.p1 && src.A.p2 && isNum(src.A.az) && isNum(src.A.el)));
-
-  const Dot = ({ on }) => <span style={{ width: 7, height: 7, borderRadius: "50%", background: on ? "var(--teal)" : "#2A3A63", display: "inline-block" }} />;
-
-  return (
-    <div className="card">
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <input value={src.name} onChange={(e) => update({ name: e.target.value })}
-          style={{ fontFamily: "inherit", fontWeight: 700, fontSize: 15, border: "none", background: "transparent", padding: 0, flex: 1, minWidth: 0 }} />
-        <span style={{ display: "inline-flex", gap: 4, flex: "none" }}>
-          <Dot on={posDone} /><Dot on={dirDone} /><Dot on={sizeDone} /><Dot on={motDone} />
-        </span>
-        <button className="btn sm ghost" onClick={() => update({ open: !src.open })}>{src.open ? "▾" : "▸"}</button>
-        {canRemove && <button className="btn sm ghost" style={{ color: "var(--red)" }} onClick={remove}>✕</button>}
-      </div>
-      {!src.open && (
-        <div style={{ marginTop: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {posDone ? `${(+src.lat).toFixed(3)}, ${(+src.lon).toFixed(3)}` : "no position"} · A {dirDone ? `${(+src.A.az).toFixed(0)}°/${(+src.A.el).toFixed(0)}°` : "—"} · {ang != null ? `${(+ang).toFixed(2)}°` : "size —"} · {trkN >= 3 ? `${trkN} pts` : (isNum(src.B.az) ? "B ✓" : "motion —")}
-        </div>
-      )}
-
-      {src.open && (
-        <>
-          <SubStep title="1 · Position & time" done={posDone} open={so.pos} onToggle={() => tog("pos")}
-            summary={posDone ? `${(+src.lat).toFixed(4)}, ${(+src.lon).toFixed(4)}` : "where you stood"}>
-            <PositionEditor src={src} update={update} others={others} />
-                        {posDone && src.mediaUrl && (
-              <button className="btn amber" style={{ width: "100%", marginTop: 10 }} onClick={() => setAimFor("A")}>
-                Looks right · place the photo in the sky →
-              </button>
-            )}
-          </SubStep>
-
-          <SubStep title="2 · Direction (Moment A)" done={dirDone} open={so.dir} onToggle={() => tog("dir")}
-            summary={dirDone ? `${(+src.A.az).toFixed(1)}° az · ${(+src.A.el).toFixed(1)}° up` : "bearing + elevation"}>
-            <div className="grid3">
-              <Num label="Bearing" unit="° true" value={src.A.az} onChange={(v) => update({ A: { ...src.A, az: v } })} ph="0–360" />
-              <Num label="Elevation" unit="° up" value={src.A.el} onChange={(v) => update({ A: { ...src.A, el: v } })} ph="0–90" />
-              <Num label="Clock time" unit="s" value={src.A.t} onChange={(v) => update({ A: { ...src.A, t: v } })} ph="0" />
-            </div>
-            <button className="btn sm amber" style={{ marginTop: 8 }} onClick={() => setAimFor("A")}>🎯 Aim in sky view</button>
-            <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-              Easiest: the sky view — place your photo on the dome, or line the crosshair up (Sun/Moon anchors, phone-pointing, camera AR). Fist at arm's length ≈ 10° elevation.
-            </div>
-          </SubStep>
-
-          <SubStep title="3 · Media & measurements" done={sizeDone} open={so.med} onToggle={() => tog("med")}
-            summary={ang != null ? `${(+ang).toFixed(2)}°${trkN ? ` · ${trkN} track pts` : ""}` : "size · track"}>
-            <MediaMeasure src={src} update={update} />
-            {posDone && src.mediaUrl && (
-              <button className="btn teal" style={{ width: "100%", marginTop: 10 }} onClick={() => setAimFor("A")}>
-                Open sky view →
-              </button>
-            )}
-          </SubStep>
-
-          <SubStep title="4 · Motion (Moment B) — optional" done={motDone} open={so.b} onToggle={() => tog("b")}
-            summary={trkN >= 3 ? `track ${trkN} pts ✓` : (isNum(src.B.az) ? `${(+src.B.az).toFixed(1)}° az` : "unlocks speed")}>
-            <div className="grid3">
-              <Num label="Bearing" unit="°" value={src.B.az} onChange={(v) => update({ B: { ...src.B, az: v } })} />
-              <Num label="Elevation" unit="°" value={src.B.el} onChange={(v) => update({ B: { ...src.B, el: v } })} />
-              <Num label="Clock time" unit="s" value={src.B.t} onChange={(v) => update({ B: { ...src.B, t: v } })} ph="5" />
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-              <button className="btn sm teal" onClick={() => setAimFor("B")}>🎯 Aim in sky view</button>
-              {canDeriveB && <button className="btn sm teal" onClick={deriveB}>Derive B from marks</button>}
-            </div>
-            <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-              Two moments give average speed. A Track in step 3 gives the full curve — speed, g-load, turn rate.
-            </div>
-          </SubStep>
-
-          <SkyAimer
-            open={!!aimFor}
-            which={aimFor || "A"}
-            onClose={() => setAimFor(null)}
-            lat={src.lat} lng={src.lon}
-            whenMs={isNum(src.whenMs) ? +src.whenMs : Date.now()}
-            initAz={aimFor === "B" ? (isNum(src.B.az) ? src.B.az : src.A.az) : src.A.az}
-            initAlt={aimFor === "B" ? (isNum(src.B.el) ? src.B.el : src.A.el) : src.A.el}
-            source={src} update={update}
-            marks={[
-              isNum(src.A.az) && isNum(src.A.el) ? { az: +src.A.az, el: +src.A.el, label: "A", color: "var(--amber)" } : null,
-              isNum(src.B.az) && isNum(src.B.el) ? { az: +src.B.az, el: +src.B.el, label: "B", color: "var(--teal)" } : null,
-            ].filter(Boolean)}
-            onCapture={(wh, az, el) => {
-              if (wh === "A") update({ A: { ...src.A, az: az.toFixed(2), el: el.toFixed(2) } });
-              else update({ B: { ...src.B, az: az.toFixed(2), el: el.toFixed(2) } });
-              setAimFor("B"); // stay in the sky — next capture defaults to Moment B
-            }}
-          />
-        </>
-      )}
-    </div>
   );
 }
 
@@ -3104,71 +2857,15 @@ const FT_M = 0.3048;
 /* ============================================================
    RESULTS PANEL
    ============================================================ */
-function ResultsPanel({ sources, est, setEst, loadDemo }) {
+function ResultsPanel({ sources }) {
   const result = useMemo(() => analyze(sources), [sources]);
   const trk = useMemo(() => analyzeTracks(sources), [sources]);
   const [soloT, setSoloT] = useState(0.42);
 
   const hasTrackContent = (trk.stereo && (trk.stereo.k || trk.stereo.overlapErr)) || trk.solo.length > 0;
-  if (!result.ok && !hasTrackContent) {
-    return (
-      <div>
-        <Section title="Fix status">
-          <div style={{ fontSize: 13, color: "var(--dim)", lineHeight: 1.5 }}>
-            {result.parallel
-              ? "The sightlines are parallel — bearings from both observers are identical, so they never cross. Re-check the compass bearings."
-              : <>Triangulation needs <b style={{ color: "var(--ink)" }}>at least 2 observers</b>, each with a position (lat/lon) and a Moment-A bearing + elevation. Currently complete: <b style={{ color: "var(--amber)" }}>{result.validCount}</b>.</>}
-            {(() => {
-              const arb = arbitrateBearings(sources);
-              return arb?.best ? (
-                <div className="warn" style={{ marginTop: 8 }}>
-                  ⚠ The bearings don't converge — rays cross behind an observer. Phone compasses near vehicles are commonly 20–60° off.
-                  Size-ratio arbitration: trusting <b>{arb.best.trustName}</b> is self-consistent (object ≈ {fmtLenShort(arb.best.range)} away, ≈ {fmtLenShort(arb.best.size)} across);
-                  <b> {arb.best.otherName}</b>'s compass would then be ≈ <b>{Math.round(arb.best.err)}° off</b> (true bearing ≈ {arb.best.azOtherTrue.toFixed(1)}°).
-                  Calibrate that photo in the sky view against the Sun/shadows or a mapped landmark.
-                </div>
-              ) : null;
-            })()}
-            {(() => {
-              if (!result.ok) return null;
-              const alts = sources.filter((s) => isNum(s.lat) && isNum(s.A?.az)).map((s) => (isNum(s.alt) ? +s.alt : 0));
-              const spread = alts.length > 1 ? Math.max(...alts) - Math.min(...alts) : 0;
-              return spread > 3 && spread > result.baseline * 0.35 ? (
-                <div className="warn" style={{ marginTop: 8 }}>
-                  ⚠ Observer GPS altitudes differ by {spread.toFixed(1)} m on a {fmtLenShort(result.baseline)} baseline — phone GPS altitude wobbles ±5 m, and at short range that tilts the rays. If the observers stood on level ground, set their elevations equal for a tighter vertical fix.
-                </div>
-              ) : null;
-            })()}
-            {(() => {
-              const asp = aspectSpan(result);
-              return asp ? (
-                <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8, fontFamily: "var(--mono)" }}>
-                  elongated-object read ({asp[0].n} views): jointly consistent with a true span of {asp.map((a) => `${fmtLenShort(a.S)} (long axis ≈ ${Math.round(a.psi)}°)`).join("  —or—  ")}{asp[0].rms != null ? ` · fit rms ${fmtLenShort(asp[0].rms)}` : ""}. Single views understate planar objects seen off-broadside{asp.length > 1 ? "; a third viewpoint breaks the two-fold ambiguity" : ""}.
-                </div>
-              ) : null;
-            })()}
-
-          </div>
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-            <button className="btn amber" onClick={loadDemo}>Load demo sighting</button>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--dim)" }}>
-            Only one witness? Use <b>Solo</b> mode — it handles the size↔distance ambiguity honestly.
-          </div>
-        </Section>
-      </div>
-    );
-  }
-
+  if (!result.ok && !hasTrackContent) return null;
   const r = result;
   const ratingColor = { excellent: "var(--teal)", good: "var(--teal)", fair: "var(--amber)", poor: "var(--red)" }[r.rating];
-
-  const cmp = (guess, actual, unitLabel) => {
-    if (!isNum(guess) || !isFinite(actual)) return null;
-    const ratio = actual / +guess;
-    const off = ratio >= 1 ? `${ratio.toFixed(1)}× larger` : `${(1 / ratio).toFixed(1)}× smaller`;
-    return <span style={{ color: "var(--dim)" }}> — the math says {off} than your guess</span>;
-  };
 
   return (
     <div>
@@ -3216,7 +2913,7 @@ function ResultsPanel({ sources, est, setEst, loadDemo }) {
       {r.sizeAvg != null && (
         <Section title="Object size (from triangulated range)">
           <div className="readout" style={{ fontSize: 30 }}>{fmtLenShort(r.sizeAvg)}</div>
-          <div className="readsub">{n1(r.sizeAvg * 3.28084)} ft across (longest marked dimension){cmp(est.size, r.sizeAvg)}</div>
+          <div className="readsub">{n1(r.sizeAvg * 3.28084)} ft across (longest marked dimension)</div>
           <div style={{ marginTop: 8, fontSize: 12, color: "var(--dim)" }}>
             Nearest reference: <b style={{ color: "var(--ink)" }}>{REF_OBJECTS.reduce((best, o) => Math.abs(Math.log(o.size / r.sizeAvg)) < Math.abs(Math.log(best.size / r.sizeAvg)) ? o : best).name}</b>
           </div>
@@ -3242,7 +2939,7 @@ function ResultsPanel({ sources, est, setEst, loadDemo }) {
               <div className="hr" />
               <ML>Ground speed</ML>
               <div className="readout" style={{ fontSize: 26 }}>{n1(r.motion.speed * 2.23694)} mph</div>
-              <div className="readsub">{fmtSpeed(r.motion.speed)}{cmp(est.speed, r.motion.speed * 2.23694)}</div>
+              <div className="readsub">{fmtSpeed(r.motion.speed)}</div>
               <div className="grid2" style={{ marginTop: 10 }}>
                 <div>
                   <ML>Heading</ML>
@@ -3284,214 +2981,15 @@ function ResultsPanel({ sources, est, setEst, loadDemo }) {
       )}
 
       <AdsbCheck sources={sources} />
-
-      <Section title="Your gut estimate (for comparison only)" collapsible defaultOpen={false}>
-        <div className="grid3">
-          <Num label="Size" unit="m" value={est.size} onChange={(v) => setEst({ ...est, size: v })} />
-          <Num label="Distance" unit="m" value={est.dist} onChange={(v) => setEst({ ...est, dist: v })} />
-          <Num label="Speed" unit="mph" value={est.speed} onChange={(v) => setEst({ ...est, speed: v })} />
-        </div>
-        {result.ok && isNum(est.dist) && (
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--dim)" }}>
-            Computed range from Obs 1: <b style={{ color: "var(--teal)" }}>{fmtLenShort(r.perSource[0].dist)}</b>{cmp(est.dist, r.perSource[0].dist)}
-          </div>
-        )}
-        <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-          Estimates never feed the solution — the fix above is pure geometry.
-        </div>
-      </Section>
     </div>
   );
-}
-
-/* ============================================================
-   SOLO MODE — single witness, size ↔ distance ambiguity
-   ============================================================ */
-function SoloPanel({ solo, setSolo }) {
-  const ang = isNum(solo.ang) ? +solo.ang : null;
-  const angRate = isNum(solo.angRate) ? +solo.angRate : null;
-  const mode = solo.mode; // 'dist' | 'size'
-  const slider = +solo.slider; // 0..1 log position
-
-  const logMin = mode === "dist" ? Math.log10(10) : Math.log10(0.1);
-  const logMax = mode === "dist" ? Math.log10(200000) : Math.log10(500);
-  const val = Math.pow(10, logMin + slider * (logMax - logMin));
-
-  let dist, size;
-  if (ang != null) {
-    if (mode === "dist") { dist = val; size = 2 * dist * Math.tan((ang * D2R) / 2); }
-    else { size = val; dist = size / (2 * Math.tan((ang * D2R) / 2)); }
-  }
-  const transSpeed = ang != null && angRate != null && dist ? dist * angRate * D2R : null;
-
-  return (
-    <div>
-      <Section title="What you measured">
-        <Num label="Angular size" unit="°" value={solo.ang} onChange={(v) => setSolo({ ...solo, ang: v })} ph="e.g. 0.5" />
-        <div style={{ marginTop: 4 }}>
-          {[["Moon-width", 0.52], ["Pinky tip @ arm", 1], ["Two fingers", 3], ["Fist", 10]].map(([l, v]) => (
-            <span key={l} className="chip" onClick={() => setSolo({ ...solo, ang: String(v) })}>{l} = {v}°</span>
-          ))}
-        </div>
-        <div style={{ marginTop: 10 }}>
-          <Num label="Angular speed (optional)" unit="°/s" value={solo.angRate} onChange={(v) => setSolo({ ...solo, angRate: v })} ph="e.g. 2" />
-          <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
-            Tip: if it crossed its own moon-width in T seconds → 0.52 / T. You can also measure angular size from a photo in the Observers tab.
-          </div>
-        </div>
-      </Section>
-
-      <Section title="The honest trade-off"
-        right={
-          <div style={{ display: "flex", gap: 4 }}>
-            <button className={"btn sm" + (mode === "dist" ? " amber" : "")} onClick={() => setSolo({ ...solo, mode: "dist" })}>Assume distance</button>
-            <button className={"btn sm" + (mode === "size" ? " amber" : "")} onClick={() => setSolo({ ...solo, mode: "size" })}>Assume size</button>
-          </div>
-        }>
-        <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 10 }}>
-          One viewpoint can't separate size from distance — a 0.5 m balloon at 100 m looks identical to a 50 m craft at 10 km. Pin one, and geometry gives the other.
-        </div>
-        {ang == null ? (
-          <div className="warn">Enter an angular size above to unlock the slider.</div>
-        ) : (
-          <>
-            <ML>{mode === "dist" ? "Assumed distance" : "Assumed size"}</ML>
-            <div className="readout amber" style={{ fontSize: 24 }}>{fmtLenShort(mode === "dist" ? dist : size)}</div>
-            <input type="range" min={0} max={1} step={0.001} value={slider}
-              onChange={(e) => setSolo({ ...solo, slider: e.target.value })} style={{ marginTop: 6 }} />
-            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
-              <span>{mode === "dist" ? "10 m" : "10 cm"}</span><span>{mode === "dist" ? "200 km" : "500 m"}</span>
-            </div>
-            <div className="hr" />
-            <div className="grid2">
-              <div>
-                <ML>{mode === "dist" ? "→ Implied true size" : "→ Implied distance"}</ML>
-                <div className="readout" style={{ fontSize: 24 }}>{fmtLenShort(mode === "dist" ? size : dist)}</div>
-                <div className="readsub">{mode === "dist" ? `${n1(size * 3.28084)} ft across` : `${n1(dist * 3.28084)} ft away`}</div>
-              </div>
-              <div>
-                <ML>→ Implied speed</ML>
-                <div className="readout" style={{ fontSize: 24 }}>{transSpeed != null ? `${n1(transSpeed * 2.23694)} mph` : "—"}</div>
-                <div className="readsub">{transSpeed != null ? `${n1(transSpeed)} m/s crossing speed` : "needs angular speed"}</div>
-              </div>
-            </div>
-          </>
-        )}
-      </Section>
-
-      {ang != null && (
-        <Section title="If it were a… (identity line-up)">
-          <table className="tbl">
-            <thead><tr><th>Object</th><th>Size</th><th>Would be at</th><th>{angRate != null ? "Speed" : ""}</th></tr></thead>
-            <tbody>
-              {REF_OBJECTS.map((o) => {
-                const d = o.size / (2 * Math.tan((ang * D2R) / 2));
-                const v = angRate != null ? d * angRate * D2R * 2.23694 : null;
-                return (
-                  <tr key={o.name}>
-                    <td>{o.name}</td>
-                    <td>{o.size} m</td>
-                    <td style={{ color: "var(--teal)" }}>{fmtLenShort(d)}</td>
-                    <td>{v != null ? `${n1(v)} mph` : ""}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 8, fontSize: 11, color: "var(--dim)" }}>
-            Read it as: "for this to be a 737, it had to be {fmtLenShort(36 / (2 * Math.tan((ang * D2R) / 2)))} away{angRate != null ? " — and moving that fast" : ""}." Implausible rows rule identities out.
-          </div>
-        </Section>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   GUIDE
-   ============================================================ */
-function GuidePanel() {
-  const S = ({ t, children }) => (
-    <Section title={t}><div style={{ fontSize: 13, color: "var(--dim)", lineHeight: 1.6 }}>{children}</div></Section>
-  );
-  return (
-    <div>
-      <S t="The fast path">
-        Tap <b style={{ color: "var(--ink)" }}>New sighting</b> and load the photo or video. GPS, capture time, lens FOV, and (on most iPhones) the compass bearing auto-fill from the file. Drag the ground under your pin to fine-tune where you stood — the photo's own GPS fix and any other witnesses are drawn around you — then one tap places the photo in the sky. Everything after that happens inside the sky view: line up the horizon, lock Moment A, aim Moment B, Close.
-      </S>
-      <S t="How the math works">
-        Each observer defines a 3-D sight line from their GPS position along a compass bearing and elevation angle. Two or more lines are intersected by least squares — where they (nearly) cross is the object's position. Range × angular size gives true size; two fixes over time give velocity. Your gut estimates are shown alongside but never influence the solution.
-      </S>
-      <S t="Getting a good bearing">
-        Open your phone's compass app, stand where you stood, and point the phone exactly where the object was. Use <b style={{ color: "var(--ink)" }}>true north</b> if the app offers it; magnetic bearings in the western US read ~13–15° low. A landmark trick also works: note what the object was directly above (a peak, a pole), then measure the bearing to that landmark on a map.
-      </S>
-      <S t="Estimating elevation angle">
-        A fist at arm's length spans ≈ 10°; stack fists from the horizon. Three fingers ≈ 5°, pinky tip ≈ 1°. Halfway up the sky is 45°.
-      </S>
-      <S t="Angular size from a photo">
-        Load the photo, pick the camera's field of view (1× phone lens ≈ 68°; every 2× zoom halves it), and tap the object's two opposite edges. Digital zoom crops the sensor, so if the photo was zoomed, use the zoomed FOV, not 1×.
-      </S>
-      <S t="The sky aimer">
-        Every moment has an <b style={{ color: "var(--ink)" }}>Aim in sky view</b> button that opens a full-screen planetarium: drag to look around, pinch to zoom, and put the crosshair exactly where the object was. On a phone (opened in a real browser tab) you can also point the phone itself, or turn on the camera and aim over your actual surroundings. The Sun and Moon are drawn at their true positions for the sighting date, time, and observer location — if you remember the object relative to either ("two moon-widths left of the Moon"), tap the ☀/☾ chip to center on it, then offset. That celestial anchor is often more accurate than a phone compass. Best of all: if the source has a photo or video loaded, tap 🖼 to project it onto the sky dome — a photo is itself a gnomonic projection, so the placement is geometrically exact. In Place mode, drag it until its horizon matches the horizon line, pinch until scenery spacing matches the grid (this calibrates the camera FOV), twist to level it, then ⌖ capture the object's direction straight from your marked points. No compass needed at all.
-      </S>
-      <S t="Trajectory tracking & g-forces">
-        On a video, switch the marker mode to <b style={{ color: "var(--ink)" }}>Track</b> and tap the object once per frame step — the video auto-advances after each tap, so a maneuver takes seconds to digitize. The first track point must sit on the frame where Moment A's bearing was taken: it anchors the whole track's absolute direction, and every later point is a precise pixel offset from it. With two observers' tracks on a common clock, each time sample is triangulated into a 3D position, giving speed, acceleration, <b style={{ color: "var(--ink)" }}>felt g-load</b> (1 g = steady flight), and turn rate over time. With one observer you get the angular path, and results scale with an assumed distance — the useful inversion is the table showing how close the object must be for the maneuver to stay within 1 g, 3 g, or the 9 g fighter limit.
-      </S>
-      <S t="Photo & video metadata">
-        Uploading a JPEG or iPhone video mines it for embedded evidence: GPS position and altitude, capture time, the lens's 35 mm-equivalent focal length (→ exact FOV), and on many phones the compass bearing the camera was pointing. It's applied to the observer automatically — position, sighting time, FOV, and a starting bearing (magnetic bearings need local declination added, ~+13° E in the western US). HEIC files hide their metadata from browsers; share as JPEG to unlock it.
-      </S>
-      <S t="Syncing clocks for speed">
-        Speed needs both observers to timestamp moments A and B on a common clock — phone clocks are GPS-synced, so video creation times or a quick "mark!" call both work. Any common reference works; only the A→B difference matters.
-      </S>
-      <S t="What makes a solution trustworthy">
-        Baseline matters most: observers separated by at least 1/10 of the object's range give strong geometry. The quality panel flags weak convergence (rays nearly parallel) and large miss distance (rays passing far apart — usually a bad compass reading or non-simultaneous observations). Excellent fixes come from wide baselines, careful bearings, and synchronized moments.
-      </S>
-      <S t="Honest limits">
-        Compass error of ±2–3° is normal on phones; at 10 km range that's ±400–500 m of position error per degree. This tool is for rigorous estimation, not proof — but it will reliably separate "balloon at 200 m" from "aircraft at 10 km," which is where most sightings live or die.
-      </S>
-    </div>
-  );
-}
-
-/* ============================================================
-   DEMO — simulated 40 m craft at 2 km altitude doing an 80 m/s
-   (~180 mph) level turn at ~3.5 g felt load; both observers'
-   tracks are derived exactly from the simulated path.
-   ============================================================ */
-function demoSources() {
-  const s1 = makeSource(1), s2 = makeSource(2);
-  Object.assign(s1, { name: "Ridge lookout", lat: "42.16380", lon: "-123.64800", alt: "0", open: false });
-  Object.assign(s2, { name: "Valley road", lat: "42.16380", lon: "-123.62374", alt: "0", open: false });
-  const obsP = [[0, 0, 0], [1999.5, 0, 0]];
-  const v = 80, aM = 34, R = (v * v) / aM, om = v / R; // level turn: radius & rate
-  const C = [1000, 3000 + R, 2000];
-  const tracks = [[], []];
-  for (let t = 0; t <= 6.001; t += 0.5) {
-    const th = -Math.PI / 2 + om * t;
-    const P = [C[0] + R * Math.cos(th), C[1] + R * Math.sin(th), 2000];
-    obsP.forEach((O, i) => {
-      const w = sub(P, O);
-      const az = ((Math.atan2(w[0], w[1]) * R2D) + 360) % 360;
-      const el = Math.atan2(w[2], Math.hypot(w[0], w[1])) * R2D;
-      tracks[i].push({ t: +t.toFixed(2), az: +az.toFixed(3), el: +el.toFixed(3) });
-    });
-  }
-  const wire = (s, tr, dist0) => {
-    const ang = (2 * Math.atan(20 / dist0) * R2D).toFixed(3);
-    s.A = { ...blankMomentA(), t: "0", az: String(tr[0].az), el: String(tr[0].el), angManual: ang };
-    s.B = { ...blankMomentB(), t: "5", az: String(tr[10].az), el: String(tr[10].el) };
-    s.track = tr;
-  };
-  wire(s1, tracks[0], Math.hypot(1000, 3000, 2000));
-  wire(s2, tracks[1], Math.hypot(1000 - 1999.5, 3000, 2000));
-  return [s1, s2];
 }
 
 /* ============================================================
    APP
    ============================================================ */
 /* ============================================================
-   WIZARD — one page at a time. The Lab remains for power users.
+   WIZARD — one page at a time. The only workflow.
    ============================================================ */
 let _crcT = null;
 function crc32buf(u8) {
@@ -3595,7 +3093,6 @@ async function packSources(sources) {
         r.B = { ...r.B, pb: sp(r.B?.pb) };
         r.track = (r.track || []).map((p) => (p.x != null ? { ...p, x: p.x * k, y: p.y * k } : p));
         if (r.shapeFit) r.shapeFit = { ...r.shapeFit, cx: r.shapeFit.cx * k, cy: r.shapeFit.cy * k, sizeNat: r.shapeFit.sizeNat * k };
-        if (r.horizonFit) r.horizonFit = { ...r.horizonFit, a: r.horizonFit.a * k };
         r.mediaJpeg = cv.toDataURL("image/jpeg", 0.8);
       } catch (e) { /* export without the image */ }
     }
@@ -3823,7 +3320,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, openLab }) {
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -3886,20 +3383,14 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
             </div>
           )}
           <button className="btn amber" style={{ width: "100%", marginTop: 10 }} onClick={onAddWitness}>➕ Add a witness / perspective</button>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <button className="btn teal" style={{ flex: 1 }} onClick={onReport}>📄 Report</button>
-            <button className="btn" style={{ flex: 1 }} onClick={openLab}>Lab (advanced)</button>
-          </div>
+          <button className="btn teal" style={{ width: "100%", marginTop: 8 }} onClick={onReport}>📄 Report</button>
         </div>
-      )}
-      {real.length === 0 && (
-        <button className="btn sm" style={{ marginTop: 18, width: "100%" }} onClick={openLab}>Open the Lab (advanced mode)</button>
       )}
     </div>
   );
 }
 
-function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, openLab }) {
+function WizFinish({ sources, est, onAdd, onReport, onShare, onHome }) {
   const fix = analyze(sources);
   const tr = analyzeTracks(sources);
   return (
@@ -3956,7 +3447,10 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, openLab }) 
         <button className="btn amber" style={{ padding: 13 }} onClick={onAdd}>➕ Add another perspective</button>
         <button className="btn teal" style={{ padding: 13 }} onClick={onReport}>📄 Generate report</button>
         <button className="btn" style={{ padding: 13 }} onClick={onShare}>💾 Share file (.phodar.json)</button>
-        <button className="btn sm" onClick={openLab}>Fine-tune in the Lab (advanced)</button>
+      </div>
+      {/* full results: top-down plot, per-observer table, motion, quality, trajectory, ADS-B */}
+      <div style={{ margin: "6px -12px 0" }}>
+        <ResultsPanel sources={sources} />
       </div>
     </div>
   );
@@ -4067,11 +3561,9 @@ function ReportView({ sources, est, onBack }) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState("observers");
   const [sources, setSources] = useState(() => [makeSource(1)]);
   const [est, setEst] = useState({ size: "", dist: "", speed: "" });
-  const [solo, setSolo] = useState({ ang: "", angRate: "", mode: "dist", slider: 0.5 });
-  const [ui, setUi] = useState({ mode: "wizard", view: "home", srcId: null });
+  const [ui, setUi] = useState({ view: "home", srcId: null });
   const loadedRef = useRef(false);
 
   /* restore session (migrates pre-rename SkyFix sessions transparently) */
@@ -4098,7 +3590,6 @@ export default function App() {
           }).catch(() => { });
         }
         if (d.est) setEst(d.est);
-        if (d.solo) setSolo(d.solo);
       }
       loadedRef.current = true;
     })();
@@ -4108,22 +3599,21 @@ export default function App() {
   useEffect(() => {
     if (!loadedRef.current) return;
     const id = setTimeout(() => {
-      try { window.storage.set("phodar-v1", JSON.stringify({ sources: sources.map(({ mediaUrl, mediaKind, mediaNorm, ...rest }) => rest), est, solo })); } catch (e) { }
+      try { window.storage.set("phodar-v1", JSON.stringify({ sources: sources.map(({ mediaUrl, mediaKind, mediaNorm, ...rest }) => rest), est })); } catch (e) { }
     }, 800);
     return () => clearTimeout(id);
-  }, [sources, est, solo]);
+  }, [sources, est]);
 
   const updateSource = (id, patch) =>
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const removeSource = (id) => { mediaDel(id); setSources((ss) => ss.filter((s) => s.id !== id)); };
-  const addSource = () => setSources((ss) => [...ss, makeSource(ss.length + 1)]);
   /* a SIGHTING is the event; each witness/perspective is a source within it */
   const addWitness = () => {
     const blank = sources.find(isEmptySource);
-    if (blank) { setUi({ mode: "wizard", view: "s1", srcId: blank.id }); return; }
+    if (blank) { setUi({ view: "s1", srcId: blank.id }); return; }
     const ns = makeSource(sources.length + 1);
     setSources((ss) => [...ss.map((s) => ({ ...s, open: false })), ns]);
-    setUi({ mode: "wizard", view: "s1", srcId: ns.id });
+    setUi({ view: "s1", srcId: ns.id });
   };
   const newSighting = () => {
     const real = sources.filter((s) => !isEmptySource(s));
@@ -4133,25 +3623,9 @@ export default function App() {
     mediaClear();
     setSources([ns]);
     setEst({ size: "", dist: "", speed: "" });
-    setUi({ mode: "wizard", view: "s1", srcId: ns.id });
+    setUi({ view: "s1", srcId: ns.id });
   };
-  const loadDemo = () => { setSources(demoSources()); setTab("results"); };
-  const resetAll = () => {
-    mediaClear();
-    setSources([makeSource(1)]);
-    setEst({ size: "", dist: "", speed: "" });
-    try { window.storage.delete("phodar-v1"); } catch (e) { }
-    try { window.storage.delete("skyfix-v1"); } catch (e) { }
-  };
-
-  const TABS = [
-    ["observers", "◬", "Observers"],
-    ["results", "⊕", "Fix"],
-    ["solo", "◑", "Solo"],
-    ["guide", "✦", "Guide"],
-  ];
-
-  /* ——— guided wizard shell (default). The Lab below remains for power users. ——— */
+  /* ——— guided wizard shell — the one and only workflow ——— */
   const goView = (view) => setUi((u) => ({ ...u, view }));
   const shareJsonNow = async () => {
     const j = await buildShareJson(sources, est);
@@ -4184,13 +3658,12 @@ export default function App() {
       return merged.length;
     } catch (e) { return 0; }
   };
-  if (ui.mode === "wizard") {
     const wsrc = sources.find((s) => s.id === ui.srcId) || null;
     let page = null;
     if (ui.view === "report") {
       page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
     } else if (ui.view === "s4") {
-      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
+      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
@@ -4224,70 +3697,6 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ mode: "wizard", view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
+    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} />;
     return <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}><style>{css}</style>{page}</div>;
-  }
-
-  return (
-    <div className="phodar">
-      <style>{css}</style>
-
-      <header style={{ padding: "18px 14px 6px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <div>
-            <div style={{ fontFamily: "var(--mono)", fontWeight: 800, fontSize: 22, letterSpacing: ".14em" }}>
-              PHO<span style={{ color: "var(--amber)" }}>DAR</span>
-            </div>
-            <div className="microlabel" style={{ marginTop: 2 }}>Photogrammetric detection &amp; ranging</div>
-          </div>
-          <button className="btn sm" onClick={() => setUi({ mode: "wizard", view: "home", srcId: null })}>‹ Guided</button>
-          <button className="btn sm ghost" style={{ color: "var(--dim)" }} onClick={resetAll}>Reset</button>
-        </div>
-      </header>
-
-      {tab === "observers" && (
-        <div>
-          {(() => {
-            const f = analyze(sources);
-            return f.ok
-              ? <div className="ok" style={{ margin: "6px 12px 0" }}>✓ Fix ready — {f.obs.length} observers locked. Open the Fix tab.</div>
-              : <div style={{ margin: "6px 12px 0", fontSize: 12, color: "var(--dim)" }}>
-                  Each observer needs <b style={{ color: "var(--amber)" }}>position + bearing + elevation</b> — dots track progress. Complete: <b style={{ color: "var(--amber)" }}>{f.validCount}</b>/2 for a fix.
-                </div>;
-          })()}
-          <div style={{ margin: "10px 12px 0" }}>
-            <button className="btn amber" style={{ width: "100%", padding: "14px", fontSize: 15 }} onClick={addWitness}>
-              📸 Add a witness — start with a photo or video
-            </button>
-          </div>
-          {sources.map((s, i) => (
-            <SourceCard key={s.id} src={s} idx={i}
-              update={(patch) => updateSource(s.id, patch)}
-              remove={() => removeSource(s.id)}
-              canRemove={sources.length > 1}
-              others={sources.filter((x) => x.id !== s.id && isNum(x.lat) && isNum(x.lon)).map((x) => ({ lat: +x.lat, lon: +x.lon, name: x.name }))} />
-          ))}
-          <div style={{ display: "flex", gap: 8, margin: "4px 12px 16px" }}>
-            <button className="btn amber" style={{ flex: 1 }} onClick={addSource}>+ Add observer</button>
-            <button className="btn teal" style={{ flex: 1 }} onClick={() => setTab("results")}>Compute fix →</button>
-          </div>
-          <div style={{ margin: "0 12px", fontSize: 11, color: "var(--dim)" }}>
-            No second witness? Jump to <b>Solo</b> mode instead.
-          </div>
-        </div>
-      )}
-
-      {tab === "results" && <ResultsPanel sources={sources} est={est} setEst={setEst} loadDemo={loadDemo} />}
-      {tab === "solo" && <SoloPanel solo={solo} setSolo={setSolo} />}
-      {tab === "guide" && <GuidePanel />}
-
-      <nav className="tabbar">
-        {TABS.map(([k, ic, l]) => (
-          <button key={k} className={"tab" + (tab === k ? " on" : "")} onClick={() => setTab(k)}>
-            <span className="ic">{ic}</span>{l}
-          </button>
-        ))}
-      </nav>
-    </div>
-  );
 }
