@@ -110,11 +110,17 @@ comments, in this order:
    `scripts/mathcheck.js`. CORS reality (probed 2026-07): **airplanes.live
    sends ACAO:\*** (primary, browser-direct); **adsb.lol has NO CORS** (kept
    as fallback; needs the Railway proxy to matter in-browser).
+   **Also done**: live traffic drawn on the SkyAimer dome (✈ chips at true
+   az/el, heading-rotated, 20 s refresh, header toggle, amber staleness
+   warning), snapshot persisted to `source.adsb` on aimer close/unmount
+   (wizard UNMOUNTS the aimer — the unmount drain matters), and an
+   "Aircraft check (ADS-B)" report section ranking the snapshot against the
+   final sight-lines with a fetch-vs-sighting time-gap caveat.
    **Remaining**: historical replay (adsb.lol daily dumps or OpenSky ≤1 h —
-   needs the proxy), report-table integration (the one-table-of-mundane-
-   explanations design), adsbdb.com hex→route enrichment, track-time
-   matching (compare aircraft position history against the witness track,
-   not just Moment A).
+   needs the proxy), adsbdb.com hex→route enrichment, track-time matching
+   (compare aircraft position history against the witness track, not just
+   Moment A). The user is wizard-first: the Lab stays but new check UI
+   belongs in the sky view + report, not Lab-only panels.
 4. **Terrain skyline calibration** — the strongest calibration source in
    hills, where auto-horizon fails. Data: AWS Open Data Terrain Tiles
    (Terrarium PNG, free, no key, CORS-open, 3DEP/NED 10 m in the US):

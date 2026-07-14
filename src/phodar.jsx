@@ -7,7 +7,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projec
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
-import { fetchAircraft, rankCandidates, radiusNmForSources } from "./checks/adsb.js";
+import { fetchAircraft, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -1569,6 +1569,55 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const moon = useMemo(() => ({ ...moonPos(T, LAT, LNG), frac: moonFrac(T) }), [T, LAT, LNG]);
   const isNight = sun.alt < -4;
 
+  /* --- live air traffic on the dome (ADS-B). Live only: chips show
+     aircraft in the air NOW at their true az/el; when the sighting time
+     is old this is context, not evidence — the chip goes amber. --- */
+  const [acOn, setAcOn] = useState(true);
+  const [acData, setAcData] = useState(null); // {ac, fetchedAt, src} | {err}
+  const acSnapRef = useRef(null);
+  const hasPos = isNum(lat) && isNum(lng);
+  useEffect(() => {
+    if (!open || !acOn || !hasPos) return;
+    let dead = false;
+    const pull = async () => {
+      try {
+        const { ac, source: apiSrc } = await fetchAircraft(LAT, LNG, 60);
+        if (dead) return;
+        const air = ac.filter((a) => !a.ground && a.altM != null);
+        setAcData({ ac: air, fetchedAt: Date.now(), src: apiSrc });
+        /* trimmed snapshot for the report — nearest 40, minimal fields */
+        const trimmed = air
+          .map((a) => ({ ...a, _r: acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, a).rangeM }))
+          .sort((x, y) => x._r - y._r).slice(0, 40)
+          .map(({ _r, ...a }) => a);
+        acSnapRef.current = { fetchedAt: Date.now(), src: apiSrc, nm: 60, ac: trimmed };
+      } catch (e) { if (!dead) setAcData({ err: String(e?.message || e) }); }
+    };
+    pull();
+    const iv = setInterval(pull, 20000);
+    return () => { dead = true; clearInterval(iv); };
+  }, [open, acOn, hasPos, LAT, LNG]);
+  /* persist the last snapshot onto the source when the aimer closes.
+     Lab flips `open`; the wizard UNMOUNTS the aimer on step change, so the
+     unmount cleanup must drain too (updateRef dodges the stale closure). */
+  const updateRef = useRef(update); updateRef.current = update;
+  const drainSnap = () => {
+    if (acSnapRef.current && updateRef.current) { updateRef.current({ adsb: acSnapRef.current }); acSnapRef.current = null; }
+  };
+  useEffect(() => { if (!open) drainSnap(); }, [open]);
+  useEffect(() => drainSnap, []);
+  const acView = useMemo(() => {
+    if (!acOn || !acData?.ac) return [];
+    return acData.ac
+      .map((a) => {
+        const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, a);
+        return { a, ...g };
+      })
+      .filter((v) => v.el > -2 && v.rangeM < 160000)
+      .sort((x, y) => x.rangeM - y.rangeM)
+      .slice(0, 30);
+  }, [acOn, acData, LAT, LNG]);
+
   /* --- true pinhole (gnomonic) projection ---
      While placing, the view is SLAVED to the photo's camera axis. Two
      gnomonic projections sharing an axis differ by pure scale+rotation,
@@ -2081,6 +2130,33 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
 
+        {/* live air traffic at true az/el (ADS-B) */}
+        {acView.map((v) => {
+          const pr = projectD(v.d);
+          if (!pr.inFront || pr.x < -0.05 || pr.x > 1.05 || pr.y < -0.05 || pr.y > 1.05) return null;
+          /* glyph heading: project the position ~15 s ahead, rotate ✈ toward it */
+          let rot = 0;
+          if (isNum(v.a.track) && isNum(v.a.gs) && v.a.gs > 5) {
+            const dM = v.a.gs * 15;
+            const ahead = {
+              ...v.a,
+              lat: +v.a.lat + (dM * Math.cos(v.a.track * D2R)) / 111320,
+              lon: +v.a.lon + (dM * Math.sin(v.a.track * D2R)) / (111320 * Math.cos(LAT * D2R)),
+            };
+            const p2 = projectD(acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, ahead).d);
+            if (p2.inFront) rot = Math.atan2((p2.y - pr.y) * (vp.h || 1), (p2.x - pr.x) * (vp.w || 1)) * R2D;
+          }
+          const id = (v.a.flight || "").trim() || v.a.reg || v.a.hex;
+          return (
+            <div key={"ac" + v.a.hex} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.92 }}>
+              <div style={{ fontSize: 13, color: "var(--track)", transform: `rotate(${rot}deg)`, textShadow: "0 1px 3px rgba(0,0,0,.85)", lineHeight: 1 }}>✈</div>
+              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 1, whiteSpace: "nowrap" }}>
+                {id}{v.a.t ? ` ${v.a.t}` : ""}<br />{fmtLenShort(v.rangeM)}{v.a.altM != null ? ` · ${Math.round(v.a.altM * 3.28084 / 100) / 10} kft` : ""}
+              </div>
+            </div>
+          );
+        })}
+
         {/* previously captured directions */}
         {markProjs.map((mk, i) => (
           <div key={"mk" + i} style={{ position: "absolute", left: (mk.p.x * 100) + "%", top: (mk.p.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center" }}>
@@ -2163,10 +2239,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,.75)", textShadow: "0 1px 3px rgba(0,0,0,.6)" }}>
             {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
           </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto" }}>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto", flexWrap: "wrap" }}>
             {sun.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(sun)}>☀ {fmtBody(sun)}</button>}
             {moon.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(moon)}>☾ {fmtBody(moon)} · {Math.round(moon.frac * 100)}%</button>}
+            {hasPos && (
+              <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: acOn ? (Math.abs(Date.now() - T) > 900000 ? "var(--amber)" : "var(--track)") : "var(--dim)" }}
+                onClick={() => setAcOn((v) => !v)}>
+                ✈ {acOn ? (acData?.ac ? `${acView.length} live` : acData?.err ? "?" : "…") : "off"}
+              </button>
+            )}
           </div>
+          {acOn && acData?.ac && Math.abs(Date.now() - T) > 900000 && (
+            <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+              ✈ shows traffic in the air NOW — the sighting time is {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h away
+            </div>
+          )}
         </div>
         <button className="btn sm" style={{ pointerEvents: "auto", background: "rgba(15,23,42,.7)" }}
           onClick={() => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); }}>
@@ -3391,6 +3478,41 @@ async function reportHtml(sources, est, opts = {}) {
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
     `</table>` : "";
   const soloKin = (!tr.stereo?.k && tr.solo?.length) ? `<p class="cap">Single-view angular trajectory: ${tr.solo[0].k.n} pts over ${tr.solo[0].k.dur.toFixed(1)} s, peak angular rate ${(tr.solo[0].k.peakSpeed * R2D).toFixed(2)} °/s (distance-free).</p>` : "";
+
+  /* --- ADS-B: rank the captured traffic snapshot against the final sight-lines --- */
+  let adsbHtml = "";
+  {
+    const snaps = origAct.map((s) => s.adsb).filter((a) => a && a.ac && a.ac.length >= 0);
+    const snap = snaps.sort((a, b) => (b.fetchedAt || 0) - (a.fetchedAt || 0))[0];
+    if (snap) {
+      const cands = rankCandidates(sources, snap.ac) || [];
+      const when = origAct.find((s) => isNum(s.whenMs))?.whenMs;
+      const gapMin = when ? Math.abs(snap.fetchedAt - +when) / 60000 : null;
+      const gapTxt = gapMin == null ? "" : gapMin < 20 ? `${Math.round(gapMin)} min from the sighting time — a fair live comparison.`
+        : gapMin < 1440 ? `<b>${(gapMin / 60).toFixed(1)} h from the sighting time</b> — traffic has turned over; treat as context, not evidence.`
+          : `<b>${Math.round(gapMin / 1440)} days from the sighting time</b> — traffic has fully turned over; treat as context only.`;
+      const measA = (() => {
+        const w = sources.find((s) => isNum(s.lat) && isNum(s.A?.az) && isNum(s.A?.el));
+        if (!w) return null;
+        return angSizeFromPoints(w.A?.p1, w.A?.p2, w.natW, w.natH, +w.fovH) ?? (isNum(w.A?.angManual) ? +w.A.angManual : null);
+      })();
+      const top = cands.slice(0, 6);
+      const rows = top.map((c) => {
+        const p = c.per[0];
+        return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? c.span.toFixed(0) + " m" : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${Math.round(c.gs * 2.23694)} mph` : ""}</td></tr>`;
+      }).join("");
+      const best = cands[0];
+      const verdict = !cands.length
+        ? `No airborne transponder aircraft were within ${snap.nm} nm at check time. ADS-B absence rules out airliners and most GA — not military or non-transponder traffic.`
+        : best.sepMax < 2.5
+          ? `<b>${e2(best.flight || best.reg || best.hex)}</b> sat within ${best.sepMax.toFixed(1)}° of every witness sight-line at check time — a strong mundane candidate; compare its predicted angular size against the measurement above.`
+          : `No aircraft sat on the sight-line (closest: ${e2(best.flight || best.reg || best.hex)}, ${best.sepMax.toFixed(1)}° off at the worst witness).`;
+      adsbHtml = `<h2>Aircraft check (ADS-B)</h2>
+<p class="cap">Live traffic captured ${new Date(snap.fetchedAt).toLocaleString()} via ${e2(snap.src)}${gapTxt ? " · " + gapTxt : ""}</p>
+${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
+<p>${verdict}</p>`;
+    }
+  }
   const exhibits = packed.map((s, i) => {
     let imgSrc = s.mediaJpeg;
     if (opts.exhibits === "full" && origAct[i]?.mediaUrl && origAct[i].mediaKind === "image") imgSrc = origAct[i].mediaUrl;
@@ -3455,6 +3577,7 @@ table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{bord
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
 <h2>Result</h2>${fixHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
+${adsbHtml}
 ${exhibits}
 <h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>
 <h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>
