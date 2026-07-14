@@ -282,11 +282,15 @@ const css = `
   color:var(--ink); border-color:rgba(138,150,179,.6); font-size:9px;}
 .plotwrap .leaflet-bar a{background:var(--panel2); color:var(--ink);
   border-color:var(--line);}
-/* portrait lock — phones only (coarse pointer + landscape-phone height).
-   Tablets and desktops never match. */
+/* portrait lock — phones only. The trigger is the DEVICE orientation
+   (html.dev-landscape, set from screen.orientation in JS), NOT a CSS
+   orientation query: the on-screen keyboard squishes the viewport wider
+   than tall, which made the old media query fire while typing
+   coordinates in step 2 and lock the user out. Plus coarse pointer +
+   small screen so tablets and desktops never match. */
 .rotate-lock{display:none;}
-@media screen and (orientation: landscape) and (pointer: coarse) and (max-height: 520px){
-  .rotate-lock{display:flex; position:fixed; inset:0; z-index:9999;
+@media screen and (pointer: coarse) and (max-height: 520px){
+  html.dev-landscape .rotate-lock{display:flex; position:fixed; inset:0; z-index:9999;
     background:var(--bg); color:var(--ink); flex-direction:column;
     align-items:center; justify-content:center; gap:14px; text-align:center;
     font-family:var(--mono); padding:20px;}
@@ -3805,6 +3809,24 @@ export default function App() {
       return !v;
     });
   };
+
+  /* device-orientation class for the portrait lock — screen.orientation is
+     the physical sensor and ignores keyboard-squished viewports */
+  useEffect(() => {
+    const upd = () => {
+      const land = screen.orientation
+        ? String(screen.orientation.type).startsWith("landscape")
+        : Math.abs(+window.orientation || 0) === 90;
+      document.documentElement.classList.toggle("dev-landscape", land);
+    };
+    upd();
+    if (screen.orientation) screen.orientation.addEventListener("change", upd);
+    window.addEventListener("orientationchange", upd);
+    return () => {
+      if (screen.orientation) screen.orientation.removeEventListener("change", upd);
+      window.removeEventListener("orientationchange", upd);
+    };
+  }, []);
   const loadedRef = useRef(false);
 
   /* restore session (migrates pre-rename SkyFix sessions transparently) */
