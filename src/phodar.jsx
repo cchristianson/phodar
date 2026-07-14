@@ -7,7 +7,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projec
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
-import { fetchAircraft, fetchAircraftAt, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -1629,6 +1629,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .slice(0, 30);
   }, [acOn, acData, LAT, LNG]);
 
+  /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
+  const [selHex, setSelHex] = useState(null);
+  const [selInfo, setSelInfo] = useState(null); // {route, aircraft} | {busy} | null
+  const selV = selHex ? acView.find((v) => v.a.hex === selHex) : null;
+  useEffect(() => {
+    if (!selHex || !selV) return;
+    let dead = false;
+    setSelInfo({ busy: true });
+    fetchAcInfo(selHex, selV.a.flight).then((info) => { if (!dead) setSelInfo(info); });
+    return () => { dead = true; };
+  }, [selHex]);
+  useEffect(() => { if (!acOn) setSelHex(null); }, [acOn]);
+
   /* --- true pinhole (gnomonic) projection ---
      While placing, the view is SLAVED to the photo's camera axis. Two
      gnomonic projections sharing an axis differ by pure scale+rotation,
@@ -2158,15 +2171,56 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             if (p2.inFront) rot = Math.atan2((p2.y - pr.y) * (vp.h || 1), (p2.x - pr.x) * (vp.w || 1)) * R2D;
           }
           const id = (v.a.flight || "").trim() || v.a.reg || v.a.hex;
+          const sel = v.a.hex === selHex;
+          const col = sel ? "var(--amber)" : "var(--track)";
           return (
-            <div key={"ac" + v.a.hex} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.92 }}>
-              <div style={{ fontSize: 13, color: "var(--track)", transform: `rotate(${rot}deg)`, textShadow: "0 1px 3px rgba(0,0,0,.85)", lineHeight: 1 }}>✈</div>
-              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 1, whiteSpace: "nowrap" }}>
+            <div key={"ac" + v.a.hex}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setSelHex(sel ? null : v.a.hex); }}
+              style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "auto", cursor: "pointer", textAlign: "center", opacity: 0.94, padding: 6, zIndex: sel ? 6 : 5 }}>
+              <div style={{ fontSize: 13, color: col, transform: `rotate(${rot}deg)`, textShadow: "0 1px 3px rgba(0,0,0,.85)", lineHeight: 1 }}>✈</div>
+              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 1, whiteSpace: "nowrap" }}>
                 {id}{v.a.t ? ` ${v.a.t}` : ""}<br />{fmtLenShort(v.rangeM)}{v.a.altM != null ? ` · ${Math.round(v.a.altM * 3.28084 / 100) / 10} kft` : ""}
               </div>
             </div>
           );
         })}
+
+        {/* selected-aircraft detail card */}
+        {selHex && (() => {
+          const v = selV;
+          const a = v ? v.a : (acData?.ac || []).find((x) => x.hex === selHex);
+          if (!a) return null;
+          const rt = selInfo?.route, acr = selInfo?.aircraft;
+          const line = (k, val) => val ? <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><span style={{ color: "var(--dim)" }}>{k}</span><span style={{ textAlign: "right" }}>{val}</span></div> : null;
+          return (
+            <div onPointerDown={(e) => e.stopPropagation()}
+              style={{ position: "absolute", left: 10, right: 10, bottom: 108, zIndex: 230, background: "rgba(10,15,28,.94)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", pointerEvents: "auto", maxWidth: 480, margin: "0 auto", lineHeight: 1.6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span style={{ fontWeight: 800, fontSize: 14, color: "var(--amber)" }}>
+                  ✈ {(a.flight || "").trim() || a.reg || a.hex}{a.t ? ` · ${a.t}` : (acr?.icao_type ? ` · ${acr.icao_type}` : "")}
+                </span>
+                <button className="btn sm" style={{ background: "transparent", border: "none", color: "var(--dim)", padding: "0 2px" }} onClick={() => setSelHex(null)}>✕</button>
+              </div>
+              {(a.desc || acr) && <div style={{ color: "var(--dim)", fontSize: 11 }}>{a.desc || `${acr.manufacturer || ""} ${acr.type || ""}`.trim()}{a.reg || acr?.registration ? ` · ${a.reg || acr.registration}` : ""}{acr?.registered_owner ? ` · ${acr.registered_owner}` : ""}</div>}
+              {selInfo?.busy && <div style={{ color: "var(--dim)", fontSize: 11 }}>looking up route…</div>}
+              {rt?.airline?.name && <div style={{ color: "var(--track)", fontSize: 11 }}>{rt.airline.name}</div>}
+              {rt?.origin && rt?.destination && (
+                <div style={{ margin: "4px 0", fontWeight: 700 }}>
+                  {rt.origin.iata_code || rt.origin.icao_code} <span style={{ color: "var(--dim)", fontWeight: 400 }}>({rt.origin.municipality})</span>
+                  {" → "}{rt.destination.iata_code || rt.destination.icao_code} <span style={{ color: "var(--dim)", fontWeight: 400 }}>({rt.destination.municipality})</span>
+                  <span style={{ color: "var(--dim)", fontWeight: 400, fontSize: 10 }}> · scheduled route</span>
+                </div>
+              )}
+              {selInfo && !selInfo.busy && !rt && (a.flight || "").trim() && <div style={{ color: "var(--dim)", fontSize: 11 }}>no route on file for this callsign</div>}
+              {line("altitude", a.altM != null ? `${Math.round(a.altM * 3.28084).toLocaleString()} ft · ${Math.round(a.altM).toLocaleString()} m` : null)}
+              {line("speed", a.gs != null ? `${Math.round(a.gs * 2.23694)} mph · ${Math.round(a.gs * 1.94384)} kt` : null)}
+              {line("track", a.track != null ? `${Math.round(a.track)}° ${compass8(a.track)}` : null)}
+              {v && line("range · az/el", `${fmtLenShort(v.rangeM)} · ${v.az.toFixed(1)}°/${v.el.toFixed(1)}°`)}
+              {line("data", `${acData?.hist ? "archive @ sighting time" : "live"} · ${acData?.src || ""}${a.seen != null ? ` · ±${Math.round(a.seen)}s` : ""}`)}
+            </div>
+          );
+        })()}
 
         {/* previously captured directions */}
         {markProjs.map((mk, i) => (

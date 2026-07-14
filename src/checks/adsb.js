@@ -161,6 +161,34 @@ export async function fetchAircraftAt(lat, lon, tMs, nm = 60, winMin = 8) {
   return { ac: j.ac || [], source: j.src, sampleT: j.sampleT, hist: true };
 }
 
+/* Identity + scheduled route for one aircraft, via adsbdb.com (free,
+   CORS-open, probed 2026-07-14). Route is looked up by CALLSIGN and is
+   the schedule for that flight number — label it "scheduled", it can
+   differ from the actual leg (repositioning, diversions). */
+const acInfoCache = new Map();
+export async function fetchAcInfo(hex, callsign) {
+  const key = `${hex || ""}|${callsign || ""}`;
+  if (acInfoCache.has(key)) return acInfoCache.get(key);
+  const get = async (url) => {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      return (await r.json()).response || null;
+    } catch (e) { return null; }
+  };
+  const [rt, acr] = await Promise.all([
+    callsign ? get(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(callsign.trim())}`) : null,
+    hex ? get(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(hex)}`) : null,
+  ]);
+  const out = {
+    route: rt && typeof rt === "object" && rt.flightroute ? rt.flightroute : null,
+    aircraft: acr && typeof acr === "object" && acr.aircraft ? acr.aircraft : null,
+  };
+  if (acInfoCache.size > 300) acInfoCache.clear();
+  acInfoCache.set(key, out);
+  return out;
+}
+
 /* search radius from the sight-line: a jet at 45,000 ft on a shallow
    sight-line can be far away horizontally; clamp to the API cap */
 export function radiusNmForSources(sources) {
