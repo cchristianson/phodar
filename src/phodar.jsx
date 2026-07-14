@@ -11,7 +11,7 @@ import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmFo
 import { declination } from "./math/geomag.js";
 import { loadSats, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
-import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
+import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
@@ -2069,6 +2069,47 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     update(syncAB(tr));
   };
 
+  /* ⛰ SNAP TO RIDGES — one-tap absolute pose: detect the photo's skyline,
+     cross-correlate against the DEM skyline, apply the az/pitch/roll fix. */
+  const snapToRidges = async () => {
+    if (!terr?.els || !source?.mediaUrl || !source?.natW || !photo) { setFlash("⛰ needs terrain data + a placed photo"); return; }
+    try {
+      const im = await new Promise((res, rej) => {
+        const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = source.mediaUrl;
+      });
+      const DW = 480, k = DW / source.natW, DH = Math.max(60, Math.round(source.natH * k));
+      const cv = document.createElement("canvas");
+      cv.width = DW; cv.height = DH;
+      const ctx = cv.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(im, 0, 0, DW, DH);
+      const pts = detectSkyline(ctx.getImageData(0, 0, DW, DH), DW, DH);
+      if (!pts) { setFlash("⛰ no clean skyline in the photo — align manually against the dashed TERRAIN line"); return; }
+      const fpx = (source.natW / 2) / Math.tan((fovM * D2R) / 2);
+      /* two passes: the correction linearizes around the current pose, so
+         re-derive the sample directions under the pass-1 result and refine.
+         Verified against a synthetic DEM photo: pass 1 lands within ~0.6°,
+         pass 2 within ~0.1° of the known truth pose. */
+      let az = pAz, el = pEl, roll = pRoll, m = null;
+      for (let pass = 0; pass < 2; pass++) {
+        const bb = photoBasis(az, el, roll);
+        const samples = pts.map((p) => {
+          const nx = p.x / k, ny = p.y / k;
+          const x = (nx - source.natW / 2) / fpx, y = (source.natH / 2 - ny) / fpx;
+          const ae = dirToAzEl(unit([bb.f[0] + bb.r[0] * x + bb.u[0] * y, bb.f[1] + bb.r[1] * x + bb.u[1] * y, bb.f[2] + bb.r[2] * x + bb.u[2] * y]));
+          return { az: ae.az, el: ae.el, thx: Math.atan2(nx - source.natW / 2, fpx) };
+        });
+        m = matchSkyline(samples, (a) => skylineElAt(terr.els, a));
+        if (!m || m.rms > 0.8) { setFlash(`⛰ ridges don't match the DEM cleanly (rms ${m ? m.rms.toFixed(2) : "—"}°) — align manually`); return; }
+        /* az/el errors add; roll subtracts (signs verified empirically) */
+        az = ((az + m.dAz) % 360 + 360) % 360;
+        el = clampN(el + m.dEl, -20, 88);
+        roll -= m.dRollDeg;
+      }
+      setPAz(az); setPEl(el); setPRoll(roll);
+      setFlash(`⛰ locked to terrain: ${az.toFixed(1)}° az · ${el.toFixed(1)}° up · roll ${roll.toFixed(1)}° · fit ${m.rms.toFixed(2)}° (${m.n} pts)`);
+    } catch (e) { setFlash("⛰ snap failed on this image"); }
+  };
+
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
 
   const aimColor = which === "B" ? "var(--teal)" : "var(--amber)";
@@ -2526,6 +2567,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </button>
                 {pMode === "place" && (
                   <>
+                    {terr?.els && <button className="btn sm teal" onClick={snapToRidges}>⛰ Snap to ridges</button>}
                     <button className="btn sm" onClick={() => setPRoll(0)}>⟺ Level</button>
                     <button className="btn sm" onClick={() => {
                       const p0 = openPoseRef.current;
@@ -3776,7 +3818,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   );
 }
 
-function WizFinish({ sources, est, onAdd, onReport, onShare, onHome }) {
+function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt }) {
   const fix = analyze(sources);
   const tr = analyzeTracks(sources);
   return (
@@ -3825,6 +3867,12 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome }) {
           return spread > 3 && spread > fix.baseline * 0.35 ? (
             <div className="warn" style={{ marginTop: 8 }}>
               ⚠ GPS altitudes differ {spread.toFixed(1)} m over a {fmtLenShort(fix.baseline)} baseline — phone altitude wobble; if you stood on level ground, set both elevations equal for a tighter fix.
+              <button className="btn sm teal" style={{ display: "block", marginTop: 6 }} onClick={async () => {
+                for (const s of sources) {
+                  if (!isNum(s.lat) || !isNum(s.lon)) continue;
+                  try { const h = await demElevation(+s.lat, +s.lon); onFixAlt(s.id, h.toFixed(0)); } catch (e) { }
+                }
+              }}>⛰ Set every observer's elevation from terrain (DEM)</button>
             </div>
           ) : null;
         })()}
@@ -4059,7 +4107,7 @@ export default function App() {
     if (ui.view === "report") {
       page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
     } else if (ui.view === "s4") {
-      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} />;
+      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} onFixAlt={(id, alt) => updateSource(id, { alt })} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (

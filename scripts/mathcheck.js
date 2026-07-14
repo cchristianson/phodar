@@ -4,7 +4,7 @@ import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../
 import { intersectLines } from "../src/math/triangulate.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections } from "../src/math/kinematics.js";
-import { skylineFromSampler, skylineElAt, AZ_STEP } from "../src/terrain.js";
+import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { planetPositions } from "../src/math/planets.js";
@@ -114,6 +114,31 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const bH = maxBend(hard), bR = maxBend(round);
   if (bR < bH * 0.45) console.log(`  ok   arc max bend ${bR.toFixed(1)}° ≪ hard corner ${bH.toFixed(1)}°`);
   else { fails++; console.error(`  FAIL rounding didn't soften the corner bend: ${bR} vs ${bH}`); }
+}
+
+// --- skyline snap: recover a known pose offset from a synthetic ridge ---
+{
+  // "DEM": a wavy ridge line; "photo": samples of it seen from a camera whose
+  // pose is off by known dAz/dEl/roll, plus deterministic noise
+  const elAt = (az) => 4 + 3 * Math.sin(az * 3 * Math.PI / 180) + 1.2 * Math.sin(az * 11 * Math.PI / 180);
+  const TRUE = { dAz: 7.3, dEl: -2.1, rollRad: 1.5 * Math.PI / 180 };
+  const samples = [];
+  for (let i = 0; i < 60; i++) {
+    const thx = ((i / 59) - 0.5) * (60 * Math.PI / 180); // ±30° horizontal FOV
+    const azPhoto = 200 + thx * 180 / Math.PI;           // camera thinks it points here
+    const azTrue = azPhoto + TRUE.dAz;                   // world truth
+    const noise = 0.05 * Math.sin(i * 12.9898);          // deterministic ±0.05°
+    // what the camera MEASURES for that column: true ridge el, shifted by its
+    // el error and tilted by its roll error
+    const elPhoto = elAt(azTrue) - TRUE.dEl + TRUE.rollRad * thx * 180 / Math.PI + noise;
+    samples.push({ az: azPhoto, el: elPhoto, thx });
+  }
+  const m = matchSkyline(samples, elAt);
+  approx(m.dAz, TRUE.dAz, 0.15, "skyline snap dAz recovery");
+  approx(m.dEl, TRUE.dEl, 0.1, "skyline snap dEl recovery");
+  approx(m.dRollDeg, TRUE.rollRad * 180 / Math.PI, 0.3, "skyline snap roll recovery (deg)");
+  if (m.rms < 0.12) console.log(`  ok   snap fit rms ${m.rms.toFixed(3)}° (noise floor)`);
+  else { fails++; console.error("  FAIL snap rms too high:", m.rms); }
 }
 
 // --- WMM2025 declination vs official NOAA test vectors ---

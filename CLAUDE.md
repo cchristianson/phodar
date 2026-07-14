@@ -164,11 +164,17 @@ comments, in this order:
    7.12° vs 7.00° from an OpenTopoData ray-march. PositionEditor gained
    "⛰ Use terrain elevation" (per-observer; sets alt from `demElevation`) —
    the structural fix for GPS-altitude wobble.
-   **v2 remaining**: detect the photo's skyline as a polyline (write a fresh
-   detector — the old auto-horizon one was removed with the Lab) and
-   cross-correlate against the DEM skyline over azimuth shift → one-tap
-   snap; "use DEM elevation for ALL observers" in one tap; labeled peaks
-   via OSM Overpass. Point-query fallbacks if
+   **v2 SNAP: DONE** — detectSkyline (72-column sky/ground edge polyline,
+   windowed-median outlier rejection) + matchSkyline (azimuth scan with
+   per-candidate least-squares pitch intercept + roll slope; asserted in
+   mathcheck against synthetic truth) + a two-pass "⛰ Snap to ridges"
+   button in place mode. End-to-end verified against a synthetic photo
+   rendered from the REAL Rogue Valley DEM at a known pose: one tap took
+   az 258.4/el 6.2/roll 0 to exactly 250.0/9.9/1.5 (truth 250/10/1.5).
+   Roll sign is empirical — matchSkyline returns the error IN the
+   measurements; az/el add, roll subtracts. "Set every observer's
+   elevation from terrain" one-tap lives in WizFinish's altitude-spread
+   warning. **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera

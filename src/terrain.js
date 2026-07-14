@@ -123,6 +123,88 @@ export async function predictedSkyline(lat, lon) {
   return p;
 }
 
+/* ============================================================
+   SKYLINE SNAP (v2) — one-tap absolute pose from the ridges.
+   detectSkyline finds the photo's sky/ground silhouette as a polyline;
+   matchSkyline cross-correlates it against the DEM skyline over an
+   azimuth scan, solving pitch (intercept) and roll (slope vs horizontal
+   image offset) by least squares at each candidate. This is also the
+   video plan's keyframe anchor.
+   ============================================================ */
+
+/* photo skyline from ImageData: for each of ~72 columns, the strongest
+   sky→ground transition of a "skyness" score (bright + blue-ish).
+   Returns [{x, y}] in the SOURCE pixel space of the ImageData, outlier-
+   rejected by a windowed median. Null if too few clean columns. */
+export function detectSkyline(im, W, H) {
+  const px = im.data ? im.data : im;
+  const sky = (x, y) => {
+    const i = (y * W + x) * 4;
+    const r = px[i], g = px[i + 1], b = px[i + 2];
+    return 0.5 * (0.299 * r + 0.587 * g + 0.114 * b) + 0.9 * (b - r);
+  };
+  const NC = 72, WIN = 3;
+  const pts = [];
+  for (let ci = 0; ci < NC; ci++) {
+    const x = Math.round((0.04 + (0.92 * ci) / (NC - 1)) * (W - 1));
+    let bestY = -1, bestG = 0;
+    for (let y = Math.round(H * 0.04) + WIN; y < Math.round(H * 0.92) - WIN; y++) {
+      let above = 0, below = 0;
+      for (let k = 1; k <= WIN; k++) { above += sky(x, y - k); below += sky(x, y + k); }
+      const gdt = above - below;
+      if (gdt > bestG) { bestG = gdt; bestY = y; }
+    }
+    if (bestY > 0 && bestG > 90) pts.push({ x, y: bestY });
+  }
+  if (pts.length < 20) return null;
+  /* windowed-median outlier rejection */
+  const keep = pts.filter((p, i) => {
+    const win = pts.slice(Math.max(0, i - 3), i + 4).map((q) => q.y).sort((a, b) => a - b);
+    const med = win[Math.floor(win.length / 2)];
+    return Math.abs(p.y - med) < Math.max(6, 0.04 * H);
+  });
+  return keep.length >= 20 ? keep : null;
+}
+
+/* Cross-correlate photo skyline directions against the DEM skyline.
+   samples: [{az, el, thx}] — az/el of each detected skyline point under
+   the CURRENT pose; thx = horizontal offset from image center (radians).
+   elAt(az) — DEM skyline elevation. Returns the pose correction
+   {dAz, dEl, dRollDeg, rms, n} minimizing the residual after fitting
+   el-offset (intercept) and roll (slope in thx) at each azimuth shift. */
+export function matchSkyline(samples, elAt) {
+  if (!samples || samples.length < 12) return null;
+  const fitAt = (dAz) => {
+    /* least squares r_i = a + b·thx_i over residuals r_i = elAt(az+dAz) − el */
+    let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const s of samples) {
+      const r = elAt(s.az + dAz) - s.el;
+      sw++; sx += s.thx; sy += r; sxx += s.thx * s.thx; sxy += s.thx * r;
+    }
+    const den = sw * sxx - sx * sx;
+    const b = Math.abs(den) > 1e-9 ? (sw * sxy - sx * sy) / den : 0;
+    const a = (sy - b * sx) / sw;
+    let r2 = 0;
+    for (const s of samples) {
+      const e = (elAt(s.az + dAz) - s.el) - (a + b * s.thx);
+      r2 += e * e;
+    }
+    return { a, b, rms: Math.sqrt(r2 / sw) };
+  };
+  let best = null;
+  for (let dAz = -180; dAz < 180; dAz += 0.5) {
+    const f = fitAt(dAz);
+    if (!best || f.rms < best.rms) best = { dAz, ...f };
+  }
+  for (let dAz = best.dAz - 0.6; dAz <= best.dAz + 0.6; dAz += 0.05) {
+    const f = fitAt(dAz);
+    if (f.rms < best.rms) best = { dAz, ...f };
+  }
+  /* roll tilts the horizon by roll_deg·thx(rad) degrees of elevation:
+     the residual slope b (deg/rad) = −roll_deg */
+  return { dAz: best.dAz, dEl: best.a, dRollDeg: -best.b, rms: best.rms, n: samples.length };
+}
+
 /* single-point DEM elevation (one z13 tile — for "use terrain elevation") */
 const tileCache = new Map();
 export async function demElevation(lat, lon) {
