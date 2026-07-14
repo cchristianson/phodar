@@ -7,7 +7,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projec
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
-import { fetchAircraft, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { fetchAircraft, fetchAircraftAt, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -1569,34 +1569,45 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const moon = useMemo(() => ({ ...moonPos(T, LAT, LNG), frac: moonFrac(T) }), [T, LAT, LNG]);
   const isNight = sun.alt < -4;
 
-  /* --- live air traffic on the dome (ADS-B). Live only: chips show
-     aircraft in the air NOW at their true az/el; when the sighting time
-     is old this is context, not evidence — the chip goes amber. --- */
+  /* --- air traffic on the dome (ADS-B), at the SIGHTING time.
+     Fresh sighting (≤15 min): live API, refreshed every 20 s.
+     Older: our /api/hist archive proxy — traffic that was actually in
+     the air at T (covers today back ~2 years). If the archive fails,
+     fall back to live with an amber "context only" warning. --- */
   const [acOn, setAcOn] = useState(true);
-  const [acData, setAcData] = useState(null); // {ac, fetchedAt, src} | {err}
+  const [acData, setAcData] = useState(null); // {ac, fetchedAt, src, hist} | {err}
   const acSnapRef = useRef(null);
   const hasPos = isNum(lat) && isNum(lng);
+  const wantHist = Math.abs(Date.now() - T) > 900000;
   useEffect(() => {
     if (!open || !acOn || !hasPos) return;
     let dead = false;
+    const keep = (ac, apiSrc, hist) => {
+      const air = ac.filter((a) => !a.ground && a.altM != null);
+      setAcData({ ac: air, fetchedAt: Date.now(), src: apiSrc, hist });
+      const trimmed = air
+        .map((a) => ({ ...a, _r: acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, a).rangeM }))
+        .sort((x, y) => x._r - y._r).slice(0, 40)
+        .map(({ _r, ...a }) => a);
+      acSnapRef.current = { fetchedAt: Date.now(), src: apiSrc, nm: 60, ac: trimmed, hist, t: hist ? T : Date.now() };
+    };
     const pull = async () => {
+      if (wantHist) {
+        try {
+          const { ac, source: apiSrc } = await fetchAircraftAt(LAT, LNG, T, 60);
+          if (!dead) keep(ac, apiSrc, true);
+          return;
+        } catch (e) { /* archive miss → live fallback below */ }
+      }
       try {
         const { ac, source: apiSrc } = await fetchAircraft(LAT, LNG, 60);
-        if (dead) return;
-        const air = ac.filter((a) => !a.ground && a.altM != null);
-        setAcData({ ac: air, fetchedAt: Date.now(), src: apiSrc });
-        /* trimmed snapshot for the report — nearest 40, minimal fields */
-        const trimmed = air
-          .map((a) => ({ ...a, _r: acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, a).rangeM }))
-          .sort((x, y) => x._r - y._r).slice(0, 40)
-          .map(({ _r, ...a }) => a);
-        acSnapRef.current = { fetchedAt: Date.now(), src: apiSrc, nm: 60, ac: trimmed };
+        if (!dead) keep(ac, apiSrc, false);
       } catch (e) { if (!dead) setAcData({ err: String(e?.message || e) }); }
     };
     pull();
-    const iv = setInterval(pull, 20000);
-    return () => { dead = true; clearInterval(iv); };
-  }, [open, acOn, hasPos, LAT, LNG]);
+    const iv = wantHist ? null : setInterval(pull, 20000);
+    return () => { dead = true; if (iv) clearInterval(iv); };
+  }, [open, acOn, hasPos, LAT, LNG, wantHist, T]);
   /* persist the last snapshot onto the source when the aimer closes.
      Lab flips `open`; the wizard UNMOUNTS the aimer on step change, so the
      unmount cleanup must drain too (updateRef dodges the stale closure). */
@@ -2243,15 +2254,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {sun.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(sun)}>☀ {fmtBody(sun)}</button>}
             {moon.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(moon)}>☾ {fmtBody(moon)} · {Math.round(moon.frac * 100)}%</button>}
             {hasPos && (
-              <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: acOn ? (Math.abs(Date.now() - T) > 900000 ? "var(--amber)" : "var(--track)") : "var(--dim)" }}
+              <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
                 onClick={() => setAcOn((v) => !v)}>
-                ✈ {acOn ? (acData?.ac ? `${acView.length} live` : acData?.err ? "?" : "…") : "off"}
+                ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : "…") : "off"}
               </button>
             )}
           </div>
-          {acOn && acData?.ac && Math.abs(Date.now() - T) > 900000 && (
+          {acOn && acData?.ac && acData.hist && (
+            <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+              ✈ archived traffic at the sighting time ({new Date(T).toLocaleString()})
+            </div>
+          )}
+          {acOn && acData?.ac && wantHist && !acData.hist && (
             <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-              ✈ shows traffic in the air NOW — the sighting time is {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h away
+              ✈ archive unavailable — showing traffic in the air NOW, {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h from the sighting
             </div>
           )}
         </div>
@@ -2855,9 +2871,14 @@ function AdsbCheck({ sources }) {
     setBusy(true); setErr(""); setData(null);
     try {
       const nm = radiusNmForSources(valid);
-      const { ac, source } = await fetchAircraft(+valid[0].lat, +valid[0].lon, nm);
-      const cands = rankCandidates(valid, ac) || [];
-      setData({ cands, source, nm, fetchedAt: Date.now(), total: ac.length });
+      let got = null;
+      if (ageMin > 15) {
+        try { got = await fetchAircraftAt(+valid[0].lat, +valid[0].lon, whenMs, nm); }
+        catch (e) { /* archive miss — fall back to live below */ }
+      }
+      if (!got) got = await fetchAircraft(+valid[0].lat, +valid[0].lon, nm);
+      const cands = rankCandidates(valid, got.ac) || [];
+      setData({ cands, source: got.source, nm, fetchedAt: Date.now(), total: got.ac.length, hist: !!got.hist });
     } catch (e) {
       setErr(`Couldn't reach an ADS-B source (${e.message || e}). Check the connection and try again.`);
     }
@@ -2874,21 +2895,21 @@ function AdsbCheck({ sources }) {
         Queries live air traffic around the observers and ranks every aircraft by how far
         it sits off each witness's sight-line. Type → wingspan gives an absolute size check.
       </div>
-      {ageMin > 15 && (
-        <div className="warn">
-          ⚠ Live check only: this shows aircraft in the air <b>now</b>, but the sighting time is{" "}
-          {ageMin > 2880 ? `${Math.round(ageMin / 1440)} days` : ageMin > 120 ? `${Math.round(ageMin / 60)} h` : `${Math.round(ageMin)} min`} away.
-          A match here means little unless you're checking right after the sighting. Historical replay is planned.
-        </div>
-      )}
       <button className="btn teal" style={{ width: "100%", marginTop: 10 }} onClick={run} disabled={busy}>
-        {busy ? "Querying live traffic…" : "🛰 Check live aircraft now"}
+        {busy ? "Querying traffic…" : ageMin > 15 ? "🛰 Check archived traffic at the sighting time" : "🛰 Check live aircraft now"}
       </button>
       {err && <div className="warn">{err}</div>}
+      {data && !data.hist && ageMin > 15 && (
+        <div className="warn">
+          ⚠ Archive unavailable for that time — showing aircraft in the air <b>now</b>, but the sighting is{" "}
+          {ageMin > 2880 ? `${Math.round(ageMin / 1440)} days` : ageMin > 120 ? `${Math.round(ageMin / 60)} h` : `${Math.round(ageMin)} min`} away.
+          Treat as context only.
+        </div>
+      )}
       {data && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
-            {data.total} aircraft within {data.nm} nm · {data.source} · {new Date(data.fetchedAt).toLocaleTimeString()}
+            {data.total} aircraft within {data.nm} nm · {data.source}{data.hist ? ` · at ${new Date(whenMs).toLocaleString()}` : ` · live ${new Date(data.fetchedAt).toLocaleTimeString()}`}
           </div>
           {data.cands.length === 0 && (
             <div className="ok" style={{ marginTop: 8 }}>
@@ -3488,9 +3509,11 @@ async function reportHtml(sources, est, opts = {}) {
       const cands = rankCandidates(sources, snap.ac) || [];
       const when = origAct.find((s) => isNum(s.whenMs))?.whenMs;
       const gapMin = when ? Math.abs(snap.fetchedAt - +when) / 60000 : null;
-      const gapTxt = gapMin == null ? "" : gapMin < 20 ? `${Math.round(gapMin)} min from the sighting time — a fair live comparison.`
-        : gapMin < 1440 ? `<b>${(gapMin / 60).toFixed(1)} h from the sighting time</b> — traffic has turned over; treat as context, not evidence.`
-          : `<b>${Math.round(gapMin / 1440)} days from the sighting time</b> — traffic has fully turned over; treat as context only.`;
+      const gapTxt = snap.hist
+        ? `archived traffic <b>at the sighting time</b> (${when ? new Date(+when).toLocaleString() : "—"}).`
+        : gapMin == null ? "" : gapMin < 20 ? `live capture ${Math.round(gapMin)} min from the sighting time — a fair comparison.`
+          : gapMin < 1440 ? `live capture <b>${(gapMin / 60).toFixed(1)} h from the sighting time</b> — traffic has turned over; treat as context, not evidence.`
+            : `live capture <b>${Math.round(gapMin / 1440)} days from the sighting time</b> — traffic has fully turned over; treat as context only.`;
       const measA = (() => {
         const w = sources.find((s) => isNum(s.lat) && isNum(s.A?.az) && isNum(s.A?.el));
         if (!w) return null;
@@ -3508,7 +3531,7 @@ async function reportHtml(sources, est, opts = {}) {
           ? `<b>${e2(best.flight || best.reg || best.hex)}</b> sat within ${best.sepMax.toFixed(1)}° of every witness sight-line at check time — a strong mundane candidate; compare its predicted angular size against the measurement above.`
           : `No aircraft sat on the sight-line (closest: ${e2(best.flight || best.reg || best.hex)}, ${best.sepMax.toFixed(1)}° off at the worst witness).`;
       adsbHtml = `<h2>Aircraft check (ADS-B)</h2>
-<p class="cap">Live traffic captured ${new Date(snap.fetchedAt).toLocaleString()} via ${e2(snap.src)}${gapTxt ? " · " + gapTxt : ""}</p>
+<p class="cap">Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
 ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
 <p>${verdict}</p>`;
     }

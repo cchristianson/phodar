@@ -148,6 +148,19 @@ export async function fetchAircraft(lat, lon, nm = 60) {
   throw lastErr || new Error("no ADS-B source reachable");
 }
 
+/* Historical: aircraft near (lat,lon) AT time tMs, via our own server's
+   /api/hist (tar1090 globe_history archives — ~2 years back, and today
+   with a few minutes' lag). Records come back already normalized; `seen`
+   is |sample − t| in seconds and `coarse` marks heatmap-only fixes
+   (30 s cadence, no type/callsign refinement). */
+export async function fetchAircraftAt(lat, lon, tMs, nm = 60, winMin = 8) {
+  const r = await fetch(`/api/hist?lat=${lat}&lon=${lon}&t=${Math.round(tMs)}&nm=${Math.round(nm)}&win=${winMin}`,
+    { signal: AbortSignal.timeout(45000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return { ac: j.ac || [], source: j.src, sampleT: j.sampleT, hist: true };
+}
+
 /* search radius from the sight-line: a jet at 45,000 ft on a shallow
    sight-line can be far away horizontally; clamp to the API cap */
 export function radiusNmForSources(sources) {

@@ -116,8 +116,24 @@ comments, in this order:
    (wizard UNMOUNTS the aimer — the unmount drain matters), and an
    "Aircraft check (ADS-B)" report section ranking the snapshot against the
    final sight-lines with a fetch-vs-sighting time-gap caveat.
-   **Remaining**: historical replay (adsb.lol daily dumps or OpenSky ≤1 h —
-   needs the proxy), adsbdb.com hex→route enrichment, track-time matching
+   **Historical replay: DONE** — `server/index.mjs` (dependency-free node,
+   also serves `dist/`; Railway `npm start`) exposes `/api/hist?lat&lon&nm&t`
+   backed by the tar1090 **globe_history archives** (globe.airplanes.live
+   primary, globe.adsbexchange.com fallback — both serve ~2 years back AND
+   today progressively, no key, no CORS → hence server-side). Data path:
+   30-min binary heatmap slice (10–25 MB, LRU-cached) → 60×u32 offset table
+   → 30 s sub-slices, 16-byte entries {u32 hex, i32 lat×1e6, i32 lon×1e6,
+   i16 alt/25ft (−123 = ground sentinel), i16 gs×10kt}, marker hex
+   0xe7f7c9d carries ms timestamp in lat/lon, INFO entries (|lat|>90°)
+   carry the callsign; nearest ~32 hexes refined via
+   `traces/{xx}/trace_full_{hex}.json` → interpolated exact state +
+   registration + type. Format validated against trace ground truth.
+   Pick deep (32): near airports many picks are on the ground AT t and get
+   dropped. Client: sighting >15 min old → `fetchAircraftAt` (archive,
+   "✈ N @ sighting" chip, teal provenance line) with live fallback (amber
+   warning); fresh → live with 20 s refresh. Dev: vite proxies `/api`→8787;
+   run `node server/index.mjs` beside `npm run dev`.
+   **Remaining**: adsbdb.com hex→route enrichment, track-time matching
    (compare aircraft position history against the witness track, not just
    Moment A). The user is wizard-first: the Lab stays but new check UI
    belongs in the sky view + report, not Lab-only panels.
