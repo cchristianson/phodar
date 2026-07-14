@@ -11,33 +11,44 @@ true span and inside the owner's height estimate).
 - `npm run dev` — Vite dev server (mobile testing: open the LAN URL on a phone)
 - `npm run build` / `npm run preview`
 - `npm test` — runs `scripts/mathcheck.js` + `scripts/trajcheck.js`.
-  **These must pass after ANY change to the math core.** They verify exact
-  triangulation recovery, homography round-trips, the elevation-convergence
-  fix, and full trajectory-kinematics recovery of a simulated 3.5 g maneuver.
+  **These must pass after ANY change to the math core.** As of the module
+  split they **import the real `src/math/*` modules** (they used to re-implement
+  the math, so a bug in the shipped code couldn't fail them). They assert exact
+  triangulation recovery, ENU round-trips, angular-size → span, the
+  elevation-convergence fix, and full trajectory-kinematics recovery of a
+  simulated 3.5 g maneuver by driving `analyzeTracks` directly.
 
 ## Layout
-Everything lives in `src/phodar.jsx` (~4,100 lines) **on purpose** — it was
-developed as a single Claude artifact. It is organized by banner comments, in
-this order:
+The **math core is now extracted** into `src/math/` (pure ES modules, no React,
+imported by both `phodar.jsx` and the test scripts):
+- `geodesy.js` — constants (`D2R/R2D/RE/RAD`), vector ops, `enuFromGeo`/
+  `geoFromEnu`, `dirFromAzEl`/`dirToAzEl`, `clampN`.
+- `format.js` — `isNum`, `fmtLen`/`fmtSpeed`/`fmtDeg`, `compass8`.
+- `projection.js` — `focalPx`, `photoBasis`, `angSizeFromPoints`,
+  `pixelDirFromAnchor`, `homography`/`solveN`, `matrix3dFromH`. The pixel/pose
+  fns take a `pose` sample (not a per-source constant) — a video provision.
+- `triangulate.js` — `solve3`, `intersectLines`, `analyze`,
+  `arbitrateBearings`, `aspectSpan`.
+- `kinematics.js` — `trackDirections`, `kinematics`, `analyzeTracks`.
+- `astro.js` — `sunPos`/`moonPos`/`moonFrac` (SunCalc-derived).
 
-1. **Math core** — geodesy/ENU (equirectangular, fine <100 km), `dirFromAzEl`,
-   `intersectLines` (N-ray least squares), Gaussian solvers, `photoBasis`,
-   `pixelDirFromAnchor`, `angSizeFromPoints`, `kinematics`, `analyze`,
-   `arbitrateBearings`, `aspectSpan`, `analyzeTracks`, sun/moon ephemeris
-   (SunCalc-derived).
-2. **EXIF / QuickTime parser** — hand-rolled TIFF walk: GPS, time, bearing
+Everything else still lives in `src/phodar.jsx` (~3,750 lines) **on purpose** —
+it was developed as a single Claude artifact. It is organized by banner
+comments, in this order:
+
+1. **EXIF / QuickTime parser** — hand-rolled TIFF walk: GPS, time, bearing
    (`GPSImgDirection` + true/mag ref), 35 mm focal → FOV, orientation.
-3. **3D shape system** — `SHAPES`, `shapeWire` (orb/saucer/capsule/tri/plane/
+2. **3D shape system** — `SHAPES`, `shapeWire` (orb/saucer/capsule/tri/plane/
    bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
-4. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
+3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
    pinch-zoom, loupe, auto-horizon), `PositionEditor` + `PinMap`,
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt
    chips, compare ghosts), `PlotBoard`, charts, `ResultsPanel`, Solo/Guide.
-5. **Wizard + reports** — `WizHome/WizStep/WizFinish/ReportView`,
+4. **Wizard + reports** — `WizHome/WizStep/WizFinish/ReportView`,
    `packSources`, `reportHtml` (self-contained HTML w/ embedded data + photo
    exhibits + detail crops), `buildShareJson`, zip writer, import.
-6. **App shell** — wizard (default) / Lab (power users) branch.
+5. **App shell** — wizard (default) / Lab (power users) branch.
 
 ## Non-negotiable invariants (each one was a multi-hour bug hunt)
 1. **Never render user images through CSS `matrix3d`.** iOS Safari composes
@@ -76,11 +87,13 @@ this order:
   Reset restores lens FOV.
 
 ## Priority backlog (rough order)
-1. **Module split** (mechanical; run `npm test` after): suggested map —
-   `src/math/{geodesy,triangulate,kinematics,astro}.js`, `src/exif.js`,
-   `src/shapes.js`, `src/components/{MediaMeasure,SkyAimer,PinMap,...}.jsx`,
+1. **Module split** (mechanical; run `npm test` after). **Math core: DONE** —
+   extracted to `src/math/{geodesy,format,projection,triangulate,kinematics,
+   astro}.js`, with the test scripts rewritten to import the real modules.
+   **Remaining seams** (the banner comments): `src/exif.js`, `src/shapes.js`,
+   `src/components/{MediaMeasure,SkyAimer,PinMap,...}.jsx`,
    `src/report/{html,share,zip}.js`, `src/wizard/*.jsx`. Keep behavior
-   identical; the banner comments are the seams.
+   identical.
 2. **Leaflet map** replacing the `PinMap` canvas (tiles were CSP-blocked in
    the artifact; they aren't here). Keep the drag-ground-under-fixed-pin
    interaction.
