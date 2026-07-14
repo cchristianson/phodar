@@ -924,6 +924,10 @@ function MediaMeasure({ src, update, wizard }) {
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
+        <label className="btn sm teal" style={{ display: "inline-block" }} title="Open the camera and shoot right now — freshest possible EXIF (GPS, time, bearing)">
+          📷 Shoot now
+          <input type="file" accept="image/*" capture="environment" onChange={onFile} style={{ display: "none" }} />
+        </label>
         {media && (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {(wizard ? [] : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
