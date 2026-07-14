@@ -9,6 +9,7 @@ import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
+import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -647,6 +648,7 @@ function MediaMeasure({ src, update, wizard }) {
       natW: null, natH: null, meta: null,
       A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [],
     });
+    if (kind === "video") mediaPut(src.id, { kind: "video", data: f }); // survives reload via IndexedDB
     /* mine the file for EXIF / QuickTime metadata and AUTO-APPLY it —
        the photo is the authority on its own capture conditions */
     f.arrayBuffer().then((buf) => {
@@ -710,6 +712,7 @@ function MediaMeasure({ src, update, wizard }) {
           cv.getContext("2d").drawImage(el, 0, 0, W, Hh); // modern browsers draw the ORIENTED image
           const durl = cv.toDataURL("image/jpeg", 0.94);
           update({ mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
+          mediaPut(src.id, { kind: "image", data: durl }); // survives reload via IndexedDB
           setLoading(false); setLoadErr("");
           measureWrap();
           return;
@@ -3740,7 +3743,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onImport, onReport, openLab }) {
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, openLab }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -3791,6 +3794,10 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onImport, onRepo
                 </div>
               </div>
               <button className="btn sm" onClick={() => onResume(s.id)}>Open ▸</button>
+              <button className="btn sm ghost" style={{ color: "var(--red)", padding: "6px 8px" }}
+                onClick={() => {
+                  if (window.confirm(`Remove ${s.name || `Observer ${i + 1}`} from this sighting? Their photo and measurements go with them.`)) onRemove(s.id);
+                }}>✕</button>
             </div>
           ))}
           {fix.ok && (
@@ -3998,7 +4005,18 @@ export default function App() {
         } catch (e) { /* key absent */ }
       }
       if (d) {
-        if (d.sources?.length) setSources(d.sources);
+        if (d.sources?.length) {
+          setSources(d.sources);
+          /* re-attach media from IndexedDB (autosave strips mediaUrl) */
+          Promise.all(d.sources.map(async (s) => ({ id: s.id, rec: await mediaGet(s.id) }))).then((rs) => {
+            setSources((ss) => ss.map((s) => {
+              const hit = rs.find((r) => r.id === s.id)?.rec;
+              if (!hit || s.mediaUrl) return s;
+              const url = hit.kind === "video" ? URL.createObjectURL(hit.data) : hit.data;
+              return { ...s, mediaUrl: url, mediaKind: hit.kind, mediaNorm: hit.kind === "image" };
+            }));
+          }).catch(() => { });
+        }
         if (d.est) setEst(d.est);
         if (d.solo) setSolo(d.solo);
       }
@@ -4017,7 +4035,7 @@ export default function App() {
 
   const updateSource = (id, patch) =>
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-  const removeSource = (id) => setSources((ss) => ss.filter((s) => s.id !== id));
+  const removeSource = (id) => { mediaDel(id); setSources((ss) => ss.filter((s) => s.id !== id)); };
   const addSource = () => setSources((ss) => [...ss, makeSource(ss.length + 1)]);
   /* a SIGHTING is the event; each witness/perspective is a source within it */
   const addWitness = () => {
@@ -4032,12 +4050,14 @@ export default function App() {
     if (real.length && !window.confirm(
       `Start a NEW sighting? The current one (${real.length} observer${real.length > 1 ? "s" : ""}) will be cleared.\n\nExport a report or backup first if you want to keep it.`)) return;
     const ns = makeSource(1);
+    mediaClear();
     setSources([ns]);
     setEst({ size: "", dist: "", speed: "" });
     setUi({ mode: "wizard", view: "s1", srcId: ns.id });
   };
   const loadDemo = () => { setSources(demoSources()); setTab("results"); };
   const resetAll = () => {
+    mediaClear();
     setSources([makeSource(1)]);
     setEst({ size: "", dist: "", speed: "" });
     try { window.storage.delete("phodar-v1"); } catch (e) { }
@@ -4080,6 +4100,7 @@ export default function App() {
         };
       });
       setSources((ss) => [...ss, ...merged]);
+      merged.forEach((s) => { if (s.mediaUrl) mediaPut(s.id, { kind: "image", data: s.mediaUrl }); });
       return merged.length;
     } catch (e) { return 0; }
   };
@@ -4123,7 +4144,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ mode: "wizard", view: "s1", srcId: id })} onImport={importShared} onReport={() => goView("report")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
+    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ mode: "wizard", view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
     return <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}><style>{css}</style>{page}</div>;
   }
 

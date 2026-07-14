@@ -74,6 +74,10 @@ comments, in this order:
    warp DPR capped at 2.
 8. **`window.storage`** is the persistence API (artifact heritage);
    `src/storageShim.js` maps it to localStorage. Keep the contract.
+   Media does NOT go through it: autosave strips `mediaUrl` (data URLs are
+   MBs; localStorage caps ~5 MB). Images/videos persist in IndexedDB via
+   `src/mediaStore.js` keyed by source id, re-attached on boot; removal,
+   new-sighting and reset clear their entries.
 
 ## Field findings baked into the UX (don't "simplify" these away)
 - Phone compass: **sub-degree on foot**, **14–66° wrong** near metal (inside a
