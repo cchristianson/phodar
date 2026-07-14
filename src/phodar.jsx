@@ -1972,7 +1972,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const tN = sortedTrack.length ? +(sortedTrack[sortedTrack.length - 1].t + dt).toFixed(2) : 0;
     const track = [...sortedTrack, { t: tN, az: +az.toFixed(2), el: +el.toFixed(2) }];
     update(syncAB(track));
-    setFlash(track.length === 1 ? "Point 1 set — pan to where it moved, drop point 2" : `Point ${track.length} ⊕ (+${dt.toFixed(1)} s)`);
+    /* timing is freshest right after the drop — open the editor for it */
+    setSelSeg(track.length >= 2 ? track.length - 1 : null);
+    setFlash(track.length === 1 ? "Point 1 set — pan to where it moved, drop point 2" : `Point ${track.length} ⊕ — set how long it took below`);
   };
   const point1FromMarks = () => {
     if (!photo || !source?.A?.p1 || !source?.A?.p2) return;
@@ -2363,12 +2365,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {wizard && pMode !== "place" && (
           <div style={{ marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point at crosshair</button>
               {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
-                <button className="btn sm amber" onClick={point1FromMarks}>⌖ Point 1 = marked object</button>
+                <button className="btn amber" style={{ flex: 1, padding: "11px 10px" }} onClick={point1FromMarks}>⌖ Start path at the marked object</button>
               )}
-              {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩ Undo</button>}
-              <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => setCmpOn((v) => !v)}>⚖ Compare</button>
+              <button className={"btn " + (sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? "sm" : "amber")}
+                style={sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? { alignSelf: "stretch" } : { flex: 1, padding: "11px 10px" }}
+                onClick={() => dropPoint(viewAz, viewAlt)}>
+                ⊕ {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? "at crosshair" : `Drop point ${sortedTrack.length + 1} at crosshair`}
+              </button>
+              {sortedTrack.length > 0 && <button className="btn sm" style={{ alignSelf: "stretch" }} onClick={undoPoint}>↩</button>}
+              <button className={"btn sm" + (cmpOn ? " teal" : "")} style={{ alignSelf: "stretch" }} onClick={() => setCmpOn((v) => !v)}>⚖</button>
             </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
@@ -2389,12 +2395,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {selSeg != null && sortedTrack[selSeg] && (() => {
               const dt = sortedTrack[selSeg].t - sortedTrack[selSeg - 1].t;
               return (
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>segment {selSeg}:</span>
-                  <button className="btn sm" onClick={() => setSegDt(selSeg, Math.max(0.1, +(dt - 0.5).toFixed(1)))}>−0.5</button>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)", minWidth: 44, textAlign: "center" }}>{dt.toFixed(1)} s</span>
-                  <button className="btn sm" onClick={() => setSegDt(selSeg, +(dt + 0.5).toFixed(1))}>+0.5</button>
-                  <button className="btn sm teal" onClick={() => setSelSeg(null)}>✓</button>
+                <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 6 }}>
+                    How long from point {selSeg} to point {selSeg + 1}?
+                  </div>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                    {[0.5, 1, 2, 3, 5, 10].map((v) => (
+                      <button key={v} className={"btn sm" + (Math.abs(dt - v) < 0.05 ? " amber" : "")}
+                        style={{ fontFamily: "var(--mono)" }} onClick={() => setSegDt(selSeg, v)}>{v}s</button>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                    <button className="btn sm" onClick={() => setSegDt(selSeg, Math.max(0.1, +(dt - 0.1).toFixed(1)))}>−0.1</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 15, fontWeight: 700, color: "var(--amber)", minWidth: 56, textAlign: "center" }}>{dt.toFixed(1)} s</span>
+                    <button className="btn sm" onClick={() => setSegDt(selSeg, +(dt + 0.1).toFixed(1))}>+0.1</button>
+                    <button className="btn sm teal" style={{ marginLeft: "auto" }} onClick={() => setSelSeg(null)}>✓ Done</button>
+                  </div>
                 </div>
               );
             })()}
@@ -2498,6 +2514,9 @@ function PinMap({ lat, lon, origin, others, onChange }) {
     const map = L.map(el, {
       center: [+lat, +lon], zoom: 17, zoomControl: false,
       attributionControl: true, doubleClickZoom: false,
+      /* the pin IS the map center — zooming must never move it. Pinch and
+         wheel zoom about the center; only a one-finger drag pans. */
+      touchZoom: "center", scrollWheelZoom: "center", bounceAtZoomLimits: false,
     });
     map.attributionControl.setPrefix(false);
     const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
