@@ -9,6 +9,7 @@ import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
+import { loadSats, satsAt, satTrail } from "./checks/satellites.js";
 import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { planetPositions } from "./math/planets.js";
@@ -1611,6 +1612,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return () => { dead = true; };
   }, [open, terrOn, hasPos, LAT, LNG]);
 
+  /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
+     at the SIGHTING time. auto = shown when the sky is dark enough;
+     on = any time; off = hidden. --- */
+  const [satMode, setSatMode] = useState("auto");
+  const [satDb, setSatDb] = useState(null); // {sats, fetchedAt} | {err}
+  const satsWanted = satMode === "on" || (satMode === "auto" && sun.alt < -6);
+  useEffect(() => {
+    if (!open || !satsWanted || satDb) return;
+    let dead = false;
+    loadSats().then((db) => { if (!dead) setSatDb(db); })
+      .catch((e) => { if (!dead) setSatDb({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, satsWanted, satDb]);
+  const satView = useMemo(() => {
+    if (!satsWanted || !satDb?.sats || !hasPos) return [];
+    return satsAt(satDb.sats, T, LAT, LNG, 0).slice(0, 20)
+      .map((s) => ({ ...s, trail: satTrail(s.rec, T, LAT, LNG) }));
+  }, [satsWanted, satDb, T, LAT, LNG, hasPos]);
+  const satStaleDays = satView.length ? Math.round(Math.max(...satView.map((s) => s.epochAgeDays || 0))) : 0;
+
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
   const [selHex, setSelHex] = useState(null);
   const [selInfo, setSelInfo] = useState(null); // {route, aircraft} | {busy} | null
@@ -2178,6 +2199,38 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
 
+        {/* satellites: markers + full-pass trails (cyan, dotted) */}
+        {satView.length > 0 && (
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+            {satView.map((s) => {
+              const segs = []; let seg = [];
+              for (const q of s.trail) {
+                const pr = projectD(dirFromAzEl(q.az, q.el));
+                if (pr.inFront && q.el > -1 && pr.x > -0.2 && pr.x < 1.2 && pr.y > -0.2 && pr.y < 1.2) seg.push(`${(pr.x * (vp.w || 1)).toFixed(1)},${(pr.y * (vp.h || 1)).toFixed(1)}`);
+                else { if (seg.length > 1) segs.push(seg); seg = []; }
+              }
+              if (seg.length > 1) segs.push(seg);
+              return segs.map((sg, k) => (
+                <polyline key={s.name + k} points={sg.join(" ")} fill="none" stroke="#9fdcff"
+                  strokeWidth="1.4" strokeLinecap="round" strokeDasharray="0.1 7" opacity={s.lit ? 0.45 : 0.18} />
+              ));
+            })}
+          </svg>
+        )}
+        {satView.map((s) => {
+          const pr = projectD(dirFromAzEl(s.az, s.el));
+          if (!pr.inFront || pr.x < -0.05 || pr.x > 1.05 || pr.y < -0.05 || pr.y > 1.05) return null;
+          const col = s.lit ? "#9fdcff" : "rgba(159,220,255,.35)";
+          return (
+            <div key={"sat" + s.name} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center" }}>
+              <div style={{ width: 5, height: 5, transform: "rotate(45deg)", background: col, margin: "0 auto", boxShadow: s.lit ? "0 0 5px 1px rgba(159,220,255,.5)" : "none" }} />
+              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 2, whiteSpace: "nowrap" }}>
+                🛰 {s.name}{s.lit ? "" : " · in shadow"}<br />{Math.round(s.rangeKm)} km
+              </div>
+            </div>
+          );
+        })}
+
         {/* faint sky-tracks: each aircraft's path ±4 min (archive) or from the
            live polls — drawn only near the sight-line, or when selected */}
         {(() => {
@@ -2417,7 +2470,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
               ★ {starMode}
             </button>
+            {hasPos && (
+              <button className="btn sm" title="Satellites (CelesTrak visual group, SGP4 at the sighting time): auto shows when dark; on forces"
+                style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
+                onClick={() => setSatMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
+                🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? "…" : `${satView.length}${satMode === "auto" ? "" : " on"}`}
+              </button>
+            )}
           </div>
+          {satView.length > 0 && satStaleDays > 5 && (
+            <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+              🛰 TLE epoch ≈ {satStaleDays} d from the sighting — satellite positions degrade; treat as approximate
+            </div>
+          )}
           {acOn && acData?.ac && acData.hist && (
             <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
               ✈ archived traffic at the sighting time ({new Date(T).toLocaleString()})
@@ -3448,6 +3513,8 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
   {
     const wit = origAct.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el) && isNum(s.whenMs));
     if (wit.length) {
+      let satDbR = null;
+      try { satDbR = await loadSats(); } catch (e) { /* offline — the rest of the check still runs */ }
       const hits = [];
       for (const w of wit) {
         const Tw = +w.whenMs, la = +w.lat, lo = +w.lon;
@@ -3461,6 +3528,11 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
           const p = raDecToAzEl(ra, dec, Tw, la, lo);
           if (p.alt > -2) cand.push({ label: `★ ${name}`, az: p.az, alt: p.alt, mag });
         }
+        if (satDbR && sunPos(Tw, la, lo).alt < -4) {
+          for (const s of satsAt(satDbR.sats, Tw, la, lo, 0)) {
+            if (s.lit) cand.push({ label: `🛰 ${s.name}`, az: s.az, alt: s.el, stale: s.epochAgeDays });
+          }
+        }
         for (const c of cand) {
           const sep = Math.acos(Math.min(1, Math.max(-1,
             d[0] * dirFromAzEl(c.az, c.alt)[0] + d[1] * dirFromAzEl(c.az, c.alt)[1] + d[2] * dirFromAzEl(c.az, c.alt)[2]))) * R2D;
@@ -3469,11 +3541,14 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
       }
       hits.sort((a, b) => a.sep - b.sep);
       const venusHit = hits.find((h) => h.label.includes("Venus"));
+      const satHit = hits.find((h) => h.label.startsWith("🛰"));
+      const satStale = satHit && satHit.stale > 5 ? ` (TLE epoch ≈ ${Math.round(satHit.stale)} d from the sighting — position approximate)` : "";
       skyHtml = `<h2>Sky-object check</h2>` + (hits.length
         ? `<table><tr><th>Object</th><th>Witness</th><th>Off sight-line</th><th>At az/el</th></tr>` +
         hits.map((h) => `<tr><td>${e2(h.label)}</td><td>${e2(h.wit)}</td><td>${h.sep.toFixed(1)}°</td><td>${h.az.toFixed(1)}° / ${h.alt.toFixed(1)}°</td></tr>`).join("") +
         `</table>` + (venusHit ? `<p>⚠ <b>Venus sat ${venusHit.sep.toFixed(1)}° from the sight-line</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
-        : `<p class="cap">No bright planet, star, Sun or Moon within 5° of any witness sight-line at the sighting time.</p>`);
+        + (satHit ? `<p>🛰 <b>${e2(satHit.label.slice(2).trim())} was ${satHit.sep.toFixed(1)}° from the sight-line</b> and sunlit${satStale} — a steady point gliding across the sky in minutes is a satellite's signature.</p>` : "")
+        : `<p class="cap">No bright planet, star, satellite, Sun or Moon within 5° of any witness sight-line at the sighting time.</p>`);
     }
   }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
