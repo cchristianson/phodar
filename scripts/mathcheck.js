@@ -4,6 +4,9 @@ import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../
 import { intersectLines } from "../src/math/triangulate.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP } from "../src/terrain.js";
+import { raDecToAzEl } from "../src/math/astro.js";
+import { planetPositions } from "../src/math/planets.js";
+import { STARS } from "../src/math/starcat.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -80,6 +83,31 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // ridge should span roughly the cone's angular width (±~16°), gone by ±25°
   if (skylineElAt(els, 90 + 25) < 0.3) console.log("  ok   cone absent 25° off-bearing");
   else { fails++; console.error("  FAIL cone leaked far off-bearing"); }
+}
+
+// --- planets vs JPL Horizons ground truth (fetched 2026-07-14) ---
+{
+  const ms = Date.UTC(2026, 6, 14, 18, 0, 0);
+  const ps = Object.fromEntries(planetPositions(ms, 0, 0).map((p) => [p.name, p]));
+  approx(ps.Venus.ra, 157.819, 0.05, "Venus RA vs Horizons");
+  approx(ps.Venus.dec, 10.582, 0.05, "Venus Dec vs Horizons");
+  approx(ps.Saturn.ra, 14.413, 0.06, "Saturn RA vs Horizons (perturbed)");
+  approx(ps.Saturn.dec, 3.508, 0.05, "Saturn Dec vs Horizons");
+}
+
+// --- star transit geometry: Sirius culminates at alt = 90 − lat + dec, az 180 ---
+{
+  const sirius = STARS.find((s) => s[3] === "Sirius");
+  approx(sirius[0], 101.287, 0.01, "Sirius catalog RA");
+  const lat = 40, lng = 0;
+  let best = { alt: -99 };
+  const day0 = Date.UTC(2026, 6, 14);
+  for (let m = 0; m < 1440; m++) {
+    const p = raDecToAzEl(sirius[0], sirius[1], day0 + m * 60000, lat, lng);
+    if (p.alt > best.alt) best = p;
+  }
+  approx(best.alt, 90 - lat + sirius[1], 0.15, "Sirius transit altitude");
+  approx(Math.abs(((best.az - 180 + 540) % 360) - 180), 0, 1.5, "Sirius transit azimuth ~180");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

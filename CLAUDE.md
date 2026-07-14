@@ -186,8 +186,16 @@ comments, in this order:
 Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **Astrometry.net** (free key, self-hostable): plate-solve night photos →
   exact pointing + rotation + pixel scale (= measured FOV per device/lens).
-- **Star/planet catalog** (static, no API): ~300 brightest stars as JSON +
-  compact planetary math; render on the sky grid like the Sun chip.
+- **Star/planet catalog: DONE** — `src/math/starcat.js` (327 stars to mag
+  3.6, 235 named, Yale BSC via d3-celestial) + `src/math/planets.js`
+  (Schlyter low-precision ephemeris; **validated vs JPL Horizons to
+  ~0.01°**, frozen as mathcheck regression values) + `raDecToAzEl` in
+  astro.js (star-transit geometry asserted). Sky view renders the REAL
+  night sky (the old random dots are gone): mag-scaled dots, labels for
+  bright named stars, glowing labeled planet markers, tap-to-recenter
+  planet chips. Reports gain a "Sky-object check": Sun/Moon/planets/
+  bright stars within 5° of any sight-line, with a Venus-specific warning
+  (the most-reported "UFO" there is).
 - **CelesTrak TLEs + satellite.js** (no key, client-side): ISS/Starlink/sat
   check against the sight-line at the sighting time — the night ADS-B.
 - **Open-Meteo** (no key, historical): winds aloft at the fix altitude →

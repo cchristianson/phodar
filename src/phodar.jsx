@@ -6,10 +6,12 @@ import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8 } from "./math/forma
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
-import { sunPos, moonPos, moonFrac } from "./math/astro.js";
+import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
+import { planetPositions } from "./math/planets.js";
+import { STARS } from "./math/starcat.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -1856,7 +1858,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => { if (cameraOn && videoRef.current && streamRef.current) { videoRef.current.srcObject = streamRef.current; const p = videoRef.current.play(); if (p && p.catch) p.catch(() => { }); } }, [cameraOn]);
 
   /* --- scene elements --- */
-  const stars = useMemo(() => Array.from({ length: 260 }, () => ({ az: Math.random() * 360, alt: Math.random() * 85 + 2, r: Math.random() * 1.2 + 0.3, o: Math.random() * 0.7 + 0.3 })), []);
+  /* REAL night sky: the 327 catalog stars + naked-eye planets at their true
+     az/el for the sighting time & place — calibration anchors ("it was two
+     fists left of Vega") and, for Venus & co, mundane-explanation candidates. */
+  const stars = useMemo(() => {
+    if (!isNight) return [];
+    return STARS.map(([ra, dec, mag, name]) => {
+      const p = raDecToAzEl(ra, dec, T, LAT, LNG);
+      return { az: p.az, alt: p.alt, mag, name, r: clampN(1.65 - 0.3 * mag, 0.35, 2.3), o: clampN(1.05 - 0.18 * mag, 0.25, 1) };
+    }).filter((s) => s.alt > -1);
+  }, [T, LAT, LNG, isNight]);
+  const planets = useMemo(() => planetPositions(T, LAT, LNG).filter((p) => p.alt > -2), [T, LAT, LNG]);
   const gpath = (pts) => { let d = "", pen = false; for (const p of pts) { if (p.inFront && p.x > -0.6 && p.x < 1.6 && p.y > -0.6 && p.y < 1.6) { d += (pen ? " L " : " M ") + (p.x * 100).toFixed(2) + " " + (p.y * 100).toFixed(2); pen = true; } else pen = false; } return d; };
   const gridColor = cameraOn ? "rgba(255,255,255,0.30)" : (isNight ? "rgba(150,180,230,0.20)" : "rgba(255,255,255,0.28)");
   const ALTS = [15, 30, 45, 60, 75];
@@ -1874,7 +1886,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   })() : null;
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
-  const starDots = isNight && !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
+  const starDots = isNight && !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
+  const starLabels = starDots.filter((p) => p.name && (p.mag <= 1.4 || (fovH < 42 && p.mag <= 2.2)));
+  const planetDots = isNight && !cameraOn ? planets.map((p) => ({ ...p, p: project(p.az, p.alt) })).filter((x) => x.p.inFront && x.p.x > -0.05 && x.p.x < 1.05 && x.p.y > -0.05 && x.p.y < 1.05) : [];
 
   const bodyPx = vp.w > 0 ? Math.max((vp.w * Math.tan((0.53 * RAD) / 2)) / tanH, 12) : 0;
   const sunProj = project(sun.az, sun.alt);
@@ -2082,6 +2096,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {starDots.map((p, i) => <circle key={i} cx={p.x * 100} cy={p.y * 100} r={p.r * 0.18} fill="#fff" opacity={p.o} />)}
           </svg>
         )}
+        {starLabels.map((p) => (
+          <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(6px,-4px)", fontSize: 8.5, fontFamily: "var(--mono)", color: "rgba(220,230,255,.75)", textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
+        ))}
+        {planetDots.map((pl) => (
+          <div key={"pl" + pl.name} style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#ffe9b0", boxShadow: "0 0 6px 2px rgba(255,225,150,.55)", margin: "0 auto" }} />
+            <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: "#ffe9b0", textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
+          </div>
+        ))}
 
         {/* photo/video — Look mode: our own canvas mesh warp */}
         {!placing && photoOn && (
@@ -2338,6 +2361,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto", flexWrap: "wrap" }}>
             {sun.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(sun)}>☀ {fmtBody(sun)}</button>}
             {moon.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(moon)}>☾ {fmtBody(moon)} · {Math.round(moon.frac * 100)}%</button>}
+            {isNight && planets.filter((p) => p.alt > 0).map((p) => (
+              <button key={p.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: "#ffe9b0" }} onClick={() => recenter(p)}>{p.sym} {fmtBody(p)}</button>
+            ))}
             {hasPos && (
               <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
                 onClick={() => setAcOn((v) => !v)}>
@@ -3692,6 +3718,41 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
   const arbR = arbitrateBearings(sources);
   if (arbR?.best)
     diagHtml += `<p>⚠ Bearings inconsistent: trusting <b>${e2(arbR.best.trustName)}</b>, <b>${e2(arbR.best.otherName)}</b>'s compass reads ≈ ${Math.round(arbR.best.err)}° off (true bearing ≈ ${arbR.best.azOtherTrue.toFixed(1)}°).</p>`;
+  /* --- sky-object check: Sun, Moon, planets, brightest stars vs each
+     sight-line at the sighting time — Venus is the most-reported "UFO"
+     there is, so this table earns its place in every report. --- */
+  let skyHtml = "";
+  {
+    const wit = origAct.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el) && isNum(s.whenMs));
+    if (wit.length) {
+      const hits = [];
+      for (const w of wit) {
+        const Tw = +w.whenMs, la = +w.lat, lo = +w.lon;
+        const d = dirFromAzEl(+w.A.az, +w.A.el);
+        const cand = [];
+        const sunW = sunPos(Tw, la, lo); if (sunW.alt > -2) cand.push({ label: "☀ Sun", az: sunW.az, alt: sunW.alt });
+        const moonW = moonPos(Tw, la, lo); if (moonW.alt > -2) cand.push({ label: "☾ Moon", az: moonW.az, alt: moonW.alt });
+        for (const p of planetPositions(Tw, la, lo)) if (p.alt > -2) cand.push({ label: `${p.sym} ${p.name}`, az: p.az, alt: p.alt });
+        for (const [ra, dec, mag, name] of STARS) {
+          if (mag > 1.6 || !name) continue;
+          const p = raDecToAzEl(ra, dec, Tw, la, lo);
+          if (p.alt > -2) cand.push({ label: `★ ${name}`, az: p.az, alt: p.alt, mag });
+        }
+        for (const c of cand) {
+          const sep = Math.acos(Math.min(1, Math.max(-1,
+            d[0] * dirFromAzEl(c.az, c.alt)[0] + d[1] * dirFromAzEl(c.az, c.alt)[1] + d[2] * dirFromAzEl(c.az, c.alt)[2]))) * R2D;
+          if (sep <= 5) hits.push({ wit: w.name, ...c, sep });
+        }
+      }
+      hits.sort((a, b) => a.sep - b.sep);
+      const venusHit = hits.find((h) => h.label.includes("Venus"));
+      skyHtml = `<h2>Sky-object check</h2>` + (hits.length
+        ? `<table><tr><th>Object</th><th>Witness</th><th>Off sight-line</th><th>At az/el</th></tr>` +
+        hits.map((h) => `<tr><td>${e2(h.label)}</td><td>${e2(h.wit)}</td><td>${h.sep.toFixed(1)}°</td><td>${h.az.toFixed(1)}° / ${h.alt.toFixed(1)}°</td></tr>`).join("") +
+        `</table>` + (venusHit ? `<p>⚠ <b>Venus sat ${venusHit.sep.toFixed(1)}° from the sight-line</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
+        : `<p class="cap">No bright planet, star, Sun or Moon within 5° of any witness sight-line at the sighting time.</p>`);
+    }
+  }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><title>PHODAR sighting report</title><style>
 body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif;color:#141414;max-width:760px;margin:32px auto;padding:0 18px}
@@ -3707,6 +3768,7 @@ table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{bord
 <h2>Result</h2>${fixHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${adsbHtml}
+${skyHtml}
 ${exhibits}
 <h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>
 <h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>

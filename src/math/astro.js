@@ -20,5 +20,11 @@ function sunCoordsC(d) { const M = RAD * (357.5291 + 0.98560028 * d); const L = 
 function moonCoordsC(d) { const L = RAD * (218.316 + 13.176396 * d), M = RAD * (134.963 + 13.064993 * d), F = RAD * (93.272 + 13.22935 * d); const l = L + RAD * 6.289 * Math.sin(M), b = RAD * 5.128 * Math.sin(F), dt = 385001 - 20905 * Math.cos(M); return { ra: rightAsc(l, b), dec: declin(l, b), dist: dt }; }
 
 export function sunPos(ms, lat, lng) { const lw = RAD * -lng, phi = RAD * lat, d = toDays(ms), c = sunCoordsC(d), H = sidereal(d, lw) - c.ra; return { az: (azimC(H, phi, c.dec) * R2D + 180 + 360) % 360, alt: altdC(H, phi, c.dec) * R2D }; }
+/* fixed RA/Dec (stars, planets) → az/el at a time and place */
+export function raDecToAzEl(raDeg, decDeg, ms, lat, lng) {
+  const lw = RAD * -lng, phi = RAD * lat, d = toDays(ms);
+  const H = sidereal(d, lw) - raDeg * RAD, dec = decDeg * RAD;
+  return { az: (azimC(H, phi, dec) * R2D + 180 + 360) % 360, alt: altdC(H, phi, dec) * R2D };
+}
 export function moonPos(ms, lat, lng) { const lw = RAD * -lng, phi = RAD * lat, d = toDays(ms), c = moonCoordsC(d), H = sidereal(d, lw) - c.ra; let h = altdC(H, phi, c.dec); h += refractionC(h); return { az: (azimC(H, phi, c.dec) * R2D + 180 + 360) % 360, alt: h * R2D }; }
 export function moonFrac(ms) { const d = toDays(ms), s = sunCoordsC(d), m = moonCoordsC(d), sd = 149598000; const phi = Math.acos(Math.sin(s.dec) * Math.sin(m.dec) + Math.cos(s.dec) * Math.cos(m.dec) * Math.cos(s.ra - m.ra)); const inc = Math.atan2(sd * Math.sin(phi), m.dist - sd * Math.cos(phi)); return (1 + Math.cos(inc)) / 2; }
