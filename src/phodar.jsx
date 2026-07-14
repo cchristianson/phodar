@@ -2562,16 +2562,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <div style={{ marginTop: 6 }}>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {GHOSTW.map((g, i) => (
-                    <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => setGhostIdx(i)}>{g.name}</button>
+                    <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => {
+                      setGhostIdx(i);
+                      /* pull the distance into THIS object's meaningful band —
+                         a drone at an airliner's 10 km is an invisible dot */
+                      const lo = Math.max(5, g.m * 10), hi = Math.min(120000, g.m * 3000);
+                      setCmpD((d) => {
+                        const dd = clampN(d, lo, hi);
+                        const ang = 2 * Math.atan(g.m / (2 * dd)) * R2D;
+                        return (ang < 0.08 || ang > 8) ? Math.round(g.m * 115) /* ≈0.5° — clearly visible */ : Math.round(dd);
+                      });
+                    }}>{g.name}</button>
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
                   <button className="btn sm teal" onClick={() => setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) })}>⌖ Drop at crosshair</button>
-                  <input type="range" min={0} max={1} step={0.004}
-                    value={Math.log(cmpD / 30) / Math.log(80000 / 30)}
-                    onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                    onChange={(e) => setCmpD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
-                    style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
+                  {(() => {
+                    /* slider range adapts to the object: full sweep runs from
+                       "fills a fist" to "sub-pixel dot" for whatever's selected */
+                    const g = GHOSTW[ghostIdx];
+                    const lo = Math.max(5, g.m * 10), hi = Math.min(120000, g.m * 3000);
+                    const t = clampN(Math.log(cmpD / lo) / Math.log(hi / lo), 0, 1);
+                    return (
+                      <input type="range" min={0} max={1} step={0.004} value={t}
+                        onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                        onChange={(e) => setCmpD(Math.round(lo * Math.pow(hi / lo, +e.target.value)))}
+                        style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
+                    );
+                  })()}
                 </div>
                 {(() => {
                   const g = GHOSTW[ghostIdx];
