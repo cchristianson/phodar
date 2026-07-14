@@ -1425,6 +1425,7 @@ function shapeProjNat(sf) { // orthographic project → natural-px curves + silh
 }
 
 const ENABLE_SENSORS = false; // 🧭 point-with-phone + 📷 camera AR — parked for now, flip to bring back
+const ENABLE_GPS_BUTTON = false; // 📍 use-my-GPS — parked (unreliable in the field), flip to bring back
 
 /* reference silhouettes for the in-sky Compare tool (from Sky Sense) */
 const GHOSTW = [
@@ -2486,13 +2487,15 @@ function PositionEditor({ src, update, others }) {
               <Num label="Elev" unit="m, opt" value={src.alt} onChange={(v) => update({ alt: v })} ph="0" />
             </div>
             <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="btn sm teal" onClick={grabLocation}>{geoBusy ? "Locating…" : "📍 Use my GPS"}</button>
+              {ENABLE_GPS_BUTTON && (
+                <button className="btn sm teal" onClick={grabLocation}>{geoBusy ? "Locating…" : "📍 Use my GPS"}</button>
+              )}
               {!posDone && src.meta && isNum(src.meta.lat) && (
                 <button className="btn sm amber" onClick={() => update({ lat: String(src.meta.lat), lon: String(src.meta.lon), ...(isNum(src.meta.alt) ? { alt: String(src.meta.alt) } : {}) })}>
                   📎 Use the photo's GPS
                 </button>
               )}
-              <span style={{ fontSize: 11, color: "var(--dim)" }}>or long-press the spot in a maps app → paste</span>
+              <span style={{ fontSize: 11, color: "var(--dim)" }}>{ENABLE_GPS_BUTTON ? "or long-press the spot in a maps app → paste" : "long-press your spot in a maps app → paste, or drag the map below"}</span>
             </div>
             {geoErr && <div className="warn">{geoErr}</div>}
             <div style={{ marginTop: 10 }}>
@@ -3391,7 +3394,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
   );
 }
 
-function WizHome({ sources, est, onNew, onResume, onImport, onReport, openLab }) {
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onImport, onReport, openLab }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -3449,7 +3452,8 @@ function WizHome({ sources, est, onNew, onResume, onImport, onReport, openLab })
               FIX: {fmtLenShort(fix.solA.X[2])} up{fix.sizeAvg != null ? ` · ${fmtLenShort(fix.sizeAvg)} across` : ""} · {fix.rating}
             </div>
           )}
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button className="btn amber" style={{ width: "100%", marginTop: 10 }} onClick={onAddWitness}>➕ Add a witness / perspective</button>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button className="btn teal" style={{ flex: 1 }} onClick={onReport}>📄 Report</button>
             <button className="btn" style={{ flex: 1 }} onClick={openLab}>Lab (advanced)</button>
           </div>
@@ -3669,11 +3673,21 @@ export default function App() {
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const removeSource = (id) => setSources((ss) => ss.filter((s) => s.id !== id));
   const addSource = () => setSources((ss) => [...ss, makeSource(ss.length + 1)]);
-  const newSighting = () => {
+  /* a SIGHTING is the event; each witness/perspective is a source within it */
+  const addWitness = () => {
     const blank = sources.find(isEmptySource);
     if (blank) { setUi({ mode: "wizard", view: "s1", srcId: blank.id }); return; }
     const ns = makeSource(sources.length + 1);
     setSources((ss) => [...ss.map((s) => ({ ...s, open: false })), ns]);
+    setUi({ mode: "wizard", view: "s1", srcId: ns.id });
+  };
+  const newSighting = () => {
+    const real = sources.filter((s) => !isEmptySource(s));
+    if (real.length && !window.confirm(
+      `Start a NEW sighting? The current one (${real.length} observer${real.length > 1 ? "s" : ""}) will be cleared.\n\nExport a report or backup first if you want to keep it.`)) return;
+    const ns = makeSource(1);
+    setSources([ns]);
+    setEst({ size: "", dist: "", speed: "" });
     setUi({ mode: "wizard", view: "s1", srcId: ns.id });
   };
   const loadDemo = () => { setSources(demoSources()); setTab("results"); };
@@ -3729,7 +3743,7 @@ export default function App() {
     if (ui.view === "report") {
       page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
     } else if (ui.view === "s4") {
-      page = <WizFinish sources={sources} est={est} onAdd={newSighting} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
+      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
@@ -3763,7 +3777,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onResume={(id) => setUi({ mode: "wizard", view: "s1", srcId: id })} onImport={importShared} onReport={() => goView("report")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
+    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ mode: "wizard", view: "s1", srcId: id })} onImport={importShared} onReport={() => goView("report")} openLab={() => setUi((u) => ({ ...u, mode: "lab" }))} />;
     return <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}><style>{css}</style>{page}</div>;
   }
 
@@ -3795,8 +3809,8 @@ export default function App() {
                 </div>;
           })()}
           <div style={{ margin: "10px 12px 0" }}>
-            <button className="btn amber" style={{ width: "100%", padding: "14px", fontSize: 15 }} onClick={newSighting}>
-              📸 New sighting — start with a photo or video
+            <button className="btn amber" style={{ width: "100%", padding: "14px", fontSize: 15 }} onClick={addWitness}>
+              📸 Add a witness — start with a photo or video
             </button>
           </div>
           {sources.map((s, i) => (

@@ -129,7 +129,9 @@ comments, in this order:
    EPQS; bulk GeoTIFF via OpenTopography API (free key) if precomputing
    server-side.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera
-   AR were parked because the artifact iframe blocked permissions).
+   AR were parked because the artifact iframe blocked permissions). The 📍
+   use-my-GPS button is likewise parked behind `ENABLE_GPS_BUTTON` (didn't
+   work reliably in the field; the Leaflet pin map covers positioning).
 6. PWA manifest + `capture` camera input; real file downloads already work
    outside the artifact (zip/report/share buttons are wired).
 7. Multi-witness 3D **pose reconciliation** from `shapeFit.rotM` — two
