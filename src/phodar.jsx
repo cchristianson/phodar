@@ -8,6 +8,7 @@ import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -1629,6 +1630,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .slice(0, 30);
   }, [acOn, acData, LAT, LNG]);
 
+  /* --- predicted terrain skyline (DEM ray-march) — the no-compass
+     calibration: drag the photo until its ridges sit on this line and
+     az + pitch + roll lock simultaneously, day or night. --- */
+  const [terrOn, setTerrOn] = useState(true);
+  const [terr, setTerr] = useState(null); // {els, h0} | {err} | null
+  useEffect(() => {
+    if (!open || !terrOn || !hasPos) return;
+    let dead = false;
+    setTerr((t) => t && t.els ? t : null);
+    predictedSkyline(LAT, LNG)
+      .then((sk) => { if (!dead) setTerr(sk); })
+      .catch((e) => { if (!dead) setTerr({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, terrOn, hasPos, LAT, LNG]);
+
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
   const [selHex, setSelHex] = useState(null);
   const [selInfo, setSelInfo] = useState(null); // {route, aircraft} | {busy} | null
@@ -1845,6 +1861,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const altLabels = ALTS.map((h) => ({ h, ...project(effAz, h) })).filter((p) => p.inFront && p.y > 0.03 && p.y < 0.97);
   const azLines = []; for (let A = 0; A < 360; A += 30) { const pts = []; for (let h = 0; h <= 87; h += 3) pts.push(project(A, h)); azLines.push(gpath(pts)); }
   const horizonPts = []; for (let a = -130; a <= 130; a += 4) horizonPts.push(project(effAz + a, 0)); const horizonPath = gpath(horizonPts);
+  const terrainPath = (terrOn && terr?.els) ? (() => {
+    const pts = []; for (let a = -130; a <= 130; a += 0.8) pts.push(project(effAz + a, skylineElAt(terr.els, effAz + a)));
+    return gpath(pts);
+  })() : null;
+  const terrainLbl = (terrainPath) ? (() => {
+    const p = project(effAz, skylineElAt(terr.els, effAz));
+    return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
+  })() : null;
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = isNight && !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
@@ -2134,7 +2158,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
+          {terrainPath && <path d={terrainPath} fill="none" stroke="rgba(158,224,138,0.9)" strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
         </svg>
+        {terrainLbl && (
+          <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: "rgba(158,224,138,0.95)", textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
+        )}
         {altLabels.map((p) => (
           <div key={"hl" + p.h} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(-50%,-50%)", fontSize: 9, fontFamily: "var(--mono)", color: gridColor.replace(/[\d.]+\)$/, "0.9)"), background: "rgba(7,11,20,.35)", borderRadius: 4, padding: "0 3px", pointerEvents: "none" }}>{p.h}°</div>
         ))}
@@ -2311,6 +2339,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
                 onClick={() => setAcOn((v) => !v)}>
                 ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : "…") : "off"}
+              </button>
+            )}
+            {hasPos && (
+              <button className="btn sm" title={TERRAIN_ATTRIB} style={{ background: "rgba(15,23,42,.7)", color: !terrOn ? "var(--dim)" : terr?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
+                onClick={() => setTerrOn((v) => !v)}>
+                ⛰ {terrOn ? (terr?.els ? "ridge" : terr?.err ? "?" : "…") : "off"}
               </button>
             )}
           </div>
@@ -2618,7 +2652,18 @@ function PinMap({ lat, lon, origin, others, onChange }) {
 function PositionEditor({ src, update, others }) {
   const [geoBusy, setGeoBusy] = useState(false);
   const [geoErr, setGeoErr] = useState("");
+  const [demBusy, setDemBusy] = useState(false);
+  const [demMsg, setDemMsg] = useState("");
   const posDone = isNum(src.lat) && isNum(src.lon);
+  const grabDem = async () => {
+    setDemBusy(true); setDemMsg("");
+    try {
+      const h = await demElevation(+src.lat, +src.lon);
+      update({ alt: h.toFixed(0) });
+      setDemMsg(`✓ terrain elevation ${h.toFixed(0)} m — steadier than phone GPS altitude (±5 m wobble)`);
+    } catch (e) { setDemMsg("Terrain lookup failed — check the connection."); }
+    setDemBusy(false);
+  };
   const grabLocation = () => {
     setGeoErr(""); setGeoBusy(true);
     if (!navigator.geolocation) { setGeoErr("No GPS here — long-press your spot in a maps app and paste the coordinates."); setGeoBusy(false); return; }
@@ -2653,8 +2698,12 @@ function PositionEditor({ src, update, others }) {
                   📎 Use the photo's GPS
                 </button>
               )}
+              {posDone && (
+                <button className="btn sm" onClick={grabDem} disabled={demBusy}>{demBusy ? "…" : "⛰ Use terrain elevation"}</button>
+              )}
               <span style={{ fontSize: 11, color: "var(--dim)" }}>{ENABLE_GPS_BUTTON ? "or long-press the spot in a maps app → paste" : "long-press your spot in a maps app → paste, or drag the map below"}</span>
             </div>
+            {demMsg && <div style={{ fontSize: 12, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6 }}>{demMsg}</div>}
             {geoErr && <div className="warn">{geoErr}</div>}
             <div style={{ marginTop: 10 }}>
               <ML>Sighting date &amp; time</ML>

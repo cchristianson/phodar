@@ -3,6 +3,7 @@
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
 import { intersectLines } from "../src/math/triangulate.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
+import { skylineFromSampler, skylineElAt, AZ_STEP } from "../src/terrain.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -58,6 +59,27 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(ranked[0].predAng, 2 * Math.atan(35.8 / 2 / rng) * R2D, 0.02, "predicted angular size (B738 @6km)");
   approx(spanForAircraft("B738").span, 35.8, 0, "wingspan lookup B738");
   approx(spanForAircraft(null, "A5").span, 62, 0, "category fallback A5");
+}
+
+// --- terrain skyline: synthetic cone mountain at a known bearing ---
+{
+  // flat plain at 100 m MSL + a cone at 10 km due EAST: peak 1100 m, radius 3 km
+  const sample = (e, n) => {
+    const d = Math.hypot(e - 10000, n);
+    return 100 + (d < 3000 ? (1 - d / 3000) * 1000 : 0);
+  };
+  const { els } = skylineFromSampler(sample, 100);
+  // expected peak elevation: atan((1100 − 101.6 − curvature) / 10000)
+  const drop = (10000 * 10000 * 0.87) / (2 * 6371000);
+  const expEl = Math.atan2(1100 - 101.6 - drop, 10000) * 180 / Math.PI;
+  approx(skylineElAt(els, 90), expEl, 0.35, "cone peak el @az 90");
+  // due west: flat ground → slightly negative horizon (curvature)
+  const west = skylineElAt(els, 270);
+  if (west < 0.05 && west > -1.5) console.log(`  ok   flat-ground horizon slightly negative: ${west.toFixed(2)}°`);
+  else { fails++; console.error(`  FAIL flat horizon west: got ${west}`); }
+  // ridge should span roughly the cone's angular width (±~16°), gone by ±25°
+  if (skylineElAt(els, 90 + 25) < 0.3) console.log("  ok   cone absent 25° off-bearing");
+  else { fails++; console.error("  FAIL cone leaked far off-bearing"); }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

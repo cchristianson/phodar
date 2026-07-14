@@ -137,26 +137,22 @@ comments, in this order:
    (compare aircraft position history against the witness track, not just
    Moment A). The user is wizard-first: the Lab stays but new check UI
    belongs in the sky view + report, not Lab-only panels.
-4. **Terrain skyline calibration** — the strongest calibration source in
-   hills, where auto-horizon fails. Data: AWS Open Data Terrain Tiles
-   (Terrarium PNG, free, no key, CORS-open, 3DEP/NED 10 m in the US):
-   `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`,
-   decode `h = R*256 + G + B/256 − 32768` (attribution required). Fetch
-   ~z13 3×3 near + z11 ring to ~45 km around the observer (≈1–2 MB), decode
-   via canvas into typed-array heightfields. Compute the predicted skyline:
-   for az 0→360° (0.4° step), ray-march log-spaced distances, elevation
-   angle = atan((h(d) − h0 − 1.6 − d²(1−k)/2R)/d) with refraction k≈0.13,
-   keep the running max. Render it as a dashed TERRAIN polyline in the sky
-   view (like the grid) — dragging the photo until its ridges sit on the line
-   calibrates az + pitch + roll simultaneously, day or night, no compass.
-   v2: extend the auto-horizon detector to a full photo-skyline polyline and
-   cross-correlate against the DEM skyline over azimuth shift → one-tap snap.
-   Side benefit: `h0 = DEM(observer)` gives true ground elevation — offer
-   "use DEM elevation for all observers", structurally fixing the GPS-altitude
-   -wobble problem. Point-query fallbacks: OpenTopoData public API
-   (`api.opentopodata.org/v1/ned10m`, 100 pts/call, 1000 calls/day) and USGS
-   EPQS; bulk GeoTIFF via OpenTopography API (free key) if precomputing
-   server-side.
+4. **Terrain skyline calibration — v1 DONE** (`src/terrain.js` + SkyAimer):
+   Terrarium tiles (CORS-open, probed) → z13 3×3 + z11 5×5 heightfields →
+   `skylineFromSampler` ray-march (az 0→360° @0.4°, log distances to 35 km,
+   k≈0.13 refraction) → dashed green TERRAIN polyline on the dome with a
+   ⛰ header toggle. The pure core takes an injected sampler and is asserted
+   in mathcheck (synthetic cone). **Validated against independent ground
+   truth**: observer DEM 408.6 m vs USGS NED 408.3 m; skyline at az 250°
+   7.12° vs 7.00° from an OpenTopoData ray-march. PositionEditor gained
+   "⛰ Use terrain elevation" (per-observer; sets alt from `demElevation`) —
+   the structural fix for GPS-altitude wobble.
+   **v2 remaining**: extend the auto-horizon detector to a full
+   photo-skyline polyline and cross-correlate against the DEM skyline over
+   azimuth shift → one-tap snap; "use DEM elevation for ALL observers" in
+   one tap; labeled peaks via OSM Overpass. Point-query fallbacks if
+   Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
+   USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera
    AR were parked because the artifact iframe blocked permissions). The 📍
    use-my-GPS button is likewise parked behind `ENABLE_GPS_BUTTON` (didn't
