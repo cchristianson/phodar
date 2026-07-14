@@ -3352,6 +3352,65 @@ async function buildShareJson(sources, est) {
   }, null, 1);
 }
 
+/* print-friendly top-down plot for the report: observers, rays, fix,
+   trajectory — pure SVG string, self-contained, no tiles */
+function reportPlotSvg(fix, traj) {
+  const pts = [...fix.obs.map((o) => o.P), fix.solA.X];
+  if (fix.motion?.XB) pts.push(fix.motion.XB);
+  if (traj) for (const p of traj) pts.push(p);
+  let minE = 1e12, maxE = -1e12, minN = 1e12, maxN = -1e12;
+  for (const p of pts) { minE = Math.min(minE, p[0]); maxE = Math.max(maxE, p[0]); minN = Math.min(minN, p[1]); maxN = Math.max(maxN, p[1]); }
+  const span = Math.max(maxE - minE, maxN - minN, 100) * 1.35;
+  const cE = (minE + maxE) / 2, cN = (minN + maxN) / 2;
+  const W = 560, H = 420, s = Math.min(W, H) / span;
+  const px = (p) => [(W / 2 + (p[0] - cE) * s).toFixed(1), (H / 2 - (p[1] - cN) * s).toFixed(1)];
+  const e2 = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  let g = "";
+  for (const o of fix.obs) {
+    const a = px(o.P), i = fix.obs.indexOf(o);
+    const far = px(add(o.P, scl(o.dA, Math.max((fix.solA.ts[i] || 0) * 1.15, span * 0.3))));
+    g += `<line x1="${a[0]}" y1="${a[1]}" x2="${far[0]}" y2="${far[1]}" stroke="#C77B14" stroke-dasharray="6 5" stroke-width="1.4" opacity=".8"/>`;
+  }
+  if (traj && traj.length > 1) g += `<polyline points="${traj.map((p) => px(p).join(",")).join(" ")}" fill="none" stroke="#4a72c4" stroke-width="2.2" opacity=".9"/>`;
+  fix.obs.forEach((o, i) => {
+    const [x, y] = px(o.P);
+    g += `<path d="M${x} ${+y - 7} l-6 12 h12 z" fill="#C77B14"/><text x="${+x + 9}" y="${+y + 4}" font-size="11" fill="#333">${e2(o.s.name || `Obs ${i + 1}`)}</text>`;
+  });
+  const A = px(fix.solA.X);
+  g += `<circle cx="${A[0]}" cy="${A[1]}" r="7" fill="none" stroke="#0e7d6f" stroke-width="2.4"/><line x1="${+A[0] - 12}" y1="${A[1]}" x2="${+A[0] + 12}" y2="${A[1]}" stroke="#0e7d6f" stroke-width="2"/><line x1="${A[0]}" y1="${+A[1] - 12}" x2="${A[0]}" y2="${+A[1] + 12}" stroke="#0e7d6f" stroke-width="2"/><text x="${+A[0] + 14}" y="${+A[1] - 9}" font-size="11" font-weight="700" fill="#0e7d6f">FIX A</text>`;
+  if (fix.motion?.XB) {
+    const B = px(fix.motion.XB);
+    g += `<line x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke="#0e7d6f" stroke-width="1.8"/><circle cx="${B[0]}" cy="${B[1]}" r="5" fill="none" stroke="#0e7d6f" stroke-width="2"/><text x="${+B[0] + 9}" y="${+B[1] + 4}" font-size="11" fill="#0e7d6f">B</text>`;
+  }
+  /* scale bar (nice round length) + north arrow */
+  const target = span / 4;
+  const nice = Math.pow(10, Math.floor(Math.log10(target))) * ([1, 2, 5, 10].find((f) => Math.pow(10, Math.floor(Math.log10(target))) * f >= target) || 10);
+  g += `<line x1="16" y1="${H - 16}" x2="${16 + nice * s}" y2="${H - 16}" stroke="#555" stroke-width="2.5"/><text x="16" y="${H - 22}" font-size="10" fill="#555">${fmtLenShort(nice)}</text>`;
+  g += `<text x="16" y="20" font-size="12" fill="#555">N ↑</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fafafa">${g}</svg>`;
+}
+
+/* speed + felt-load strip chart for the report */
+function reportTrajSvg(k) {
+  if (!k?.segs?.length) return "";
+  const W = 560, H = 220, L = 46, Rm = 46, T = 16, B = 30;
+  const t0 = k.segs[0].t, t1 = k.segs[k.segs.length - 1].t || t0 + 1;
+  const vMax = Math.max(...k.segs.map((s) => s.speed)) * 1.15 || 1;
+  const gMax = Math.max(1.5, ...(k.acc || []).map((a) => a.load)) * 1.15;
+  const X = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - Rm);
+  const Yv = (v) => T + (1 - v / vMax) * (H - T - B);
+  const Yg = (gg) => T + (1 - gg / gMax) * (H - T - B);
+  const spd = k.segs.map((s) => `${X(s.t).toFixed(1)},${Yv(s.speed).toFixed(1)}`).join(" ");
+  const lod = (k.acc || []).map((a) => `${X(a.t).toFixed(1)},${Yg(a.load).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
+<polyline points="${spd}" fill="none" stroke="#0e7d6f" stroke-width="2.2"/>
+${lod ? `<polyline points="${lod}" fill="none" stroke="#C77B14" stroke-width="2" stroke-dasharray="5 4"/>` : ""}
+<text x="${L}" y="${T - 3}" font-size="10" fill="#0e7d6f">speed (peak ${Math.round(k.peakSpeed)} m/s · ${Math.round(k.peakSpeed * 2.23694)} mph)</text>
+${lod ? `<text x="${W - Rm}" y="${T - 3}" font-size="10" fill="#C77B14" text-anchor="end">felt load (peak ${k.peakLoad?.toFixed(1)} g, dashed)</text>` : ""}
+<text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">${(t1 - t0).toFixed(1)} s</text>
+</svg>`;
+}
+
 async function reportHtml(sources, est, opts = {}) {
   const fix = analyze(sources);            // numbers from full-res originals
   const tr = analyzeTracks(sources);
@@ -3375,7 +3434,9 @@ async function reportHtml(sources, est, opts = {}) {
       row("Baseline", fmtLenShort(fix.baseline)) +
       row("Ray convergence", fix.conv.toFixed(1) + "°") +
       row("Quality", fix.rating + (fix.behind ? " — rays cross BEHIND an observer; treat as unreliable (see caveats)" : "")) +
-      `</table>`;
+      `</table>` +
+      reportPlotSvg(fix, tr.stereo?.k ? tr.stereo.pos : null) +
+      `<p class="cap">Top-down: observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>`;
   } else {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
     /* single witness: the honest deliverable is the size↔distance line —
@@ -3422,7 +3483,7 @@ ${xTicks}${yTicks}${refs}
     (tr.stereo.k.peakA != null ? row("Peak acceleration", tr.stereo.k.peakA.toFixed(1) + " m/s²") : "") +
     (tr.stereo.k.peakLoad != null ? row("Peak felt load", tr.stereo.k.peakLoad.toFixed(2) + " g") : "") +
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
-    `</table>` : "";
+    `</table>` + reportTrajSvg(tr.stereo.k) : "";
   const soloKin = (!tr.stereo?.k && tr.solo?.length) ? `<p class="cap">Single-view angular trajectory: ${tr.solo[0].k.n} pts over ${tr.solo[0].k.dur.toFixed(1)} s, peak angular rate ${(tr.solo[0].k.peakSpeed * R2D).toFixed(2)} °/s (distance-free).</p>` : "";
 
   /* --- ADS-B: rank the captured traffic snapshot against the final sight-lines --- */

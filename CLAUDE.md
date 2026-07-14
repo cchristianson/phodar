@@ -180,7 +180,10 @@ comments, in this order:
 7. Multi-witness 3D **pose reconciliation** from `shapeFit.rotM` — two
    observers' capsule poses should agree on one world axis; a falsifiable
    consistency test.
-8. Report charts (trajectory/plot as embedded images), print CSS polish.
+8. **Report charts: DONE** — reportPlotSvg (top-down observers/rays/fix/
+   trajectory, scale bar) + reportTrajSvg (speed + felt-load strip) as
+   self-contained SVG; plus the single-witness distance⇄size chart.
+   Print CSS polish still open.
 9. **Reference-locked video** (after the still reference stack — video composes
    the same primitives). Phase A: pose(t) timeline — per-frame Δpose from
    horizon/ridge tracking (pitch+roll; detector exists) + distant-feature
@@ -210,16 +213,22 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   planet chips. Reports gain a "Sky-object check": Sun/Moon/planets/
   bright stars within 5° of any sight-line, with a Venus-specific warning
   (the most-reported "UFO" there is).
-- **CelesTrak TLEs + satellite.js** (no key, client-side): ISS/Starlink/sat
-  check against the sight-line at the sighting time — the night ADS-B.
-  Reuse the aircraft SKY-TRACK pattern when built: `/api/hist` returns
+- **CelesTrak satellites: DONE** (src/checks/satellites.js — visual-group
+  TLEs, satellite.js v5 SGP4 (v7 is WASM-first and breaks vite), Earth-shadow
+  lit test, dome markers + pass trails, sky-object-check integration with
+  TLE-staleness honesty; ISS validated vs wheretheiss.at to ~61 km).
+  The aircraft SKY-TRACK pattern it reuses: `/api/hist` returns
   `trail` ([[dtSec, lat, lon, altM], …] ±4 min from the full-day trace);
   the dome draws faint dashed polylines for craft within 25° of the
   sight-line (bright/solid when selected), live mode accumulates its own
   trail from the 20 s polls. Satellites should emit the same trail shape.
-- **Open-Meteo** (no key, historical): winds aloft at the fix altitude →
-  balloon signature test (track speed/heading ≈ wind); cloud-base bounds.
-- **NOAA WMM** (client-side JS): magnetic→true declination when azRef="M".
+- **Open-Meteo winds: DONE** (src/checks/winds.js + report "Wind check"):
+  pressure-level wind at the fix altitude, forecast API ≤~3 months back,
+  ERA5 archive beyond; balloonVerdict compares heading + speed ratio.
+  Cloud-base bounds still open.
+- **NOAA WMM: DONE** (src/math/geomag.js — embedded WMM2025 coefficients,
+  NOAA geomagc algorithm, validated against ALL 100 official test vectors
+  to 0.005°; EXIF magnetic bearings auto-correct to true on load).
 - **Launch Library 2** + **NASA CNEOS fireball API**: known-events correlator
   (rocket launches, bolides) near the sighting time/place.
 - **adsbdb.com**: aircraft hex/callsign → type, registration, route.
