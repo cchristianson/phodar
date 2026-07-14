@@ -10,6 +10,7 @@ import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, satsAt, satTrail } from "./checks/satellites.js";
+import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { planetPositions } from "./math/planets.js";
@@ -3551,6 +3552,39 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
         : `<p class="cap">No bright planet, star, satellite, Sun or Moon within 5° of any witness sight-line at the sighting time.</p>`);
     }
   }
+  /* --- wind check: does the motion match balloon drift at the fix altitude? --- */
+  let windHtml = "";
+  if (fix.ok) {
+    let objSpeed = null, objHeading = null, motionSrc = null;
+    if (tr.stereo?.k && tr.stereo.pos?.length > 1) {
+      const p0 = tr.stereo.pos[0], p1 = tr.stereo.pos[tr.stereo.pos.length - 1];
+      const dur = tr.stereo.times[tr.stereo.times.length - 1] - tr.stereo.times[0];
+      if (dur > 0) {
+        const vE = (p1[0] - p0[0]) / dur, vN = (p1[1] - p0[1]) / dur;
+        objSpeed = Math.hypot(vE, vN);
+        objHeading = ((Math.atan2(vE, vN) * R2D) + 360) % 360;
+        motionSrc = "triangulated track";
+      }
+    } else if (fix.motion?.v) {
+      objSpeed = Math.hypot(fix.motion.v[0], fix.motion.v[1]);
+      objHeading = fix.motion.heading;
+      motionSrc = "Moment A→B";
+    }
+    if (objSpeed != null && objSpeed > 0.2) {
+      try {
+        const when = +(origAct.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
+        const altMSL = fix.solA.X[2] + (fix.ref.alt || 0);
+        const wind = await fetchWindAt(fix.ref.lat, fix.ref.lon, when, altMSL);
+        const v = balloonVerdict(objSpeed, objHeading, wind);
+        const cls = v.verdict === "balloon-consistent" ? "" : "cap";
+        windHtml = `<h2>Wind check (balloon test)</h2>
+<p class="${cls}">Wind at ${wind.hPa} hPa (≈ ${fmtLenShort(wind.levelM)} MSL; fix ≈ ${fmtLenShort(altMSL)}): <b>${n1(wind.speedMs)} m/s from ${Math.round(wind.fromDeg)}°</b> → drift toward ${Math.round(wind.driftDeg)}°.
+The object (${motionSrc}) moved <b>${n1(objSpeed)} m/s toward ${Math.round(objHeading)}°</b> — heading off by ${Math.round(v.dHead)}°, speed ${isFinite(v.ratio) ? v.ratio.toFixed(1) + "×" : "≫"} the wind.
+<b>${v.verdict === "balloon-consistent" ? "⚠ Consistent with a wind-borne object (balloon signature)." : v.verdict === "partially wind-like" ? "Partially wind-like — not conclusive either way." : "Not wind-borne: a balloon cannot do this."}</b>
+<span class="cap">(${wind.src})</span></p>`;
+      } catch (e) { /* offline or no data — say nothing rather than guess */ }
+    }
+  }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><title>PHODAR sighting report</title><style>
 body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif;color:#141414;max-width:760px;margin:32px auto;padding:0 18px}
@@ -3567,6 +3601,7 @@ table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{bord
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${adsbHtml}
 ${skyHtml}
+${windHtml}
 ${exhibits}
 <h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>
 <h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>
