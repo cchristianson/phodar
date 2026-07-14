@@ -277,6 +277,17 @@ const css = `
   color:var(--ink); border-color:rgba(138,150,179,.6); font-size:9px;}
 .plotwrap .leaflet-bar a{background:var(--panel2); color:var(--ink);
   border-color:var(--line);}
+/* portrait lock — phones only (coarse pointer + landscape-phone height).
+   Tablets and desktops never match. */
+.rotate-lock{display:none;}
+@media screen and (orientation: landscape) and (pointer: coarse) and (max-height: 520px){
+  .rotate-lock{display:flex; position:fixed; inset:0; z-index:9999;
+    background:var(--bg); color:var(--ink); flex-direction:column;
+    align-items:center; justify-content:center; gap:14px; text-align:center;
+    font-family:var(--mono); padding:20px;}
+  .rotate-lock .ic{font-size:44px; animation:rot-nudge 1.6s ease-in-out infinite;}
+  @keyframes rot-nudge{0%,100%{transform:rotate(0)}50%{transform:rotate(-90deg)}}
+}
 `;
 
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
@@ -3775,5 +3786,15 @@ export default function App() {
       }
     }
     if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} />;
-    return <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}><style>{css}</style>{page}</div>;
+    return (
+      <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}>
+        <style>{css}</style>
+        {page}
+        <div className="rotate-lock">
+          <div className="ic">📱</div>
+          <div style={{ fontWeight: 800, letterSpacing: ".1em" }}>ROTATE TO PORTRAIT</div>
+          <div style={{ fontSize: 12, color: "var(--dim)" }}>Phodar is built for an upright phone.</div>
+        </div>
+      </div>
+    );
 }
