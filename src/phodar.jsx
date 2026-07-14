@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
 import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8 } from "./math/format.js";
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projection.js";
@@ -233,6 +235,31 @@ const css = `
   border-radius:50%; border:2px solid; display:flex; align-items:center;
   justify-content:center; font-size:10px; font-weight:800; font-family:var(--mono);
   touch-action:none; pointer-events:none;}
+.pinmapwrap{position:relative; isolation:isolate; z-index:0; height:240px;
+  border-radius:10px; border:1px solid var(--line); overflow:hidden;
+  background:#08101F;}
+.pinmapwrap .leaflet-container{width:100%; height:100%; background:#08101F;
+  font-family:var(--mono); cursor:grab;}
+.pinmapwrap .leaflet-container:active{cursor:grabbing;}
+.pinmapwrap .leaflet-control-attribution{background:rgba(7,11,20,.55);
+  color:var(--dim); font-size:8px; padding:1px 4px;}
+.pinmapwrap .leaflet-control-attribution a{color:var(--dim);}
+.pinmap-street-tiles{filter:invert(1) hue-rotate(180deg) brightness(.85)
+  contrast(.9) saturate(.55);}
+.pinmap-cross{position:absolute; left:50%; top:50%; margin:-14px 0 0 -14px;
+  z-index:900; pointer-events:none; filter:drop-shadow(0 1px 2px rgba(0,0,0,.8));}
+.pinmap-you{position:absolute; left:50%; top:50%; margin:-26px 0 0 12px;
+  z-index:900; pointer-events:none; color:var(--teal); font-family:var(--mono);
+  font-size:9px; font-weight:700; text-shadow:0 1px 2px #000;}
+.pinmap-hud{position:absolute; left:8px; bottom:6px; z-index:900;
+  pointer-events:none; font-family:var(--mono); font-size:10px; color:var(--ink);
+  text-shadow:0 1px 2px #000; line-height:1.5;}
+.lmk{position:relative; transform:translate(-50%,-50%); color:var(--amber);
+  font-size:11px; text-align:center; white-space:nowrap; width:0; height:0;
+  display:flex; align-items:center; justify-content:center;
+  text-shadow:0 1px 2px #000; font-family:var(--mono);}
+.lmk span{position:absolute; left:8px; top:-6px; font-size:10px; color:var(--ink);}
+.lmk-dot{font-size:13px;}
 `;
 
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
@@ -2292,100 +2319,136 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 }
 
 /* ============================================================
-   PIN MAP — tactical position refiner. You are the fixed pin at
-   center; drag slides the ground beneath you. (Map tiles can't be
-   fetched from the artifact sandbox, so this is a metric chart:
-   range rings, the photo's GPS fix, and your other observers.)
+   PIN MAP — tactical position refiner on real map tiles (Leaflet).
+   You are the fixed pin at center; dragging slides the ground
+   beneath you and releasing commits the new center. Esri World
+   Imagery by default (a rooftop is a better anchor than a street
+   name), OSM street as the toggle.
    ============================================================ */
 function PinMap({ lat, lon, origin, others, onChange }) {
-  const cRef = useRef(null);
-  const [mpp, setMpp] = useState(1.2); // meters per CSS px
-  const [pin, setPin] = useState({ lat: +lat, lon: +lon });
-  const dragRef = useRef(null);
-  useEffect(() => { setPin({ lat: +lat, lon: +lon }); }, [lat, lon]);
-
-  useEffect(() => {
-    const el = cRef.current; if (!el) return;
-    const block = (e) => { if (e.cancelable) e.preventDefault(); };
-    el.addEventListener("touchstart", block, { passive: false });
-    el.addEventListener("touchmove", block, { passive: false });
-    return () => { el.removeEventListener("touchstart", block); el.removeEventListener("touchmove", block); };
-  }, []);
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const layersRef = useRef(null);     // {sat, street}
+  const overlayRef = useRef(null);    // marker layer group
+  const originLineRef = useRef(null);
+  const originRef = useRef(origin);
+  const onChangeRef = useRef(onChange);
+  const progRef = useRef(false);      // programmatic setView — don't commit
+  const coordElRef = useRef(null);
+  const distElRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [baseSat, setBaseSat] = useState(true);
+  originRef.current = origin;
+  onChangeRef.current = onChange;
 
   const mPerDegN = 111320;
-  const mPerDegE = 111320 * Math.max(0.2, Math.cos((+lat || 0) * D2R));
+  const mPerDegE = (la) => 111320 * Math.max(0.2, Math.cos((+la || 0) * D2R));
 
-  const onDown = (e) => {
-    e.preventDefault();
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
-    dragRef.current = { x: e.clientX, y: e.clientY, lat: pin.lat, lon: pin.lon };
-  };
-  const onMove = (e) => {
-    const d = dragRef.current; if (!d) return;
-    const dx = e.clientX - d.x, dy = e.clientY - d.y;
-    setPin({ lat: d.lat + (dy * mpp) / mPerDegN, lon: d.lon - (dx * mpp) / mPerDegE });
-  };
-  const onUp = (e) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
-    onChange(pin.lat, pin.lon);
+  const hud = (c) => {
+    if (coordElRef.current) coordElRef.current.textContent = `${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}`;
+    const og = originRef.current;
+    if (distElRef.current) {
+      if (og && isNum(og.lat)) {
+        const dE = (c.lng - og.lon) * mPerDegE(c.lat), dN = (c.lat - og.lat) * mPerDegN;
+        const dd = Math.hypot(dE, dN);
+        distElRef.current.textContent = dd < 1 ? "on the photo's GPS fix" : `${fmtLenShort(dd)} ${dN >= 0 ? "N" : "S"}${dE >= 0 ? "E" : "W"} of photo GPS`;
+      } else distElRef.current.textContent = "";
+    }
+    if (originLineRef.current && og && isNum(og.lat)) originLineRef.current.setLatLngs([[c.lat, c.lng], [+og.lat, +og.lon]]);
   };
 
   useEffect(() => {
-    const cv = cRef.current; if (!cv) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = cv.clientWidth, H = 240;
-    cv.width = W * dpr; cv.height = H * dpr;
-    const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#08101F"; ctx.fillRect(0, 0, W, H);
-    const toXY = (la, lo) => [W / 2 + ((lo - pin.lon) * mPerDegE) / mpp, H / 2 - ((la - pin.lat) * mPerDegN) / mpp];
-    const step = niceStep((Math.min(W, H) * mpp) / 3.2);
-    ctx.strokeStyle = "#152242"; ctx.fillStyle = "#8A96B3"; ctx.font = "9px ui-monospace,Menlo,monospace"; ctx.lineWidth = 1;
-    for (let r = step; r <= Math.hypot(W, H) * mpp; r += step) {
-      ctx.beginPath(); ctx.arc(W / 2, H / 2, r / mpp, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillText(fmtLenShort(r), W / 2 + r / mpp + 3, H / 2 - 3);
-    }
-    if (origin && isNum(origin.lat)) {
-      const [x, y] = toXY(+origin.lat, +origin.lon);
-      ctx.strokeStyle = "rgba(245,169,63,.7)"; ctx.setLineDash([4, 4]);
-      ctx.beginPath(); ctx.moveTo(W / 2, H / 2); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = "#F5A93F"; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.fillText("photo GPS", x + 6, y + 3);
-    }
-    (others || []).forEach((o) => {
-      const [x, y] = toXY(+o.lat, +o.lon);
-      ctx.fillStyle = "#F5A93F";
-      ctx.beginPath(); ctx.moveTo(x, y - 6); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = "#DCE3F2"; ctx.fillText(o.name || "", x + 7, y + 3);
+    const el = boxRef.current; if (!el || mapRef.current) return;
+    const map = L.map(el, {
+      center: [+lat, +lon], zoom: 17, zoomControl: false,
+      attributionControl: true, doubleClickZoom: false,
     });
-    ctx.strokeStyle = "#5FD3BC"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(W / 2, H / 2, 7, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(W / 2 - 12, H / 2); ctx.lineTo(W / 2 + 12, H / 2);
-    ctx.moveTo(W / 2, H / 2 - 12); ctx.lineTo(W / 2, H / 2 + 12); ctx.stroke();
-    ctx.fillStyle = "#5FD3BC"; ctx.fillText("YOU", W / 2 + 10, H / 2 - 10);
-    ctx.fillStyle = "#8A96B3"; ctx.fillText("N ↑", 8, 14);
-    ctx.fillStyle = "#DCE3F2"; ctx.font = "10px ui-monospace,Menlo,monospace";
-    ctx.fillText(`${pin.lat.toFixed(6)}, ${pin.lon.toFixed(6)}`, 8, H - 8);
-    if (origin && isNum(origin.lat)) {
-      const dE = (pin.lon - origin.lon) * mPerDegE, dN = (pin.lat - origin.lat) * mPerDegN;
-      const dd = Math.hypot(dE, dN);
-      ctx.fillStyle = "#F5A93F";
-      ctx.fillText(dd < 1 ? "on the photo's GPS fix" : `${fmtLenShort(dd)} ${dN >= 0 ? "N" : "S"}${dE >= 0 ? "E" : "W"} of photo GPS`, 8, H - 20);
+    map.attributionControl.setPrefix(false);
+    const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics",
+    });
+    const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 21, maxNativeZoom: 19, attribution: "© OpenStreetMap contributors", className: "pinmap-street-tiles",
+    });
+    sat.addTo(map);
+    map.on("move", () => hud(map.getCenter()));
+    map.on("moveend", () => {
+      if (progRef.current) { progRef.current = false; return; }
+      const c = map.getCenter();
+      onChangeRef.current(c.lat, c.lng);
+    });
+    mapRef.current = map; layersRef.current = { sat, street };
+    hud(map.getCenter());
+    setReady(true);
+    return () => { map.remove(); mapRef.current = null; setReady(false); };
+  }, []);
+
+  /* external coordinate edits re-center the map; sub-meter echoes of our own
+     commit (PositionEditor rounds to 1e-6°) must not — they'd loop */
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !isNum(lat) || !isNum(lon)) return;
+    const c = map.getCenter();
+    if (Math.abs(c.lat - +lat) > 2e-6 || Math.abs(c.lng - +lon) > 2e-6) {
+      progRef.current = true;
+      map.setView([+lat, +lon], map.getZoom(), { animate: false });
+      hud(map.getCenter());
     }
-  }, [pin, mpp, others, origin]);
+  }, [lat, lon]);
+
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !ready) return;
+    const { sat, street } = layersRef.current;
+    if (baseSat) { map.removeLayer(street); sat.addTo(map); }
+    else { map.removeLayer(sat); street.addTo(map); }
+  }, [baseSat, ready]);
+
+  /* photo-GPS origin + fellow observers */
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !ready) return;
+    if (overlayRef.current) { map.removeLayer(overlayRef.current); overlayRef.current = null; }
+    originLineRef.current = null;
+    const g = L.layerGroup();
+    if (origin && isNum(origin.lat)) {
+      const c = map.getCenter();
+      originLineRef.current = L.polyline([[c.lat, c.lng], [+origin.lat, +origin.lon]],
+        { color: "#F5A93F", weight: 1.5, dashArray: "4 4", opacity: 0.7, interactive: false }).addTo(g);
+      L.marker([+origin.lat, +origin.lon], {
+        interactive: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-dot">●<span>photo GPS</span></div>` }),
+      }).addTo(g);
+    }
+    (others || []).filter((o) => isNum(o.lat) && isNum(o.lon)).forEach((o) => {
+      L.marker([+o.lat, +o.lon], {
+        interactive: false,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-tri">▲<span>${String(o.name || "").replace(/[<>&]/g, "")}</span></div>` }),
+      }).addTo(g);
+    });
+    g.addTo(map); overlayRef.current = g;
+    hud(map.getCenter());
+  }, [others, origin, ready]);
 
   return (
     <div style={{ marginTop: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
         <ML style={{ marginBottom: 0 }}>Refine position — drag the ground under your pin</ML>
         <div style={{ display: "flex", gap: 4 }}>
-          <button className="btn sm" onClick={() => setMpp((m) => clampN(m * 2, 0.15, 40))}>−</button>
-          <button className="btn sm" onClick={() => setMpp((m) => clampN(m / 2, 0.15, 40))}>+</button>
+          <button className="btn sm" onClick={() => setBaseSat((s) => !s)}>{baseSat ? "🗺 street" : "🛰 sat"}</button>
+          <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomOut()}>−</button>
+          <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomIn()}>+</button>
         </div>
       </div>
-      <canvas ref={cRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-        style={{ width: "100%", height: 240, borderRadius: 10, border: "1px solid var(--line)", display: "block", touchAction: "none", cursor: "grab" }} />
+      <div className="pinmapwrap">
+        <div ref={boxRef} style={{ position: "absolute", inset: 0 }} />
+        <svg className="pinmap-cross" viewBox="-14 -14 28 28" width="28" height="28">
+          <circle cx="0" cy="0" r="7" fill="none" stroke="#5FD3BC" strokeWidth="2" />
+          <path d="M-12 0H12M0 -12V12" stroke="#5FD3BC" strokeWidth="2" />
+        </svg>
+        <div className="pinmap-you">YOU</div>
+        <div className="pinmap-hud">
+          <div ref={distElRef} style={{ color: "var(--amber)" }} />
+          <div ref={coordElRef} />
+        </div>
+      </div>
     </div>
   );
 }

@@ -94,9 +94,12 @@ comments, in this order:
    `src/components/{MediaMeasure,SkyAimer,PinMap,...}.jsx`,
    `src/report/{html,share,zip}.js`, `src/wizard/*.jsx`. Keep behavior
    identical.
-2. **Leaflet map** replacing the `PinMap` canvas (tiles were CSP-blocked in
-   the artifact; they aren't here). Keep the drag-ground-under-fixed-pin
-   interaction.
+2. **Leaflet map: DONE** — `PinMap` now renders Leaflet tiles (Esri World
+   Imagery default, OSM street toggle with a dark-inversion filter), same
+   props and same drag-ground-under-fixed-pin interaction: the crosshair is a
+   fixed DOM overlay, `moveend` commits the center via `onChange`, and a
+   `progRef` guard + 2e-6° epsilon stop commit echoes from looping. Markers
+   are `divIcon`s (no PNG assets — they break under bundlers).
 3. **ADS-B check** — the killer feature: given observer pos + time + derived
    az/el (+ angular size), query aircraft and rank candidates by angular
    separation; aircraft type → wingspan table gives absolute ground truth.
