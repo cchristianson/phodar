@@ -1,3 +1,5 @@
+import { R2D } from "./math/geodesy.js";
+
 /* ============================================================
    MEDIA METADATA — minimal EXIF/QuickTime readers (no libraries)
    Pulls GPS position/altitude, capture time, camera compass

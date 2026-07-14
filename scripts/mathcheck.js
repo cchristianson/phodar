@@ -7,6 +7,7 @@ import { trackDirections } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
+import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 
@@ -148,6 +149,57 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(declination(89, -121, 28000, d2025), -99.77, 0.02, "WMM decl 89N 121W");
   approx(declination(-33, 109, 51000, d2025), -5.49, 0.02, "WMM decl 33S 109E");
   approx(declination(-66, -5, 37000, new Date(Date.UTC(2027, 0))), -17.22, 0.02, "WMM decl 2027.0 66S 5W");
+}
+
+// --- EXIF parser: hand-built JPEG with known GPS/bearing/focal must parse.
+//     (Guards the src/exif.js module boundary: a missing import there fails
+//     silently through parseMediaMeta's try/catch — exactly the bug that
+//     killed GPS autofill once.) ---
+{
+  const tiff = new Uint8Array(190);
+  const dv = new DataView(tiff.buffer);
+  const w16 = (o, v) => dv.setUint16(o, v, true), w32 = (o, v) => dv.setUint32(o, v, true);
+  tiff[0] = 0x49; tiff[1] = 0x49; w16(2, 42); w32(4, 8);          // II, magic, IFD0@8
+  w16(8, 2);                                                       // IFD0: 2 entries
+  w16(10, 0x8769); w16(12, 4); w32(14, 1); w32(18, 38);            // → Exif IFD @38
+  w16(22, 0x8825); w16(24, 4); w32(26, 1); w32(30, 56);            // → GPS IFD @56
+  w32(34, 0);
+  w16(38, 1);                                                      // Exif IFD: 1 entry
+  w16(40, 0xA405); w16(42, 3); w32(44, 1); w16(48, 26);            // f35 = 26 mm
+  w32(52, 0);
+  w16(56, 6);                                                      // GPS IFD: 6 entries
+  const gpsE = (i, tag, type, cnt, val, inline) => {
+    const o = 58 + i * 12;
+    w16(o, tag); w16(o + 2, type); w32(o + 4, cnt);
+    if (inline != null) { tiff[o + 8] = inline.charCodeAt(0); tiff[o + 9] = 0; }
+    else w32(o + 8, val);
+  };
+  gpsE(0, 1, 2, 2, 0, "N");
+  gpsE(1, 2, 5, 3, 134);
+  gpsE(2, 3, 2, 2, 0, "W");
+  gpsE(3, 4, 5, 3, 158);
+  gpsE(4, 16, 2, 2, 0, "M");
+  gpsE(5, 17, 5, 1, 182);
+  w32(130, 0);
+  const rat = (o, n, d) => { w32(o, n); w32(o + 4, d); };
+  rat(134, 42, 1); rat(142, 9, 1); rat(150, 4968, 100);            // 42°9'49.68" = 42.1638
+  rat(158, 123, 1); rat(166, 38, 1); rat(174, 5280, 100);          // 123°38'52.8" = 123.648
+  rat(182, 1234, 10);                                              // bearing 123.4°M
+  const jpeg = new Uint8Array(4 + 2 + 6 + 190 + 2);
+  jpeg.set([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 198 & 0xFF], 0);
+  jpeg[4] = 198 >> 8; jpeg[5] = 198 & 0xFF;
+  jpeg.set([0x45, 0x78, 0x69, 0x66, 0, 0], 6);                     // "Exif\0\0"
+  jpeg.set(tiff, 12);
+  const m = parseMediaMeta(jpeg.buffer, false);
+  if (!m) { fails++; console.error("  FAIL EXIF: parseMediaMeta returned null (module boundary broken?)"); }
+  else {
+    approx(m.lat, 42.1638, 0.0001, "EXIF GPS lat");
+    approx(m.lon, -123.648, 0.0001, "EXIF GPS lon");
+    approx(m.az, 123.4, 0.01, "EXIF bearing");
+    if (m.azRef === "magnetic") console.log("  ok   EXIF bearing flagged magnetic");
+    else { fails++; console.error("  FAIL EXIF azRef:", m.azRef); }
+    approx(m.fovH, 2 * Math.atan(18 / 26) * R2D, 0.2, "EXIF f35→FOV (the line that broke)");
+  }
 }
 
 // --- planets vs JPL Horizons ground truth (fetched 2026-07-14) ---
