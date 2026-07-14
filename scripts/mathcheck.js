@@ -6,6 +6,7 @@ import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
+import { declination } from "../src/math/geomag.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 
@@ -113,6 +114,15 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const bH = maxBend(hard), bR = maxBend(round);
   if (bR < bH * 0.45) console.log(`  ok   arc max bend ${bR.toFixed(1)}° ≪ hard corner ${bH.toFixed(1)}°`);
   else { fails++; console.error(`  FAIL rounding didn't soften the corner bend: ${bR} vs ${bH}`); }
+}
+
+// --- WMM2025 declination vs official NOAA test vectors ---
+{
+  // rows from WMM2025_TEST_VALUES.txt (decimal year, alt km, lat, lon → dec°)
+  const d2025 = new Date(Date.UTC(2025, 0));
+  approx(declination(89, -121, 28000, d2025), -99.77, 0.02, "WMM decl 89N 121W");
+  approx(declination(-33, 109, 51000, d2025), -5.49, 0.02, "WMM decl 33S 109E");
+  approx(declination(-66, -5, 37000, new Date(Date.UTC(2027, 0))), -17.22, 0.02, "WMM decl 2027.0 66S 5W");
 }
 
 // --- planets vs JPL Horizons ground truth (fetched 2026-07-14) ---

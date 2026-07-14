@@ -8,6 +8,7 @@ import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { declination } from "./math/geomag.js";
 import { predictedSkyline, skylineElAt, demElevation, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { planetPositions } from "./math/planets.js";
@@ -602,8 +603,16 @@ function MediaMeasure({ src, update, wizard }) {
       if (m.timeMs) patch.whenMs = m.timeMs;
       if (isNum(m.fovH)) patch.fovH = m.fovH;
       if (isNum(m.az)) {
-        patch.mediaAim = { az: m.az, el: 15, roll: 0 }; // pre-aims the sky placement
-        if (!isNum(src.A?.az)) patch.A = { ...src.A, p1: null, p2: null, az: String(m.az) };
+        /* MAGNETIC bearings become TRUE via WMM before anything uses them —
+           declination runs to ±25° and would otherwise pass through silently */
+        let azUse = +m.az;
+        if (m.azRef === "magnetic" && isNum(m.lat) && isNum(m.lon)) {
+          const dec = declination(+m.lat, +m.lon, isNum(m.alt) ? +m.alt : 0, new Date(m.timeMs || Date.now()));
+          azUse = ((azUse + dec) % 360 + 360) % 360;
+          patch.meta = { ...m, decl: +dec.toFixed(2), azTrue: +azUse.toFixed(1) };
+        }
+        patch.mediaAim = { az: azUse, el: 15, roll: 0 }; // pre-aims the sky placement
+        if (!isNum(src.A?.az)) patch.A = { ...src.A, p1: null, p2: null, az: azUse.toFixed(1) };
       }
       update(patch);
     }).catch(() => { });
@@ -1170,7 +1179,7 @@ function MediaMeasure({ src, update, wizard }) {
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)", lineHeight: 1.6 }}>
             {isNum(src.meta.lat) && <div>GPS {src.meta.lat}, {src.meta.lon}{isNum(src.meta.alt) ? ` · ${src.meta.alt} m` : ""}</div>}
             {src.meta.timeMs && <div>{new Date(src.meta.timeMs).toLocaleString()}</div>}
-            {isNum(src.meta.az) && <div>camera bearing {src.meta.az}° {src.meta.azRef}{src.meta.azRef === "magnetic" ? " (true ≈ magnetic + local declination)" : ""}</div>}
+            {isNum(src.meta.az) && <div>camera bearing {src.meta.az}° {src.meta.azRef}{src.meta.azRef === "magnetic" ? (isNum(src.meta.azTrue) ? ` → ${src.meta.azTrue}° true (WMM declination ${src.meta.decl >= 0 ? "+" : ""}${src.meta.decl}°)` : " (true ≈ magnetic + local declination)") : ""}</div>}
             {isNum(src.meta.fovH) && <div>FOV {src.meta.fovH}° (from {src.meta.f35} mm-eq lens)</div>}
             {src.meta.model && <div>{src.meta.model}</div>}
           </div>
