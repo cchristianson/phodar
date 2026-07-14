@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
-import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8 } from "./math/format.js";
+import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits } from "./math/format.js";
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -1411,9 +1411,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      which silently eats native drags on anything inside it. Drop the ghost
      at the crosshair like a trajectory point; distance via preset chips. */
   const [cmpOn, setCmpOn] = useState(false);
-  const [cmpD, setCmpD] = useState(1000);       // assumed distance, meters
+  const [cmpD, setCmpD] = useState(1000);       // ghost's assumed distance, meters
   const [ghostIdx, setGhostIdx] = useState(3);
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
+  const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -2601,6 +2602,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   );
                 })()}
                 <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then slide its assumed distance</div>
+                {objAngW != null && (() => {
+                  /* the measured object: sweep assumed distance, read implied size live */
+                  const t = clampN(Math.log(objD / 50) / Math.log(80000 / 50), 0, 1);
+                  const size = 2 * objD * Math.tan(objAngW * D2R / 2);
+                  return (
+                    <div style={{ marginTop: 8, borderTop: "1px dashed var(--line)", paddingTop: 6 }}>
+                      <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--amber)" }}>
+                        Your object — measured {objAngW.toFixed(2)}°
+                      </div>
+                      <input type="range" min={0} max={1} step={0.004} value={t}
+                        onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                        onChange={(e) => setObjD(Math.round(50 * Math.pow(80000 / 50, +e.target.value)))}
+                        style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
+                        if it was <b>{fmtLenShort(objD)}</b> away → it's <b>{fmtLenShort(size)}</b> across
+                        <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -3278,6 +3299,42 @@ async function reportHtml(sources, est, opts = {}) {
       `</table>`;
   } else {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
+    /* single witness: the honest deliverable is the size↔distance line —
+       every assumed distance implies a size; reference objects pin intuition */
+    const wAng = (() => {
+      for (const s of origAct) {
+        const a = angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ?? (isNum(s.A?.angManual) ? +s.A.angManual : null);
+        if (a != null && a > 0) return a;
+      }
+      return null;
+    })();
+    if (wAng != null) {
+      const W = 560, H = 300, L = 62, Rm = 16, T = 34, B = 44;
+      const D0 = 50, D1 = 50000;
+      const s0 = 2 * D0 * Math.tan(wAng * D2R / 2), s1 = 2 * D1 * Math.tan(wAng * D2R / 2);
+      const sLo = Math.min(s0, 0.2), sHi = Math.max(s1, 120);
+      const X = (Dm) => L + ((Math.log10(Dm) - Math.log10(D0)) / (Math.log10(D1) - Math.log10(D0))) * (W - L - Rm);
+      const Y = (Sm) => T + (1 - (Math.log10(Sm) - Math.log10(sLo)) / (Math.log10(sHi) - Math.log10(sLo))) * (H - T - B);
+      const refs = REF_OBJECTS.filter((o) => {
+        const Dq = o.size / (2 * Math.tan(wAng * D2R / 2));
+        return Dq >= D0 && Dq <= D1;
+      }).map((o) => {
+        const Dq = o.size / (2 * Math.tan(wAng * D2R / 2));
+        return `<line x1="${L}" y1="${Y(o.size).toFixed(1)}" x2="${W - Rm}" y2="${Y(o.size).toFixed(1)}" stroke="#ddd" stroke-dasharray="4 4"/>` +
+          `<circle cx="${X(Dq).toFixed(1)}" cy="${Y(o.size).toFixed(1)}" r="3.5" fill="#C77B14"/>` +
+          `<text x="${(X(Dq) + 6).toFixed(1)}" y="${(Y(o.size) - 5).toFixed(1)}" font-size="10" fill="#555">${e2(o.name)} — ${fmtLenShort(Dq)}</text>`;
+      }).join("");
+      const xTicks = [100, 1000, 10000].map((d) => `<line x1="${X(d)}" y1="${T}" x2="${X(d)}" y2="${H - B}" stroke="#eee"/><text x="${X(d)}" y="${H - B + 16}" font-size="10" fill="#555" text-anchor="middle">${fmtLenShort(d)}</text>`).join("");
+      const yTicks = [1, 10, 100].filter((s) => s >= sLo && s <= sHi).map((s) => `<text x="${L - 6}" y="${(Y(s) + 3).toFixed(1)}" font-size="10" fill="#555" text-anchor="end">${fmtLenShort(s)}</text>`).join("");
+      fixHtml += `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
+<text x="${L}" y="20" font-size="12" font-weight="700" fill="#333">Assumed distance ⇄ implied size (measured ${wAng.toFixed(2)}°)</text>
+${xTicks}${yTicks}${refs}
+<line x1="${X(D0)}" y1="${Y(s0).toFixed(1)}" x2="${X(D1)}" y2="${Y(s1).toFixed(1)}" stroke="#0e7d6f" stroke-width="2.5"/>
+<text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">assumed distance →</text>
+<text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">implied size →</text>
+</svg>
+<p class="cap">One witness can't fix the distance — but every assumed distance implies a size. Dots mark where common objects would sit on this sight-line.</p>`;
+    }
   }
   const kin = tr.stereo?.k ? `<table>` +
     row("Samples / duration", `${tr.stereo.k.n} pts · ${tr.stereo.k.dur.toFixed(1)} s`) +
@@ -3462,7 +3519,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport }) {
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, unitsImp, onToggleUnits }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -3477,6 +3534,9 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
           Turn a sighting photo into real numbers — direction, size, altitude, speed.
           Two witnesses make it true triangulation.
         </div>
+        <button className="chip" style={{ marginTop: 8 }} onClick={onToggleUnits}>
+          units: <b style={{ color: "var(--amber)" }}>{unitsImp ? "ft · mi · mph" : "m · km · m/s"}</b> — tap to switch
+        </button>
       </div>
       <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
@@ -3706,6 +3766,16 @@ export default function App() {
   const [sources, setSources] = useState(() => [makeSource(1)]);
   const [est, setEst] = useState({ size: "", dist: "", speed: "" });
   const [ui, setUi] = useState({ view: "home", srcId: null });
+  const [unitsImp, setUnitsImp] = useState(() => {
+    try { return localStorage.getItem("phodar-units") === "imp"; } catch (e) { return false; }
+  });
+  setImperialUnits(unitsImp); // module state — every formatter call this render follows it
+  const toggleUnits = () => {
+    setUnitsImp((v) => {
+      try { localStorage.setItem("phodar-units", !v ? "imp" : "met"); } catch (e) { }
+      return !v;
+    });
+  };
   const loadedRef = useRef(false);
 
   /* restore session (migrates pre-rename SkyFix sessions transparently) */
@@ -3839,7 +3909,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} />;
+    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} unitsImp={unitsImp} onToggleUnits={toggleUnits} />;
     return (
       <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}>
         <style>{css}</style>
