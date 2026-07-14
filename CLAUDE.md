@@ -74,6 +74,12 @@ comments, in this order:
    preventDefault on marking canvases (iOS ignores `touch-action` for
    multi-touch), document-level lock while touching, blur/visibilitychange
    hard-reset. `pointercancel` must never place a point.
+   **Corollary (cost: several broken releases):** the aimer's scroll-lock
+   preventDefaults ALL document touchmoves while open, which silently kills
+   native drags on anything inside it — sliders and draggable elements DON'T
+   WORK in the sky view unless whitelisted in that handler (range inputs now
+   are). Prefer buttons/taps; if you must add a slider, extend the whitelist
+   and test on a real phone.
 6. **Loupe keeps its devicePixelRatio backing store** or it renders soft.
 7. **Drags are rAF-coalesced** (`queuePose`) — 120 Hz phones flood React
    otherwise. Warp texture is pre-downsampled to 1280 px, mesh 7 columns,

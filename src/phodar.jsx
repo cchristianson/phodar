@@ -1364,8 +1364,11 @@ const GHOSTW = [
   { name: "Airliner (737)", m: 36, shape: "p" },
 ];
 function GhostSil({ shape, w, color }) {
+  /* true angular size, floored at 1 px — a balloon at 3 km IS sub-pixel,
+     and faking it bigger defeats the whole comparison */
+  const ww = Math.max(w, 1);
   if (shape === "p") return (
-    <svg width={Math.max(w, 4)} height={Math.max(w, 4) * 1.2} viewBox="0 0 100 120" style={{ display: "block", overflow: "visible" }}>
+    <svg width={ww} height={ww * 1.2} viewBox="0 0 100 120" style={{ display: "block", overflow: "visible" }}>
       <g fill={color}>
         <path d="M50 4 C56 4 57 18 56 34 L56 92 C56 104 54 116 50 116 C46 116 44 104 44 92 L44 34 C43 18 44 4 50 4 Z" />
         <path d="M50 48 L3 84 L3 88 L16 88 L50 64 L84 88 L97 88 L97 84 Z" />
@@ -1373,7 +1376,7 @@ function GhostSil({ shape, w, color }) {
       </g>
     </svg>
   );
-  return <svg width={Math.max(w, 4)} height={Math.max(w, 4)} viewBox="0 0 100 100" style={{ display: "block" }}><circle cx="50" cy="50" r="47" fill={color} /></svg>;
+  return <svg width={ww} height={ww} viewBox="0 0 100 100" style={{ display: "block" }}><circle cx="50" cy="50" r="47" fill={color} /></svg>;
 }
 
 function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
@@ -1398,6 +1401,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [pEl, setPEl] = useState(30);
   const [pRoll, setPRoll] = useState(0);
   const [fovM, setFovM] = useState(68);      // photo's own FOV (calibrated by pinch)
+  const openPoseRef = useRef(null);          // placement as of aimer-open — Reset target
   const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
   const [selSeg, setSelSeg] = useState(null);   // Δt chip being edited
@@ -1467,20 +1471,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setViewAlt(isNum(initAlt) ? clampN(+initAlt, -15, 88) : 30);
       setMotionMsg(""); setCameraMsg("");
       const ma = source?.mediaAim;
-      setPAz(ma ? ma.az : (isNum(source?.A?.az) ? +source.A.az : (isNum(initAz) ? +initAz : 180)));
-      setPEl(ma ? ma.el : (isNum(source?.A?.el) ? +source.A.el : 30));
-      setPRoll(ma ? (ma.roll || 0) : 0);
-      setFovM(isNum(source?.fovH) ? +source.fovH : 68);
+      const p0 = {
+        az: ma ? ma.az : (isNum(source?.A?.az) ? +source.A.az : (isNum(initAz) ? +initAz : 180)),
+        el: ma ? ma.el : (isNum(source?.A?.el) ? +source.A.el : 30),
+        roll: ma ? (ma.roll || 0) : 0,
+        fov: isNum(source?.fovH) ? +source.fovH : 68,
+      };
+      openPoseRef.current = p0; // Reset restores the WHOLE placement to this
+      setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov);
       setPhotoOn(!!source?.mediaUrl);
       setPMode(source?.mediaAim ? "look" : (source?.mediaUrl ? "place" : "look"));
       if (wizard && source?.mediaUrl) setPMode("place"); // wizard always starts in adjust mode
     }
   }, [open]); // eslint-disable-line
 
-  /* scroll lock while the aimer is open */
+  /* scroll lock while the aimer is open. Range inputs are whitelisted:
+     this document-level preventDefault is what silently killed every
+     slider drag inside the aimer on touch devices. */
   useEffect(() => {
     if (!open) return;
-    const prevent = (e) => { if (e.cancelable) e.preventDefault(); };
+    const prevent = (e) => {
+      if (e.target && e.target.closest && e.target.closest("input[type=range]")) return;
+      if (e.cancelable) e.preventDefault();
+    };
     document.addEventListener("touchmove", prevent, { passive: false });
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -2327,12 +2340,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const g = GHOSTW[ghostIdx];
           const gAng = 2 * Math.atan(g.m / (2 * cmpD)) * R2D;
           const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
-          const gPx = Math.max(4, gAng * D2R * fpxS);
+          const gPx = gAng * D2R * fpxS; // TRUE angular size — no vanity floor
           return (
             <div style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.92 }}>
-              <div style={{ display: "inline-block" }}><GhostSil shape={g.shape} w={gPx} color="#9fb4d8" /></div>
+              <div style={{ position: "relative", display: "inline-block" }}>
+                {gPx < 6 && (
+                  <div style={{ position: "absolute", left: "50%", top: "50%", width: 18, height: 18, margin: "-9px 0 0 -9px", border: "1px dashed rgba(159,180,216,.6)", borderRadius: "50%" }} />
+                )}
+                <GhostSil shape={g.shape} w={gPx} color="#9fb4d8" />
+              </div>
               <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2 }}>
-                {g.name} ({g.m} m) @ {fmtLenShort(cmpD)}
+                {g.name} ({g.m} m) @ {fmtLenShort(cmpD)}{gPx < 3 ? " · sub-pixel at this range" : ""}
               </div>
             </div>
           );
@@ -2429,7 +2447,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 {pMode === "place" && (
                   <>
                     <button className="btn sm" onClick={() => setPRoll(0)}>⟺ Level</button>
-                    <button className="btn sm" onClick={() => { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }}>Reset</button>
+                    <button className="btn sm" onClick={() => {
+                      const p0 = openPoseRef.current;
+                      if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); }
+                      else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }
+                    }}>Reset placement</button>
                   </>
                 )}
                 {source.mediaKind === "video" && vidDur2 > 0 && (
@@ -2543,13 +2565,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => setGhostIdx(i)}>{g.name}</button>
                   ))}
                 </div>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
                   <button className="btn sm teal" onClick={() => setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) })}>⌖ Drop at crosshair</button>
-                  {[[100, "100 m"], [300, "300 m"], [1000, "1 km"], [3000, "3 km"], [10000, "10 km"], [30000, "30 km"]].map(([v, l]) => (
-                    <button key={v} className={"btn sm" + (Math.abs(cmpD / v - 1) < 0.1 ? " amber" : "")} onClick={() => setCmpD(v)}>{l}</button>
-                  ))}
-                  <button className="btn sm" onClick={() => setCmpD((d) => Math.max(30, Math.round(d / 1.3)))}>closer</button>
-                  <button className="btn sm" onClick={() => setCmpD((d) => Math.min(80000, Math.round(d * 1.3)))}>farther</button>
+                  <input type="range" min={0} max={1} step={0.004}
+                    value={Math.log(cmpD / 30) / Math.log(80000 / 30)}
+                    onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                    onChange={(e) => setCmpD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
+                    style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
                 </div>
                 {(() => {
                   const g = GHOSTW[ghostIdx];
@@ -2560,7 +2582,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     </div>
                   );
                 })()}
-                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then step its distance closer/farther</div>
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then slide its assumed distance</div>
               </div>
             )}
           </div>
