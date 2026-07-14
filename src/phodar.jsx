@@ -1860,15 +1860,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* --- scene elements --- */
   /* REAL night sky: the 327 catalog stars + naked-eye planets at their true
      az/el for the sighting time & place — calibration anchors ("it was two
-     fists left of Vega") and, for Venus & co, mundane-explanation candidates. */
+     fists left of Vega") and, for Venus & co, mundane-explanation candidates.
+     No hard night cliff: a twilight limiting magnitude fades the sky in the
+     way the real one does — Venus minutes after sunset, Sirius-class stars
+     near −5° sun, the full mag-3.6 field by about −10°. */
+  const limMag = sun.alt > -1.5 ? -99 : clampN(-3.5 + (-sun.alt - 2) * 0.95, -4, 7);
   const stars = useMemo(() => {
-    if (!isNight) return [];
+    if (limMag < -4) return [];
     return STARS.map(([ra, dec, mag, name]) => {
       const p = raDecToAzEl(ra, dec, T, LAT, LNG);
-      return { az: p.az, alt: p.alt, mag, name, r: clampN(1.65 - 0.3 * mag, 0.35, 2.3), o: clampN(1.05 - 0.18 * mag, 0.25, 1) };
-    }).filter((s) => s.alt > -1);
-  }, [T, LAT, LNG, isNight]);
+      return {
+        az: p.az, alt: p.alt, mag, name,
+        r: clampN(1.65 - 0.3 * mag, 0.35, 2.3),
+        o: clampN(1.05 - 0.18 * mag, 0.25, 1) * clampN((limMag - mag) / 1.2, 0.15, 1),
+      };
+    }).filter((s) => s.alt > -1 && s.mag <= limMag);
+  }, [T, LAT, LNG, limMag]);
   const planets = useMemo(() => planetPositions(T, LAT, LNG).filter((p) => p.alt > -2), [T, LAT, LNG]);
+  const planetsVisible = sun.alt < -1;
   const gpath = (pts) => { let d = "", pen = false; for (const p of pts) { if (p.inFront && p.x > -0.6 && p.x < 1.6 && p.y > -0.6 && p.y < 1.6) { d += (pen ? " L " : " M ") + (p.x * 100).toFixed(2) + " " + (p.y * 100).toFixed(2); pen = true; } else pen = false; } return d; };
   const gridColor = cameraOn ? "rgba(255,255,255,0.30)" : (isNight ? "rgba(150,180,230,0.20)" : "rgba(255,255,255,0.28)");
   const ALTS = [15, 30, 45, 60, 75];
@@ -1886,18 +1895,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   })() : null;
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
-  const starDots = isNight && !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
+  const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
   const starLabels = starDots.filter((p) => p.name && (p.mag <= 1.4 || (fovH < 42 && p.mag <= 2.2)));
-  const planetDots = isNight && !cameraOn ? planets.map((p) => ({ ...p, p: project(p.az, p.alt) })).filter((x) => x.p.inFront && x.p.x > -0.05 && x.p.x < 1.05 && x.p.y > -0.05 && x.p.y < 1.05) : [];
+  const planetDots = planetsVisible && !cameraOn ? planets.map((p) => ({ ...p, p: project(p.az, p.alt) })).filter((x) => x.p.inFront && x.p.x > -0.05 && x.p.x < 1.05 && x.p.y > -0.05 && x.p.y < 1.05) : [];
 
   const bodyPx = vp.w > 0 ? Math.max((vp.w * Math.tan((0.53 * RAD) / 2)) / tanH, 12) : 0;
   const sunProj = project(sun.az, sun.alt);
   const moonProj = project(moon.az, moon.alt);
   const markProjs = (marks || []).map((mk) => ({ ...mk, p: project(mk.az, mk.el) })).filter((mk) => mk.p.inFront && mk.p.x > -0.1 && mk.p.x < 1.1 && mk.p.y > -0.1 && mk.p.y < 1.1);
 
-  const skyBg = isNight
+  const skyBg = sun.alt < -8
     ? "linear-gradient(180deg,#070b16 0%,#0e1424 60%,#18203a 100%)"
-    : "linear-gradient(180deg,#1f64b8 0%,#4f93d6 55%,#bfe2ff 100%)";
+    : sun.alt < -1
+      ? "linear-gradient(180deg,#0a1226 0%,#16224a 55%,#4a3a55 100%)" // twilight
+      : "linear-gradient(180deg,#1f64b8 0%,#4f93d6 55%,#bfe2ff 100%)";
   /* --- the pose IS the state; place-mode gestures mutate it directly --- */
   const poseNow = { az: pAz, el: pEl, roll: pRoll, fov: fovM };
 
@@ -2361,7 +2372,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto", flexWrap: "wrap" }}>
             {sun.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(sun)}>☀ {fmtBody(sun)}</button>}
             {moon.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(moon)}>☾ {fmtBody(moon)} · {Math.round(moon.frac * 100)}%</button>}
-            {isNight && planets.filter((p) => p.alt > 0).map((p) => (
+            {planetsVisible && planets.filter((p) => p.alt > 0).map((p) => (
               <button key={p.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: "#ffe9b0" }} onClick={() => recenter(p)}>{p.sym} {fmtBody(p)}</button>
             ))}
             {hasPos && (
