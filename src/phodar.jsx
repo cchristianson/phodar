@@ -2154,12 +2154,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               const sep = Math.acos(clampN(dot(sight, v.d), -1, 1)) * R2D;
               if (sep > 25) continue;
             }
+            /* densify by lerping in geo space (positions ~10 s apart are locally
+               straight in 3D) — the projected curve then bends with the sky
+               view's own curvature instead of cutting straight chords */
             const segs = []; let seg = [];
-            for (const q of raw) {
-              const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { lat: q[1], lon: q[2], altM: q[3] });
+            const pushPt = (la, lo, alt) => {
+              const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { lat: la, lon: lo, altM: alt });
               const pr = projectD(g.d);
-              if (pr.inFront && pr.x > -0.3 && pr.x < 1.3 && pr.y > -0.3 && pr.y < 1.3) seg.push(`${(pr.x * 100).toFixed(2)},${(pr.y * 100).toFixed(2)}`);
+              if (pr.inFront && pr.x > -0.3 && pr.x < 1.3 && pr.y > -0.3 && pr.y < 1.3) seg.push(`${(pr.x * (vp.w || 1)).toFixed(1)},${(pr.y * (vp.h || 1)).toFixed(1)}`);
               else { if (seg.length > 1) segs.push(seg); seg = []; }
+            };
+            for (let i = 0; i < raw.length; i++) {
+              if (i === 0) { pushPt(raw[0][1], raw[0][2], raw[0][3]); continue; }
+              const a0 = raw[i - 1], a1 = raw[i], K = 5;
+              for (let k = 1; k <= K; k++) {
+                const f = k / K;
+                pushPt(a0[1] + (a1[1] - a0[1]) * f, a0[2] + (a1[2] - a0[2]) * f, a0[3] + (a1[3] - a0[3]) * f);
+              }
             }
             if (seg.length > 1) segs.push(seg);
             segs.forEach((sg, k) => lines.push({ sel, pts: sg.join(" "), key: v.a.hex + "-" + k }));
@@ -2167,11 +2178,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           }
           if (!lines.length) return null;
           return (
-            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
+            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
               {lines.map((l) => (
                 <polyline key={l.key} points={l.pts} fill="none" stroke="var(--track)"
-                  strokeWidth={l.sel ? 1.6 : 1} strokeDasharray={l.sel ? undefined : "2 3.5"}
-                  opacity={l.sel ? 0.85 : 0.32} vectorEffect="non-scaling-stroke" />
+                  strokeWidth={l.sel ? 2.2 : 1.6} strokeLinecap="round"
+                  strokeDasharray={l.sel ? "0.1 6" : "0.1 9"}
+                  opacity={l.sel ? 0.9 : 0.4} />
               ))}
             </svg>
           );
@@ -2382,12 +2394,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         </button>
       </div>
 
+      {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
+      {pMode !== "place" && (
+        <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(f - 12, 10, 90))}>+</button>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(f + 12, 10, 90))}>−</button>
+        </div>
+      )}
+
       {/* bottom controls */}
       <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.92) 55%, rgba(7,11,20,0))", zIndex: 210 }}>
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
         {source?.mediaUrl && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
-            <button className={"btn sm" + (photoOn ? " amber" : "")} onClick={() => setPhotoOn((v) => !v)}>🖼 {photoOn ? "Photo on" : "Show photo"}</button>
             {photoOn && (
               <>
                 <button className={"btn sm" + (pMode === "place" ? " amber" : "")}
@@ -2424,23 +2443,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <button className={"btn sm" + (cameraOn ? " teal" : "")} onClick={() => (cameraOn ? disableCamera() : enableCamera())}>{cameraOn ? "◉ Camera on" : "📷 Camera AR"}</button>
             </>
           )}
-          <button className="btn sm" onClick={() => setFov((f) => clampN(f + 12, 10, 90))}>− zoom</button>
-          <button className="btn sm" onClick={() => setFov((f) => clampN(f - 12, 10, 90))}>+ zoom</button>
         </div>
         )}
         {wizard && pMode !== "place" && (
           <div style={{ marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
               {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
-                <button className="btn amber" style={{ flex: 1, padding: "11px 10px" }} onClick={point1FromMarks}>⌖ Start path at the marked object</button>
+                <button className="btn sm amber" onClick={point1FromMarks}>⌖ Start at marked object</button>
               )}
-              <button className={"btn " + (sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? "sm" : "amber")}
-                style={sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? { alignSelf: "stretch" } : { flex: 1, padding: "11px 10px" }}
-                onClick={() => dropPoint(viewAz, viewAlt)}>
-                ⊕ {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 ? "at crosshair" : `Drop point ${sortedTrack.length + 1} at crosshair`}
-              </button>
-              {sortedTrack.length > 0 && <button className="btn sm" style={{ alignSelf: "stretch" }} onClick={undoPoint}>↩</button>}
-              <button className={"btn sm" + (cmpOn ? " teal" : "")} style={{ alignSelf: "stretch" }} onClick={() => setCmpOn((v) => !v)}>⚖</button>
+              <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
+              {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
+              <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => setCmpOn((v) => !v)}>⚖</button>
             </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
@@ -2531,7 +2544,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {pMode === "place" && photoOn
             ? "The photo is pinned, undistorted, center-screen — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Line the photo's horizon onto the horizon line, then ✓ Done — nothing will shift."
             : wizard
-              ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust the time between points."
+              ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
               : motionOn
                 ? "Point the phone exactly where the object was, then capture."
                 : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}

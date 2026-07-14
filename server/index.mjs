@@ -157,6 +157,12 @@ async function refineViaTrace(day, hex, tMs) {
         lastT = p[0];
         trail.push([+(p[0] - t0).toFixed(1), +p[1].toFixed(5), +p[2].toFixed(5), Math.round(p[3] * 0.3048)]);
       }
+      /* guarantee a sample at the exact sighting instant — the chip is drawn
+         there, and without it the chords visibly miss the chip */
+      if (trail.length && typeof st.altFt === "number" && !trail.some((q) => Math.abs(q[0]) < 2)) {
+        trail.push([0, +st.lat.toFixed(5), +st.lon.toFixed(5), Math.round(st.altFt * 0.3048)]);
+        trail.sort((x, y) => x[0] - y[0]);
+      }
       return {
         hex, reg: j.r || null, t: j.t || null, desc: j.desc || null, dbFlags: j.dbFlags,
         callsign, trail: trail.length > 1 ? trail : null,
