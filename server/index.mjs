@@ -143,9 +143,23 @@ async function refineViaTrace(day, hex, tMs) {
       if (st.dt > 300) return null; // trace has a >5 min hole at t — don't fake it
       let callsign = null;
       for (let i = lo; i >= 0 && i > lo - 40; i--) { const ao = tr[i][8]; if (ao && ao.flight) { callsign = ao.flight.trim(); break; } }
+      /* trail: the aircraft's path ±4 min around t, thinned to ≥10 s spacing —
+         the sky view draws these as faint sky-tracks near the sight-line */
+      const trail = [];
+      const TRAIL_S = 240, MIN_GAP = 10;
+      let lastT = -1e9;
+      for (let i = 0; i < tr.length; i++) {
+        const p = tr[i];
+        if (p[0] < t0 - TRAIL_S) continue;
+        if (p[0] > t0 + TRAIL_S) break;
+        if (p[0] - lastT < MIN_GAP) continue;
+        if (typeof p[3] !== "number") continue; // skip ground/holes
+        lastT = p[0];
+        trail.push([+(p[0] - t0).toFixed(1), +p[1].toFixed(5), +p[2].toFixed(5), Math.round(p[3] * 0.3048)]);
+      }
       return {
         hex, reg: j.r || null, t: j.t || null, desc: j.desc || null, dbFlags: j.dbFlags,
-        callsign,
+        callsign, trail: trail.length > 1 ? trail : null,
         lat: st.lat, lon: st.lon,
         altM: typeof st.altFt === "number" ? st.altFt * FT : (st.altFt === "ground" ? 0 : null),
         ground: st.altFt === "ground",
@@ -218,6 +232,7 @@ async function apiHist(q, res) {
   const ac = refined.filter((a) => a && !a.ground).map((a) => ({
     hex: a.hex, flight: a.callsign, reg: a.reg, t: a.t, desc: a.desc, category: null,
     lat: a.lat, lon: a.lon, altM: a.altM, gs: a.gs, track: a.track, seen: a.dt, ground: false, coarse: !!a.coarse,
+    trail: a.trail || null, // [[dtSec, lat, lon, altM], ...] ±4 min around t
   }));
   json(res, 200, { ac, src, sampleT: t, nm, win: winMin, total: all.length });
 }

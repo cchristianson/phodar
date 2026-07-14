@@ -1495,6 +1495,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [acOn, setAcOn] = useState(true);
   const [acData, setAcData] = useState(null); // {ac, fetchedAt, src, hist} | {err}
   const acSnapRef = useRef(null);
+  const liveTrailRef = useRef(new Map()); // hex → [[ms, lat, lon, altM], ...] built from the 20 s polls
   const hasPos = isNum(lat) && isNum(lng);
   const wantHist = Math.abs(Date.now() - T) > 900000;
   useEffect(() => {
@@ -1503,10 +1504,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const keep = (ac, apiSrc, hist) => {
       const air = ac.filter((a) => !a.ground && a.altM != null);
       setAcData({ ac: air, fetchedAt: Date.now(), src: apiSrc, hist });
+      if (!hist) {
+        const m = liveTrailRef.current, now = Date.now();
+        for (const a of air) {
+          const arr = m.get(a.hex) || [];
+          if (!arr.length || now - arr[arr.length - 1][0] > 8000) arr.push([now, a.lat, a.lon, a.altM]);
+          while (arr.length > 32) arr.shift();
+          m.set(a.hex, arr);
+        }
+      }
       const trimmed = air
         .map((a) => ({ ...a, _r: acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, a).rangeM }))
         .sort((x, y) => x._r - y._r).slice(0, 40)
-        .map(({ _r, ...a }) => a);
+        .map(({ _r, trail, ...a }) => a); // trails stay out of the stored snapshot
       acSnapRef.current = { fetchedAt: Date.now(), src: apiSrc, nm: 60, ac: trimmed, hist, t: hist ? T : Date.now() };
     };
     const pull = async () => {
@@ -2128,6 +2138,44 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <MoonDiscA width={bodyPx} fraction={moon.frac} />
           </div>
         )}
+
+        {/* faint sky-tracks: each aircraft's path ±4 min (archive) or from the
+           live polls — drawn only near the sight-line, or when selected */}
+        {(() => {
+          if (!acView.length) return null;
+          const sight = isNum(source?.A?.az) && isNum(source?.A?.el) ? dirFromAzEl(+source.A.az, +source.A.el) : null;
+          const lines = [];
+          for (const v of acView) {
+            const sel = v.a.hex === selHex;
+            const raw = acData?.hist ? v.a.trail : liveTrailRef.current.get(v.a.hex);
+            if (!raw || raw.length < 2) continue;
+            if (!sel) {
+              if (!sight) continue;
+              const sep = Math.acos(clampN(dot(sight, v.d), -1, 1)) * R2D;
+              if (sep > 25) continue;
+            }
+            const segs = []; let seg = [];
+            for (const q of raw) {
+              const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { lat: q[1], lon: q[2], altM: q[3] });
+              const pr = projectD(g.d);
+              if (pr.inFront && pr.x > -0.3 && pr.x < 1.3 && pr.y > -0.3 && pr.y < 1.3) seg.push(`${(pr.x * 100).toFixed(2)},${(pr.y * 100).toFixed(2)}`);
+              else { if (seg.length > 1) segs.push(seg); seg = []; }
+            }
+            if (seg.length > 1) segs.push(seg);
+            segs.forEach((sg, k) => lines.push({ sel, pts: sg.join(" "), key: v.a.hex + "-" + k }));
+            if (lines.length > 12) break;
+          }
+          if (!lines.length) return null;
+          return (
+            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
+              {lines.map((l) => (
+                <polyline key={l.key} points={l.pts} fill="none" stroke="var(--track)"
+                  strokeWidth={l.sel ? 1.6 : 1} strokeDasharray={l.sel ? undefined : "2 3.5"}
+                  opacity={l.sel ? 0.85 : 0.32} vectorEffect="non-scaling-stroke" />
+              ))}
+            </svg>
+          );
+        })()}
 
         {/* live air traffic at true az/el (ADS-B) */}
         {acView.map((v) => {

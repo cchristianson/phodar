@@ -206,6 +206,11 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   (the most-reported "UFO" there is).
 - **CelesTrak TLEs + satellite.js** (no key, client-side): ISS/Starlink/sat
   check against the sight-line at the sighting time — the night ADS-B.
+  Reuse the aircraft SKY-TRACK pattern when built: `/api/hist` returns
+  `trail` ([[dtSec, lat, lon, altM], …] ±4 min from the full-day trace);
+  the dome draws faint dashed polylines for craft within 25° of the
+  sight-line (bright/solid when selected), live mode accumulates its own
+  trail from the 20 s polls. Satellites should emit the same trail shape.
 - **Open-Meteo** (no key, historical): winds aloft at the fix altitude →
   balloon signature test (track speed/heading ≈ wind); cloud-base bounds.
 - **NOAA WMM** (client-side JS): magnetic→true declination when azRef="M".
