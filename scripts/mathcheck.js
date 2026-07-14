@@ -3,6 +3,7 @@
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
 import { intersectLines } from "../src/math/triangulate.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
+import { trackDirections } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { planetPositions } from "../src/math/planets.js";
@@ -83,6 +84,35 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // ridge should span roughly the cone's angular width (±~16°), gone by ±25°
   if (skylineElAt(els, 90 + 25) < 0.3) console.log("  ok   cone absent 25° off-bearing");
   else { fails++; console.error("  FAIL cone leaked far off-bearing"); }
+}
+
+// --- trajectory corner rounding: an arc beats a hard 90° corner ---
+{
+  const mk = (r) => ({ track: [{ t: 0, az: 0, el: 40 }, { t: 5, az: 45, el: 40, r }, { t: 10, az: 45, el: 5 }], A: {}, fovH: null });
+  const hard = trackDirections(mk(0)), round = trackDirections(mk(0.4));
+  if (hard.length === 3) console.log("  ok   r=0 keeps the hard corner (3 samples)");
+  else { fails++; console.error("  FAIL hard corner sample count:", hard.length); }
+  if (round.length > 6) console.log(`  ok   r=0.4 inserts arc samples (${round.length})`);
+  else { fails++; console.error("  FAIL arc samples:", round.length); }
+  if (round.every((p, i) => i === 0 || p.ct > round[i - 1].ct)) console.log("  ok   arc times strictly increasing");
+  else { fails++; console.error("  FAIL arc times not monotonic"); }
+  // geometric smoothing: the max single-step bend of the path must shrink.
+  // (Kinematics on the COARSE hard corner under-reads the turn — the
+  // instantaneous corner hides between samples; that's why arcs exist.)
+  const maxBend = (dirs) => {
+    let m = 0;
+    for (let i = 1; i < dirs.length - 1; i++) {
+      const u = sub(dirs[i].d, dirs[i - 1].d), v = sub(dirs[i + 1].d, dirs[i].d);
+      const du = Math.hypot(...u), dv = Math.hypot(...v);
+      if (du < 1e-9 || dv < 1e-9) continue;
+      const c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (du * dv);
+      m = Math.max(m, Math.acos(Math.min(1, Math.max(-1, c))) * 180 / Math.PI);
+    }
+    return m;
+  };
+  const bH = maxBend(hard), bR = maxBend(round);
+  if (bR < bH * 0.45) console.log(`  ok   arc max bend ${bR.toFixed(1)}° ≪ hard corner ${bH.toFixed(1)}°`);
+  else { fails++; console.error(`  FAIL rounding didn't soften the corner bend: ${bR} vs ${bH}`); }
 }
 
 // --- planets vs JPL Horizons ground truth (fetched 2026-07-14) ---

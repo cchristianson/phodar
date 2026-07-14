@@ -1390,6 +1390,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [phOp, setPhOp] = useState(0.85);
   const [flash, setFlash] = useState("");
   const [selSeg, setSelSeg] = useState(null);   // Δt chip being edited
+  const [selPt, setSelPt] = useState(null);     // trajectory point whose turn radius is being edited
   const [cmpOn, setCmpOn] = useState(false);    // compare panel
   const [cmpT, setCmpT] = useState(0.42);       // assumed-distance slider (log 0..1)
   const [ghostIdx, setGhostIdx] = useState(3);
@@ -1970,10 +1971,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (!update || !source) return;
     const dt = lastDtRef.current || 2;
     const tN = sortedTrack.length ? +(sortedTrack[sortedTrack.length - 1].t + dt).toFixed(2) : 0;
-    const track = [...sortedTrack, { t: tN, az: +az.toFixed(2), el: +el.toFixed(2) }];
+    /* new points default to a realistic arc (r 0.3) — a hard corner is a
+       deliberate claim the witness makes by selecting the point */
+    const track = [...sortedTrack, { t: tN, az: +az.toFixed(2), el: +el.toFixed(2), r: 0.3 }];
     update(syncAB(track));
     /* timing is freshest right after the drop — open the editor for it */
     setSelSeg(track.length >= 2 ? track.length - 1 : null);
+    setSelPt(null);
     setFlash(track.length === 1 ? "Point 1 set — pan to where it moved, drop point 2" : `Point ${track.length} ⊕ — set how long it took below`);
   };
   const point1FromMarks = () => {
@@ -1981,7 +1985,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const ae = dirToAzEl(pixDir((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2));
     dropPoint(ae.az, ae.el);
   };
-  const undoPoint = () => { if (!sortedTrack.length) return; update(syncAB(sortedTrack.slice(0, -1))); setSelSeg(null); };
+  const undoPoint = () => { if (!sortedTrack.length) return; update(syncAB(sortedTrack.slice(0, -1))); setSelSeg(null); setSelPt(null); };
   const setSegDt = (i, nd) => {
     const tr = sortedTrack.map((p) => ({ ...p }));
     const shift = nd - (tr[i].t - tr[i - 1].t);
@@ -2215,12 +2219,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <polyline points={poly.map((p) => `${p[0] * 100},${p[1] * 100}`).join(" ")} fill="none" stroke="var(--track)" strokeWidth="1.6" strokeDasharray="2 2.5" vectorEffect="non-scaling-stroke" opacity="0.9" />
                 </svg>
               )}
-              {ps.map((p, i) => p && (
-                <div key={"tj" + i} style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center" }}>
-                  <div style={{ width: 11, height: 11, borderRadius: "50%", border: "2px solid var(--track)", background: "rgba(7,11,20,.55)", margin: "0 auto" }} />
-                  <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{i + 1}</div>
-                </div>
-              ))}
+              {(() => {
+                let n = -1;
+                return ps.map((p, i) => {
+                  if (dirs[i].virt) return null;
+                  n++;
+                  if (!p) return null;
+                  const idx = n, sel = selPt === idx;
+                  const interior = wizard && idx > 0 && idx < (source?.track || []).length - 1;
+                  const col = sel ? "var(--amber)" : "var(--track)";
+                  return (
+                    <div key={"tj" + i}
+                      onPointerDown={interior ? (e) => e.stopPropagation() : undefined}
+                      onClick={interior ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); } : undefined}
+                      style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: interior ? "auto" : "none", cursor: interior ? "pointer" : "default", textAlign: "center", padding: 6 }}>
+                      <div style={{ width: 11, height: 11, borderRadius: "50%", border: `2px solid ${col}`, background: "rgba(7,11,20,.55)", margin: "0 auto" }} />
+                      <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
+                    </div>
+                  );
+                });
+              })()}
             </>
           );
         })()}
@@ -2384,7 +2402,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const on = selSeg === i + 1;
                   return (
                     <button key={i} className="btn sm" style={{ fontFamily: "var(--mono)", ...(on ? { borderColor: "var(--track)", color: "var(--track)" } : {}) }}
-                      onClick={() => setSelSeg((s) => (s === i + 1 ? null : i + 1))}>+{dt}s</button>
+                      onClick={() => { setSelSeg((s) => (s === i + 1 ? null : i + 1)); setSelPt(null); }}>+{dt}s</button>
                   );
                 })}
                 <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
@@ -2410,6 +2428,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <span style={{ fontFamily: "var(--mono)", fontSize: 15, fontWeight: 700, color: "var(--amber)", minWidth: 56, textAlign: "center" }}>{dt.toFixed(1)} s</span>
                     <button className="btn sm" onClick={() => setSegDt(selSeg, +(dt + 0.1).toFixed(1))}>+0.1</button>
                     <button className="btn sm teal" style={{ marginLeft: "auto" }} onClick={() => setSelSeg(null)}>✓ Done</button>
+                  </div>
+                </div>
+              );
+            })()}
+            {selPt != null && sortedTrack[selPt] && (() => {
+              const r = +(sortedTrack[selPt].r ?? 0);
+              const setR = (v) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, r: v } : p)) });
+              return (
+                <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 6 }}>
+                    Turn at point {selPt + 1} — how tight was it?
+                  </div>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                    {[["Hard corner", 0], ["Tight", 0.15], ["Normal", 0.3], ["Wide", 0.45]].map(([l, v]) => (
+                      <button key={l} className={"btn sm" + (Math.abs(r - v) < 0.03 ? " amber" : "")} onClick={() => setR(v)}>{l}</button>
+                    ))}
+                    <button className="btn sm teal" style={{ marginLeft: "auto" }} onClick={() => setSelPt(null)}>✓ Done</button>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 6, lineHeight: 1.5 }}>
+                    Real aircraft and birds fly arcs — a hard corner means an instantaneous direction change, which is itself an extraordinary claim. The arc feeds the g-load math.
                   </div>
                 </div>
               );

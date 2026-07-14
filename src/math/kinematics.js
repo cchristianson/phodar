@@ -12,6 +12,46 @@ import { isNum } from "./format.js";
 import { pixelDirFromAnchor } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
 
+/* spherical linear interpolation between unit vectors */
+function slerp(a, b, f) {
+  const c = clampN(dot(a, b), -1, 1);
+  const th = Math.acos(c);
+  if (th < 1e-6) return a;
+  const sA = Math.sin((1 - f) * th) / Math.sin(th), sB = Math.sin(f * th) / Math.sin(th);
+  return [a[0] * sA + b[0] * sB, a[1] * sA + b[1] * sB, a[2] * sA + b[2] * sB];
+}
+
+/* Corner rounding: a real object flies an arc, not a vertex — piecewise-
+   linear witness paths imply infinite instantaneous turn. Each interior
+   point may carry r (0..0.49): the fraction of each adjacent segment (in
+   time and angle) consumed by a quadratic arc through the corner, sampled
+   as `virt` points on the sphere. r=0 (or absent) keeps the hard corner —
+   which is then a deliberate claim, not a drawing artifact. */
+function roundCorners(pts) {
+  if (pts.length < 3 || !pts.some((p, i) => i > 0 && i < pts.length - 1 && p.r > 0)) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const f = clampN(+pts[i].r || 0, 0, 0.49);
+    if (!(f > 0)) { out.push(pts[i]); continue; }
+    const prev = pts[i - 1], v = pts[i], next = pts[i + 1];
+    const dtP = v.ct - prev.ct, dtN = next.ct - v.ct;
+    if (dtP <= 0 || dtN <= 0) { out.push(pts[i]); continue; }
+    const P0 = slerp(v.d, prev.d, f), P1 = slerp(v.d, next.d, f);
+    const te = v.ct - f * dtP, tx = v.ct + f * dtN;
+    const N = 6;
+    for (let k = 0; k <= N; k++) {
+      const t = k / N;
+      const d = unit(slerp(slerp(P0, v.d, t), slerp(v.d, P1, t), t));
+      const ae = dirToAzEl(d);
+      out.push({ ct: te + (tx - te) * t, d, az: ae.az, el: ae.el, virt: k !== 0 || undefined });
+    }
+    /* mark the arc's start as the display anchor for point i */
+    out[out.length - 1 - N].virt = undefined; out[out.length - 1 - N].orig = i;
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 /* Convert a source's track into [{ct, d}] — clock time + unit direction.
    Pixel points are anchored to Moment A: the FIRST pixel track point is
    defined to lie along A's az/el; later points are pixel offsets from it.
@@ -37,9 +77,9 @@ export function trackDirections(s) {
     } else continue;
     const ct = (isNum(s.A?.t) && s.A?.videoTime != null) ? (+s.A.t + (p.t - s.A.videoTime)) : p.t;
     const ae = dirToAzEl(d);
-    out.push({ ct, d, az: ae.az, el: ae.el });
+    out.push({ ct, d, az: ae.az, el: ae.el, r: p.r });
   }
-  return out.length >= 2 ? out : null;
+  return out.length >= 2 ? roundCorners(out) : null;
 }
 
 /* 3D kinematics from a time-stamped position series.
