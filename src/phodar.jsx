@@ -1398,13 +1398,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [pEl, setPEl] = useState(30);
   const [pRoll, setPRoll] = useState(0);
   const [fovM, setFovM] = useState(68);      // photo's own FOV (calibrated by pinch)
-  const [phOp, setPhOp] = useState(0.85);
+  const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
   const [selSeg, setSelSeg] = useState(null);   // Δt chip being edited
   const [selPt, setSelPt] = useState(null);     // trajectory point whose turn radius is being edited
   const [cmpOn, setCmpOn] = useState(false);    // compare panel
   const [cmpT, setCmpT] = useState(0.42);       // assumed-distance slider (log 0..1)
   const [ghostIdx, setGhostIdx] = useState(3);
+  const [cmpPos, setCmpPos] = useState(null);   // ghost's own sky anchor {az, el} — drag it anywhere
+  const cmpDragRef = useRef(null);
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -1923,7 +1925,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       dst.push(row);
     }
-    ctx.globalAlpha = phOp;
+    ctx.globalAlpha = PH_OP;
     const tri = (s0, s1, s2, d0, d1, d2) => {
       const cx = (d0[0] + d1[0] + d2[0]) / 3, cy = (d0[1] + d1[1] + d2[1]) / 3;
       const ex = (p) => { const dx = p[0] - cx, dy = p[1] - cy, L = Math.hypot(dx, dy) || 1; return [p[0] + (dx / L) * 0.6, p[1] + (dy / L) * 0.6]; };
@@ -2091,9 +2093,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {source.mediaKind === "video" ? (
               <video ref={aimVidRef} src={source.mediaUrl} muted playsInline preload="auto"
                 onLoadedMetadata={(e) => setVidDur2(e.target.duration || 0)}
-                style={{ width: "100%", display: "block", opacity: phOp }} />
+                style={{ width: "100%", display: "block", opacity: PH_OP }} />
             ) : (
-              <img src={source.mediaUrl} alt="" style={{ width: "100%", display: "block", opacity: phOp }} />
+              <img src={source.mediaUrl} alt="" style={{ width: "100%", display: "block", opacity: PH_OP }} />
             )}
             {source?.natW && (
               <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
@@ -2314,24 +2316,37 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })()}
 
-        {/* compare ghost — a reference object drawn at the assumed distance */}
-        {wizard && cmpOn && objAngW != null && (() => {
-          const dirs = trackDirections(source);
-          const aDir = dirs && dirs.length ? dirs[0].d : (photo ? photo.f : null);
-          if (!aDir) return null;
-          const pr = projectD(aDir);
+        {/* compare ghost — a reference object at an assumed distance, anchored
+           to its OWN sky position: drag it anywhere (next to the object, onto
+           the photo), then size↔distance it with the slider below */}
+        {wizard && cmpOn && cmpPos && (() => {
+          const pr = projectD(dirFromAzEl(cmpPos.az, cmpPos.el));
           if (!pr.inFront) return null;
           const D = Math.pow(10, Math.log10(50) + cmpT * (Math.log10(50000) - Math.log10(50)));
           const g = GHOSTW[ghostIdx];
           const gAng = 2 * Math.atan(g.m / (2 * D)) * R2D;
-          const fpxS = (vp.w || 1) / (2 * tanH);
-          const objPx = objAngW * D2R * fpxS, gPx = Math.max(3, gAng * D2R * fpxS);
-          const x = pr.x * (vp.w || 1) + objPx * 0.8 + gPx * 0.7 + 14;
-          const y = pr.y * (vp.h || 1);
+          const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
+          const gPx = Math.max(4, gAng * D2R * fpxS);
+          const moveTo = (cx, cy) => {
+            const d = unproject(cx / (window.innerWidth || 1), cy / (window.innerHeight || 1));
+            const ae = dirToAzEl(d);
+            setCmpPos({ az: ae.az, el: clampN(ae.el, -15, 89) });
+          };
           return (
-            <div style={{ position: "absolute", left: x, top: y, transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.9 }}>
-              <div style={{ display: "inline-block" }}><GhostSil shape={g.shape} w={gPx} color="#9fb4d8" /></div>
-              <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2 }}>{g.name} @ {fmtLenShort(D)}</div>
+            <div
+              onPointerDown={(e) => {
+                e.stopPropagation(); e.preventDefault();
+                try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
+                cmpDragRef.current = e.pointerId;
+              }}
+              onPointerMove={(e) => { if (cmpDragRef.current === e.pointerId) moveTo(e.clientX, e.clientY); }}
+              onPointerUp={(e) => { cmpDragRef.current = null; }}
+              onPointerCancel={() => { cmpDragRef.current = null; }}
+              style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "auto", cursor: "grab", touchAction: "none", textAlign: "center", opacity: 0.92, padding: 10 }}>
+              <div style={{ display: "inline-block", pointerEvents: "none" }}><GhostSil shape={g.shape} w={gPx} color="#9fb4d8" /></div>
+              <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2, pointerEvents: "none" }}>
+                ⇕ {g.name} ({g.m} m) @ {fmtLenShort(D)}
+              </div>
             </div>
           );
         })()}
@@ -2430,16 +2445,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm" onClick={() => { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }}>Reset</button>
                   </>
                 )}
-                <span title="Photo opacity — fade the photo to line its ridges/stars up with the grid behind it"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 11, opacity: 0.8 }}>🖼</span>
-                  <input type="range" min={0.25} max={1} step={0.05} value={phOp}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                    onChange={(e) => setPhOp(+e.target.value)}
-                    style={{ width: 82, touchAction: "auto", pointerEvents: "auto" }} />
-                  <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "var(--dim)", minWidth: 26 }}>{Math.round(phOp * 100)}%</span>
-                </span>
                 {source.mediaKind === "video" && vidDur2 > 0 && (
                   <input type="range" min={0} max={vidDur2} step={0.033} value={vidT2}
                     onChange={(e) => { const t = +e.target.value; setVidT2(t); if (aimVidRef.current) aimVidRef.current.currentTime = t; }}
@@ -2472,7 +2477,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               )}
               <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
               {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-              <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => setCmpOn((v) => !v)}>⚖</button>
+              <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => {
+                setCmpOn((v) => !v);
+                if (!cmpOn) setCmpPos({ az: viewAz + 5, el: clampN(viewAlt, 0, 80) });
+              }}>⚖</button>
             </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
@@ -2548,22 +2556,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => setGhostIdx(i)}>{g.name}</button>
                   ))}
                 </div>
-                {objAngW != null ? (
-                  <>
-                    <input type="range" min={0} max={1} step={0.005} value={cmpT} onChange={(e) => setCmpT(+e.target.value)} style={{ width: "100%", marginTop: 6 }} />
-                    {(() => {
-                      const D = Math.pow(10, Math.log10(50) + cmpT * (Math.log10(50000) - Math.log10(50)));
-                      const size = 2 * D * Math.tan(objAngW * D2R / 2);
-                      return (
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)" }}>
-                          if it was {fmtLenShort(D)} away → {fmtLenShort(size)} across ({Math.round(size * 3.28084)} ft)
-                        </div>
-                      );
-                    })()}
-                  </>
-                ) : (
-                  <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>Mark the object's two edges in step 1 to unlock size ↔ distance.</div>
-                )}
+                <input type="range" min={0} max={1} step={0.005} value={cmpT}
+                  onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                  onChange={(e) => setCmpT(+e.target.value)}
+                  style={{ width: "100%", marginTop: 6, touchAction: "auto", pointerEvents: "auto" }} />
+                {(() => {
+                  const D = Math.pow(10, Math.log10(50) + cmpT * (Math.log10(50000) - Math.log10(50)));
+                  const g = GHOSTW[ghostIdx];
+                  return (
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)" }}>
+                      {g.name} at {fmtLenShort(D)} → looks {(2 * Math.atan(g.m / (2 * D)) * R2D).toFixed(2)}°
+                      {objAngW != null && <> · your object measured {objAngW.toFixed(2)}° (= {fmtLenShort(2 * D * Math.tan(objAngW * D2R / 2))} at that range)</>}
+                    </div>
+                  );
+                })()}
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Drag the ghost anywhere on the sky · slider sets its assumed distance</div>
               </div>
             )}
           </div>
