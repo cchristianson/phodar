@@ -7,6 +7,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projec
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac } from "./math/astro.js";
+import { fetchAircraft, rankCandidates, radiusNmForSources } from "./checks/adsb.js";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -2749,6 +2750,100 @@ function niceStep(x) {
 }
 
 /* ============================================================
+   ADS-B CHECK — rank live aircraft against the witness sight-lines.
+   Live only (historical replay is on the roadmap), so it's most
+   meaningful right after a sighting; the time-gap warning is honest
+   about that.
+   ============================================================ */
+function AdsbCheck({ sources }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [data, setData] = useState(null);
+  const valid = sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el));
+  if (!valid.length) return null;
+  const whenMs = +valid[0].whenMs || Date.now();
+  const ageMin = Math.abs(Date.now() - whenMs) / 60000;
+
+  const run = async () => {
+    setBusy(true); setErr(""); setData(null);
+    try {
+      const nm = radiusNmForSources(valid);
+      const { ac, source } = await fetchAircraft(+valid[0].lat, +valid[0].lon, nm);
+      const cands = rankCandidates(valid, ac) || [];
+      setData({ cands, source, nm, fetchedAt: Date.now(), total: ac.length });
+    } catch (e) {
+      setErr(`Couldn't reach an ADS-B source (${e.message || e}). Check the connection and try again.`);
+    }
+    setBusy(false);
+  };
+
+  const measAng = (s) =>
+    angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ??
+    (isNum(s.A?.angManual) ? +s.A.angManual : null);
+
+  return (
+    <Section title="✈ Aircraft check (ADS-B)" collapsible>
+      <div style={{ fontSize: 12, color: "var(--dim)", lineHeight: 1.5 }}>
+        Queries live air traffic around the observers and ranks every aircraft by how far
+        it sits off each witness's sight-line. Type → wingspan gives an absolute size check.
+      </div>
+      {ageMin > 15 && (
+        <div className="warn">
+          ⚠ Live check only: this shows aircraft in the air <b>now</b>, but the sighting time is{" "}
+          {ageMin > 2880 ? `${Math.round(ageMin / 1440)} days` : ageMin > 120 ? `${Math.round(ageMin / 60)} h` : `${Math.round(ageMin)} min`} away.
+          A match here means little unless you're checking right after the sighting. Historical replay is planned.
+        </div>
+      )}
+      <button className="btn teal" style={{ width: "100%", marginTop: 10 }} onClick={run} disabled={busy}>
+        {busy ? "Querying live traffic…" : "🛰 Check live aircraft now"}
+      </button>
+      {err && <div className="warn">{err}</div>}
+      {data && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
+            {data.total} aircraft within {data.nm} nm · {data.source} · {new Date(data.fetchedAt).toLocaleTimeString()}
+          </div>
+          {data.cands.length === 0 && (
+            <div className="ok" style={{ marginTop: 8 }}>
+              No transponder-equipped aircraft in range right now. (Some military and older light
+              aircraft carry no ADS-B — absence here rules out airliners, not everything.)
+            </div>
+          )}
+          {data.cands.slice(0, 8).map((c) => {
+            const on = c.sepMax < 2.5, near = c.sepMax < 8;
+            return (
+              <div key={c.hex} style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ color: "var(--ink)", fontWeight: 700 }}>
+                    {c.flight || c.reg || c.hex}{c.t ? ` · ${c.t}` : ""}{c.span != null ? ` · ${c.span.toFixed(0)} m span` : ""}
+                  </span>
+                  <span style={{ color: on ? "var(--teal)" : near ? "var(--amber)" : "var(--dim)", fontWeight: 700 }}>
+                    {on ? "◉ ON the sight-line" : near ? "◎ near" : `${c.sepMax.toFixed(1)}° off`}
+                  </span>
+                </div>
+                {c.per.map((p, i) => {
+                  const m = measAng(valid[i]);
+                  return (
+                    <div key={i} style={{ color: "var(--dim)", marginTop: 2 }}>
+                      {valid.length > 1 ? `${p.name}: ` : ""}{p.sep.toFixed(1)}° off · seen at {p.az.toFixed(0)}°/{p.el.toFixed(0)}° (witness {(+valid[i].A.az).toFixed(0)}°/{(+valid[i].A.el).toFixed(0)}°) · {fmtLenShort(p.rangeM)}
+                      {p.predAng != null && <> · would appear <span style={{ color: "var(--teal)" }}>{p.predAng.toFixed(2)}°</span>{m != null && <> vs measured <span style={{ color: "var(--amber)" }}>{m.toFixed(2)}°</span></>}</>}
+                    </div>
+                  );
+                })}
+                <div style={{ color: "var(--dim)", marginTop: 2 }}>
+                  {c.altM != null ? `FL ${(c.altM / FT_M / 100).toFixed(0)} · ` : ""}{c.gs != null ? `${(c.gs * 2.23694).toFixed(0)} mph` : ""}{c.track != null ? ` · trk ${c.track.toFixed(0)}°` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+}
+const FT_M = 0.3048;
+
+/* ============================================================
    RESULTS PANEL
    ============================================================ */
 function ResultsPanel({ sources, est, setEst, loadDemo }) {
@@ -2929,6 +3024,8 @@ function ResultsPanel({ sources, est, setEst, loadDemo }) {
       {!(trk.stereo && trk.stereo.k) && trk.solo.length > 0 && (
         <SoloTrackSection solo={trk.solo} t={soloT} setT={setSoloT} />
       )}
+
+      <AdsbCheck sources={sources} />
 
       <Section title="Your gut estimate (for comparison only)" collapsible defaultOpen={false}>
         <div className="grid3">

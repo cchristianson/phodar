@@ -1,7 +1,8 @@
 // Exercises the REAL math core (src/math/*) — not a copy. A regression in
 // triangulation, geodesy, or angular sizing fails `npm test` here.
-import { D2R, enuFromGeo, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
+import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
 import { intersectLines } from "../src/math/triangulate.js";
+import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -38,6 +39,26 @@ const B = intersectLines([
 ]);
 approx(B.rmsMiss, 0, 1, "Fix B rms miss");
 approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
+
+// --- ADS-B ranking: an aircraft planted ON the sight-line must rank ~0° sep ---
+{
+  const az = 18.43, el = 32.31, rng = 6000;
+  const d = dirFromAzEl(az, el);
+  // curvature correction in acAzElRange subtracts d²(1-k)/2R from z — pre-add it
+  const dg = Math.hypot(d[0] * rng, d[1] * rng);
+  const P = [d[0] * rng, d[1] * rng, d[2] * rng + (dg * dg * (1 - 0.13)) / (2 * RE)];
+  const geo = geoFromEnu(P, { lat: 42.16380, lon: -123.64800, alt: 0 });
+  const src = { name: "obs", lat: 42.16380, lon: -123.64800, alt: 0, A: { az, el } };
+  const onLine = { hex: "aaaaaa", flight: "TEST1", t: "B738", lat: geo.lat, lon: geo.lon, altM: geo.alt };
+  const offLine = { hex: "bbbbbb", flight: "TEST2", t: "A320", lat: geo.lat + 0.3, lon: geo.lon, altM: geo.alt };
+  const ranked = rankCandidates([src], [offLine, onLine]);
+  approx(ranked[0].sepMax, 0, 0.05, "on-line aircraft sep ~0°");
+  if (ranked[0].hex !== "aaaaaa") { fails++; console.error("  FAIL ranking order: on-line aircraft should rank first"); }
+  else console.log("  ok   ranking order: on-line aircraft first");
+  approx(ranked[0].predAng, 2 * Math.atan(35.8 / 2 / rng) * R2D, 0.02, "predicted angular size (B738 @6km)");
+  approx(spanForAircraft("B738").span, 35.8, 0, "wingspan lookup B738");
+  approx(spanForAircraft(null, "A5").span, 62, 0, "category fallback A5");
+}
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");

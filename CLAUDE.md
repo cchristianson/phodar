@@ -100,14 +100,21 @@ comments, in this order:
    fixed DOM overlay, `moveend` commits the center via `onChange`, and a
    `progRef` guard + 2e-6° epsilon stop commit echoes from looping. Markers
    are `divIcon`s (no PNG assets — they break under bundlers).
-3. **ADS-B check** — the killer feature: given observer pos + time + derived
-   az/el (+ angular size), query aircraft and rank candidates by angular
-   separation; aircraft type → wingspan table gives absolute ground truth.
-   APIs (verified July 2026): `https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{nm}`
-   (free, no key, ODbL, ADSBx-compatible, free historical dumps);
-   `https://api.airplanes.live/v2/point/{lat}/{lon}/{nm}` (free backup);
-   OpenSky (OAuth2 client-credentials since 2026-03, live only ≤1 h old).
-   May need a tiny server proxy for CORS — Railway can host it beside the app.
+3. **ADS-B check — LIVE VERSION DONE** (`src/checks/adsb.js` + `AdsbCheck` in
+   ResultsPanel): queries live aircraft around the observers, ranks by
+   worst-witness angular separation from the sight-line (a real match must
+   satisfy EVERY witness), type→wingspan (~140 types + emitter-category
+   fallback) → predicted angular size vs measured, curvature+refraction
+   corrected el, ground-state aircraft filtered, search radius derived from
+   the sight-line elevation (45 kft ceiling). Ranking math is asserted in
+   `scripts/mathcheck.js`. CORS reality (probed 2026-07): **airplanes.live
+   sends ACAO:\*** (primary, browser-direct); **adsb.lol has NO CORS** (kept
+   as fallback; needs the Railway proxy to matter in-browser).
+   **Remaining**: historical replay (adsb.lol daily dumps or OpenSky ≤1 h —
+   needs the proxy), report-table integration (the one-table-of-mundane-
+   explanations design), adsbdb.com hex→route enrichment, track-time
+   matching (compare aircraft position history against the witness track,
+   not just Moment A).
 4. **Terrain skyline calibration** — the strongest calibration source in
    hills, where auto-horizon fails. Data: AWS Open Data Terrain Tiles
    (Terrarium PNG, free, no key, CORS-open, 3DEP/NED 10 m in the US):
