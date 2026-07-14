@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
+import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
 import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8 } from "./math/format.js";
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
@@ -263,6 +263,20 @@ const css = `
   text-shadow:0 1px 2px #000; font-family:var(--mono);}
 .lmk span{position:absolute; left:8px; top:-6px; font-size:10px; color:var(--ink);}
 .lmk-dot{font-size:13px;}
+.lmk-fix{color:var(--teal); font-size:17px; font-weight:800;}
+.lmk-fix span{color:var(--teal); font-weight:700;}
+.plotwrap{position:relative; isolation:isolate; z-index:0; height:300px;
+  border-radius:10px; border:1px solid var(--line); overflow:hidden;
+  background:#08101F;}
+.plotwrap .leaflet-container{width:100%; height:100%; background:#08101F;
+  font-family:var(--mono);}
+.plotwrap .leaflet-control-attribution{background:rgba(7,11,20,.55);
+  color:var(--dim); font-size:8px; padding:1px 4px;}
+.plotwrap .leaflet-control-attribution a{color:var(--dim);}
+.plotwrap .leaflet-control-scale-line{background:rgba(7,11,20,.6);
+  color:var(--ink); border-color:rgba(138,150,179,.6); font-size:9px;}
+.plotwrap .leaflet-bar a{background:var(--panel2); color:var(--ink);
+  border-color:var(--line);}
 `;
 
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
@@ -2650,109 +2664,54 @@ function PositionEditor({ src, update, others }) {
 }
 
 /* ============================================================
-   PLOT BOARD — top-down chart of observers, rays, and the fix
+   PLOT BOARD — top-down view of observers, rays, fix and trajectory
+   on real satellite imagery (Leaflet + Esri World Imagery, same base
+   as PinMap). ENU solution points convert back to geo through the
+   fix's own reference frame.
    ============================================================ */
 function PlotBoard({ result, traj }) {
-  const ref = useRef(null);
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
   useEffect(() => {
-    const cv = ref.current;
-    if (!cv || !result?.ok) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = cv.clientWidth, H = 300;
-    cv.width = W * dpr; cv.height = H * dpr;
-    const ctx = cv.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    ctx.fillStyle = "#08101F"; ctx.fillRect(0, 0, W, H);
-
-    const pts = [...result.obs.map((o) => o.P), result.solA.X];
-    if (result.motion?.XB) pts.push(result.motion.XB);
-    if (traj) for (const p of traj) pts.push(p);
-    let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
-    for (const p of pts) { minE = Math.min(minE, p[0]); maxE = Math.max(maxE, p[0]); minN = Math.min(minN, p[1]); maxN = Math.max(maxN, p[1]); }
-    const spanE = Math.max(50, maxE - minE), spanN = Math.max(50, maxN - minN);
-    const pad = 0.18;
-    const span = Math.max(spanE, spanN) * (1 + pad * 2);
-    const cE = (minE + maxE) / 2, cN = (minN + maxN) / 2;
-    const s = Math.min(W, H) / span;
-    const px = (p) => [W / 2 + (p[0] - cE) * s, H / 2 - (p[1] - cN) * s];
-
-    /* grid */
-    ctx.strokeStyle = "#152242"; ctx.lineWidth = 1;
-    const step = niceStep(span / 5);
-    for (let e = Math.ceil((cE - span) / step) * step; e < cE + span; e += step) {
-      const [x] = px([e, 0, 0]); ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (let n = Math.ceil((cN - span) / step) * step; n < cN + span; n += step) {
-      const [, y] = px([0, n, 0]); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
-
-    /* triangulated trajectory */
-    if (traj && traj.length > 1) {
-      ctx.strokeStyle = "rgba(143,180,255,.9)"; ctx.lineWidth = 2; ctx.beginPath();
-      traj.forEach((p, i) => { const [x, y] = px(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.stroke();
-      ctx.fillStyle = "rgba(143,180,255,.9)";
-      for (const p of traj) { const [x, y] = px(p); ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill(); }
-    }
-
-    /* sight rays */
-    for (const o of result.obs) {
-      const a = px(o.P);
-      const far = add(o.P, scl(o.dA, span * 2));
-      const b = px(far);
-      ctx.strokeStyle = "rgba(245,169,63,.55)"; ctx.setLineDash([5, 5]); ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    /* observers */
-    ctx.font = "10px ui-monospace,Menlo,monospace";
+    const el = boxRef.current; if (!el || mapRef.current) return;
+    const map = L.map(el, { attributionControl: true });
+    map.attributionControl.setPrefix(false);
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics",
+    }).addTo(map);
+    L.control.scale({ imperial: true }).addTo(map);
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !result?.ok) return;
+    if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+    const g = L.layerGroup();
+    const geo = (P) => { const w = geoFromEnu(P, result.ref); return [w.lat, w.lon]; };
+    const esc = (t) => String(t || "").replace(/[<>&]/g, "");
+    const bounds = [];
     result.obs.forEach((o, i) => {
-      const [x, y] = px(o.P);
-      ctx.fillStyle = "#F5A93F";
-      ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x - 6, y + 5); ctx.lineTo(x + 6, y + 5); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = "#DCE3F2";
-      ctx.fillText(o.s.name || `Obs ${i + 1}`, x + 9, y + 4);
+      const far = add(o.P, scl(o.dA, Math.max((result.solA.ts[i] || 0) * 1.15, 500)));
+      L.polyline([geo(o.P), geo(far)], { color: "#F5A93F", weight: 1.5, dashArray: "5 5", opacity: 0.8, interactive: false }).addTo(g);
+      L.marker(geo(o.P), { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-tri">▲<span>${esc(o.s.name || `Obs ${i + 1}`)}</span></div>` }) }).addTo(g);
+      bounds.push(geo(o.P));
     });
-
-    /* fix A (and B + arrow) */
-    const [fx, fy] = px(result.solA.X);
-    ctx.strokeStyle = "#5FD3BC"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(fx, fy, 7, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(fx - 11, fy); ctx.lineTo(fx + 11, fy); ctx.moveTo(fx, fy - 11); ctx.lineTo(fx, fy + 11); ctx.stroke();
-    ctx.fillStyle = "#5FD3BC"; ctx.fillText("FIX A", fx + 12, fy - 8);
-
-    if (result.motion?.XB) {
-      const [bx, by] = px(result.motion.XB);
-      ctx.strokeStyle = "#5FD3BC";
-      ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillText("B", bx + 9, by + 4);
-      /* arrow */
-      ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(bx, by); ctx.stroke();
-      const angl = Math.atan2(by - fy, bx - fx);
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(bx - 8 * Math.cos(angl - 0.4), by - 8 * Math.sin(angl - 0.4));
-      ctx.lineTo(bx - 8 * Math.cos(angl + 0.4), by - 8 * Math.sin(angl + 0.4));
-      ctx.closePath(); ctx.fill();
+    if (traj && traj.length > 1) {
+      L.polyline(traj.map(geo), { color: "#8FB4FF", weight: 2.5, opacity: 0.95, interactive: false }).addTo(g);
     }
-
-    /* north arrow + scale bar */
-    ctx.fillStyle = "#8A96B3";
-    ctx.fillText("N ↑", 10, 16);
-    const barM = step;
-    ctx.strokeStyle = "#8A96B3"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(10, H - 12); ctx.lineTo(10 + barM * s, H - 12); ctx.stroke();
-    ctx.fillText(fmtLenShort(barM), 10, H - 18);
+    const A = geo(result.solA.X); bounds.push(A);
+    L.marker(A, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-fix">⊕<span>FIX A</span></div>` }) }).addTo(g);
+    if (result.motion?.XB) {
+      const B = geo(result.motion.XB); bounds.push(B);
+      L.polyline([A, B], { color: "#5FD3BC", weight: 2, opacity: 0.9, interactive: false }).addTo(g);
+      L.marker(B, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-fix">◯<span>B</span></div>` }) }).addTo(g);
+    }
+    g.addTo(map); layerRef.current = g;
+    try { map.fitBounds(L.latLngBounds(bounds).pad(0.3), { maxZoom: 16, animate: false }); } catch (e) { }
   }, [result, traj]);
-
-  return <canvas ref={ref} style={{ width: "100%", height: 300, borderRadius: 10, border: "1px solid var(--line)", display: "block" }} />;
-}
-function niceStep(x) {
-  const p = Math.pow(10, Math.floor(Math.log10(x)));
-  const f = x / p;
-  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
+  if (!result?.ok) return null;
+  return <div className="plotwrap"><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /></div>;
 }
 
 /* ============================================================
