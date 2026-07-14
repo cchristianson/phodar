@@ -1402,11 +1402,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [flash, setFlash] = useState("");
   const [selSeg, setSelSeg] = useState(null);   // Δt chip being edited
   const [selPt, setSelPt] = useState(null);     // trajectory point whose turn radius is being edited
-  const [cmpOn, setCmpOn] = useState(false);    // compare panel
-  const [cmpT, setCmpT] = useState(0.42);       // assumed-distance slider (log 0..1)
+  /* compare ghost — buttons only, NO sliders and NO draggable elements:
+     the aimer holds a document-level touch lock (invariant: iOS multi-touch),
+     which silently eats native drags on anything inside it. Drop the ghost
+     at the crosshair like a trajectory point; distance via preset chips. */
+  const [cmpOn, setCmpOn] = useState(false);
+  const [cmpD, setCmpD] = useState(1000);       // assumed distance, meters
   const [ghostIdx, setGhostIdx] = useState(3);
-  const [cmpPos, setCmpPos] = useState(null);   // ghost's own sky anchor {az, el} — drag it anywhere
-  const cmpDragRef = useRef(null);
+  const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -2316,36 +2319,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })()}
 
-        {/* compare ghost — a reference object at an assumed distance, anchored
-           to its OWN sky position: drag it anywhere (next to the object, onto
-           the photo), then size↔distance it with the slider below */}
+        {/* compare ghost — pure display, world-anchored where it was dropped.
+           No pointer handlers: nothing here may interfere with look/pan. */}
         {wizard && cmpOn && cmpPos && (() => {
           const pr = projectD(dirFromAzEl(cmpPos.az, cmpPos.el));
           if (!pr.inFront) return null;
-          const D = Math.pow(10, Math.log10(50) + cmpT * (Math.log10(50000) - Math.log10(50)));
           const g = GHOSTW[ghostIdx];
-          const gAng = 2 * Math.atan(g.m / (2 * D)) * R2D;
+          const gAng = 2 * Math.atan(g.m / (2 * cmpD)) * R2D;
           const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
           const gPx = Math.max(4, gAng * D2R * fpxS);
-          const moveTo = (cx, cy) => {
-            const d = unproject(cx / (window.innerWidth || 1), cy / (window.innerHeight || 1));
-            const ae = dirToAzEl(d);
-            setCmpPos({ az: ae.az, el: clampN(ae.el, -15, 89) });
-          };
           return (
-            <div
-              onPointerDown={(e) => {
-                e.stopPropagation(); e.preventDefault();
-                try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
-                cmpDragRef.current = e.pointerId;
-              }}
-              onPointerMove={(e) => { if (cmpDragRef.current === e.pointerId) moveTo(e.clientX, e.clientY); }}
-              onPointerUp={(e) => { cmpDragRef.current = null; }}
-              onPointerCancel={() => { cmpDragRef.current = null; }}
-              style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "auto", cursor: "grab", touchAction: "none", textAlign: "center", opacity: 0.92, padding: 10 }}>
-              <div style={{ display: "inline-block", pointerEvents: "none" }}><GhostSil shape={g.shape} w={gPx} color="#9fb4d8" /></div>
-              <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2, pointerEvents: "none" }}>
-                ⇕ {g.name} ({g.m} m) @ {fmtLenShort(D)}
+            <div style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.92 }}>
+              <div style={{ display: "inline-block" }}><GhostSil shape={g.shape} w={gPx} color="#9fb4d8" /></div>
+              <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2 }}>
+                {g.name} ({g.m} m) @ {fmtLenShort(cmpD)}
               </div>
             </div>
           );
@@ -2479,7 +2466,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
               <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => {
                 setCmpOn((v) => !v);
-                if (!cmpOn) setCmpPos({ az: viewAz + 5, el: clampN(viewAlt, 0, 80) });
+                if (!cmpOn) setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); // drop at the crosshair
               }}>⚖</button>
             </div>
             {sortedTrack.length > 0 && (
@@ -2556,21 +2543,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => setGhostIdx(i)}>{g.name}</button>
                   ))}
                 </div>
-                <input type="range" min={0} max={1} step={0.005} value={cmpT}
-                  onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                  onChange={(e) => setCmpT(+e.target.value)}
-                  style={{ width: "100%", marginTop: 6, touchAction: "auto", pointerEvents: "auto" }} />
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
+                  <button className="btn sm teal" onClick={() => setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) })}>⌖ Drop at crosshair</button>
+                  {[[100, "100 m"], [300, "300 m"], [1000, "1 km"], [3000, "3 km"], [10000, "10 km"], [30000, "30 km"]].map(([v, l]) => (
+                    <button key={v} className={"btn sm" + (Math.abs(cmpD / v - 1) < 0.1 ? " amber" : "")} onClick={() => setCmpD(v)}>{l}</button>
+                  ))}
+                  <button className="btn sm" onClick={() => setCmpD((d) => Math.max(30, Math.round(d / 1.3)))}>closer</button>
+                  <button className="btn sm" onClick={() => setCmpD((d) => Math.min(80000, Math.round(d * 1.3)))}>farther</button>
+                </div>
                 {(() => {
-                  const D = Math.pow(10, Math.log10(50) + cmpT * (Math.log10(50000) - Math.log10(50)));
                   const g = GHOSTW[ghostIdx];
                   return (
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)" }}>
-                      {g.name} at {fmtLenShort(D)} → looks {(2 * Math.atan(g.m / (2 * D)) * R2D).toFixed(2)}°
-                      {objAngW != null && <> · your object measured {objAngW.toFixed(2)}° (= {fmtLenShort(2 * D * Math.tan(objAngW * D2R / 2))} at that range)</>}
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)", marginTop: 4 }}>
+                      {g.name} at {fmtLenShort(cmpD)} → looks {(2 * Math.atan(g.m / (2 * cmpD)) * R2D).toFixed(2)}°
+                      {objAngW != null && <> · your object measured {objAngW.toFixed(2)}° (= {fmtLenShort(2 * cmpD * Math.tan(objAngW * D2R / 2))} at that range)</>}
                     </div>
                   );
                 })()}
-                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Drag the ghost anywhere on the sky · slider sets its assumed distance</div>
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then step its distance closer/farther</div>
               </div>
             )}
           </div>
