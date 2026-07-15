@@ -3322,6 +3322,23 @@ const dataUrlU8 = (durl) => {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
 };
+/* pull one STORE-method entry's text out of a zip (the reader half of makeZip
+   — the share bundle is uncompressed, so no inflate needed). Scans local file
+   headers; returns the named entry decoded as UTF-8, or null. */
+function unzipEntryText(u8, name) {
+  const u16 = (o) => u8[o] | (u8[o + 1] << 8);
+  const u32 = (o) => u8[o] + u8[o + 1] * 256 + u8[o + 2] * 65536 + u8[o + 3] * 16777216;
+  let o = 0;
+  while (o + 30 <= u8.length && u32(o) === 0x04034b50) {
+    const method = u16(o + 8), compSize = u32(o + 18);
+    const nameLen = u16(o + 26), extraLen = u16(o + 28);
+    const nm = new TextDecoder().decode(u8.subarray(o + 30, o + 30 + nameLen));
+    const dataStart = o + 30 + nameLen + extraLen;
+    if (nm === name) return method === 0 ? new TextDecoder().decode(u8.subarray(dataStart, dataStart + compSize)) : null;
+    o = dataStart + compSize;
+  }
+  return null;
+}
 
 const download = (name, payload, mime) => {
   try {
@@ -3845,13 +3862,21 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
           catch (e) { setImpMsg("clipboard blocked — use Report → 📤 Share sighting"); }
         }}>⬆ Backup session to clipboard</button>
       )}
-      <input ref={fileRef} type="file" accept=".json,.html,application/json,text/html" style={{ display: "none" }}
+      <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => {
           const f = e.target.files?.[0]; if (!f) return;
-          f.text().then((tx) => {
-            const n = onImport(tx);
-            setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}` : "Couldn't read that — expected a .phodar.json or a Phodar report.");
-          });
+          const finish = (tx) => {
+            const n = tx ? onImport(tx) : 0;
+            setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}` : "Couldn't read that — expected a .phodar.json, a Phodar report, or a sighting .zip.");
+          };
+          f.arrayBuffer().then((buf) => {
+            const u8 = new Uint8Array(buf);
+            /* a sighting .zip (PK\x03\x04) → pull the data file out of it;
+               otherwise it's a .phodar.json or a report .html — read as text */
+            if (u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04) {
+              finish(unzipEntryText(u8, "sighting.phodar.json") || unzipEntryText(u8, "report.html"));
+            } else finish(new TextDecoder().decode(u8));
+          }).catch(() => setImpMsg("Couldn't read that file."));
           e.target.value = "";
         }} />
       {impMsg && <div style={{ fontSize: 12, color: impMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, textAlign: "center" }}>{impMsg}</div>}
