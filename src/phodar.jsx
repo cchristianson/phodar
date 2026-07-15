@@ -1372,8 +1372,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       openPoseRef.current = p0; // Reset restores the WHOLE placement to this
       setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov);
       setPhotoOn(!!source?.mediaUrl);
-      setPMode(source?.mediaAim ? "look" : (source?.mediaUrl ? "place" : "look"));
-      if (wizard && source?.mediaUrl) setPMode("place"); // wizard always starts in adjust mode
+      /* start in Place only until this observer has been placed ONCE in the
+         sky view (source.placed) — after that, return straight to Look and
+         skip the adjust step. `mediaAim` alone can't gate this: it's also
+         pre-set from the photo's EXIF bearing before any placement. The
+         ✥ Place button is still there to re-adjust. */
+      setPMode(source?.placed || !source?.mediaUrl ? "look" : "place");
     }
   }, [open]); // eslint-disable-line
 
@@ -1905,7 +1909,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const commitPlacement = () => {
     if (!update || !photoOn) return;
-    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1) }, fovH: +fovM.toFixed(1) };
+    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1) }, fovH: +fovM.toFixed(1), placed: true };
     /* placement + marked points fully determine the sight-lines — derive
        A (object marks / shape fit) and B (motion mark) automatically, so
        the fix never dies for want of an elevation the user already gave us */
