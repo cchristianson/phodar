@@ -172,6 +172,15 @@ comments, in this order:
    button in place mode. End-to-end verified against a synthetic photo
    rendered from the REAL Rogue Valley DEM at a known pose: one tap took
    az 258.4/el 6.2/roll 0 to exactly 250.0/9.9/1.5 (truth 250/10/1.5).
+   detectSkyline picks the LOWEST sky/ground boundary with sustained ground
+   below (per-column adaptive threshold), NOT the strongest edge — a tree
+   canopy out-gradients a hazy distant ridge and used to capture the
+   detector (field report: snap failed with rms 7.57°); it now sees through
+   foreground foliage that has sky beneath it. Asserted in mathcheck on
+   synthetic sky/ridge/field images with and without side-column canopy
+   (both recover the horizon to ~2 px). Also: a "ridge" hue slider in place
+   mode recolors the terrain + ridge lines (persisted in localStorage;
+   default 106° ≈ the original green) so they stand out over green hills.
    Roll sign is empirical — matchSkyline returns the error IN the
    measurements; az/el add, roll subtracts. "Set every observer's
    elevation from terrain" one-tap lives in WizFinish's altitude-spread
@@ -249,11 +258,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **adsbdb.com**: aircraft hex/callsign → type, registration, route.
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
-  skyline and landmark azimuth anchors. **Nominatim**: forward geocoding is
-  DONE — PositionEditor has a "find your spot by name" search (Nominatim
-  jsonv2, CORS-open, no key, browser-direct — no server proxy) that sets
-  lat/lon from a place/landmark so users never source coordinates elsewhere;
-  refine with the pin afterward. Readable place names in reports still open.
+  skyline and landmark azimuth anchors. **Forward geocoding is DONE** —
+  PositionEditor's "find your spot by name" search runs the **US Census
+  geocoder** (onelineaddress, TIGER/parcel — resolves to the actual house;
+  Nominatim only knows the road, so rural street addresses landed at the
+  start of the highway) for queries containing a digit, then **Nominatim**
+  (jsonv2, landmarks + non-US); both CORS-open, no key, browser-direct, no
+  server proxy. Census failures (CORS/non-US) fall through to Nominatim.
+  Results are labeled exact-address vs road/area (drag the pin). Readable
+  place names in reports still open.
 Design principle: each check outputs the same shape — a candidate with
 predicted az/el/angular-size/motion and an angular separation from the
 witness sight-line — so the report can rank ALL mundane explanations in one

@@ -4,7 +4,7 @@ import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../
 import { intersectLines } from "../src/math/triangulate.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections } from "../src/math/kinematics.js";
-import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline } from "../src/terrain.js";
+import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
@@ -116,6 +116,38 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const phantom = ridges.some((r) => r.pts.some(([a]) => Math.abs(a - 270) < 20));
   if (!phantom) console.log("  ok   flat ground west has no ridge layers");
   else { fails++; console.error("  FAIL phantom ridge on flat ground"); }
+}
+
+// --- detectSkyline: the true horizon must win over foreground foliage.
+//     (The reported failure: a tree canopy out-gradients a hazy distant
+//     ridge, so the old strongest-edge detector locked onto branches and
+//     the snap matched no azimuth. The fix finds the lowest sky/ground
+//     boundary with sustained ground below, seeing THROUGH the foliage.) ---
+{
+  const W = 144, H = 100;
+  const SKY = [150, 180, 220], RIDGE = [70, 90, 80], FIELD = [180, 165, 120], TREE = [25, 35, 20];
+  const yh = (x) => Math.round(60 - 8 * Math.sin((Math.PI * x) / (W - 1))); // gentle bump ~52..60
+  const build = (foliage) => {
+    const px = new Uint8ClampedArray(W * H * 4);
+    for (let x = 0; x < W; x++) {
+      const h = yh(x);
+      for (let y = 0; y < H; y++) {
+        let c = y < h ? SKY : (y < h + 6 ? RIDGE : FIELD);
+        // dark canopy in the side columns, ABOVE the horizon with sky showing
+        // through beneath it — the case that fooled the old detector
+        if (foliage && (x < 40 || x > 103) && y < 42) c = TREE;
+        const i = (y * W + x) * 4; px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2]; px[i + 3] = 255;
+      }
+    }
+    return { data: px };
+  };
+  const rms = (pts) => { let s = 0; for (const p of pts) { const d = p.y - yh(p.x); s += d * d; } return Math.sqrt(s / pts.length); };
+  const clean = detectSkyline(build(false), W, H);
+  if (clean && clean.length >= 20 && rms(clean) < 3) console.log(`  ok   clean horizon detected (rms ${rms(clean).toFixed(2)} px, ${clean.length} pts)`);
+  else { fails++; console.error(`  FAIL clean horizon: ${clean ? rms(clean).toFixed(2) + " px, " + clean.length + " pts" : "null"}`); }
+  const fol = detectSkyline(build(true), W, H);
+  if (fol && fol.length >= 20 && rms(fol) < 4) console.log(`  ok   ridge found under foreground foliage (rms ${rms(fol).toFixed(2)} px, ${fol.length} pts)`);
+  else { fails++; console.error(`  FAIL foliage case: ${fol ? rms(fol).toFixed(2) + " px, " + fol.length + " pts" : "null"} — detector captured by the canopy`); }
 }
 
 // --- trajectory corner rounding: an arc beats a hard 90° corner ---

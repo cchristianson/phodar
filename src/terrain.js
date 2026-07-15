@@ -188,10 +188,21 @@ export async function predictedSkyline(lat, lon) {
    video plan's keyframe anchor.
    ============================================================ */
 
-/* photo skyline from ImageData: for each of ~72 columns, the strongest
-   sky→ground transition of a "skyness" score (bright + blue-ish).
+/* photo skyline from ImageData: for each of ~72 columns, the sky→ground
+   silhouette using a "skyness" score (bright + blue-ish).
    Returns [{x, y}] in the SOURCE pixel space of the ImageData, outlier-
-   rejected by a windowed median. Null if too few clean columns. */
+   rejected by a windowed median. Null if too few clean columns.
+
+   Not "strongest edge" — that loses to high-contrast FOREGROUND (a tree
+   canopy against bright sky out-gradients a hazy distant ridge, so the
+   detector locked onto branches and the snap couldn't match any azimuth).
+   Instead: the LOWEST sky-above/ground-below boundary that has sustained
+   ground beneath it. Everything below the true horizon is terrain, so
+   foliage hanging in the sky (which has sky BELOW it) is skipped, while a
+   column fully occluded by a near tree yields a too-high point that the
+   windowed median rejects as an outlier. The threshold is per-column
+   adaptive (from that column's own bright/dark span) so it survives
+   varied lighting rather than a fixed contrast floor. */
 export function detectSkyline(im, W, H) {
   const px = im.data ? im.data : im;
   const sky = (x, y) => {
@@ -199,21 +210,29 @@ export function detectSkyline(im, W, H) {
     const r = px[i], g = px[i + 1], b = px[i + 2];
     return 0.5 * (0.299 * r + 0.587 * g + 0.114 * b) + 0.9 * (b - r);
   };
-  const NC = 72, WIN = 3;
+  const NC = 72, WIN = 3, BAND = Math.max(4, Math.round(H * 0.05));
+  const yT = Math.round(H * 0.04) + WIN, yB = Math.round(H * 0.92) - WIN;
   const pts = [];
   for (let ci = 0; ci < NC; ci++) {
     const x = Math.round((0.04 + (0.92 * ci) / (NC - 1)) * (W - 1));
-    let bestY = -1, bestG = 0;
-    for (let y = Math.round(H * 0.04) + WIN; y < Math.round(H * 0.92) - WIN; y++) {
-      let above = 0, below = 0;
-      for (let k = 1; k <= WIN; k++) { above += sky(x, y - k); below += sky(x, y + k); }
-      const gdt = above - below;
-      if (gdt > bestG) { bestG = gdt; bestY = y; }
+    /* column's own sky/ground range → adaptive threshold */
+    let smax = -1e9, smin = 1e9;
+    for (let y = yT; y <= yB; y++) { const s = sky(x, y); if (s > smax) smax = s; if (s < smin) smin = s; }
+    if (smax - smin < 40) continue; // no real sky/ground contrast here
+    const thr = smin + 0.45 * (smax - smin);
+    const meanAbove = (y) => { let a = 0; for (let k = 1; k <= WIN; k++) a += sky(x, y - k); return a / WIN; };
+    const meanBelow = (y) => { let a = 0; for (let k = 1; k <= WIN; k++) a += sky(x, y + k); return a / WIN; };
+    let found = -1;
+    for (let y = yB; y >= yT; y--) {
+      if (meanAbove(y) < thr || meanBelow(y) >= thr) continue; // need sky over ground
+      let gnd = 0, tot = 0;
+      for (let k = 1; k <= BAND && y + k < H; k++) { tot++; if (sky(x, y + k) < thr) gnd++; }
+      if (tot > 0 && gnd / tot >= 0.8) { found = y; break; } // sustained ground below
     }
-    if (bestY > 0 && bestG > 90) pts.push({ x, y: bestY });
+    if (found > 0) pts.push({ x, y: found });
   }
   if (pts.length < 20) return null;
-  /* windowed-median outlier rejection */
+  /* windowed-median outlier rejection — also culls fully-occluded columns */
   const keep = pts.filter((p, i) => {
     const win = pts.slice(Math.max(0, i - 3), i + 4).map((q) => q.y).sort((a, b) => a - b);
     const med = win[Math.floor(win.length / 2)];

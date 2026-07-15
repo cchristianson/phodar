@@ -1428,6 +1428,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      az + pitch + roll lock simultaneously, day or night. --- */
   const [terrOn, setTerrOn] = useState(true);
   const [terr, setTerr] = useState(null); // {els, h0} | {err} | null
+  /* ridge/terrain line hue — a display preference (the default green washes
+     out over green hillsides for some photos); persisted across sessions.
+     Default 106° ≈ the original rgba(158,224,138). */
+  const [ridgeHue, setRidgeHue] = useState(() => {
+    try { const raw = localStorage.getItem("phodar:ridgeHue"); if (raw != null && Number.isFinite(+raw)) return +raw; } catch (e) { }
+    return 106;
+  });
+  useEffect(() => { try { localStorage.setItem("phodar:ridgeHue", String(ridgeHue)); } catch (e) { } }, [ridgeHue]);
+  const ridgeCol = (a) => `hsla(${ridgeHue},58%,71%,${a})`;
   useEffect(() => {
     if (!open || !terrOn || !hasPos) return;
     let dead = false;
@@ -2055,11 +2064,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
-          {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={"rgba(158,224,138," + r.o.toFixed(2) + ")"} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
-          {terrainPath && <path d={terrainPath} fill="none" stroke="rgba(158,224,138,0.9)" strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
+          {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
+          {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
         </svg>
         {terrainLbl && (
-          <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: "rgba(158,224,138,0.95)", textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
+          <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: ridgeCol(0.95), textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
         )}
         {altLabels.map((p) => (
           <div key={"hl" + p.h} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(-50%,-50%)", fontSize: 9, fontFamily: "var(--mono)", color: gridColor.replace(/[\d.]+\)$/, "0.9)"), background: "rgba(7,11,20,.35)", borderRadius: 4, padding: "0 3px", pointerEvents: "none" }}>{p.h}°</div>
@@ -2409,6 +2418,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); }
                       else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }
                     }}>Reset placement</button>
+                    {terrOn && terr?.els && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
+                        <span className="microlabel" style={{ marginBottom: 0 }}>ridge</span>
+                        <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ width: 70 }} />
+                        <span style={{ width: 13, height: 13, borderRadius: 7, flex: "0 0 auto", background: ridgeCol(0.95), border: "1px solid rgba(255,255,255,.3)" }} />
+                      </span>
+                    )}
                   </>
                 )}
                 {source.mediaKind === "video" && vidDur2 > 0 && (
@@ -2768,13 +2784,31 @@ function PositionEditor({ src, update, others }) {
     const query = q.trim();
     if (!query) return;
     setFindBusy(true); setPlaces(null);
+    const hits = [];
+    /* US street addresses resolve to the actual house via the Census
+       geocoder (TIGER/parcel) — Nominatim usually only knows the road, so
+       "5101 Caves Hwy" lands at the start of the highway. Free, no key. If
+       it's CORS-blocked or the query isn't a US address it just throws and
+       we fall through to Nominatim (which also covers landmarks / non-US). */
+    if (/\d/.test(query)) {
+      try {
+        const cr = await fetch("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?benchmark=Public_AR_Current&format=json&address=" + encodeURIComponent(query));
+        if (cr.ok) {
+          const cj = await cr.json();
+          (cj?.result?.addressMatches || []).forEach((mm) => hits.push({ lat: +mm.coordinates.y, lon: +mm.coordinates.x, name: mm.matchedAddress, precise: true }));
+        }
+      } catch (e) { /* fall back to Nominatim */ }
+    }
     try {
-      const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=" + encodeURIComponent(query), { headers: { Accept: "application/json" } });
-      if (!r.ok) throw new Error("bad status");
-      const j = await r.json();
-      if (!Array.isArray(j) || !j.length) { setPlaces({ err: "No match — try a nearby town, a landmark, or paste coordinates." }); }
-      else setPlaces(j.map((p) => ({ lat: +p.lat, lon: +p.lon, name: p.display_name })).filter((p) => isNum(p.lat) && isNum(p.lon)));
-    } catch (e) { setPlaces({ err: "Place search unavailable — check the connection, or paste coordinates instead." }); }
+      const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=" + encodeURIComponent(query), { headers: { Accept: "application/json" } });
+      if (r.ok) {
+        const j = await r.json();
+        (Array.isArray(j) ? j : []).forEach((p) => hits.push({ lat: +p.lat, lon: +p.lon, name: p.display_name, precise: !!(p.address && p.address.house_number) }));
+      }
+    } catch (e) { /* handled by the empty-hits check below */ }
+    const clean = hits.filter((p) => isNum(p.lat) && isNum(p.lon));
+    if (!clean.length) setPlaces({ err: "No match — try a nearby town or landmark, paste coordinates, or drag the pin below." });
+    else setPlaces(clean);
     setFindBusy(false);
   };
   const pickPlace = (p) => { update({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) }); setPlaces(null); setQ(p.name.split(",").slice(0, 2).join(",").trim()); };
@@ -2816,6 +2850,7 @@ function PositionEditor({ src, update, others }) {
                     style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", background: "transparent", border: "none", borderTop: i ? "1px solid var(--line)" : "none", color: "var(--ink)", fontSize: 12, cursor: "pointer" }}>
                     <span style={{ color: "var(--teal)" }}>📍</span> {p.name}
                     <span style={{ color: "var(--dim)", fontFamily: "var(--mono)", fontSize: 10 }}>  {p.lat.toFixed(4)}, {p.lon.toFixed(4)}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: p.precise ? "var(--teal)" : "var(--amber)" }}>  {p.precise ? "· exact address" : "· road/area — drag pin to your spot"}</span>
                   </button>
                 ))}
               </div>
