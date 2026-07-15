@@ -243,9 +243,11 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   TLE-staleness honesty; ISS validated vs wheretheiss.at to ~61 km).
   The aircraft SKY-TRACK pattern it reuses: `/api/hist` returns
   `trail` ([[dtSec, lat, lon, altM], …] ±4 min from the full-day trace);
-  the dome draws faint dashed polylines for craft within 25° of the
-  sight-line (bright/solid when selected), live mode accumulates its own
-  trail from the 20 s polls. Satellites should emit the same trail shape.
+  the dome draws faint dashed polylines for craft within 25° of the current
+  view direction OR the sight-line (bright/solid when selected) — keying only
+  off the sight-line meant zero tracks before Moment A is set, so the look
+  direction is the fallback reference; live mode accumulates its own trail
+  from the 20 s polls. Satellites should emit the same trail shape.
 - **Open-Meteo winds: DONE** (src/checks/winds.js + report "Wind check"):
   pressure-level wind at the fix altitude, forecast API ≤~3 months back,
   ERA5 archive beyond; balloonVerdict compares heading + speed ratio.
