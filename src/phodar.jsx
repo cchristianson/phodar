@@ -552,7 +552,13 @@ function MediaMeasure({ src, update, wizard }) {
   const paintFirstFrame = () => {
     const el = mediaRef.current;
     if (!el || media?.kind !== "video") return;
-    try { if (el.currentTime < 0.01) el.currentTime = Math.min(0.04, (el.duration || 1) / 4); } catch (e) { /* seek not ready yet — onLoadedData retries */ }
+    /* restore the frame the object was marked on when revisiting this step —
+       otherwise it reloads at the start and loses the mark. Falls back to a
+       hair past 0 so iOS still decodes a frame instead of showing blank.
+       Only fires on (re)load events, so it never fights the scrubber. */
+    const marked = isNum(src?.A?.videoTime) ? +src.A.videoTime : 0;
+    const target = marked > 0.01 ? marked : Math.min(0.04, (el.duration || 1) / 4);
+    try { if (Math.abs(el.currentTime - target) > 0.02) { el.currentTime = target; setVidT(target); } } catch (e) { /* seek not ready yet — onLoadedData retries */ }
   };
   const onLoaded = () => {
     const el = mediaRef.current;
