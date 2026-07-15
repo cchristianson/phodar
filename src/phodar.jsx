@@ -2123,20 +2123,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         })}
 
         {/* faint sky-tracks: each aircraft's path ±4 min (archive) or from the
-           live polls — drawn only near the sight-line, or when selected */}
+           live polls — drawn for craft near what you're looking at OR near the
+           sight-line, and always when selected. (Before Moment A there is no
+           sight-line, so keying only off it left the dome with no tracks at
+           all — now the current view direction is the fallback reference.) */}
         {(() => {
           if (!acView.length) return null;
           const sight = isNum(source?.A?.az) && isNum(source?.A?.el) ? dirFromAzEl(+source.A.az, +source.A.el) : null;
+          const look = dirFromAzEl(effAz, effAlt);
+          const near = (r, d) => r && Math.acos(clampN(dot(r, d), -1, 1)) * R2D <= 25;
           const lines = [];
           for (const v of acView) {
             const sel = v.a.hex === selHex;
             const raw = acData?.hist ? v.a.trail : liveTrailRef.current.get(v.a.hex);
             if (!raw || raw.length < 2) continue;
-            if (!sel) {
-              if (!sight) continue;
-              const sep = Math.acos(clampN(dot(sight, v.d), -1, 1)) * R2D;
-              if (sep > 25) continue;
-            }
+            if (!sel && !near(look, v.d) && !near(sight, v.d)) continue;
             /* densify by lerping in geo space (positions ~10 s apart are locally
                straight in 3D) — the projected curve then bends with the sky
                view's own curvature instead of cutting straight chords */
