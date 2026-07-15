@@ -3551,18 +3551,32 @@ async function reportHtml(sources, est, opts = {}) {
   ).join("");
   let fixHtml;
   if (fix.ok) {
+    const mslA = fix.solA.X[2] + (fix.ref.alt || 0);
+    const geomTbl = `<table><tr><th>Observer</th><th>Range</th><th>Angular size</th><th>→ True size</th></tr>` +
+      fix.perSource.map((p) => `<tr><td>${e2(p.name || "—")}</td><td>${fmtLenShort(p.dist)}</td><td>${p.ang != null ? fmtDeg(p.ang) : "—"}</td><td>${p.size != null ? `${fmtLenShort(p.size)} (${ft(p.size)} ft)` : "—"}</td></tr>`).join("") +
+      `</table>`;
+    const qualTbl = `<table>` +
+      row("Baseline (observer separation)", fmtLenShort(fix.baseline)) +
+      row("Ray convergence angle", fix.conv.toFixed(1) + "°") +
+      row("Ray miss distance (RMS)", `${fmtLenShort(fix.solA.rmsMiss)} (${(fix.missRatio * 100).toFixed(1)}% of range)`) +
+      row("Range / baseline ratio", `${(fix.meanDist / Math.max(1, fix.baseline)).toFixed(1)} : 1`) +
+      row("Position uncertainty", `± ${fmtLenShort(fix.posErr)} (from a ±1° pointing error)`) +
+      row("Quality rating", fix.rating + (fix.behind ? " — rays cross BEHIND an observer; treat as unreliable (see caveats)" : "")) +
+      `</table>`;
     fixHtml = `<table>` +
+      row("Object ground position", `${fix.geoA.lat.toFixed(5)}, ${fix.geoA.lon.toFixed(5)} (± ${fmtLenShort(fix.posErr)})`) +
       row("Altitude above observer 1", `${fmtLenShort(fix.solA.X[2])} (${ft(fix.solA.X[2])} ft)`) +
+      row("Altitude (MSL)", `${fmtLenShort(mslA)} (${ft(mslA)} ft)`) +
       row("Range from observer 1", fmtLenShort(fix.perSource[0].dist)) +
       (fix.sizeAvg != null ? row("Object size (avg)", `${fmtLenShort(fix.sizeAvg)} (${ft(fix.sizeAvg)} ft)`) : "") +
       ((asp) => asp ? row("Aspect-corrected span (if elongated)", `${asp.map((x) => `${fmtLenShort(x.S)} @ long-axis ${Math.round(x.psi)}°`).join(" or ")} (${asp[0].n} views${asp[0].rms != null ? `, fit rms ${fmtLenShort(asp[0].rms)}` : ""})`) : "")(aspectSpan(fix)) +
-      (fix.motion?.speed != null ? row("Speed A→B", `${Math.round(fix.motion.speed)} m/s (${Math.round(fix.motion.speed * 2.23694)} mph), heading ${Math.round(fix.motion.heading)}°`) : "") +
-      row("Baseline", fmtLenShort(fix.baseline)) +
-      row("Ray convergence", fix.conv.toFixed(1) + "°") +
-      row("Quality", fix.rating + (fix.behind ? " — rays cross BEHIND an observer; treat as unreliable (see caveats)" : "")) +
+      (fix.motion?.speed != null ? row("Speed A→B", `${Math.round(fix.motion.speed)} m/s (${Math.round(fix.motion.speed * 2.23694)} mph), heading ${Math.round(fix.motion.heading)}° ${compass8(fix.motion.heading)}${isNum(fix.motion.vRate) ? `, vertical ${fix.motion.vRate >= 0 ? "climb" : "descent"} ${n1(Math.abs(fix.motion.vRate))} m/s` : ""}`) : "") +
+      (fix.motion?.disp != null ? row("Displacement A→B", `${fmtLenShort(fix.motion.disp)}${fix.motion.dt != null ? ` over ${fix.motion.dt.toFixed(2)} s` : ""} (Δalt ${n1(fix.motion.XB[2] - fix.solA.X[2])} m)`) : "") +
       `</table>` +
       (await reportPlotSvg(fix, tr.stereo?.k ? tr.stereo.pos : null)) +
-      `<p class="cap">Top-down (satellite basemap): observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>`;
+      `<p class="cap">Top-down (satellite basemap): observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>` +
+      `<p class="cap" style="margin-top:14px"><b>Per-observer geometry</b> — range × measured angular size gives each witness's independent size estimate.</p>${geomTbl}` +
+      `<p class="cap" style="margin-top:14px"><b>Solution quality</b> — how trustworthy the geometry is.</p>${qualTbl}`;
   } else {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
     /* single witness: the honest deliverable is the size↔distance line —
@@ -3698,6 +3712,28 @@ ${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="
   const arbR = arbitrateBearings(sources);
   if (arbR?.best)
     diagHtml += `<p>⚠ Bearings inconsistent: trusting <b>${e2(arbR.best.trustName)}</b>, <b>${e2(arbR.best.otherName)}</b>'s compass reads ≈ ${Math.round(arbR.best.err)}° off (true bearing ≈ ${arbR.best.azOtherTrue.toFixed(1)}°).</p>`;
+  /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
+     at the primary observer's time & place. Flags glare, a bright Moon as
+     the light source, and pins the local-time / twilight state. --- */
+  let condHtml = "";
+  {
+    const w = origAct.find((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs));
+    if (w) {
+      const Tw = +w.whenMs, la = +w.lat, lo = +w.lon;
+      const sun = sunPos(Tw, la, lo);
+      const moon = moonPos(Tw, la, lo);
+      const ill = Math.round(moonFrac(Tw) * 100);
+      const tw = sun.alt > 0 ? "daylight" : sun.alt > -6 ? "civil twilight" : sun.alt > -12 ? "nautical twilight" : sun.alt > -18 ? "astronomical twilight" : "night (full dark)";
+      let dec = null;
+      try { dec = declination(la, lo, isNum(w.alt) ? +w.alt : 0, new Date(Tw)); } catch (e) { }
+      condHtml = `<h2>Sighting conditions</h2><table>` +
+        row("Local sky", `${tw} — Sun ${Math.abs(sun.alt).toFixed(1)}° ${sun.alt >= 0 ? "above" : "below"} the horizon at az ${Math.round(sun.az)}° ${compass8(sun.az)}`) +
+        row("Moon", `${ill}% illuminated · ${moon.alt > 0 ? `${moon.alt.toFixed(0)}° up at az ${Math.round(moon.az)}° ${compass8(moon.az)}` : "below the horizon"}`) +
+        (dec != null ? row("Magnetic declination", `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}° (WMM2025 — added to any magnetic compass bearing to get true)`) : "") +
+        `</table>` +
+        `<p class="cap">Computed for ${e2(w.name || "observer 1")} at ${new Date(Tw).toLocaleString()}. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.</p>`;
+    }
+  }
   /* --- sky-object check: Sun, Moon, planets, brightest stars vs each
      sight-line at the sighting time — Venus is the most-reported "UFO"
      there is, so this table earns its place in every report. --- */
@@ -3794,6 +3830,7 @@ img,svg{max-width:100%;height:auto}
 <h2>Result</h2>${fixHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${adsbHtml}
+${condHtml}
 ${skyHtml}
 ${windHtml}
 ${exhibits}
