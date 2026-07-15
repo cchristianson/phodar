@@ -39,8 +39,16 @@ export const AZ_STEP = 0.4, N_AZ = Math.round(360 / AZ_STEP);
    Occluded stretches emit nothing, so layering comes out for free. */
 const RIDGE_PROM = 0.25; // deg a crest must stand above what's behind it
 export function skylineFromSampler(sampleEN, h0, maxDistM = 35000) {
+  /* Start the march past the immediate FOREGROUND. The DEM tile is ~19 m/px
+     (z13) / ~76 m/px (z11), so samples within a couple hundred metres are
+     resolution noise, not the horizon this feature calibrates against. That
+     noise only ever changes the skyline when it spikes ABOVE eye level at
+     close range — e.g. a coastal observer whose own beach reads 3 m higher
+     than their pixel, producing a fake 2–3° "berm" over open ocean (field
+     report). For normal terrain the far horizon already wins, so this is a
+     targeted fix, not a general change. 200 m ≈ a few coarse-grid pixels. */
   const dists = [];
-  for (let d = 40; d < maxDistM; d *= 1.06) dists.push(d);
+  for (let d = 200; d < maxDistM; d *= 1.06) dists.push(d);
   /* clamp to sea level: DEM tiles carry BATHYMETRY (negative sea-floor depth)
      over oceans, but what you SEE is the water surface at 0 m. Using the raw
      depths made the running-max skyline pick the shallowest-relative sea floor
