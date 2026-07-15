@@ -88,6 +88,22 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else { fails++; console.error("  FAIL cone leaked far off-bearing"); }
 }
 
+// --- ocean: DEM bathymetry (negative sea-floor depth, varying by azimuth &
+//     distance) must render as the FLAT sea horizon, not a bumpy low ridge.
+//     (Field report: coastal observer looking out to sea saw fake terrain.) ---
+{
+  // sea floor (always below sea level) deepening with distance + an azimuthal
+  // ripple — raw, the running max makes a bumpy, too-low skyline; clamped to
+  // 0 m (the water surface) it's flat
+  const sample = (e, n) => { const d = Math.hypot(e, n); return -(5 + d * 0.03 + 15 * (1 + Math.sin(Math.atan2(e, n) * 3))); };
+  const { els } = skylineFromSampler(sample, 2);
+  let mn = 99, mx = -99, sum = 0;
+  for (let i = 0; i < els.length; i++) { mn = Math.min(mn, els[i]); mx = Math.max(mx, els[i]); sum += els[i]; }
+  approx(sum / els.length, -0.057, 0.05, "ocean skyline ≈ geometric sea-horizon dip");
+  if (mx - mn < 0.02) console.log(`  ok   ocean skyline flat across azimuth (spread ${(mx - mn).toFixed(4)}°)`);
+  else { fails++; console.error(`  FAIL ocean skyline bumpy: spread ${(mx - mn).toFixed(4)}°`); }
+}
+
 // --- layered ridges: a near crest in front of a tall far wall must survive
 //     as an interior ridge line; a cone fully hidden behind the near crest
 //     must emit NOTHING (visibility/occlusion is the whole feature) ---

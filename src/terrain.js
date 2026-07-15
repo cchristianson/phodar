@@ -41,7 +41,12 @@ const RIDGE_PROM = 0.25; // deg a crest must stand above what's behind it
 export function skylineFromSampler(sampleEN, h0, maxDistM = 35000) {
   const dists = [];
   for (let d = 40; d < maxDistM; d *= 1.06) dists.push(d);
-  const eye = h0 + EYE_M;
+  /* clamp to sea level: DEM tiles carry BATHYMETRY (negative sea-floor depth)
+     over oceans, but what you SEE is the water surface at 0 m. Using the raw
+     depths made the running-max skyline pick the shallowest-relative sea floor
+     per azimuth — a bumpy, too-low fake ridge over open water. Below-sea-level
+     land (rare, inland) reads as 0 too; an acceptable trade for correct coasts. */
+  const eye = Math.max(0, h0) + EYE_M;
   const els = new Float32Array(N_AZ), ridgeD = new Float32Array(N_AZ);
   const cols = new Array(N_AZ);
   for (let i = 0; i < N_AZ; i++) {
@@ -52,7 +57,8 @@ export function skylineFromSampler(sampleEN, h0, maxDistM = 35000) {
     for (const d of dists) {
       const h = sampleEN(sa * d, ca * d);
       if (h == null) continue;
-      const el = Math.atan2(h - eye - (d * d * (1 - K_REFR)) / (2 * RE), d) * R2D;
+      const hs = h > 0 ? h : 0; // water / below sea level → visible surface is sea level
+      const el = Math.atan2(hs - eye - (d * d * (1 - K_REFR)) / (2 * RE), d) * R2D;
       if (el > best) {
         if (pend && pend.el - dipMin >= RIDGE_PROM) crests.push(pend);
         best = el; bd = d;
