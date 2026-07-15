@@ -175,7 +175,15 @@ comments, in this order:
    Roll sign is empirical — matchSkyline returns the error IN the
    measurements; az/el add, roll subtracts. "Set every observer's
    elevation from terrain" one-tap lives in WizFinish's altitude-spread
-   warning. **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
+   warning. **Layered ridges: DONE** — `skylineFromSampler` also returns
+   `ridges`: interior visible crest lines below the silhouette (a crest
+   is emitted only when unoccluded by nearer terrain AND the ground
+   behind drops ≥0.25° below it — occluded stretches emit nothing, so
+   layering is in the data), stitched into polylines by depth+elevation
+   continuity, drawn on the dome in the same green, thinner and faded
+   with distance; the silhouette stays the bright line and the snap
+   still matches against it only. Asserted in mathcheck (near cone in
+   front of a tall far wall; a fully-hidden middle cone must not leak). **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera
@@ -241,8 +249,11 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **adsbdb.com**: aircraft hex/callsign → type, registration, route.
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
-  skyline and landmark azimuth anchors. **Nominatim**: readable place names
-  in reports.
+  skyline and landmark azimuth anchors. **Nominatim**: forward geocoding is
+  DONE — PositionEditor has a "find your spot by name" search (Nominatim
+  jsonv2, CORS-open, no key, browser-direct — no server proxy) that sets
+  lat/lon from a place/landmark so users never source coordinates elsewhere;
+  refine with the pin afterward. Readable place names in reports still open.
 Design principle: each check outputs the same shape — a candidate with
 predicted az/el/angular-size/motion and an angular separation from the
 witness sight-line — so the report can rank ALL mundane explanations in one

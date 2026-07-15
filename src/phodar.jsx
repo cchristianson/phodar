@@ -503,6 +503,10 @@ function MediaMeasure({ src, update, wizard }) {
       const m = parseMediaMeta(buf, kind === "video");
       if (!m) {
         if (/hei[cf]/i.test(f.type) || /\.hei[cf]$/i.test(f.name || "")) update({ meta: { heic: true } });
+        /* valid pixels but no GPS/time/bearing: the file was re-encoded and
+           stripped in sharing (messaging apps, "All Photos Data" off). Say so
+           instead of failing silently — otherwise it reads as a load bug. */
+        else update({ meta: { stripped: true } });
         return;
       }
       const patch = { meta: m };
@@ -1085,7 +1089,7 @@ function MediaMeasure({ src, update, wizard }) {
       </div>
       )}
 
-      {src.meta && !src.meta.heic && (
+      {src.meta && !src.meta.heic && !src.meta.stripped && (
         <div style={{ marginTop: 10, padding: "8px 10px", border: "1px solid var(--amber)", borderRadius: 10, background: "rgba(245,169,63,.06)" }}>
           <ML style={{ color: "var(--amber)" }}>📎 Auto-filled from the file ✓</ML>
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)", lineHeight: 1.6 }}>
@@ -1095,14 +1099,30 @@ function MediaMeasure({ src, update, wizard }) {
             {isNum(src.meta.fovH) && <div>FOV {src.meta.fovH}° (from {src.meta.f35} mm-eq lens)</div>}
             {src.meta.model && <div>{src.meta.model}</div>}
           </div>
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--dim)" }}>
-            Position, time, FOV{src.meta.az != null ? ", bearing & photo placement" : ""} were applied — every field below stays editable.
-          </div>
+          {isNum(src.meta.lat) ? (
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--dim)" }}>
+              Position, time, FOV{src.meta.az != null ? ", bearing & photo placement" : ""} were applied — every field below stays editable.
+            </div>
+          ) : (
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--dim)" }}>
+              No GPS in this file (Location was likely off when it was shot) — search your spot by name or drop the pin on the position step.
+            </div>
+          )}
         </div>
       )}
       {src.meta?.heic && (
         <div style={{ marginTop: 10, fontSize: 11, color: "var(--dim)" }}>
           📎 HEIC file — metadata unreadable here. Export or share as JPEG to auto-fill GPS, time, bearing, and FOV.
+        </div>
+      )}
+      {src.meta?.stripped && (
+        <div style={{ marginTop: 10, padding: "8px 10px", border: "1px solid var(--amber)", borderRadius: 10, background: "rgba(245,169,63,.06)" }}>
+          <ML style={{ color: "var(--amber)" }}>⚠ No location, time, or direction in this photo</ML>
+          <div style={{ fontSize: 11, color: "var(--dim)", lineHeight: 1.6 }}>
+            The image loaded fine, but its metadata was stripped before it reached here — the tell-tale of a re-encoded copy (sent through Messages/WhatsApp/email, or shared with the Share Sheet's <b>“All Photos Data”</b> turned off). Nothing was lost in transit here; the geodata simply isn’t in the file.
+            <div style={{ marginTop: 5 }}>To keep it next time: in Photos, tap <b>Share → Options (top) → All Photos Data ON</b>, Location ON, then AirDrop the original — and don’t route it through a messaging app.</div>
+            <div style={{ marginTop: 5, color: "var(--teal)" }}>You can still measure this photo — just set the location by name or pin, the date/time, and the FOV on the steps that follow.</div>
+          </div>
         </div>
       )}
 
@@ -1679,6 +1699,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const pts = []; for (let a = -130; a <= 130; a += 0.8) pts.push(project(effAz + a, skylineElAt(terr.els, effAz + a)));
     return gpath(pts);
   })() : null;
+  /* nearer visible ridge crests below the silhouette — same green, faded
+     with distance like real haze; occluded stretches never emit a crest
+     so the layering is already respected in the data */
+  const ridgePaths = (terrOn && terr?.ridges) ? terr.ridges.map((r) => {
+    const pts = r.pts.map(([raz, rel]) => {
+      const da = ((raz - effAz + 540) % 360) - 180;
+      return Math.abs(da) <= 130 ? project(effAz + da, rel) : { inFront: false };
+    });
+    const d = gpath(pts);
+    if (!d) return null;
+    const t = clampN(Math.log(r.dist / 800) / Math.log(35000 / 800), 0, 1);
+    return { d, o: 0.60 - 0.35 * t };
+  }).filter(Boolean) : [];
   const terrainLbl = (terrainPath) ? (() => {
     const p = project(effAz, skylineElAt(terr.els, effAz));
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
@@ -2022,6 +2055,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
+          {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={"rgba(158,224,138," + r.o.toFixed(2) + ")"} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke="rgba(158,224,138,0.9)" strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
         </svg>
         {terrainLbl && (
@@ -2723,7 +2757,27 @@ function PositionEditor({ src, update, others }) {
   const [geoErr, setGeoErr] = useState("");
   const [demBusy, setDemBusy] = useState(false);
   const [demMsg, setDemMsg] = useState("");
+  const [q, setQ] = useState("");
+  const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
+  const [findBusy, setFindBusy] = useState(false);
   const posDone = isNum(src.lat) && isNum(src.lon);
+  /* forward geocode by place name so no one has to source coordinates
+     elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
+     to refine to the exact standing spot. */
+  const searchPlace = async () => {
+    const query = q.trim();
+    if (!query) return;
+    setFindBusy(true); setPlaces(null);
+    try {
+      const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=" + encodeURIComponent(query), { headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error("bad status");
+      const j = await r.json();
+      if (!Array.isArray(j) || !j.length) { setPlaces({ err: "No match — try a nearby town, a landmark, or paste coordinates." }); }
+      else setPlaces(j.map((p) => ({ lat: +p.lat, lon: +p.lon, name: p.display_name })).filter((p) => isNum(p.lat) && isNum(p.lon)));
+    } catch (e) { setPlaces({ err: "Place search unavailable — check the connection, or paste coordinates instead." }); }
+    setFindBusy(false);
+  };
+  const pickPlace = (p) => { update({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) }); setPlaces(null); setQ(p.name.split(",").slice(0, 2).join(",").trim()); };
   const grabDem = async () => {
     setDemBusy(true); setDemMsg("");
     try {
@@ -2747,6 +2801,27 @@ function PositionEditor({ src, update, others }) {
   };
   return (
     <>
+            <ML>Find your spot by name</ML>
+            <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+              <input value={q} onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); searchPlace(); } }}
+                placeholder="town, address, or landmark — e.g. Grants Pass, OR"
+                style={{ flex: 1, minWidth: 0 }} />
+              <button className="btn sm teal" onClick={searchPlace} disabled={findBusy || !q.trim()}>{findBusy ? "…" : "🔎 Search"}</button>
+            </div>
+            {Array.isArray(places) && places.length > 0 && (
+              <div style={{ marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+                {places.map((p, i) => (
+                  <button key={i} onClick={() => pickPlace(p)}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", background: "transparent", border: "none", borderTop: i ? "1px solid var(--line)" : "none", color: "var(--ink)", fontSize: 12, cursor: "pointer" }}>
+                    <span style={{ color: "var(--teal)" }}>📍</span> {p.name}
+                    <span style={{ color: "var(--dim)", fontFamily: "var(--mono)", fontSize: 10 }}>  {p.lat.toFixed(4)}, {p.lon.toFixed(4)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {places && places.err && <div className="warn">{places.err}</div>}
+            <div style={{ fontSize: 10, color: "var(--dim)", margin: "5px 0 10px" }}>Search by OpenStreetMap · Nominatim — then drag the pin below to your exact standing spot.</div>
             <div className="grid3">
               <Num label="Latitude" value={src.lat} onChange={(v) => {
                 const m = String(v).match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
