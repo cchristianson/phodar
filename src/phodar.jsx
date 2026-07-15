@@ -18,6 +18,7 @@ import { SHAPES, I3, rotX3, rotY3, mul3, SHAPE_R0, shapeProjNat } from "./shapes
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
+import phodarLogoRaw from "./assets/phodar-logo.svg?raw";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -3786,7 +3787,7 @@ img,svg{max-width:100%;height:auto}
 .cap{color:#666;font-size:12px}@media print{.noprint{display:none}}
 @media(max-width:640px){body{margin:16px auto;padding:0 12px}table{table-layout:fixed;font-size:12px}}
 </style></head><body>
-<h1>PHO<span>DAR</span> · SIGHTING REPORT</h1>
+<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:2px"><img src="data:image/svg+xml,${encodeURIComponent(phodarLogoRaw)}" alt="PHODAR" style="height:48px;width:auto;border-radius:8px;display:block"/><span style="font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#555">SIGHTING REPORT</span></div>
 <div class="cap">Generated ${new Date().toLocaleString()} · photogrammetric detection &amp; ranging · phodar v1</div>
 <h2>Observers (${packed.length})</h2>
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
@@ -3840,7 +3841,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   return (
     <div style={{ padding: "26px 14px 40px" }}>
       <div style={{ textAlign: "center", marginTop: 16 }}>
-        <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(300px, 80%)", margin: "0 auto" }} />
+        <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(300px, 82%)", margin: "0 auto", borderRadius: 12 }} />
         <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>
         <div style={{ color: "var(--dim)", fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
           Turn a sighting photo into real numbers — direction, size, altitude, speed.
