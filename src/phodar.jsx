@@ -17,6 +17,7 @@ import { parseMediaMeta } from "./exif.js";
 import { SHAPES, I3, rotX3, rotY3, mul3, SHAPE_R0, shapeProjNat } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
+import phodarLogo from "./assets/phodar-logo.svg";
 
 /* ============================================================
    PHODAR — PHOtogrammetric Detection And Ranging
@@ -3839,8 +3840,8 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   return (
     <div style={{ padding: "26px 14px 40px" }}>
       <div style={{ textAlign: "center", marginTop: 16 }}>
-        <div style={{ fontFamily: "var(--mono)", fontWeight: 800, fontSize: 34, letterSpacing: ".16em" }}>PHO<span style={{ color: "var(--amber)" }}>DAR</span></div>
-        <div className="microlabel" style={{ marginTop: 4 }}>Photogrammetric detection &amp; ranging</div>
+        <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(300px, 80%)", margin: "0 auto" }} />
+        <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>
         <div style={{ color: "var(--dim)", fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
           Turn a sighting photo into real numbers — direction, size, altitude, speed.
           Two witnesses make it true triangulation.
