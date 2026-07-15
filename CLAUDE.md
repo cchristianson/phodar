@@ -61,7 +61,13 @@ comments, in this order:
    its hidden EXIF-orientation transform with author matrices unpredictably.
    All images are **canvas-normalized once at load** (≤4300 px — iOS canvas
    area ceiling — EXIF baked out, `mediaNorm` flag), and the sky-view photo
-   warp is a hand-rolled canvas **triangle mesh through `projectD`**.
+   warp is a hand-rolled canvas **triangle mesh through `projectD`**. The warp
+   texture is ALWAYS a static image (≤1280 px): for video, the marked frame
+   (`A.videoTime`) is baked to a canvas off the render path — the warp never
+   draws a live `<video>` (per-render video→canvas draws were slow, janky, and
+   crashed iOS on memory). Single-frame analysis, so the aimer has no scrubber;
+   the frame is locked to what was set on the measure step. (Phase-2
+   reference-locked video will rebuild this with a per-frame pose.)
 2. **Projection aspect is tangent-scaled:** `tanV = tanH · (h/w)`. Degree
    scaling is wrong and was the original geometry bug.
 3. **`pixelDirFromAnchor` handles azimuth convergence** (1/cos el). Never
