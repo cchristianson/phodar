@@ -2845,19 +2845,24 @@ function PositionEditor({ src, update, others }) {
   const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
   const [findBusy, setFindBusy] = useState(false);
   const posDone = isNum(src.lat) && isNum(src.lon);
-  /* viewing direction (true bearing): auto from the photo's EXIF compass
-     (already WMM-corrected into A.az / mediaAim.az at load), else set here.
-     Writing both A.az and mediaAim.az carries it into the sky view as the
-     initial photo-placement azimuth. */
-  const bearing = isNum(src.A?.az) ? +src.A.az
-    : (src.mediaAim && isNum(src.mediaAim.az) ? +src.mediaAim.az
-      : (isNum(src.meta?.azTrue) ? +src.meta.azTrue : (isNum(src.meta?.az) ? +src.meta.az : null)));
+  /* Viewing direction = the placement-center azimuth, held in mediaAim.az —
+     the SAME field the sky view uses for photo placement. Both screens read
+     and write it, so they always mirror: change the ray here and the sky view
+     opens aimed there; rotate the placement in the sky view and (on commit)
+     the ray here follows. Auto-seeded from the EXIF compass at load. */
+  const bearing = isNum(src.mediaAim?.az) ? +src.mediaAim.az
+    : (isNum(src.meta?.azTrue) ? +src.meta.azTrue
+      : (isNum(src.meta?.az) ? +src.meta.az
+        : (isNum(src.A?.az) ? +src.A.az : null)));
   const setBearing = (deg) => {
     const b = ((+deg % 360) + 360) % 360;
-    update({
-      A: { ...src.A, az: b.toFixed(1) },
-      mediaAim: { az: +b.toFixed(2), el: src.mediaAim?.el ?? 15, roll: src.mediaAim?.roll ?? 0 },
-    });
+    const old = isNum(src.mediaAim?.az) ? +src.mediaAim.az : b;
+    const d = b - old; // repointing rotates the whole placement in azimuth — the sight-lines ride along
+    const rot = (a) => ((((+a + d) % 360) + 360) % 360);
+    const patch = { mediaAim: { az: +b.toFixed(2), el: src.mediaAim?.el ?? 15, roll: src.mediaAim?.roll ?? 0 } };
+    if (isNum(src.A?.az)) patch.A = { ...src.A, az: rot(src.A.az).toFixed(1) };
+    if (isNum(src.B?.az)) patch.B = { ...src.B, az: rot(src.B.az).toFixed(1) };
+    update(patch);
   };
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
