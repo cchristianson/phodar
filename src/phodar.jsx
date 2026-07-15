@@ -199,7 +199,7 @@ const css = `
   border-radius:8px; padding:9px 10px; font-size:16px; width:100%;
   font-family:var(--mono); outline:none;}
 .phodar input:focus,.phodar select:focus{border-color:var(--amber);}
-.phodar input[type=range]{padding:0; height:34px; accent-color:var(--amber); font-size:14px;}
+.phodar input[type=range]{padding:0; height:42px; accent-color:var(--amber); font-size:14px; cursor:pointer;}
 .btn{background:var(--panel2); border:1px solid var(--line); color:var(--ink);
   border-radius:8px; padding:10px 14px; font-size:13px; font-weight:600; cursor:pointer;
   letter-spacing:.03em;}
@@ -2631,14 +2631,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--amber)", marginBottom: 4 }}>Object size vs distance</div>
                 {objAngW != null ? (() => {
                   /* the measured object: sweep assumed distance, read implied size live */
-                  const t = clampN(Math.log(objD / 50) / Math.log(80000 / 50), 0, 1);
+                  const t = clampN(Math.log(objD / 30) / Math.log(80000 / 30), 0, 1); // floor 30 m ≈ 100 ft
                   const size = 2 * objD * Math.tan(objAngW * D2R / 2);
                   return (
                     <>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                        onChange={(e) => setObjD(Math.round(50 * Math.pow(80000 / 50, +e.target.value)))}
+                        onChange={(e) => setObjD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
                         style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
                         if it was <b>{fmtLenShort(objD)}</b> away → it's <b>{fmtLenShort(size)}</b> across
