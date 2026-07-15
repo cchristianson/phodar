@@ -544,6 +544,16 @@ function MediaMeasure({ src, update, wizard }) {
     setLoadErr("The browser refused to display that file. Try a smaller image (a screenshot of it works) or another format.");
   };
 
+  /* Force the first video frame to render. A muted, unplayed <video> shows
+     blank on iOS Safari (and often desktop) until a frame is decoded — the
+     bug where the clip appeared only after leaving the step and coming back
+     (a remount over a now-buffered file). A hair of seek triggers the paint.
+     Guarded to fire once, near t=0, so it never fights the scrubber. */
+  const paintFirstFrame = () => {
+    const el = mediaRef.current;
+    if (!el || media?.kind !== "video") return;
+    try { if (el.currentTime < 0.01) el.currentTime = Math.min(0.04, (el.duration || 1) / 4); } catch (e) { /* seek not ready yet — onLoadedData retries */ }
+  };
   const onLoaded = () => {
     const el = mediaRef.current;
     if (!el) return;
@@ -551,6 +561,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (media.kind === "video") {
       update({ natW: el.videoWidth, natH: el.videoHeight });
       setVidDur(el.duration || 0);
+      paintFirstFrame(); // iOS Safari leaves a <video> blank until it decodes a frame
     } else {
       /* IMAGE: Safari can report UNROTATED naturals for EXIF-oriented photos
          while displaying them rotated — and it composes its hidden orientation
@@ -920,7 +931,7 @@ function MediaMeasure({ src, update, wizard }) {
               <div style={{ transform: `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`, transformOrigin: "0 0", willChange: "transform" }}>
                 {media.kind === "video" ? (
                   <video ref={mediaRef} src={media.url} playsInline muted preload="auto"
-                    onLoadedMetadata={onLoaded} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
+                    onLoadedMetadata={onLoaded} onLoadedData={paintFirstFrame} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
                     style={{ width: "100%", display: "block", pointerEvents: "none" }} />
                 ) : (
                   <img ref={mediaRef} src={media.url} alt="sighting" onLoad={onLoaded} onError={onMediaError}
