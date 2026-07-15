@@ -1199,20 +1199,21 @@ const GHOSTW = [
   { name: "Cessna 172", m: 11, shape: "p" },
   { name: "Airliner (737)", m: 36, shape: "p" },
 ];
-function GhostSil({ shape, w, color }) {
+function GhostSil({ shape, w }) {
   /* true angular size, floored at 1 px — a balloon at 3 km IS sub-pixel,
-     and faking it bigger defeats the whole comparison */
+     and faking it bigger defeats the whole comparison. Opaque black with a
+     thin white outline so the reference reads clearly against any sky. */
   const ww = Math.max(w, 1);
   if (shape === "p") return (
     <svg width={ww} height={ww * 1.2} viewBox="0 0 100 120" style={{ display: "block", overflow: "visible" }}>
-      <g fill={color}>
+      <g fill="#000" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke">
         <path d="M50 4 C56 4 57 18 56 34 L56 92 C56 104 54 116 50 116 C46 116 44 104 44 92 L44 34 C43 18 44 4 50 4 Z" />
         <path d="M50 48 L3 84 L3 88 L16 88 L50 64 L84 88 L97 88 L97 84 Z" />
         <path d="M50 96 L24 110 L24 113 L34 113 L50 104 L66 113 L76 113 L76 110 Z" />
       </g>
     </svg>
   );
-  return <svg width={ww} height={ww} viewBox="0 0 100 100" style={{ display: "block" }}><circle cx="50" cy="50" r="47" fill={color} /></svg>;
+  return <svg width={ww} height={ww} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}><circle cx="50" cy="50" r="47" fill="#000" stroke="#fff" strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg>;
 }
 
 function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
@@ -1251,6 +1252,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [ghostIdx, setGhostIdx] = useState(3);
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
   const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
+  const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -2298,12 +2300,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
           const gPx = gAng * D2R * fpxS; // TRUE angular size — no vanity floor
           return (
-            <div style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 0.92 }}>
+            <div style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: 1 }}>
               <div style={{ position: "relative", display: "inline-block" }}>
                 {gPx < 6 && (
-                  <div style={{ position: "absolute", left: "50%", top: "50%", width: 18, height: 18, margin: "-9px 0 0 -9px", border: "1px dashed rgba(159,180,216,.6)", borderRadius: "50%" }} />
+                  <div style={{ position: "absolute", left: "50%", top: "50%", width: 18, height: 18, margin: "-9px 0 0 -9px", border: "1px dashed rgba(255,255,255,.7)", borderRadius: "50%" }} />
                 )}
-                <GhostSil shape={g.shape} w={gPx} color="#9fb4d8" />
+                <GhostSil shape={g.shape} w={gPx} />
               </div>
               <div style={{ fontSize: 9, fontFamily: "var(--mono)", color: "#9fb4d8", textShadow: "0 1px 2px rgba(0,0,0,.8)", whiteSpace: "nowrap", marginTop: 2 }}>
                 {g.name} ({g.m} m) @ {fmtLenShort(cmpD)}{gPx < 3 ? " · sub-pixel at this range" : ""}
@@ -2459,10 +2461,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               )}
               <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
               {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-              <button className={"btn sm" + (cmpOn ? " teal" : "")} onClick={() => {
+              <button className={"btn sm" + (sizeOn ? " teal" : "")} title="Object size vs distance" onClick={() => setSizeOn((v) => !v)}>📏 size</button>
+              <button className={"btn sm" + (cmpOn ? " teal" : "")} title="Compare to a reference object (balloon, drone, aircraft)" onClick={() => {
                 setCmpOn((v) => !v);
                 if (!cmpOn) setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); // drop at the crosshair
-              }}>⚖</button>
+              }}>⚖ compare</button>
             </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
@@ -2533,6 +2536,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             })()}
             {cmpOn && (
               <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--track)", marginBottom: 4 }}>Compare to a reference object</div>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {GHOSTW.map((g, i) => (
                     <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => {
@@ -2574,15 +2578,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   );
                 })()}
                 <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then slide its assumed distance</div>
-                {objAngW != null && (() => {
+              </div>
+            )}
+            {sizeOn && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--amber)", marginBottom: 4 }}>Object size vs distance</div>
+                {objAngW != null ? (() => {
                   /* the measured object: sweep assumed distance, read implied size live */
                   const t = clampN(Math.log(objD / 50) / Math.log(80000 / 50), 0, 1);
                   const size = 2 * objD * Math.tan(objAngW * D2R / 2);
                   return (
-                    <div style={{ marginTop: 8, borderTop: "1px dashed var(--line)", paddingTop: 6 }}>
-                      <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--amber)" }}>
-                        Your object — measured {objAngW.toFixed(2)}°
-                      </div>
+                    <>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
                         onChange={(e) => setObjD(Math.round(50 * Math.pow(80000 / 50, +e.target.value)))}
@@ -2591,9 +2598,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         if it was <b>{fmtLenShort(objD)}</b> away → it's <b>{fmtLenShort(size)}</b> across
                         <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
                       </div>
-                    </div>
+                    </>
                   );
-                })()}
+                })() : (
+                  <div style={{ fontSize: 11, color: "var(--dim)" }}>Mark the object's width first (fit a shape, or set the two size marks on the photo) — then slide an assumed distance to read its true size.</div>
+                )}
               </div>
             )}
           </div>
