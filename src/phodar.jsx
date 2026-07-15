@@ -3995,10 +3995,10 @@ function ReportView({ sources, est, onBack }) {
     else if (dl) setMsg(`✓ downloading ${name}`);
     else { setMsg(""); setManual({ name, text }); }
   };
-  /* one share artifact: the report, the importable data, and the FULL-res
-     photos, all in a single .zip */
-  const shareZip = async () => {
-    setMsg("packing sighting…");
+  /* the full bundle as a single .zip: the report, the importable data, and
+     the FULL-res photos — a download, importable back into Phodar */
+  const downloadBundle = async () => {
+    setMsg("packing bundle…");
     const html = await reportHtml(sources, est, { exhibits: "files" });
     const json = await buildShareJson(sources, est);
     const act = sources.filter((s) => !isEmptySource(s));
@@ -4013,8 +4013,21 @@ function ReportView({ sources, est, onBack }) {
     });
     const blob = makeZip(files);
     if (download("phodar-sighting.zip", blob, "application/zip"))
-      setMsg(`✓ downloading sighting — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
-    else setMsg("Sharing needs the deployed app — this preview can't save binaries.");
+      setMsg(`✓ downloading bundle — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
+    else setMsg("Bundle download needs the deployed app — this preview can't save binaries.");
+  };
+  /* share the viewable report page itself via the OS share sheet (text,
+     email, AirDrop…); falls back to a download/copy where share is unsupported */
+  const shareReportHtml = async () => {
+    const html = prevHtml || await reportHtml(sources, est, { exhibits: "full" });
+    try {
+      const file = new File([html], "phodar-report.html", { type: "text/html" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "PHODAR sighting report" });
+        return;
+      }
+    } catch (e) { if (e && e.name === "AbortError") return; }
+    deliver("phodar-report.html", html, "text/html");
   };
   const openReport = async () => { setMsg("packing…"); setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); setMsg(""); };
   return (
@@ -4039,10 +4052,11 @@ function ReportView({ sources, est, onBack }) {
         )}
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
           <button className="btn amber" style={{ padding: 14, fontSize: 15 }} onClick={openReport}>👁 View report</button>
+          <button className="btn" style={{ padding: 12 }} onClick={downloadBundle}>⬇ Download bundle (.zip — report + full-res photos + data)</button>
         </div>
         {msg && <div style={{ fontSize: 12, color: "var(--teal)", marginTop: 8 }}>{msg}</div>}
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8 }}>
-          Opens the full report — download it or share it (report + full-res photos + data) from the top of that view.
+          The bundle re-imports into Phodar. Open the report to read it and share the page itself (text / email) from the top.
         </div>
       </div>
 
@@ -4050,9 +4064,8 @@ function ReportView({ sources, est, onBack }) {
         <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#0009", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", gap: 6, padding: "10px 12px", background: "var(--bg)", alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1, minWidth: 60 }}>REPORT</span>
-            <button className="btn sm teal" onClick={() => deliver("phodar-report.html", prevHtml, "text/html")}>⬇ Download</button>
-            <button className="btn sm amber" onClick={shareZip}>📤 Share</button>
-            <button className="btn sm" onClick={() => setPrevHtml(null)}>✕</button>
+            <button className="btn sm amber" onClick={shareReportHtml}>📤 Share page</button>
+            <button className="btn sm" onClick={() => setPrevHtml(null)}>✕ Close</button>
           </div>
           {msg && <div style={{ padding: "0 12px 8px", background: "var(--bg)", fontSize: 11, color: "var(--teal)" }}>{msg}</div>}
           <iframe title="report" srcDoc={prevHtml} style={{ flex: 1, border: 0, background: "#fff" }} />
