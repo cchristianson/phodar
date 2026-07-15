@@ -893,7 +893,7 @@ function MediaMeasure({ src, update, wizard }) {
                     onChange={(e) => { const nsf = { ...src.shapeFit, aspect: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
               )}
-              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "bird") && (
+              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                   <span className="microlabel" style={{ marginBottom: 0 }}>spin</span>
                   <input type="range" min={-180} max={180} step={1} value={src.shapeFit.roll || 0}

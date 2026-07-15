@@ -19,6 +19,7 @@ export const SHAPES = [
   { k: "tri", label: "▲ Triangle" },
   { k: "plane", label: "✈ Plane" },
   { k: "bird", label: "🕊 Bird" },
+  { k: "drone", label: "❖ Drone" },
 ];
 export const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 export const rotX3 = (d) => { const a = d * D2R, c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
@@ -84,6 +85,22 @@ export function shapeWire(kind, aspect) { // unit major dimension, centered at o
       ]);                                                             // wing with dihedral
     }
     C.push([[-0.12, 0.02, 0], [-0.23, 0.08, 0], [-0.25, 0, 0], [-0.23, -0.08, 0], [-0.12, -0.02, 0], [-0.12, 0.02, 0]]); // tail fan
+  } else if (kind === "drone") {
+    // quadcopter, X-frame: diagonal motor-to-motor span (incl. props) = 1.
+    // frame in XY; rotor discs spin about +Z (the lift axis)
+    const rm = 0.35, rp = 0.15, zt = 0.06, bx = 0.1, bz = 0.05;
+    const top = [[bx, bx, bz], [bx, -bx, bz], [-bx, -bx, bz], [-bx, bx, bz], [bx, bx, bz]];
+    C.push(top, top.map(([x, y]) => [x, y, -bz]));                       // body box top + bottom
+    for (const sx of [bx, -bx]) for (const sy of [bx, -bx]) C.push([[sx, sy, bz], [sx, sy, -bz]]); // box verticals
+    for (const d of [45, 135, 225, 315]) {
+      const cx = Math.cos(d * D2R), sy = Math.sin(d * D2R), mx = cx * rm, my = sy * rm;
+      C.push([[cx * bx, sy * bx, 0], [mx, my, zt * 0.6]]);               // arm out to the motor
+      C.push([[mx, my, zt * 0.6], [mx, my, zt]]);                        // motor post
+      C.push(Array.from({ length: 33 }, (_, i) => { const a = (i / 32) * Math.PI * 2; return [mx + Math.cos(a) * rp, my + Math.sin(a) * rp, zt]; })); // rotor disc
+      C.push([[mx - cx * rp, my - sy * rp, zt], [mx + cx * rp, my + sy * rp, zt]]);  // prop blade
+      C.push([[mx + sy * rp, my - cx * rp, zt], [mx - sy * rp, my + cx * rp, zt]]);  // prop blade
+    }
+    for (const s of [1, -1]) C.push([[bx * 0.6, s * bx, -bz], [bx * 0.8, s * bx * 1.5, -bz - 0.1], [-bx * 0.8, s * bx * 1.5, -bz - 0.1], [-bx * 0.6, s * bx, -bz]]); // landing skids
   } else { // tri — thin equilateral plate
     const R = 0.5774, th = 0.05;
     const v = [90, 210, 330].map((d) => [Math.cos(d * D2R) * R, Math.sin(d * D2R) * R]);
@@ -92,7 +109,7 @@ export function shapeWire(kind, aspect) { // unit major dimension, centered at o
   }
   return C;
 }
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: rotX3(-24), plane: rotX3(-55), bird: rotX3(-60) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: rotX3(-24), plane: rotX3(-55), bird: rotX3(-60), drone: rotX3(-40) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
