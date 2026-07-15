@@ -264,6 +264,10 @@ const css = `
 .pinmap-hud{position:absolute; left:8px; bottom:6px; z-index:900;
   pointer-events:none; font-family:var(--mono); font-size:10px; color:var(--ink);
   text-shadow:0 1px 2px #000; line-height:1.5;}
+.map-north{position:absolute; top:6px; left:8px; z-index:900; pointer-events:none;
+  font-family:var(--mono); font-size:11px; font-weight:800; color:#fff;
+  background:rgba(7,11,20,.6); border:1px solid rgba(255,255,255,.28);
+  border-radius:6px; padding:2px 6px; text-shadow:0 1px 2px #000; letter-spacing:.06em;}
 .lmk{position:relative; transform:translate(-50%,-50%); color:var(--amber);
   font-size:11px; text-align:center; white-space:nowrap; width:0; height:0;
   display:flex; align-items:center; justify-content:center;
@@ -2812,6 +2816,7 @@ function PinMap({ lat, lon, origin, others, onChange, bearing }) {
       </div>
       <div className="pinmapwrap">
         <div ref={boxRef} style={{ position: "absolute", inset: 0 }} />
+        <div className="map-north">N ↑</div>
         {isNum(bearing) && (
           /* which way you were looking — north-up map, so screen rotation = bearing */
           <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)` }}>
@@ -3041,7 +3046,7 @@ function PlotBoard({ result, traj }) {
     try { map.fitBounds(L.latLngBounds(bounds).pad(0.3), { maxZoom: 16, animate: false }); } catch (e) { }
   }, [result, traj]);
   if (!result?.ok) return null;
-  return <div className="plotwrap"><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /></div>;
+  return <div className="plotwrap"><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /><div className="map-north">N ↑</div></div>;
 }
 
 /* ============================================================
