@@ -256,6 +256,8 @@ const css = `
   contrast(.9) saturate(.55);}
 .pinmap-cross{position:absolute; left:50%; top:50%; margin:-14px 0 0 -14px;
   z-index:900; pointer-events:none; filter:drop-shadow(0 1px 2px rgba(0,0,0,.8));}
+.pinmap-ray{position:absolute; left:50%; top:50%; z-index:899; overflow:visible;
+  pointer-events:none; transform-origin:0 0; filter:drop-shadow(0 1px 2px rgba(0,0,0,.85));}
 .pinmap-you{position:absolute; left:50%; top:50%; margin:-26px 0 0 12px;
   z-index:900; pointer-events:none; color:var(--teal); font-family:var(--mono);
   font-size:9px; font-weight:700; text-shadow:0 1px 2px #000;}
@@ -2693,7 +2695,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
    Imagery by default (a rooftop is a better anchor than a street
    name), OSM street as the toggle.
    ============================================================ */
-function PinMap({ lat, lon, origin, others, onChange }) {
+function PinMap({ lat, lon, origin, others, onChange, bearing }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef(null);     // {sat, street}
@@ -2810,6 +2812,13 @@ function PinMap({ lat, lon, origin, others, onChange }) {
       </div>
       <div className="pinmapwrap">
         <div ref={boxRef} style={{ position: "absolute", inset: 0 }} />
+        {isNum(bearing) && (
+          /* which way you were looking — north-up map, so screen rotation = bearing */
+          <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)` }}>
+            <line x1="0" y1="0" x2="0" y2="-78" stroke="#5FD3BC" strokeWidth="2.5" />
+            <polygon points="0,-90 -6,-75 6,-75" fill="#5FD3BC" />
+          </svg>
+        )}
         <svg className="pinmap-cross" viewBox="-14 -14 28 28" width="28" height="28">
           <circle cx="0" cy="0" r="7" fill="none" stroke="#5FD3BC" strokeWidth="2" />
           <path d="M-12 0H12M0 -12V12" stroke="#5FD3BC" strokeWidth="2" />
@@ -2836,6 +2845,20 @@ function PositionEditor({ src, update, others }) {
   const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
   const [findBusy, setFindBusy] = useState(false);
   const posDone = isNum(src.lat) && isNum(src.lon);
+  /* viewing direction (true bearing): auto from the photo's EXIF compass
+     (already WMM-corrected into A.az / mediaAim.az at load), else set here.
+     Writing both A.az and mediaAim.az carries it into the sky view as the
+     initial photo-placement azimuth. */
+  const bearing = isNum(src.A?.az) ? +src.A.az
+    : (src.mediaAim && isNum(src.mediaAim.az) ? +src.mediaAim.az
+      : (isNum(src.meta?.azTrue) ? +src.meta.azTrue : (isNum(src.meta?.az) ? +src.meta.az : null)));
+  const setBearing = (deg) => {
+    const b = ((+deg % 360) + 360) % 360;
+    update({
+      A: { ...src.A, az: b.toFixed(1) },
+      mediaAim: { az: +b.toFixed(2), el: src.mediaAim?.el ?? 15, roll: src.mediaAim?.roll ?? 0 },
+    });
+  };
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -2949,9 +2972,16 @@ function PositionEditor({ src, update, others }) {
                 onChange={(e) => { const t = new Date(e.target.value).getTime(); if (!isNaN(t)) update({ whenMs: t }); }} />
             </div>
             {posDone && (
+              <div style={{ marginTop: 10 }}>
+                <ML style={{ marginBottom: 2 }}>Viewing direction {isNum(bearing) ? <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(bearing)}° {compass8(bearing)}</span> : <span style={{ color: "var(--dim)" }}>— drag to set which way you looked</span>}</ML>
+                <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{isNum(src.meta?.az) ? "Auto-filled from the photo's compass — adjust if needed." : "The teal ray on the map shows the direction; it seeds the sky-view placement."}</div>
+              </div>
+            )}
+            {posDone && (
               <PinMap lat={+src.lat} lon={+src.lon}
                 origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
-                others={others}
+                others={others} bearing={bearing}
                 onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
             )}
     </>
