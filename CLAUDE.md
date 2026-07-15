@@ -123,7 +123,12 @@ comments, in this order:
    props and same drag-ground-under-fixed-pin interaction: the crosshair is a
    fixed DOM overlay, `moveend` commits the center via `onChange`, and a
    `progRef` guard + 2e-6° epsilon stop commit echoes from looping. Markers
-   are `divIcon`s (no PNG assets — they break under bundlers).
+   are `divIcon`s (no PNG assets — they break under bundlers). The position
+   step also draws a **viewing-direction ray** from the pin (fixed DOM SVG,
+   north-up map so screen rotation = true bearing): auto from the photo's
+   EXIF compass, or set via a bearing slider. It writes both `A.az` and
+   `mediaAim.az`, so the direction carries into the sky view as the initial
+   photo-placement azimuth.
 3. **ADS-B check — LIVE VERSION DONE** (`src/checks/adsb.js` + `AdsbCheck` in
    ResultsPanel): queries live aircraft around the observers, ranks by
    worst-witness angular separation from the sight-line (a real match must
