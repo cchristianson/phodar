@@ -175,7 +175,15 @@ comments, in this order:
    Roll sign is empirical — matchSkyline returns the error IN the
    measurements; az/el add, roll subtracts. "Set every observer's
    elevation from terrain" one-tap lives in WizFinish's altitude-spread
-   warning. **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
+   warning. **Layered ridges: DONE** — `skylineFromSampler` also returns
+   `ridges`: interior visible crest lines below the silhouette (a crest
+   is emitted only when unoccluded by nearer terrain AND the ground
+   behind drops ≥0.25° below it — occluded stretches emit nothing, so
+   layering is in the data), stitched into polylines by depth+elevation
+   continuity, drawn on the dome in the same green, thinner and faded
+   with distance; the silhouette stays the bright line and the snap
+   still matches against it only. Asserted in mathcheck (near cone in
+   front of a tall far wall; a fully-hidden middle cone must not leak). **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera

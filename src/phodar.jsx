@@ -1679,6 +1679,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const pts = []; for (let a = -130; a <= 130; a += 0.8) pts.push(project(effAz + a, skylineElAt(terr.els, effAz + a)));
     return gpath(pts);
   })() : null;
+  /* nearer visible ridge crests below the silhouette — same green, faded
+     with distance like real haze; occluded stretches never emit a crest
+     so the layering is already respected in the data */
+  const ridgePaths = (terrOn && terr?.ridges) ? terr.ridges.map((r) => {
+    const pts = r.pts.map(([raz, rel]) => {
+      const da = ((raz - effAz + 540) % 360) - 180;
+      return Math.abs(da) <= 130 ? project(effAz + da, rel) : { inFront: false };
+    });
+    const d = gpath(pts);
+    if (!d) return null;
+    const t = clampN(Math.log(r.dist / 800) / Math.log(35000 / 800), 0, 1);
+    return { d, o: 0.60 - 0.35 * t };
+  }).filter(Boolean) : [];
   const terrainLbl = (terrainPath) ? (() => {
     const p = project(effAz, skylineElAt(terr.els, effAz));
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
@@ -2022,6 +2035,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
+          {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={"rgba(158,224,138," + r.o.toFixed(2) + ")"} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke="rgba(158,224,138,0.9)" strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
         </svg>
         {terrainLbl && (

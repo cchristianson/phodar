@@ -30,24 +30,80 @@ export const AZ_STEP = 0.4, N_AZ = Math.round(360 / AZ_STEP);
 /* ---------- pure core (node-testable) ----------
    sampleEN(eastM, northM) → terrain height (m, MSL) or null off-grid.
    h0 = observer ground height (m, MSL).
-   Returns { els: Float32Array(N_AZ) degrees, dists: Float32Array(N_AZ) m } */
+   Returns { els: Float32Array(N_AZ) degrees, dists: Float32Array(N_AZ) m,
+             ridges: [{pts: [[azDeg, elDeg], …], dist: medianM}] } — ridges
+   are the VISIBLE interior crest lines below the silhouette: a crest is
+   emitted only where nearer terrain hasn't already covered it AND the
+   ground behind it drops ≥ RIDGE_PROM below its sight-line before higher
+   terrain rises past it, i.e. exactly the depth edges a photo shows.
+   Occluded stretches emit nothing, so layering comes out for free. */
+const RIDGE_PROM = 0.25; // deg a crest must stand above what's behind it
 export function skylineFromSampler(sampleEN, h0, maxDistM = 35000) {
   const dists = [];
   for (let d = 40; d < maxDistM; d *= 1.06) dists.push(d);
   const eye = h0 + EYE_M;
   const els = new Float32Array(N_AZ), ridgeD = new Float32Array(N_AZ);
+  const cols = new Array(N_AZ);
   for (let i = 0; i < N_AZ; i++) {
     const a = i * AZ_STEP * D2R, sa = Math.sin(a), ca = Math.cos(a);
     let best = -89, bd = 0;
+    let pend = null, dipMin = Infinity; // last visible crest; deepest dip since
+    const crests = [];
     for (const d of dists) {
       const h = sampleEN(sa * d, ca * d);
       if (h == null) continue;
       const el = Math.atan2(h - eye - (d * d * (1 - K_REFR)) / (2 * RE), d) * R2D;
-      if (el > best) { best = el; bd = d; }
+      if (el > best) {
+        if (pend && pend.el - dipMin >= RIDGE_PROM) crests.push(pend);
+        best = el; bd = d;
+        pend = { el, d }; dipMin = Infinity;
+      } else if (el < dipMin) dipMin = el;
     }
     els[i] = best; ridgeD[i] = bd;
+    cols[i] = crests; // interior only — the final pend IS the skyline
   }
-  return { els, dists: ridgeD };
+  return { els, dists: ridgeD, ridges: linkRidges(cols) };
+}
+
+/* stitch per-azimuth crest lists into ridge polylines: a crest joins the
+   segment from the previous column when its depth is coherent (<1.5×
+   jump) and its elevation continuous; otherwise it starts a new segment.
+   Segments meeting across az 360→0 are merged; specks (<2°) dropped. */
+function linkRidges(cols) {
+  const segs = [];
+  let open = []; // segments touching the previous column
+  for (let i = 0; i < N_AZ; i++) {
+    const nx = [], used = new Set();
+    for (const c of cols[i]) {
+      let bj = -1, bs = Infinity;
+      for (let j = 0; j < open.length; j++) {
+        if (used.has(j)) continue;
+        const dr = Math.abs(Math.log(c.d / open[j].d)), de = Math.abs(c.el - open[j].el);
+        if (dr > 0.41 || de > 1.2) continue; // 0.41 ≈ ln 1.5
+        if (de + dr < bs) { bs = de + dr; bj = j; }
+      }
+      let seg;
+      if (bj >= 0) { used.add(bj); seg = open[bj].seg; seg.pts.push([i * AZ_STEP, c.el]); seg.ds.push(c.d); }
+      else { seg = { pts: [[i * AZ_STEP, c.el]], ds: [c.d], i0: i }; segs.push(seg); }
+      nx.push({ seg, el: c.el, d: c.d });
+    }
+    open = nx;
+  }
+  /* merge across north: a segment ending at the last column continues one
+     starting at column 0 when the endpoints line up */
+  for (const e of segs) {
+    if (e.merged || Math.round(e.pts[e.pts.length - 1][0] / AZ_STEP) !== N_AZ - 1) continue;
+    for (const s of segs) {
+      if (s === e || s.merged || s.i0 !== 0) continue;
+      const de = Math.abs(e.pts[e.pts.length - 1][1] - s.pts[0][1]);
+      const dr = Math.abs(Math.log(e.ds[e.ds.length - 1] / s.ds[0]));
+      if (de <= 1.2 && dr <= 0.41) { e.pts = e.pts.concat(s.pts); e.ds = e.ds.concat(s.ds); s.merged = true; break; }
+    }
+  }
+  return segs.filter((s) => !s.merged && s.pts.length >= 5).map((s) => {
+    const ds = s.ds.slice().sort((a, b) => a - b);
+    return { pts: s.pts, dist: ds[ds.length >> 1] };
+  });
 }
 
 /* interpolate a skyline elevation at an arbitrary azimuth */

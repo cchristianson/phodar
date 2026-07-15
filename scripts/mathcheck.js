@@ -88,6 +88,36 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else { fails++; console.error("  FAIL cone leaked far off-bearing"); }
 }
 
+// --- layered ridges: a near crest in front of a tall far wall must survive
+//     as an interior ridge line; a cone fully hidden behind the near crest
+//     must emit NOTHING (visibility/occlusion is the whole feature) ---
+{
+  const cone = (e0, n0, r, h) => (e, n) => { const d = Math.hypot(e - e0, n - n0); return d < r ? (1 - d / r) * h : 0; };
+  const near = cone(2000, 0, 800, 150);   // peak 250 m @ 2 km due east
+  const hidden = cone(4000, 0, 800, 150); // peak 250 m @ 4 km — below the near sight-line
+  const far = cone(12000, 0, 3000, 2000); // peak 2100 m @ 12 km — the skyline
+  const sample = (e, n) => 100 + Math.max(near(e, n), hidden(e, n), far(e, n));
+  const { els, ridges } = skylineFromSampler(sample, 100);
+  const curv = (d) => (d * d * 0.87) / (2 * 6371000);
+  const farEl = Math.atan2(2100 - 101.6 - curv(12000), 12000) * 180 / Math.PI;
+  approx(skylineElAt(els, 90), farEl, 0.35, "far wall is the skyline @az 90");
+  const nearEl = Math.atan2(250 - 101.6 - curv(2000), 2000) * 180 / Math.PI;
+  const at90 = ridges.filter((r) => r.pts.some(([a, el]) => Math.abs(a - 90) < 1 && Math.abs(el - nearEl) < 0.5));
+  if (at90.length) console.log(`  ok   near ridge visible under the far wall (${at90[0].pts.length} pts)`);
+  else { fails++; console.error("  FAIL near ridge missing from interior layers"); }
+  if (at90.length && Math.abs(at90[0].dist - 2000) < 500) console.log(`  ok   near ridge depth ~2 km: ${Math.round(at90[0].dist)} m`);
+  else { fails++; console.error(`  FAIL near ridge depth: ${at90.length ? Math.round(at90[0].dist) : "n/a"} m`); }
+  const span = at90.length ? at90[0].pts[at90[0].pts.length - 1][0] - at90[0].pts[0][0] : 0;
+  if (span >= 8) console.log(`  ok   near ridge spans ${span.toFixed(1)}° of azimuth`);
+  else { fails++; console.error(`  FAIL near ridge span too short: ${span.toFixed(1)}°`); }
+  const leak = ridges.some((r) => r.dist > 3000 && r.dist < 6000 && r.pts.some(([a]) => Math.abs(a - 90) < 15));
+  if (!leak) console.log("  ok   fully-occluded middle cone emits no ridge");
+  else { fails++; console.error("  FAIL occluded cone leaked a ridge line"); }
+  const phantom = ridges.some((r) => r.pts.some(([a]) => Math.abs(a - 270) < 20));
+  if (!phantom) console.log("  ok   flat ground west has no ridge layers");
+  else { fails++; console.error("  FAIL phantom ridge on flat ground"); }
+}
+
 // --- trajectory corner rounding: an arc beats a hard 90° corner ---
 {
   const mk = (r) => ({ track: [{ t: 0, az: 0, el: 40 }, { t: 5, az: 45, el: 40, r }, { t: 10, az: 45, el: 5 }], A: {}, fovH: null });
