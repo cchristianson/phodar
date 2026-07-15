@@ -3663,12 +3663,15 @@ The object (${motionSrc}) moved <b>${n1(objSpeed)} m/s toward ${Math.round(objHe
     }
   }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>PHODAR sighting report</title><style>
-body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif;color:#141414;max-width:760px;margin:32px auto;padding:0 18px}
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PHODAR sighting report</title><style>
+html,body{max-width:100%;overflow-x:hidden}
+body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif;color:#141414;max-width:760px;margin:32px auto;padding:0 18px;overflow-wrap:break-word}
 h1{font:800 22px ui-monospace,Menlo,monospace;letter-spacing:.12em}h1 span{color:#C77B14}
 h2{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#555;margin-top:26px}
-table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top;overflow-wrap:break-word}
+img,svg{max-width:100%;height:auto}
 .cap{color:#666;font-size:12px}@media print{.noprint{display:none}}
+@media(max-width:640px){body{margin:16px auto;padding:0 12px}table{table-layout:fixed;font-size:12px}}
 </style></head><body>
 <h1>PHO<span>DAR</span> · SIGHTING REPORT</h1>
 <div class="cap">Generated ${new Date().toLocaleString()} · photogrammetric detection &amp; ranging · phodar v1</div>
@@ -3744,7 +3747,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
             est,
           }, null, 1);
           try { await navigator.clipboard.writeText(lite); setImpMsg("✓ session data copied — paste it somewhere safe (preview storage can reset between versions)"); }
-          catch (e) { setImpMsg("clipboard blocked — use Report → 🪶 Data only"); }
+          catch (e) { setImpMsg("clipboard blocked — use Report → 📤 Share sighting"); }
         }}>⬆ Backup session to clipboard</button>
       )}
       <input ref={fileRef} type="file" accept=".json,.html,application/json,text/html" style={{ display: "none" }}
@@ -3890,7 +3893,7 @@ function ReportView({ sources, est, onBack }) {
       <div className="card" style={{ margin: 0 }}>
         <ML>Sighting report</ML>
         <div style={{ fontSize: 12, color: "var(--dim)", lineHeight: 1.6 }}>
-          White-paper style: observers, the triangulated result, kinematics, methodology, caveats. It prints to PDF from any browser, and the sighting data is <b style={{ color: "var(--ink)" }}>embedded inside it</b> — anyone with Phodar can import the report itself to add their perspective. The .phodar.json is the bare data.
+          White-paper style: observers, the triangulated result, kinematics, methodology, caveats. It prints to PDF from any browser, and the sighting data is <b style={{ color: "var(--ink)" }}>embedded inside it</b> — anyone with Phodar can import the report itself to add their perspective. The share bundle also carries the full-resolution photos.
         </div>
         {fix.ok ? (
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--teal)", marginTop: 8 }}>
@@ -3904,9 +3907,10 @@ function ReportView({ sources, est, onBack }) {
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
           <button className="btn amber" style={{ padding: 12 }} onClick={async () => { setMsg("packing…"); setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); setMsg(""); }}>👁 Preview the report (full-res)</button>
           <button className="btn teal" style={{ padding: 12 }} onClick={async () => { setMsg("packing…"); deliver("phodar-report.html", await reportHtml(sources, est), "text/html"); }}>📄 Report → clipboard / download</button>
-          <button className="btn" style={{ padding: 12 }} onClick={async () => { setMsg("packing…"); deliver("sighting.phodar.json", await buildShareJson(sources, est), "application/json"); }}>💾 Share file → clipboard / download</button>
           <button className="btn" style={{ padding: 12 }} onClick={async () => {
-            setMsg("building zip…");
+            setMsg("packing sighting…");
+            /* one share artifact: the report, the importable data, and the
+               FULL-resolution photos, all in a single .zip */
             const html = await reportHtml(sources, est, { exhibits: "files" });
             const json = await buildShareJson(sources, est);
             const act = sources.filter((s) => !isEmptySource(s));
@@ -3921,17 +3925,9 @@ function ReportView({ sources, est, onBack }) {
             });
             const blob = makeZip(files);
             if (download("phodar-sighting.zip", blob, "application/zip"))
-              setMsg(`✓ downloading zip — ${(blob.size / 1048576).toFixed(1)} MB, full-resolution photos inside`);
-            else setMsg("Zip downloads need the deployed app — this preview can't save binaries. Preview / Copy work here.");
-          }}>🗜 Bundle (.zip — report + full-res photos + data)</button>
-          <button className="btn sm" onClick={() => {
-            const lite = JSON.stringify({
-              phodar: 1, created: new Date().toISOString(),
-              sources: sources.filter((s) => !isEmptySource(s)).map(({ mediaUrl, mediaKind, mediaNorm, open, ...r }) => r),
-              est,
-            }, null, 1);
-            deliver("sighting-data.phodar.json", lite, "application/json");
-          }}>🪶 Data only, no photos (~10 KB — pastes anywhere)</button>
+              setMsg(`✓ downloading sighting — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
+            else setMsg("Sharing needs the deployed app — this preview can't save binaries. Preview / Copy work here.");
+          }}>📤 Share sighting (.zip — report + full-res photos + data)</button>
         </div>
         {msg && <div style={{ fontSize: 12, color: "var(--teal)", marginTop: 8 }}>{msg}</div>}
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8 }}>
