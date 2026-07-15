@@ -2112,9 +2112,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           if (!pr.inFront || pr.x < -0.05 || pr.x > 1.05 || pr.y < -0.05 || pr.y > 1.05) return null;
           const col = s.lit ? "#9fdcff" : "rgba(159,220,255,.35)";
           return (
-            <div key={"sat" + s.name} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center" }}>
-              <div style={{ width: 5, height: 5, transform: "rotate(45deg)", background: col, margin: "0 auto", boxShadow: s.lit ? "0 0 5px 1px rgba(159,220,255,.5)" : "none" }} />
-              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 2, whiteSpace: "nowrap" }}>
+            <div key={"sat" + s.name} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
+              {/* diamond sits ON the point (and its trail); label hangs below */}
+              <div style={{ width: 5, height: 5, transform: "rotate(45deg)", background: col, boxShadow: s.lit ? "0 0 5px 1px rgba(159,220,255,.5)" : "none" }} />
+              <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 3, textAlign: "center", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", whiteSpace: "nowrap" }}>
                 🛰 {s.name}{s.lit ? "" : " · in shadow"}<br />{Math.round(s.rangeKm)} km
               </div>
             </div>
@@ -2194,9 +2195,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <div key={"ac" + v.a.hex}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); setSelHex(sel ? null : v.a.hex); }}
-              style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "auto", cursor: "pointer", textAlign: "center", opacity: 0.94, padding: 6, zIndex: sel ? 6 : 5 }}>
+              style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "auto", cursor: "pointer", opacity: 0.94, padding: 6, zIndex: sel ? 6 : 5 }}>
+              {/* glyph sits ON the point (and its sky-track); label hangs below */}
               <div style={{ fontSize: 13, color: col, transform: `rotate(${rot}deg)`, textShadow: "0 1px 3px rgba(0,0,0,.85)", lineHeight: 1 }}>✈</div>
-              <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 1, whiteSpace: "nowrap" }}>
+              <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 1, textAlign: "center", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", whiteSpace: "nowrap" }}>
                 {id}{v.a.t ? ` ${v.a.t}` : ""}<br />{fmtLenShort(v.rangeM)}{v.a.altM != null ? ` · ${Math.round(v.a.altM * 3.28084 / 100) / 10} kft` : ""}
               </div>
             </div>
@@ -2338,11 +2340,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto", flexWrap: "wrap" }}>
-            {sun.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(sun)}>☀ {fmtBody(sun)}</button>}
-            {moon.alt > -1 && <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => recenter(moon)}>☾ {fmtBody(moon)} · {Math.round(moon.frac * 100)}%</button>}
-            {planetsVisible && planets.filter((p) => p.alt > 0).map((p) => (
-              <button key={p.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: "#ffe9b0" }} onClick={() => recenter(p)}>{p.sym} {fmtBody(p)}</button>
-            ))}
+            {sun.alt > -1 && <button className="btn sm" title={`Sun ${fmtBody(sun)} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(sun)}>☀</button>}
+            {moon.alt > -1 && <button className="btn sm" title={`Moon ${fmtBody(moon)} · ${Math.round(moon.frac * 100)}% lit — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(moon)}>☾</button>}
             {hasPos && (
               <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
                 onClick={() => setAcOn((v) => !v)}>
