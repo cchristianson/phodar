@@ -3406,18 +3406,19 @@ async function satBasemap(fix, G) {
     const nT = pow(z), cw = (x1 - x0 + 1) * 256, ch = (y1 - y0 + 1) * 256;
     const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
     const ctx = cv.getContext("2d");
+    /* same-origin proxy (server/index.mjs) → no CORS taint on toDataURL;
+       any 404s (server not running) fall through to the plain plot */
+    const loadImg = (src) => new Promise((r) => { const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => r(im); im.onerror = () => r(null); im.src = src; });
     const jobs = [];
     for (let tx = x0; tx <= x1; tx++) for (let ty = y0; ty <= y1; ty++) {
       if (ty < 0 || ty >= nT) continue;
-      const wx = ((tx % nT) + nT) % nT;
-      jobs.push(new Promise((done) => {
-        const im = new Image(); im.crossOrigin = "anonymous";
-        im.onload = () => { try { ctx.drawImage(im, (tx - x0) * 256, (ty - y0) * 256); } catch (e) { } done(true); };
-        im.onerror = () => done(false);
-        /* same-origin proxy (server/index.mjs) → no CORS taint on toDataURL;
-           404s harmlessly to the plain plot where the server isn't running */
-        im.src = `/api/tile/${z}/${ty}/${wx}`;
-      }));
+      const wx = ((tx % nT) + nT) % nT, dx = (tx - x0) * 256, dy = (ty - y0) * 256;
+      jobs.push((async () => {
+        /* imagery first, then roads + place-name/boundary overlays on top */
+        const layers = await Promise.all(["img", "trans", "ref"].map((L) => loadImg(`/api/tile/${L}/${z}/${ty}/${wx}`)));
+        layers.forEach((im) => { if (im) { try { ctx.drawImage(im, dx, dy); } catch (e) { } } });
+        return layers[0] != null; // base imagery loaded
+      })());
     }
     if (!(await Promise.all(jobs)).some(Boolean)) return null;
     let href;
