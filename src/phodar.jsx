@@ -3995,6 +3995,28 @@ function ReportView({ sources, est, onBack }) {
     else if (dl) setMsg(`✓ downloading ${name}`);
     else { setMsg(""); setManual({ name, text }); }
   };
+  /* one share artifact: the report, the importable data, and the FULL-res
+     photos, all in a single .zip */
+  const shareZip = async () => {
+    setMsg("packing sighting…");
+    const html = await reportHtml(sources, est, { exhibits: "files" });
+    const json = await buildShareJson(sources, est);
+    const act = sources.filter((s) => !isEmptySource(s));
+    const files = [
+      { name: strU8("report.html"), data: strU8(html) },
+      { name: strU8("sighting.phodar.json"), data: strU8(json) },
+    ];
+    act.forEach((s, i) => {
+      if (s.mediaUrl && s.mediaKind === "image") {
+        try { files.push({ name: strU8(`photos/observer-${i + 1}.jpg`), data: dataUrlU8(s.mediaUrl) }); } catch (e) { }
+      }
+    });
+    const blob = makeZip(files);
+    if (download("phodar-sighting.zip", blob, "application/zip"))
+      setMsg(`✓ downloading sighting — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
+    else setMsg("Sharing needs the deployed app — this preview can't save binaries.");
+  };
+  const openReport = async () => { setMsg("packing…"); setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); setMsg(""); };
   return (
     <div style={{ padding: "14px 12px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -4016,43 +4038,23 @@ function ReportView({ sources, est, onBack }) {
           </div>
         )}
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-          <button className="btn amber" style={{ padding: 12 }} onClick={async () => { setMsg("packing…"); setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); setMsg(""); }}>👁 Preview the report (full-res)</button>
-          <button className="btn teal" style={{ padding: 12 }} onClick={async () => { setMsg("packing…"); deliver("phodar-report.html", await reportHtml(sources, est), "text/html"); }}>📄 Report → clipboard / download</button>
-          <button className="btn" style={{ padding: 12 }} onClick={async () => {
-            setMsg("packing sighting…");
-            /* one share artifact: the report, the importable data, and the
-               FULL-resolution photos, all in a single .zip */
-            const html = await reportHtml(sources, est, { exhibits: "files" });
-            const json = await buildShareJson(sources, est);
-            const act = sources.filter((s) => !isEmptySource(s));
-            const files = [
-              { name: strU8("report.html"), data: strU8(html) },
-              { name: strU8("sighting.phodar.json"), data: strU8(json) },
-            ];
-            act.forEach((s, i) => {
-              if (s.mediaUrl && s.mediaKind === "image") {
-                try { files.push({ name: strU8(`photos/observer-${i + 1}.jpg`), data: dataUrlU8(s.mediaUrl) }); } catch (e) { }
-              }
-            });
-            const blob = makeZip(files);
-            if (download("phodar-sighting.zip", blob, "application/zip"))
-              setMsg(`✓ downloading sighting — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
-            else setMsg("Sharing needs the deployed app — this preview can't save binaries. Preview / Copy work here.");
-          }}>📤 Share sighting (.zip — report + full-res photos + data)</button>
+          <button className="btn amber" style={{ padding: 14, fontSize: 15 }} onClick={openReport}>👁 View report</button>
         </div>
         {msg && <div style={{ fontSize: 12, color: "var(--teal)", marginTop: 8 }}>{msg}</div>}
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8 }}>
-          Real file downloads arrive with the deployed (Railway) build — this preview falls back to your clipboard.
+          Opens the full report — download it or share it (report + full-res photos + data) from the top of that view.
         </div>
       </div>
 
       {prevHtml && (
         <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#0009", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", gap: 8, padding: "10px 12px", background: "var(--bg)", alignItems: "center" }}>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1 }}>REPORT PREVIEW</span>
-            <button className="btn sm teal" onClick={async () => { const ok = await copyText(prevHtml); setMsg(ok ? "✓ report HTML copied" : ""); if (!ok) setManual({ name: "phodar-report.html", text: prevHtml }); setPrevHtml(null); }}>⧉ Copy HTML</button>
-            <button className="btn sm" onClick={() => setPrevHtml(null)}>✕ Close</button>
+          <div style={{ display: "flex", gap: 6, padding: "10px 12px", background: "var(--bg)", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1, minWidth: 60 }}>REPORT</span>
+            <button className="btn sm teal" onClick={() => deliver("phodar-report.html", prevHtml, "text/html")}>⬇ Download</button>
+            <button className="btn sm amber" onClick={shareZip}>📤 Share</button>
+            <button className="btn sm" onClick={() => setPrevHtml(null)}>✕</button>
           </div>
+          {msg && <div style={{ padding: "0 12px 8px", background: "var(--bg)", fontSize: 11, color: "var(--teal)" }}>{msg}</div>}
           <iframe title="report" srcDoc={prevHtml} style={{ flex: 1, border: 0, background: "#fff" }} />
         </div>
       )}
