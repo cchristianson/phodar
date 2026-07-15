@@ -250,10 +250,31 @@ function json(res, code, obj) {
   res.writeHead(code, { "content-type": "application/json", "access-control-allow-origin": "*" });
   res.end(body);
 }
+/* Esri World Imagery tile proxy — lets the browser composite the report's
+   satellite basemap onto a canvas WITHOUT a CORS taint (same origin here),
+   so toDataURL succeeds and the imagery bakes into the self-contained report. */
+async function apiTile(u, res) {
+  const m = u.pathname.match(/^\/api\/tile\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/);
+  if (!m) { res.writeHead(400); return res.end("bad tile"); }
+  const [, z, y, x] = m;
+  if (+z > 21) { res.writeHead(400); return res.end("zoom"); }
+  try {
+    const r = await fetch(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) { res.writeHead(r.status, { "cache-control": "no-store" }); return res.end(); }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, {
+      "content-type": r.headers.get("content-type") || "image/jpeg",
+      "access-control-allow-origin": "*",
+      "cache-control": "public, max-age=604800",
+    });
+    res.end(buf);
+  } catch (e) { res.writeHead(502, { "cache-control": "no-store" }); res.end("tile fetch failed"); }
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
+    if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));

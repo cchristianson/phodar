@@ -3366,7 +3366,7 @@ async function buildShareJson(sources, est) {
 
 /* print-friendly top-down plot for the report: observers, rays, fix,
    trajectory — pure SVG string, self-contained, no tiles */
-function reportPlotSvg(fix, traj) {
+function plotGeom(fix, traj) {
   const pts = [...fix.obs.map((o) => o.P), fix.solA.X];
   if (fix.motion?.XB) pts.push(fix.motion.XB);
   if (traj) for (const p of traj) pts.push(p);
@@ -3376,30 +3376,84 @@ function reportPlotSvg(fix, traj) {
   const cE = (minE + maxE) / 2, cN = (minN + maxN) / 2;
   const W = 560, H = 420, s = Math.min(W, H) / span;
   const px = (p) => [(W / 2 + (p[0] - cE) * s).toFixed(1), (H / 2 - (p[1] - cN) * s).toFixed(1)];
+  return { W, H, cE, cN, s, span, px };
+}
+
+/* Esri World Imagery basemap for the report plot, composited to a canvas and
+   returned as a data URI so the report stays self-contained (viewable offline,
+   shareable as a file). North-up Web-Mercator aligns with the ENU plot at
+   these scales. Returns null on any failure (unreachable / CORS-tainted) so
+   the plot falls back to the plain background — never blocks the report. */
+async function satBasemap(fix, G) {
+  try {
+    if (!fix?.ref || typeof document === "undefined") return null;
+    const c = geoFromEnu([G.cE, G.cN, 0], fix.ref);
+    const latR = c.lat * D2R, pow = (z) => Math.pow(2, z);
+    const plotMpp = 1 / G.s;
+    let z = clampN(Math.round(Math.log2(156543.03392 * Math.cos(latR) / plotMpp)), 1, 19);
+    const res = 156543.03392 * Math.cos(latR) / pow(z);   // m per mercator px
+    const k = G.s * res;                                   // SVG px per mercator px
+    const worldPx = (la, lo) => {
+      const sinL = Math.sin(la * D2R);
+      return [(lo + 180) / 360 * 256 * pow(z),
+        (0.5 - Math.log((1 + sinL) / (1 - sinL)) / (4 * Math.PI)) * 256 * pow(z)];
+    };
+    const [mcx, mcy] = worldPx(c.lat, c.lon);
+    const halfW = (G.W / 2) / k * 1.06, halfH = (G.H / 2) / k * 1.06;
+    const x0 = Math.floor((mcx - halfW) / 256), x1 = Math.floor((mcx + halfW) / 256);
+    const y0 = Math.floor((mcy - halfH) / 256), y1 = Math.floor((mcy + halfH) / 256);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 36) return null; // safety cap
+    const nT = pow(z), cw = (x1 - x0 + 1) * 256, ch = (y1 - y0 + 1) * 256;
+    const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext("2d");
+    const jobs = [];
+    for (let tx = x0; tx <= x1; tx++) for (let ty = y0; ty <= y1; ty++) {
+      if (ty < 0 || ty >= nT) continue;
+      const wx = ((tx % nT) + nT) % nT;
+      jobs.push(new Promise((done) => {
+        const im = new Image(); im.crossOrigin = "anonymous";
+        im.onload = () => { try { ctx.drawImage(im, (tx - x0) * 256, (ty - y0) * 256); } catch (e) { } done(true); };
+        im.onerror = () => done(false);
+        /* same-origin proxy (server/index.mjs) → no CORS taint on toDataURL;
+           404s harmlessly to the plain plot where the server isn't running */
+        im.src = `/api/tile/${z}/${ty}/${wx}`;
+      }));
+    }
+    if (!(await Promise.all(jobs)).some(Boolean)) return null;
+    let href;
+    try { href = cv.toDataURL("image/jpeg", 0.82); } catch (e) { return null; } // tainted → bail
+    return { href, x: G.W / 2 - (mcx - x0 * 256) * k, y: G.H / 2 - (mcy - y0 * 256) * k, w: cw * k, h: ch * k };
+  } catch (e) { return null; }
+}
+
+async function reportPlotSvg(fix, traj) {
+  const G = plotGeom(fix, traj), { W, H, s, span, px } = G;
+  const bm = await satBasemap(fix, G);
   const e2 = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  let g = "";
+  /* legible over imagery: white text with a dark halo when a basemap is shown */
+  const tx = (x, y, str, o = {}) => `<text x="${x}" y="${y}" font-size="${o.size || 11}"${o.weight ? ` font-weight="${o.weight}"` : ""} fill="${bm ? "#fff" : (o.fill || "#333")}"${bm ? ` stroke="#000" stroke-width="2.6" paint-order="stroke"` : ""}>${str}</text>`;
+  let g = bm ? `<image href="${bm.href}" x="${bm.x.toFixed(1)}" y="${bm.y.toFixed(1)}" width="${bm.w.toFixed(1)}" height="${bm.h.toFixed(1)}" preserveAspectRatio="none"/>` : "";
   for (const o of fix.obs) {
     const a = px(o.P), i = fix.obs.indexOf(o);
     const far = px(add(o.P, scl(o.dA, Math.max((fix.solA.ts[i] || 0) * 1.15, span * 0.3))));
-    g += `<line x1="${a[0]}" y1="${a[1]}" x2="${far[0]}" y2="${far[1]}" stroke="#C77B14" stroke-dasharray="6 5" stroke-width="1.4" opacity=".8"/>`;
+    g += `<line x1="${a[0]}" y1="${a[1]}" x2="${far[0]}" y2="${far[1]}" stroke="#F5A93F" stroke-dasharray="6 5" stroke-width="1.8" opacity=".95"/>`;
   }
-  if (traj && traj.length > 1) g += `<polyline points="${traj.map((p) => px(p).join(",")).join(" ")}" fill="none" stroke="#4a72c4" stroke-width="2.2" opacity=".9"/>`;
+  if (traj && traj.length > 1) g += `<polyline points="${traj.map((p) => px(p).join(",")).join(" ")}" fill="none" stroke="#6ea0ff" stroke-width="2.4" opacity=".95"/>`;
   fix.obs.forEach((o, i) => {
     const [x, y] = px(o.P);
-    g += `<path d="M${x} ${+y - 7} l-6 12 h12 z" fill="#C77B14"/><text x="${+x + 9}" y="${+y + 4}" font-size="11" fill="#333">${e2(o.s.name || `Obs ${i + 1}`)}</text>`;
+    g += `<path d="M${x} ${+y - 7} l-6 12 h12 z" fill="#F5A93F" stroke="#000" stroke-width=".6"/>` + tx(+x + 9, +y + 4, e2(o.s.name || `Obs ${i + 1}`));
   });
   const A = px(fix.solA.X);
-  g += `<circle cx="${A[0]}" cy="${A[1]}" r="7" fill="none" stroke="#0e7d6f" stroke-width="2.4"/><line x1="${+A[0] - 12}" y1="${A[1]}" x2="${+A[0] + 12}" y2="${A[1]}" stroke="#0e7d6f" stroke-width="2"/><line x1="${A[0]}" y1="${+A[1] - 12}" x2="${A[0]}" y2="${+A[1] + 12}" stroke="#0e7d6f" stroke-width="2"/><text x="${+A[0] + 14}" y="${+A[1] - 9}" font-size="11" font-weight="700" fill="#0e7d6f">FIX A</text>`;
+  g += `<circle cx="${A[0]}" cy="${A[1]}" r="7" fill="none" stroke="#2ee6c8" stroke-width="2.6"/><line x1="${+A[0] - 12}" y1="${A[1]}" x2="${+A[0] + 12}" y2="${A[1]}" stroke="#2ee6c8" stroke-width="2.2"/><line x1="${A[0]}" y1="${+A[1] - 12}" x2="${A[0]}" y2="${+A[1] + 12}" stroke="#2ee6c8" stroke-width="2.2"/>` + tx(+A[0] + 14, +A[1] - 9, "FIX A", { weight: 700, fill: "#0e7d6f" });
   if (fix.motion?.XB) {
     const B = px(fix.motion.XB);
-    g += `<line x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke="#0e7d6f" stroke-width="1.8"/><circle cx="${B[0]}" cy="${B[1]}" r="5" fill="none" stroke="#0e7d6f" stroke-width="2"/><text x="${+B[0] + 9}" y="${+B[1] + 4}" font-size="11" fill="#0e7d6f">B</text>`;
+    g += `<line x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke="#2ee6c8" stroke-width="2"/><circle cx="${B[0]}" cy="${B[1]}" r="5" fill="none" stroke="#2ee6c8" stroke-width="2.2"/>` + tx(+B[0] + 9, +B[1] + 4, "B", { fill: "#0e7d6f" });
   }
-  /* scale bar (nice round length) + north arrow */
   const target = span / 4;
   const nice = Math.pow(10, Math.floor(Math.log10(target))) * ([1, 2, 5, 10].find((f) => Math.pow(10, Math.floor(Math.log10(target))) * f >= target) || 10);
-  g += `<line x1="16" y1="${H - 16}" x2="${16 + nice * s}" y2="${H - 16}" stroke="#555" stroke-width="2.5"/><text x="16" y="${H - 22}" font-size="10" fill="#555">${fmtLenShort(nice)}</text>`;
-  g += `<text x="16" y="20" font-size="12" fill="#555">N ↑</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fafafa">${g}</svg>`;
+  g += `<line x1="16" y1="${H - 16}" x2="${16 + nice * s}" y2="${H - 16}" stroke="${bm ? "#fff" : "#555"}" stroke-width="2.5"/>` + tx(16, H - 22, fmtLenShort(nice), { size: 10, fill: "#555" }) + tx(16, 20, "N ↑", { size: 12, fill: "#555" });
+  if (bm) g += tx(W - 6, H - 6, "© Esri, Maxar", { size: 9 }).replace("<text ", '<text text-anchor="end" opacity=".9" ');
+  return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:${bm ? "#111" : "#fafafa"}">${g}</svg>`;
 }
 
 /* speed + felt-load strip chart for the report */
@@ -3447,8 +3501,8 @@ async function reportHtml(sources, est, opts = {}) {
       row("Ray convergence", fix.conv.toFixed(1) + "°") +
       row("Quality", fix.rating + (fix.behind ? " — rays cross BEHIND an observer; treat as unreliable (see caveats)" : "")) +
       `</table>` +
-      reportPlotSvg(fix, tr.stereo?.k ? tr.stereo.pos : null) +
-      `<p class="cap">Top-down: observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>`;
+      (await reportPlotSvg(fix, tr.stereo?.k ? tr.stereo.pos : null)) +
+      `<p class="cap">Top-down (satellite basemap): observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>`;
   } else {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
     /* single witness: the honest deliverable is the size↔distance line —
