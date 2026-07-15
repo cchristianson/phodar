@@ -2657,7 +2657,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             )}
           </div>
         )}
-        <div style={{ fontSize: 11, color: "rgba(255,255,255,.65)", marginBottom: 8 }}>
+        <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
             ? "The photo is pinned, undistorted, center-screen — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Line the photo's horizon onto the horizon line, then ✓ Done — nothing will shift."
             : wizard
