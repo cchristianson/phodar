@@ -249,8 +249,11 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **adsbdb.com**: aircraft hex/callsign → type, registration, route.
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
-  skyline and landmark azimuth anchors. **Nominatim**: readable place names
-  in reports.
+  skyline and landmark azimuth anchors. **Nominatim**: forward geocoding is
+  DONE — PositionEditor has a "find your spot by name" search (Nominatim
+  jsonv2, CORS-open, no key, browser-direct — no server proxy) that sets
+  lat/lon from a place/landmark so users never source coordinates elsewhere;
+  refine with the pin afterward. Readable place names in reports still open.
 Design principle: each check outputs the same shape — a candidate with
 predicted az/el/angular-size/motion and an angular separation from the
 witness sight-line — so the report can rank ALL mundane explanations in one
