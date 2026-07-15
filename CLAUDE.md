@@ -205,7 +205,13 @@ comments, in this order:
    continuity, drawn on the dome in the same green, thinner and faded
    with distance; the silhouette stays the bright line and the snap
    still matches against it only. Asserted in mathcheck (near cone in
-   front of a tall far wall; a fully-hidden middle cone must not leak). **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
+   front of a tall far wall; a fully-hidden middle cone must not leak).
+   **Sea-level clamp**: DEM tiles carry bathymetry (negative sea-floor depth)
+   over oceans, but the visible surface is 0 m — sampling raw made the
+   running-max skyline a bumpy, too-low fake ridge over open water (field
+   report: coastal observer looking out to sea). `skylineFromSampler` now
+   clamps samples (and the eye height) to ≥ 0, so water reads as the flat sea
+   horizon; asserted in mathcheck. **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera
