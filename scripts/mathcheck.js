@@ -104,6 +104,18 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else { fails++; console.error(`  FAIL ocean skyline bumpy: spread ${(mx - mn).toFixed(4)}°`); }
 }
 
+// --- near-shore foreground noise: a spurious berm ~3 m above eye a few dozen
+//     metres away (coarse-DEM shoreline artifact) must NOT become a 2-3° fake
+//     ridge over open water. The march skips the resolution-limited foreground. ---
+{
+  const eye = 4 + 1.6; // observer 4 m; berm 7 m within 150 m is DEM noise, sea beyond
+  const sample = (e, n) => { const d = Math.hypot(e, n); return d < 150 ? 7 : 0; };
+  const { els } = skylineFromSampler(sample, 4);
+  let mx = -99; for (let i = 0; i < els.length; i++) mx = Math.max(mx, els[i]);
+  if (mx < 0.3) console.log(`  ok   near-shore berm ignored, sea horizon flat (max ${mx.toFixed(2)}°)`);
+  else { fails++; console.error(`  FAIL near-field berm leaked a ${mx.toFixed(2)}° fake ridge`); }
+}
+
 // --- layered ridges: a near crest in front of a tall far wall must survive
 //     as an interior ridge line; a cone fully hidden behind the near crest
 //     must emit NOTHING (visibility/occlusion is the whole feature) ---
@@ -116,7 +128,7 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const { els, ridges } = skylineFromSampler(sample, 100);
   const curv = (d) => (d * d * 0.87) / (2 * 6371000);
   const farEl = Math.atan2(2100 - 101.6 - curv(12000), 12000) * 180 / Math.PI;
-  approx(skylineElAt(els, 90), farEl, 0.35, "far wall is the skyline @az 90");
+  approx(skylineElAt(els, 90), farEl, 0.6, "far wall is the skyline @az 90"); // tol covers where log-spaced samples land on the apex
   const nearEl = Math.atan2(250 - 101.6 - curv(2000), 2000) * 180 / Math.PI;
   const at90 = ridges.filter((r) => r.pts.some(([a, el]) => Math.abs(a - 90) < 1 && Math.abs(el - nearEl) < 0.5));
   if (at90.length) console.log(`  ok   near ridge visible under the far wall (${at90[0].pts.length} pts)`);

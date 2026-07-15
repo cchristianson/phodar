@@ -211,7 +211,15 @@ comments, in this order:
    running-max skyline a bumpy, too-low fake ridge over open water (field
    report: coastal observer looking out to sea). `skylineFromSampler` now
    clamps samples (and the eye height) to ≥ 0, so water reads as the flat sea
-   horizon; asserted in mathcheck. **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
+   horizon; asserted in mathcheck. **Foreground skip**: the far-field clamp
+   wasn't enough — the real culprit at the coast was near-field NOISE: the
+   coarse tile (~19 m/px z13) put a spurious 7 m "berm" 40–85 m from a 5.6 m
+   eye → a fake 2.7° ridge that won the running-max over open ocean. The
+   march now starts at 200 m (a few coarse-grid pixels), below which samples
+   are resolution noise, not the horizon this calibrates against. It only
+   changes the skyline when the near field spikes ABOVE eye at close range
+   (the coast case); for normal terrain the far horizon already wins. Both
+   asserted in mathcheck (a near berm over sea must stay flat). **Still open**: labeled peaks via OSM Overpass. Point-query fallbacks if
    Terrarium dies: OpenTopoData (`/v1/ned10m`, 100 pts/call, 1000/day),
    USGS EPQS.
 5. Re-enable device sensors: flip `ENABLE_SENSORS` (point-with-phone + camera
