@@ -1194,10 +1194,10 @@ const ENABLE_GPS_BUTTON = false; // 📍 use-my-GPS — parked (unreliable in th
 
 /* reference silhouettes for the in-sky Compare tool (from Sky Sense) */
 const GHOSTW = [
-  { name: "Mylar balloon", m: 0.5, shape: "c" },
-  { name: "Drone", m: 0.35, shape: "c" },
-  { name: "Cessna 172", m: 11, shape: "p" },
-  { name: "Airliner (737)", m: 36, shape: "p" },
+  { name: "Mylar balloon", short: "Balloon", m: 0.5, shape: "c" },
+  { name: "Drone", short: "Drone", m: 0.35, shape: "d" },
+  { name: "Cessna 172", short: "Cessna", m: 11, shape: "p" },
+  { name: "Airliner (737)", short: "737", m: 36, shape: "p" },
 ];
 function GhostSil({ shape, w }) {
   /* true angular size, floored at 1 px — a balloon at 3 km IS sub-pixel,
@@ -1210,6 +1210,17 @@ function GhostSil({ shape, w }) {
         <path d="M50 4 C56 4 57 18 56 34 L56 92 C56 104 54 116 50 116 C46 116 44 104 44 92 L44 34 C43 18 44 4 50 4 Z" />
         <path d="M50 48 L3 84 L3 88 L16 88 L50 64 L84 88 L97 88 L97 84 Z" />
         <path d="M50 96 L24 110 L24 113 L34 113 L50 104 L66 113 L76 113 L76 110 Z" />
+      </g>
+    </svg>
+  );
+  if (shape === "d") return ( // quadcopter, top-down X-frame: 4 rotor discs + arms + hub
+    <svg width={ww} height={ww} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
+      <g fill="#000" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke">
+        <rect x="8" y="45.5" width="84" height="9" rx="4" transform="rotate(45 50 50)" />
+        <rect x="8" y="45.5" width="84" height="9" rx="4" transform="rotate(-45 50 50)" />
+        <circle cx="19" cy="19" r="16" /><circle cx="81" cy="19" r="16" />
+        <circle cx="19" cy="81" r="16" /><circle cx="81" cy="81" r="16" />
+        <circle cx="50" cy="50" r="12" />
       </g>
     </svg>
   );
@@ -2539,7 +2550,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--track)", marginBottom: 4 }}>Compare to a reference object</div>
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {GHOSTW.map((g, i) => (
-                    <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")} onClick={() => {
+                    <button key={i} className={"btn sm" + (ghostIdx === i ? " teal" : "")}
+                      style={{ padding: "4px 8px", fontSize: 11, flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap" }} onClick={() => {
                       setGhostIdx(i);
                       /* pull the distance into THIS object's meaningful band —
                          a drone at an airliner's 10 km is an invisible dot */
@@ -2549,7 +2561,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         const ang = 2 * Math.atan(g.m / (2 * dd)) * R2D;
                         return (ang < 0.08 || ang > 8) ? Math.round(g.m * 115) /* ≈0.5° — clearly visible */ : Math.round(dd);
                       });
-                    }}>{g.name}</button>
+                    }}>{g.short}</button>
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
