@@ -213,12 +213,14 @@ comments, in this order:
 8. **Report charts: DONE** — reportPlotSvg (top-down observers/rays/fix/
    trajectory, scale bar) + reportTrajSvg (speed + felt-load strip) as
    self-contained SVG; plus the single-witness distance⇄size chart. The
-   top-down plot now composites an **Esri World Imagery basemap** (Web-
-   Mercator tiles → canvas → data URI baked into the report, so it stays
-   self-contained/offline). Tiles are fetched via a **same-origin proxy**
-   (`/api/tile/{z}/{y}/{x}` in `server/index.mjs`) so `toDataURL` isn't
-   CORS-tainted; any failure (no server, upstream down) falls back to the
-   plain background — never blocks the report. Report HTML also carries a
+   top-down plot now composites an **Esri World Imagery basemap + map-data
+   overlay** (satellite + roads + place-names/boundaries): Web-Mercator tiles
+   → canvas → data URI baked into the report, so it stays self-contained/
+   offline. Tiles are fetched via a **same-origin proxy**
+   (`/api/tile/{layer}/{z}/{y}/{x}`, layer ∈ img|trans|ref, in
+   `server/index.mjs`) so `toDataURL` isn't CORS-tainted; any failure (no
+   server, upstream down) falls back to the plain background — never blocks
+   the report. Report HTML also carries a
    viewport meta + responsive rules so it fits mobile width. Print CSS
    polish still open.
 9. **Reference-locked video** (after the still reference stack — video composes

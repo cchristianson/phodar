@@ -250,16 +250,18 @@ function json(res, code, obj) {
   res.writeHead(code, { "content-type": "application/json", "access-control-allow-origin": "*" });
   res.end(body);
 }
-/* Esri World Imagery tile proxy — lets the browser composite the report's
-   satellite basemap onto a canvas WITHOUT a CORS taint (same origin here),
-   so toDataURL succeeds and the imagery bakes into the self-contained report. */
+/* Esri tile proxy — lets the browser composite the report's satellite basemap
+   + map-data overlay onto a canvas WITHOUT a CORS taint (same origin here), so
+   toDataURL succeeds and the tiles bake into the self-contained report.
+   Layers: img = World Imagery, trans = roads, ref = place names/boundaries. */
+const TILE_SVC = { img: "World_Imagery", trans: "Reference/World_Transportation", ref: "Reference/World_Boundaries_and_Places" };
 async function apiTile(u, res) {
-  const m = u.pathname.match(/^\/api\/tile\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/);
+  const m = u.pathname.match(/^\/api\/tile\/(img|trans|ref)\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})$/);
   if (!m) { res.writeHead(400); return res.end("bad tile"); }
-  const [, z, y, x] = m;
+  const [, layer, z, y, x] = m;
   if (+z > 21) { res.writeHead(400); return res.end("zoom"); }
   try {
-    const r = await fetch(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, { signal: AbortSignal.timeout(15000) });
+    const r = await fetch(`https://server.arcgisonline.com/ArcGIS/rest/services/${TILE_SVC[layer]}/MapServer/tile/${z}/${y}/${x}`, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) { res.writeHead(r.status, { "cache-control": "no-store" }); return res.end(); }
     const buf = Buffer.from(await r.arrayBuffer());
     res.writeHead(200, {
