@@ -1293,53 +1293,62 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const id = setTimeout(() => setFlash(""), 2200);
     return () => clearTimeout(id);
   }, [flash]);
-  const [vidT2, setVidT2] = useState(0);
-  const [vidDur2, setVidDur2] = useState(0);
-  const [, setFrameNonce] = useState(0); // bumped on 'seeked' to force a warp redraw of the newly-decoded frame
-  const aimVidRef = useRef(null);
-  /* the aimer must show the SAME frame the object was marked on (A.videoTime),
-     not frame 0 — otherwise placement aligns to the wrong picture. Seek there
-     on load (first open) or to the current scrub position (after a look↔place
-     remount), and force a redraw once the frame actually decodes. */
-  const onAimVidMeta = (e) => {
-    const dur = e.target.duration || 0;
-    setVidDur2(dur);
-    const want = vidT2 > 0 ? vidT2 : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0);
-    /* below ~0.01 s, seeking to 0 won't force iOS to decode a frame, so nudge
-       to a hair to guarantee a paint (same first-frame issue as the load step) */
-    const eps = Math.min(0.04, (dur || 1) / 4);
-    const target = clampN(want > 0.01 ? want : eps, 0, dur || want || 1);
-    setVidT2(target);
-    try { e.target.currentTime = target; } catch (err) { /* onSeeked/next tick */ }
-  };
+  /* Video in the aimer is a SINGLE still: the frame the object was marked on
+     (A.videoTime). It's baked to a static texture once (below) — the analysis
+     is single-frame, so there is no scrubber here, and the warp never touches
+     a live <video> (repeated per-render video→canvas draws were the source of
+     the jank and the iOS memory crashes that kicked back to the start). */
+  const [vidFrameUrl, setVidFrameUrl] = useState(null); // baked marked-frame data URL for Place mode
   const placeRef = useRef(null);
   const twistRef = useRef(null);
   const warpRef = useRef(null);   // canvas that draws the Look-mode warp ourselves
   const texRef = useRef(null);
   const [, setTexReady] = useState(0);
 
-  /* decode the (already EXIF-normalized) image once for canvas texturing */
+  /* decode the still texture for the canvas warp ONCE. Image: the EXIF-
+     normalized photo. Video: the marked frame (A.videoTime) baked to a
+     canvas off the render path, so the warp draws a static texture — never
+     a live <video> — which is what made the sky view fast and stable. */
+  const MAXT = 1280;
+  const bakeTex = (drawable, w, h) => {
+    let tex = drawable;
+    try {
+      if (w > MAXT || h > MAXT) {
+        const sc = MAXT / Math.max(w, h);
+        const cv = document.createElement("canvas");
+        cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+        cv.getContext("2d").drawImage(drawable, 0, 0, cv.width, cv.height);
+        tex = cv;
+      }
+    } catch (e) { /* keep full-res */ }
+    texRef.current = tex; setTexReady((v) => v + 1);
+  };
   useEffect(() => {
-    texRef.current = null; setTexReady((v) => v + 1);
-    if (!source?.mediaUrl || source?.mediaKind === "video") return;
-    const im = new Image();
-    im.onload = () => {
-      let tex = im;
-      try {
-        const MAXT = 1280;
-        if (im.naturalWidth > MAXT || im.naturalHeight > MAXT) {
-          const sc = MAXT / Math.max(im.naturalWidth, im.naturalHeight);
+    texRef.current = null; setTexReady((v) => v + 1); setVidFrameUrl(null);
+    if (!source?.mediaUrl) return;
+    if (source?.mediaKind === "video") {
+      const v = document.createElement("video");
+      v.muted = true; v.playsInline = true; v.preload = "auto";
+      let dead = false;
+      const t = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+      v.onloadeddata = () => { if (!dead) { try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } } };
+      v.onseeked = () => {
+        if (dead || !v.videoWidth) return;
+        try {
           const cv = document.createElement("canvas");
-          cv.width = Math.round(im.naturalWidth * sc);
-          cv.height = Math.round(im.naturalHeight * sc);
-          cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height);
-          tex = cv;
-        }
-      } catch (e) { /* keep full-res image */ }
-      texRef.current = tex; setTexReady((v) => v + 1);
-    };
+          cv.width = v.videoWidth; cv.height = v.videoHeight;
+          cv.getContext("2d").drawImage(v, 0, 0);
+          bakeTex(cv, cv.width, cv.height);
+          setVidFrameUrl(cv.toDataURL("image/jpeg", 0.9));
+        } catch (e) { /* frame not paintable yet */ }
+      };
+      v.src = source.mediaUrl;
+      return () => { dead = true; v.removeAttribute("src"); v.load(); };
+    }
+    const im = new Image();
+    im.onload = () => bakeTex(im, im.naturalWidth, im.naturalHeight);
     im.src = source.mediaUrl;
-  }, [source?.mediaUrl, source?.mediaKind]);
+  }, [source?.mediaUrl, source?.mediaKind, source?.A?.videoTime]);
 
   /* aim starts on the previously entered direction, if any */
   useEffect(() => {
@@ -1844,11 +1853,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     if (placing || !photoOn || !photo) return;
-    const isVid = source?.mediaKind === "video";
-    const tex = isVid ? aimVidRef.current : texRef.current;
+    const tex = texRef.current; // static image OR the baked video frame — never a live <video>
     if (!tex) return;
-    const tw = isVid ? tex.videoWidth : (tex.naturalWidth || tex.width);
-    const th = isVid ? tex.videoHeight : (tex.naturalHeight || tex.height);
+    const tw = tex.naturalWidth || tex.width;
+    const th = tex.naturalHeight || tex.height;
     if (!tw || !th) return;
     const NC = 7, NR = Math.max(4, Math.round(NC * photo.natH / photo.natW));
     const dst = [];
@@ -2026,14 +2034,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         ))}
 
-        {/* photo/video — Look mode: our own canvas mesh warp */}
+        {/* photo/video — Look mode: our own canvas mesh warp (static texture) */}
         {!placing && photoOn && (
           <canvas ref={warpRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
-        )}
-        {!placing && photoOn && source?.mediaKind === "video" && (
-          <video ref={aimVidRef} src={source.mediaUrl} muted playsInline preload="auto"
-            onLoadedMetadata={onAimVidMeta} onSeeked={() => setFrameNonce((n) => n + 1)}
-            style={{ position: "absolute", width: 2, height: 2, opacity: 0, pointerEvents: "none" }} />
         )}
         {photoHidden && (
           <div style={{ position: "absolute", left: "50%", top: 56, transform: "translateX(-50%)", background: "rgba(15,23,42,.75)", border: "1px solid var(--line)", borderRadius: 999, padding: "4px 12px", fontSize: 11, fontFamily: "var(--mono)", color: "var(--dim)", pointerEvents: "none" }}>
@@ -2066,13 +2069,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             transform: `translate(-50%,-50%) rotate(${-pRoll}deg)`,
             pointerEvents: "none",
           }}>
-            {source.mediaKind === "video" ? (
-              <video ref={aimVidRef} src={source.mediaUrl} muted playsInline preload="auto"
-                onLoadedMetadata={onAimVidMeta} onSeeked={() => setFrameNonce((n) => n + 1)}
-                style={{ width: "100%", display: "block", opacity: PH_OP }} />
-            ) : (
-              <img src={source.mediaUrl} alt="" style={{ width: "100%", display: "block", opacity: PH_OP }} />
-            )}
+            {/* video shows the baked marked frame — the same still the warp uses */}
+            {(() => {
+              const imgSrc = source.mediaKind === "video" ? vidFrameUrl : source.mediaUrl;
+              return imgSrc
+                ? <img src={imgSrc} alt="" style={{ width: "100%", display: "block", opacity: PH_OP }} />
+                : <div style={{ width: "100%", aspectRatio: (source.natW && source.natH) ? `${source.natW} / ${source.natH}` : "16 / 9", background: "rgba(15,23,42,.6)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11, fontFamily: "var(--mono)" }}>rendering frame…</div>;
+            })()}
             {source?.natW && (
               <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
                 viewBox={`0 0 ${source.natW} ${source.natH}`} preserveAspectRatio="none">
@@ -2467,10 +2470,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     )}
                   </>
                 )}
-                {source.mediaKind === "video" && vidDur2 > 0 && (
-                  <input type="range" min={0} max={vidDur2} step={0.033} value={vidT2}
-                    onChange={(e) => { const t = +e.target.value; setVidT2(t); if (aimVidRef.current) aimVidRef.current.currentTime = t; }}
-                    style={{ width: 110 }} />
+                {source.mediaKind === "video" && (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (locked — set it on the measure step)</span>
                 )}
                 {pMode === "place" && (
                   <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
