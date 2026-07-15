@@ -3853,17 +3853,6 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
       </div>
       <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
-      {real.length > 0 && (
-        <button className="btn sm" style={{ width: "100%", marginTop: 6 }} onClick={async () => {
-          const lite = JSON.stringify({
-            phodar: 1, created: new Date().toISOString(),
-            sources: sources.filter((s) => !isEmptySource(s)).map(({ mediaUrl, mediaKind, mediaNorm, open, ...r }) => r),
-            est,
-          }, null, 1);
-          try { await navigator.clipboard.writeText(lite); setImpMsg("✓ session data copied — paste it somewhere safe (preview storage can reset between versions)"); }
-          catch (e) { setImpMsg("clipboard blocked — use Report → 📤 Share sighting"); }
-        }}>⬆ Backup session to clipboard</button>
-      )}
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => {
           const f = e.target.files?.[0]; if (!f) return;
