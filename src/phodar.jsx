@@ -3841,7 +3841,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   return (
     <div style={{ padding: "26px 14px 40px" }}>
       <div style={{ textAlign: "center", marginTop: 16 }}>
-        <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(300px, 82%)", margin: "0 auto", borderRadius: 12 }} />
+        <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(460px, 94%)", margin: "0 auto", borderRadius: 12 }} />
         <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>
         <div style={{ color: "var(--dim)", fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
           Turn a sighting photo into real numbers — direction, size, altitude, speed.
