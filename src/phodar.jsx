@@ -1295,7 +1295,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, [flash]);
   const [vidT2, setVidT2] = useState(0);
   const [vidDur2, setVidDur2] = useState(0);
+  const [, setFrameNonce] = useState(0); // bumped on 'seeked' to force a warp redraw of the newly-decoded frame
   const aimVidRef = useRef(null);
+  /* the aimer must show the SAME frame the object was marked on (A.videoTime),
+     not frame 0 — otherwise placement aligns to the wrong picture. Seek there
+     on load (first open) or to the current scrub position (after a look↔place
+     remount), and force a redraw once the frame actually decodes. */
+  const onAimVidMeta = (e) => {
+    const dur = e.target.duration || 0;
+    setVidDur2(dur);
+    const want = vidT2 > 0 ? vidT2 : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0);
+    /* below ~0.01 s, seeking to 0 won't force iOS to decode a frame, so nudge
+       to a hair to guarantee a paint (same first-frame issue as the load step) */
+    const eps = Math.min(0.04, (dur || 1) / 4);
+    const target = clampN(want > 0.01 ? want : eps, 0, dur || want || 1);
+    setVidT2(target);
+    try { e.target.currentTime = target; } catch (err) { /* onSeeked/next tick */ }
+  };
   const placeRef = useRef(null);
   const twistRef = useRef(null);
   const warpRef = useRef(null);   // canvas that draws the Look-mode warp ourselves
@@ -2016,7 +2032,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {!placing && photoOn && source?.mediaKind === "video" && (
           <video ref={aimVidRef} src={source.mediaUrl} muted playsInline preload="auto"
-            onLoadedMetadata={(e) => setVidDur2(e.target.duration || 0)}
+            onLoadedMetadata={onAimVidMeta} onSeeked={() => setFrameNonce((n) => n + 1)}
             style={{ position: "absolute", width: 2, height: 2, opacity: 0, pointerEvents: "none" }} />
         )}
         {photoHidden && (
@@ -2052,7 +2068,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           }}>
             {source.mediaKind === "video" ? (
               <video ref={aimVidRef} src={source.mediaUrl} muted playsInline preload="auto"
-                onLoadedMetadata={(e) => setVidDur2(e.target.duration || 0)}
+                onLoadedMetadata={onAimVidMeta} onSeeked={() => setFrameNonce((n) => n + 1)}
                 style={{ width: "100%", display: "block", opacity: PH_OP }} />
             ) : (
               <img src={source.mediaUrl} alt="" style={{ width: "100%", display: "block", opacity: PH_OP }} />
