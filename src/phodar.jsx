@@ -4064,7 +4064,7 @@ function ReportView({ sources, est, onBack }) {
         <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#0009", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", gap: 6, padding: "10px 12px", background: "var(--bg)", alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1, minWidth: 60 }}>REPORT</span>
-            <button className="btn sm amber" onClick={shareReportHtml}>📤 Share page</button>
+            <button className="btn sm amber" onClick={shareReportHtml}>📤 Share/Download page</button>
             <button className="btn sm" onClick={() => setPrevHtml(null)}>✕ Close</button>
           </div>
           {msg && <div style={{ padding: "0 12px 8px", background: "var(--bg)", fontSize: 11, color: "var(--teal)" }}>{msg}</div>}
