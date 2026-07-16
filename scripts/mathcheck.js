@@ -538,27 +538,34 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const nearDot = found.filter((s) => dots.some(([x, y]) => Math.hypot(s.x - (x + 0.5), s.y - (y + 0.5)) < 2)).length;
   approx(nearDot, 4, 0, "platesolve: all four star centroids located");
 
-  // autoStarAlign: synth a catalog + detections at a known pose, recover from a
-  // perturbed seed (mirrors the manual placement being a few degrees off)
+  // autoStarAlign: recover a known pose from a perturbed seed, ROBUST to
+  // (a) clouds hiding some catalog stars, (b) a UFO-like bright blob that isn't
+  // a catalog star, and (c) faint non-catalog clutter
   const natW = 4000, natH = 3000;
   const truth = { az: 230, el: 85, roll: -30, fov: 45, k: 0.02 };
   let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  const cat = [], det = [];
+  const cat = [], catPx = [], det = [];
   for (let i = 0; i < 30; i++) {
     const px = (0.12 + 0.76 * rnd()) * natW, py = (0.12 + 0.76 * rnd()) * natH;
-    const g = pixToDirK(px, py, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
-    cat.push({ g });
-    const p = dirToPixK(g, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
+    cat.push({ g: pixToDirK(px, py, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k) });
+    catPx.push({ px, py });
+  }
+  const covered = new Set([5, 17]); // two stars hidden behind cloud → no detection
+  for (let i = 0; i < 30; i++) {
+    if (covered.has(i)) continue;
+    const p = dirToPixK(cat[i].g, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
     det.push({ x: p.px + (rnd() - 0.5) * 2, y: p.py + (rnd() - 0.5) * 2 }); // ±1 px noise
   }
-  for (let i = 0; i < 8; i++) det.push({ x: rnd() * natW, y: rnd() * natH }); // clutter / faint non-catalog blobs
+  det.push({ x: catPx[5].px + 120, y: catPx[5].py - 90 }); // a "UFO": bright blob, matches no star — must be rejected
+  for (let i = 0; i < 8; i++) det.push({ x: rnd() * natW, y: rnd() * natH }); // faint non-catalog clutter
   const sol = autoStarAlign(det, cat, natW, natH, { az: truth.az + 7, el: truth.el - 4, roll: truth.roll + 12, fov: truth.fov * 1.1, k: 0 });
-  approx(sol ? 1 : 0, 1, 0, "platesolve: locked a solution");
+  approx(sol ? 1 : 0, 1, 0, "platesolve: locked despite clouds + a UFO");
   if (sol) {
-    approx(sol.az, truth.az, 0.6, "platesolve: az recovered");
-    approx(sol.el, truth.el, 0.6, "platesolve: el recovered");
-    approx(sol.roll, truth.roll, 1.2, "platesolve: roll recovered");
-    approx(sol.fov, truth.fov, 1.5, "platesolve: FOV recovered");
+    approx(sol.az, truth.az, 0.6, "platesolve: az recovered (robust)");
+    approx(sol.el, truth.el, 0.6, "platesolve: el recovered (robust)");
+    approx(sol.roll, truth.roll, 1.2, "platesolve: roll recovered (robust)");
+    approx(sol.fov, truth.fov, 1.5, "platesolve: FOV recovered (robust)");
+    approx(sol.n >= 26 && sol.n <= 28 ? 1 : 0, 1, 0, "platesolve: matched visible stars, excluded UFO/clutter");
     approx(sol.rms < 0.6 ? 1 : 0, 1, 0, "platesolve: sub-degree fit rms");
   }
 }
