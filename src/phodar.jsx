@@ -2065,23 +2065,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const pix = dirToPixK(vC, photo.natW, photo.natH, pAz, pEl, pRoll, fovM, pDist); // the object's fixed pixel
     if (!pix) { setCalibMsg("Couldn't read that spot — re-aim the crosshair on the object"); return; }
     const g = dirOf(calibAnchor.az, calibAnchor.el);
-    if (calibPrevRef.current == null) calibPrevRef.current = { fov: fovM, roll: pRoll, dist: pDist };
+    if (calibPrevRef.current == null) calibPrevRef.current = { az: pAz, el: pEl, fov: fovM, roll: pRoll, dist: pDist };
     const list = [...calibAnchorsRef.current, { px: pix.px, py: pix.py, g }];
     calibAnchorsRef.current = list;
     const oldFov = fovM;
     const sol = solvePoseAnchors(list, photo.natW, photo.natH, pAz, pEl, { roll: pRoll, fov: fovM, k: pDist });
+    if (list.length >= 3) { setPAz(sol.az); setPEl(clampN(sol.el, -20, 88)); } // full plate solve moves the pointing too
     setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
     setFovM(clampN(sol.fov, 8, 135));
     setPDist(sol.k);
     setCalibApplied(true); setCalibCount(list.length);
-    setCalibMsg(list.length >= 2
-      ? `✓ ${list.length} stars aligned · FOV ${sol.fov.toFixed(0)}° · lens ${sol.k >= 0 ? "+" : ""}${sol.k.toFixed(3)} · fit ${sol.rms.toFixed(2)}°`
-      : `✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · add a 2nd star to also fit lens distortion`);
+    setCalibMsg(list.length >= 3
+      ? `✓ ${list.length} stars — full solve · FOV ${sol.fov.toFixed(0)}° · lens ${sol.k >= 0 ? "+" : ""}${sol.k.toFixed(3)} · fit ${sol.rms.toFixed(2)}° (whole sky matched)`
+      : list.length === 2
+        ? `✓ 2 stars · FOV ${sol.fov.toFixed(0)}° · lens fit ${sol.rms.toFixed(2)}° · add a 3rd star for a full plate-solve (matches the whole sky)`
+        : `✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · add a 2nd star for lens distortion`);
     setCalibAnchor(null);   // stay in align mode so more stars can be added
   };
   const resetCalib = () => {
     const p = calibPrevRef.current;
-    if (p) { setFovM(p.fov); setPRoll(p.roll); setPDist(p.dist || 0); }
+    if (p) { setFovM(p.fov); setPRoll(p.roll); setPDist(p.dist || 0); if (isNum(p.az)) setPAz(p.az); if (isNum(p.el)) setPEl(p.el); }
     calibPrevRef.current = null; calibAnchorsRef.current = []; setCalibCount(0);
     setCalibApplied(false); setCalibAnchor(null); setCalibMsg("");
   };
@@ -2904,7 +2907,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {!calibAnchor ? (
               <>
                 <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 6 }}>
-                  {calibCount === 0 ? "Pick the star/planet to align to:" : calibCount === 1 ? "1 star set — add a 2nd (different part of the frame) to also correct lens distortion:" : `${calibCount} stars set — add more to refine, or done:`}
+                  {calibCount === 0 ? "Pick the star/planet to align to:" : calibCount === 1 ? "1 star set — add a 2nd (different part of the frame) for lens distortion:" : calibCount === 2 ? "2 stars set — add a 3rd for a FULL plate-solve (matches the whole sky + terrain):" : `${calibCount} stars set — add more to refine, or done:`}
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {calibRefs.length ? calibRefs.map((o) => (

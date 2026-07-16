@@ -452,6 +452,19 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const one = solvePoseAnchors([anchors[0]], natW, natH, az, el, seed);
   approx(one.rms, 0, 0.05, "single-anchor fit: lands (rms→0°)");
   approx(one.k, 0, 1e-9, "single-anchor fit: k stays 0");
+
+  // 3+ anchors → FULL plate solve: recover a WRONG-CENTER pose too. Build 3
+  // stars' fixed pixels under the TRUE pose (incl. a shifted az/el), seed the
+  // solve from an OFF center, and confirm it recovers az/el/roll/fov/k.
+  const T = { az: 252, el: 15, roll: 1.2, fov: 62, k: 0.08 };
+  const gs = [dirFromAzEl(T.az - 10, T.el + 13), dirFromAzEl(T.az + 12, T.el + 2), dirFromAzEl(T.az + 4, T.el + 20)];
+  const anc3 = gs.map((g) => { const p = dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, T.k); return { px: p.px, py: p.py, g }; });
+  const sol3 = solvePoseAnchors(anc3, natW, natH, T.az - 3, T.el + 2, { roll: 0, fov: 68, k: 0 }); // seeded 3° off in az
+  approx(sol3.az, T.az, 0.3, "3-anchor plate solve: recovered az (center freed)");
+  approx(sol3.el, T.el, 0.3, "3-anchor plate solve: recovered el");
+  approx(sol3.fov, T.fov, 1.0, "3-anchor plate solve: recovered FOV");
+  approx(sol3.k, T.k, 0.03, "3-anchor plate solve: recovered k");
+  approx(sol3.rms, 0, 0.1, "3-anchor plate solve: all stars land (rms→0°)");
 }
 
 // --- aspectSpan: two-view mirror ambiguity (same-span mirror must be reported) ---

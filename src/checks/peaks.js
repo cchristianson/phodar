@@ -49,7 +49,7 @@ export function parsePeaks(jsonBody, obsLat, obsLon, obsEleM, maxKm = 40) {
 }
 
 export async function fetchPeaks(lat, lon, obsEleM, radiusKm = 40) {
-  const r = await fetch(`/api/peaks?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&r=${Math.round(radiusKm * 1000)}`, { signal: AbortSignal.timeout(25000) });
+  const r = await fetch(`/api/peaks?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&r=${Math.round(radiusKm * 1000)}`, { signal: AbortSignal.timeout(30000) });
   if (!r.ok) throw new Error(`peaks HTTP ${r.status}`);
   const j = await r.json();
   if (j.error) throw new Error(j.error);

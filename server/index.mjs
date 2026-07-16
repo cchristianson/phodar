@@ -304,29 +304,39 @@ async function apiFireballs(q, res) {
   } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
 }
 /* named-peak proxy — OSM Overpass summits/volcanoes near the observer. CORS
-   is unreliable on the Overpass mirrors, so proxy it. Two mirrors for
-   resilience. */
+   is unreliable on the Overpass mirrors, so proxy it. The mirrors are RACED in
+   parallel (first success wins) — querying them one-by-one could exceed the
+   client's timeout when a mirror is slow/queuing ("Fetch is aborted"). Results
+   are cached (peaks don't move) so repeats are instant. */
+const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
   const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(1000, +q.get("r") || 40000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
-  const ql = `[out:json][timeout:25];(node["natural"="peak"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)});node["natural"="volcano"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)}););out qt;`;
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
+  const hit = peaksCache.get(key);
+  if (hit && Date.now() - hit.t < 6 * 3600 * 1000) return json(res, 200, hit.body);
+  const ql = `[out:json][timeout:20];(node["natural"="peak"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)});node["natural"="volcano"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)}););out qt;`;
   const eps = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
   ];
-  let last = "no mirror tried";
-  for (const ep of eps) {
-    try {
-      // GET is widely cached/accepted by the mirrors and avoids POST-body quirks
-      const rr = await fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(28000) });
-      if (!rr.ok) { last = `${ep.split("/")[2]} → HTTP ${rr.status}`; continue; }
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
+    .then(async (rr) => {
+      if (!rr.ok) throw new Error(`${ep.split("/")[2]} HTTP ${rr.status}`);
       const j = await rr.json();
-      return json(res, 200, j);
-    } catch (e) { last = `${ep.split("/")[2]} → ${String(e.message || e)}`; }
+      if (!j || !Array.isArray(j.elements)) throw new Error(`${ep.split("/")[2]} bad body`);
+      return j;
+    });
+  try {
+    const j = await Promise.any(eps.map(attempt)); // fastest healthy mirror wins
+    peaksCache.set(key, { t: Date.now(), body: j });
+    return json(res, 200, j);
+  } catch (e) {
+    const msg = e && e.errors ? e.errors.map((x) => String(x.message || x)).join("; ") : String(e.message || e);
+    return json(res, 502, { error: `overpass unreachable (${msg})` });
   }
-  return json(res, 502, { error: `overpass unreachable (${last})` });
 }
 const server = http.createServer(async (req, res) => {
   try {
