@@ -2226,20 +2226,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{ position: "absolute", left: 0, right: 0, top: (clampN(horizonY, 0, 1) * 100) + "%", bottom: 0, background: isNight ? "#0b0f18" : "#2c3729", pointerEvents: "none" }} />
         )}
 
-        {starDots.length > 0 && (
-          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
-            {starDots.map((p, i) => <circle key={i} cx={p.x * 100} cy={p.y * 100} r={p.r * 0.18} fill="#fff" opacity={p.o} />)}
-          </svg>
-        )}
-        {starLabels.map((p) => (
-          <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(6px,-4px)", fontSize: 8.5, fontFamily: "var(--mono)", color: "rgba(220,230,255,.75)", textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
-        ))}
-        {planetDots.map((pl) => (
-          <div key={"pl" + pl.name} style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" }}>
-            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#ffe9b0", boxShadow: "0 0 6px 2px rgba(255,225,150,.55)", margin: "0 auto" }} />
-            <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: "#ffe9b0", textShadow: "0 1px 2px rgba(0,0,0,.85)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
-          </div>
-        ))}
+        {/* stars & planets are drawn AFTER the photo (below) so they overlay it
+            like the Sun/Moon anchors — see the sky-object layer past the grid */}
 
         {/* photo/video — Look mode: our own canvas mesh warp (static texture) */}
         {!placing && photoOn && (
@@ -2325,6 +2313,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         ))}
         {cardinals.map((c, i) => (
           <div key={"cd" + i} style={{ position: "absolute", left: (c.x * 100) + "%", top: (c.y * 100) + "%", transform: "translate(-50%,-50%)", fontSize: 12, fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.7)", pointerEvents: "none" }}>{c.lbl}</div>
+        ))}
+
+        {/* stars & planets — overlaid ON the photo (a bright halo behind each so
+            they read against a twilight image; brighter stars glow more) */}
+        {starDots.length > 0 && (
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
+            {starDots.map((p, i) => <circle key={"sh" + i} cx={p.x * 100} cy={p.y * 100} r={p.r * 0.5} fill="#bcd2ff" opacity={p.o * 0.35} />)}
+            {starDots.map((p, i) => <circle key={"sc" + i} cx={p.x * 100} cy={p.y * 100} r={p.r * 0.24} fill="#fff" opacity={clampN(p.o + 0.1, 0, 1)} />)}
+          </svg>
+        )}
+        {starLabels.map((p) => (
+          <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(7px,-5px)", fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 600, color: "#eaf1ff", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
+        ))}
+        {planetDots.map((pl) => (
+          <div key={"pl" + pl.name} style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff6d8", boxShadow: "0 0 9px 3px rgba(255,225,150,.75)", margin: "0 auto" }} />
+            <div style={{ fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 700, color: "#ffe9b0", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
+          </div>
         ))}
 
         {/* Sun & Moon — calibration anchors at their true positions */}
