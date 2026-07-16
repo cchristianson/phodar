@@ -76,32 +76,44 @@ export function dirToPixK(g, natW, natH, az, el, roll, fov, k) {
   const sc = rd > 1e-9 ? rho / rd : 1;
   return { px: natW / 2 + Xc * sc * fpx, py: natH / 2 - Yc * sc * fpx };
 }
-/* Fit (roll, fov, k) to anchors [{px,py,g}] keeping center (az,el) fixed, by
-   coordinate descent with step-halving on summed squared angular error. 1
-   anchor → roll+fov (k held at seed); ≥2 → also k. Returns {roll,fov,k,rms}. */
-export function solvePoseAnchors(anchors, natW, natH, az, el, seed) {
-  let roll = seed.roll, fov = seed.fov, k = seed.k || 0;
-  const fitK = anchors.length >= 2;
-  const sse = (rl, fv, kk) => {
+/* Fit the photo pose to star anchors [{px,py,g}] by coordinate descent with
+   step-halving on summed squared angular error. The active parameter set grows
+   with the anchor count (each anchor = 2 constraints), so more stars lock in
+   more of the pose:
+     1 anchor  → roll, fov            (center kept — one star can't move it)
+     2 anchors → roll, fov, k         (+ lens distortion; center still kept, so
+                                        the terrain match survives)
+     3+ anchors→ az, el, roll, fov, k (FULL plate solve — the stars drive the
+                                        pointing too, matching the whole sky)
+   (az,el) seed is the incoming center; it's only moved with ≥3 anchors, and
+   bounded to ±8° of the seed so a mis-aim can't fling the pose. Returns
+   {az,el,roll,fov,k,rms}. */
+export function solvePoseAnchors(anchors, natW, natH, az0, el0, seed) {
+  const n = anchors.length;
+  const fitCenter = n >= 3, fitK = n >= 2;
+  const P = { az: az0, el: el0, roll: seed.roll, fov: seed.fov, k: seed.k || 0 };
+  const lim = { az: [az0 - 8, az0 + 8], el: [el0 - 8, el0 + 8], roll: [-90, 90], fov: [8, 150], k: [-0.6, 0.6] };
+  const sse = (q) => {
     let s = 0;
-    for (const a of anchors) { const c = Math.min(1, Math.max(-1, dot(pixToDirK(a.px, a.py, natW, natH, az, el, rl, fv, kk), a.g))); s += Math.acos(c) ** 2; }
+    for (const a of anchors) { const c = Math.min(1, Math.max(-1, dot(pixToDirK(a.px, a.py, natW, natH, q.az, q.el, q.roll, q.fov, q.k), a.g))); s += Math.acos(c) ** 2; }
     return s;
   };
-  const step = { roll: 1.0, fov: 2.0, k: 0.02 };
-  const params = fitK ? ["roll", "fov", "k"] : ["roll", "fov"];
-  for (let iter = 0; iter < 200; iter++) {
+  const params = [...(fitCenter ? ["az", "el"] : []), "roll", "fov", ...(fitK ? ["k"] : [])];
+  const step = { az: 1.0, el: 1.0, roll: 1.0, fov: 2.0, k: 0.02 };
+  const cl = (pn, v) => Math.min(lim[pn][1], Math.max(lim[pn][0], v));
+  for (let iter = 0; iter < 400; iter++) {
     let any = false;
     for (const pn of params) {
-      const base = sse(roll, fov, k), st = step[pn];
-      const up = pn === "roll" ? sse(roll + st, fov, k) : pn === "fov" ? sse(roll, fov + st, k) : sse(roll, fov, k + st);
-      const dn = pn === "roll" ? sse(roll - st, fov, k) : pn === "fov" ? sse(roll, fov - st, k) : sse(roll, fov, k - st);
-      if (up < base && up <= dn) { if (pn === "roll") roll += st; else if (pn === "fov") fov += st; else k += st; any = true; }
-      else if (dn < base) { if (pn === "roll") roll -= st; else if (pn === "fov") fov -= st; else k -= st; any = true; }
+      const base = sse(P), v = P[pn], st = step[pn];
+      P[pn] = cl(pn, v + st); const up = sse(P);
+      P[pn] = cl(pn, v - st); const dn = sse(P);
+      if (up < base && up <= dn) { P[pn] = cl(pn, v + st); any = true; }
+      else if (dn < base) { P[pn] = cl(pn, v - st); any = true; }
+      else P[pn] = v;
     }
-    fov = Math.min(150, Math.max(8, fov)); k = Math.min(0.6, Math.max(-0.6, k));
-    if (!any) { step.roll *= 0.5; step.fov *= 0.5; step.k *= 0.5; if (step.fov < 1e-4) break; }
+    if (!any) { for (const pn of params) step[pn] *= 0.5; if (step.fov < 1e-4) break; }
   }
-  return { roll, fov, k, rms: Math.sqrt(sse(roll, fov, k) / Math.max(1, anchors.length)) * R2D };
+  return { az: P.az, el: P.el, roll: P.roll, fov: P.fov, k: P.k, rms: Math.sqrt(sse(P) / Math.max(1, n)) * R2D };
 }
 
 export function angSizeFromPoints(p1, p2, natW, natH, fovH) {
