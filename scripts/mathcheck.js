@@ -14,6 +14,7 @@ import { photoBasis, solveRollFov } from "../src/math/projection.js";
 import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
+import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -393,6 +394,34 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(F[1].lat, -10.0, 0.001, "fireball: S hemisphere → negative lat");
   approx(F[0].distKm, 24, 3, "fireball: distance to observer (~24 km)");
   approx(haversineKm(0, 0, 0, 1), 111.2, 0.5, "haversine: 1° lon at equator ≈ 111 km");
+}
+
+// --- named peaks (OSM Overpass): bearing / distance / elevation ---
+{
+  // due-north and due-east reference points (~11.1 km) from an observer
+  const oLat = 42.0, oLon = -123.0;
+  approx(bearingDeg(oLat, oLon, oLat + 0.1, oLon), 0, 0.01, "peaks: bearing due north = 0");
+  approx(bearingDeg(oLat, oLon, oLat, oLon + 0.1), 90, 0.2, "peaks: bearing due east ≈ 90");
+  approx(distM(oLat, oLon, oLat + 0.1, oLon) / 1000, 11.12, 0.05, "peaks: 0.1° lat ≈ 11.1 km");
+
+  // a 2000 m summit ~10 km due east of a 400 m observer: elevation angle with
+  // curvature drop (d²(1−k)/2R ≈ 6.8 m over 10 km) → atan2(2000−401.6−6.8, 10000)
+  const body = {
+    elements: [
+      { lat: oLat, lon: oLon + 0.1207, tags: { name: "Test Peak", ele: "2000" } }, // ~10 km east
+      { lat: oLat + 0.0005, lon: oLon, tags: { name: "Too Close" } },              // < 200 m: dropped
+      { lat: oLat + 1.0, lon: oLon, tags: { name: "Too Far", ele: "3000" } },      // > 40 km: dropped
+      { lat: oLat, lon: oLon - 0.05, tags: { ele: "1500" } },                       // no name: dropped
+    ],
+  };
+  const P = parsePeaks(body, oLat, oLon, 400, 40);
+  approx(P.length, 1, 0, "peaks: filters unnamed / too-close / too-far");
+  approx(P[0].az, 90, 0.3, "peaks: summit due east ≈ 90° az");
+  approx(P[0].distKm, 10.0, 0.2, "peaks: summit distance ≈ 10 km");
+  const eye = 400 + 1.6, d = P[0].distKm * 1000;
+  const wantEl = Math.atan2(2000 - eye - (d * d * (1 - 0.13)) / (2 * RE), d) * R2D;
+  approx(P[0].el, wantEl, 0.02, "peaks: curvature-corrected elevation");
+  approx(P[0].el > 8 && P[0].el < 10 ? 1 : 0, 1, 0, "peaks: elevation in plausible band (~9°)");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

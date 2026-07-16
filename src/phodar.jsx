@@ -14,6 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
+import { fetchPeaks } from "./checks/peaks.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
 import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
@@ -1670,6 +1671,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return satsAt(slDb.sats, T, LAT, LNG, 0).filter((s) => s.lit).slice(0, 60);
   }, [starlinkOn, slDb, T, LAT, LNG, hasPos]);
 
+  /* named peaks (OSM Overpass) — placed on the terrain skyline by bearing +
+     curvature-corrected elevation; opt-in, fetched once per open. */
+  const [peaksOn, setPeaksOn] = useState(false);
+  const [peaks, setPeaks] = useState(null); // [] | {err}
+  useEffect(() => {
+    if (!open || !peaksOn || peaks || !hasPos) return;
+    let dead = false;
+    fetchPeaks(LAT, LNG, isNum(source?.alt) ? +source.alt : 0)
+      .then((ps) => { if (!dead) setPeaks(ps); })
+      .catch((e) => { if (!dead) setPeaks({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, peaksOn, peaks, hasPos, LAT, LNG]); // eslint-disable-line
+  const peakMarks = (peaksOn && Array.isArray(peaks)) ? peaks.slice(0, 40) : [];
+
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
   const [selHex, setSelHex] = useState(null);
   const [selInfo, setSelInfo] = useState(null); // {route, aircraft} | {busy} | null
@@ -2395,6 +2410,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {terrainLbl && (
           <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: ridgeCol(0.95), textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
         )}
+        {/* named peaks on the skyline — el from the summit's own height, or the
+            drawn ridge elevation when OSM has no `ele` tag */}
+        {peakMarks.map((pk, i) => {
+          const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
+          const pr = project(pk.az, elv);
+          if (!pr.inFront || pr.x < 0.01 || pr.x > 0.99 || pr.y < -0.02 || pr.y > 1.02) return null;
+          return (
+            <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", textAlign: "center", pointerEvents: "none" }}>
+              <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>
+                {pk.name}{pk.eleM != null ? ` ${Math.round(pk.eleM)}m` : ""}
+              </div>
+              <div style={{ width: 0, height: 0, margin: "1px auto 0", borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `6px solid ${ridgeCol(0.98)}` }} />
+            </div>
+          );
+        })}
         {altLabels.map((p) => (
           <div key={"hl" + p.h} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(-50%,-50%)", fontSize: 9, fontFamily: "var(--mono)", color: gridColor.replace(/[\d.]+\)$/, "0.9)"), background: "rgba(7,11,20,.35)", borderRadius: 4, padding: "0 3px", pointerEvents: "none" }}>{p.h}°</div>
         ))}
@@ -2776,6 +2806,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               style={{ background: "rgba(15,23,42,.7)", color: !starlinkOn ? "var(--dim)" : slDb?.err ? "var(--amber)" : "#c9b6ff" }}
               onClick={() => setStarlinkOn((v) => !v)}>
               ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? "…" : `Starlink ${slView.length}`) : "Starlink"}
+            </button>
+          )}
+          {hasPos && (
+            <button className="btn sm" title="Named peaks (OpenStreetMap) placed on the terrain skyline — a labeled summit on the horizon is also a compass check"
+              style={{ background: "rgba(15,23,42,.7)", color: !peaksOn ? "var(--dim)" : peaks?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
+              onClick={() => setPeaksOn((v) => !v)}>
+              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? "…" : `peaks ${peakMarks.length}`) : "peaks"}
             </button>
           )}
         </div>
