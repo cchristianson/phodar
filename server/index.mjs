@@ -315,7 +315,8 @@ async function apiPeaks(q, res) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
   const hit = peaksCache.get(key);
   if (hit && Date.now() - hit.t < 6 * 3600 * 1000) return json(res, 200, hit.body);
-  const ql = `[out:json][timeout:20];(node["natural"="peak"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)});node["natural"="volcano"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)}););out qt;`;
+  const la = lat.toFixed(5), lo = lon.toFixed(5), rHill = Math.min(r, 30000); // hills are LOCAL landmarks — keep them near
+  const ql = `[out:json][timeout:20];(node["natural"="peak"](around:${r},${la},${lo});node["natural"="volcano"](around:${r},${la},${lo});node["natural"="hill"](around:${rHill},${la},${lo}););out qt;`;
   const eps = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
