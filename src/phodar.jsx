@@ -1466,6 +1466,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [calibCount, setCalibCount] = useState(0); // # of stars aligned (2+ enables lens-distortion fit)
   const calibPrevRef = useRef(null);   // {fov, roll, dist} before the first align — for reset
   const calibAnchorsRef = useRef([]);  // [{px, py, g}] accumulated star correspondences
+  const calibNamesRef = useRef([]);    // names of the tapped calibration objects
+  const calibRecRef = useRef(null);    // {method, ...} — HOW the image was aligned, persisted to source.calib for the report
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -1561,7 +1563,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       openPoseRef.current = p0; // Reset restores the WHOLE placement to this
       setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist);
       setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); setCalibApplied(false); setCalibCount(0);
-      calibPrevRef.current = null; calibAnchorsRef.current = [];
+      calibPrevRef.current = null; calibAnchorsRef.current = []; calibNamesRef.current = [];
+      calibRecRef.current = source?.calib || null; // keep a prior session's calibration record unless re-aligned/dragged
       setPhotoOn(!!source?.mediaUrl);
       /* start in Place only until this observer has been placed ONCE in the
          sky view (source.placed) — after that, return straight to Look and
@@ -1925,6 +1928,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
       const nAz = (((pr.az + dx * fovH) % 360) + 360) % 360;
       const nEl = clampN(pr.el - dy * fovV, -20, EL_MAX);
+      if (Math.abs(dx) + Math.abs(dy) > 0.01) calibRecRef.current = null; // hand-dragged → no longer a star/terrain-calibrated pose
       queuePose("place", nAz, nEl);
       return;
     }
@@ -2158,8 +2162,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (calibPrevRef.current == null) calibPrevRef.current = { az: pAz, el: pEl, fov: fovM, roll: pRoll, dist: pDist };
     const list = [...calibAnchorsRef.current, { px: pix.px, py: pix.py, g }];
     calibAnchorsRef.current = list;
+    calibNamesRef.current = [...calibNamesRef.current, calibAnchor.name];
     const oldFov = fovM;
     const sol = solvePoseAnchors(list, photo.natW, photo.natH, pAz, pEl, { roll: pRoll, fov: fovM, k: pDist });
+    calibRecRef.current = { method: "stars", mode: "tap", n: list.length, refs: [...calibNamesRef.current], rms: +sol.rms.toFixed(2), fov: +clampN(sol.fov, 8, 135).toFixed(1) };
     if (list.length >= 3) { setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX)); } // full plate solve moves the pointing too
     setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
     setFovM(clampN(sol.fov, 8, 135));
@@ -2175,7 +2181,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const resetCalib = () => {
     const p = calibPrevRef.current;
     if (p) { setFovM(p.fov); setPRoll(p.roll); setPDist(p.dist || 0); if (isNum(p.az)) setPAz(p.az); if (isNum(p.el)) setPEl(p.el); }
-    calibPrevRef.current = null; calibAnchorsRef.current = []; setCalibCount(0);
+    calibPrevRef.current = null; calibAnchorsRef.current = []; calibNamesRef.current = []; setCalibCount(0);
+    calibRecRef.current = null; // reset alignment → back to whatever the placement is by hand
     setCalibApplied(false); setCalibAnchor(null); setCalibMsg("");
   };
 
@@ -2273,7 +2280,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const commitPlacement = () => {
     if (!update || !photoOn) return;
-    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true };
+    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: calibRecRef.current || { method: "manual" } };
     /* placement + marked points fully determine the sight-lines — derive
        A (object marks / shape fit) and B (motion mark) automatically, so
        the fix never dies for want of an elevation the user already gave us */
@@ -2396,6 +2403,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         roll -= m.dRollDeg;
       }
       setPAz(az); setPEl(el); setPRoll(roll);
+      calibRecRef.current = { method: "terrain", n: m.n, rms: +m.rms.toFixed(2) };
       setFlash(`⛰ locked to terrain: ${az.toFixed(1)}° az · ${el.toFixed(1)}° up · roll ${roll.toFixed(1)}° · fit ${m.rms.toFixed(2)}° (${m.n} pts)`);
     } catch (e) { setFlash("⛰ snap failed on this image"); }
   };
@@ -2443,13 +2451,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (!sol) sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess, { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4], elPrior, elBand: 20 });
       if (!sol) sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist }, { minMatch: 10, maxRms: 0.6 });
       if (!sol) { setFlash(`✦ couldn't confidently solve this frame (${det.length} points). Wide/soft/hazy night shots are hard to solve blind — tap ✦ align-to-star to set 2–3 named stars yourself, and raise brightness on the photo step to see them.`); return; }
-      calibAnchorsRef.current = [];
+      calibAnchorsRef.current = []; calibNamesRef.current = [];
       setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX));
       setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
       setFovM(clampN(sol.fov, 8, 135)); setPDist(sol.k);
       /* be honest about confidence — a wide phone lens + a bright-only catalog
          can yield a LOOSE partial fit; don't present that as a clean lock */
       const loose = sol.rms > 0.7 || sol.n < 12;
+      calibRecRef.current = { method: "stars", mode: "auto", n: sol.n, rms: +sol.rms.toFixed(2), fov: +clampN(sol.fov, 8, 135).toFixed(1), loose };
       setFlash(loose
         ? `✦ matched ${sol.n} stars, but the fit is loose (±${sol.rms.toFixed(1)}°) — toggle ★ stars ON and check they sit on the photo's stars; nudge/retry if it's off`
         : `✦ auto-aligned · ${sol.n} stars · fit ±${sol.rms.toFixed(2)}° · FOV ${sol.fov.toFixed(0)}° — toggle ★ stars to verify`);
@@ -4311,6 +4320,53 @@ async function reportHtml(sources, est, opts = {}) {
   const obsRows = packed.map((s, i) =>
     `<tr><td>${e2(s.name || "Observer " + (i + 1))}</td><td>${dv(s.lat)}, ${dv(s.lon)} · ${dv(s.alt || 0)} m</td><td>${s.whenMs ? new Date(+s.whenMs).toLocaleString() : "—"}</td><td>${dv(s.A?.az)}° / ${dv(s.A?.el)}°</td><td>${isNum(s.fovH) ? (+s.fovH).toFixed(1) + "°" : "—"}</td><td>${(s.track || []).length}</td></tr>`
   ).join("");
+
+  /* --- is an object (az,el) inside a photo's frame? Projects it through the
+     photo's own pose (mediaAim center + FOV + lens distortion) and checks the
+     pixel lands in-bounds. Used to only report cross-check features that are
+     actually IN the picture, not everything above the horizon somewhere. --- */
+  const objInFrame = (s, oaz, oel) => {
+    if (!s || !isNum(s.fovH) || !s.natW || !s.natH) return false;
+    const ma = s.mediaAim || {};
+    const caz = isNum(ma.az) ? +ma.az : (isNum(s.A?.az) ? +s.A.az : null);
+    const cel = isNum(ma.el) ? +ma.el : (isNum(s.A?.el) ? +s.A.el : null);
+    if (caz == null || cel == null) return false;
+    const p = dirToPixK(dirFromAzEl(oaz, oel), s.natW, s.natH, caz, cel, isNum(ma.roll) ? +ma.roll : 0, +s.fovH, isNum(ma.dist) ? +ma.dist : 0);
+    if (!p) return false;
+    const mx = s.natW * 0.03, my = s.natH * 0.03; // small margin past the edge
+    return p.px > -mx && p.px < s.natW + mx && p.py > -my && p.py < s.natH + my;
+  };
+  const inAnyFrame = (oaz, oel) => origAct.some((s) => objInFrame(s, oaz, oel));
+  const brg = (la1, lo1, la2, lo2) => { const p1 = la1 * D2R, p2 = la2 * D2R, dL = (lo2 - lo1) * D2R; return ((Math.atan2(Math.sin(dL) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dL)) * R2D) + 360) % 360; };
+
+  /* --- how each photo was aligned onto the sky — the references that turn
+     pixels into true bearings (persisted as source.calib). Always reported. --- */
+  const alignText = (s) => {
+    const c = s.calib;
+    if (!c || c.method === "manual") return { how: "placed by eye — dragged onto the sky/terrain (no star or terrain solve)", cls: "cap" };
+    if (c.method === "stars") {
+      const via = c.mode === "auto" ? "automatic plate-solve of the star field"
+        : `tapped reference stars${c.refs && c.refs.length ? " (" + c.refs.map(e2).join(", ") + ")" : ""}`;
+      const q = isNum(c.rms) ? ` — ${isNum(c.n) ? c.n + " stars, " : ""}${c.rms}° fit` : "";
+      return { how: `aligned to the stars via ${via}${q}${c.loose ? " · loose fit, verify" : ""}`, cls: c.loose ? "cap" : "" };
+    }
+    if (c.method === "terrain") return { how: `aligned to the DEM terrain skyline (snap to ridges)${isNum(c.rms) ? ` — ${c.n} points, ${c.rms}° fit` : ""}`, cls: "" };
+    return { how: "placed by eye", cls: "cap" };
+  };
+  const alignRows = packed.filter((s) => s.mediaAim || s.calib);
+  const alignHtml = alignRows.length ? `<h2>Image alignment</h2>
+<p class="cap">How each photo was oriented on the sky — the reference used to turn its pixels into true bearings. Everything downstream depends on this.</p>
+<table><tr><th>Observer</th><th>Aligned via</th><th>FOV · lens</th></tr>${alignRows.map((s, i) => {
+    const a = alignText(s); const k = s.mediaAim && isNum(s.mediaAim.dist) ? +s.mediaAim.dist : 0;
+    return `<tr><td>${e2(s.name || "Observer " + (i + 1))}</td><td class="${a.cls}">${a.how}</td><td>${isNum(s.fovH) ? (+s.fovH).toFixed(1) + "°" : "—"}${Math.abs(k) > 1e-4 ? ` · lens k ${k >= 0 ? "+" : ""}${k.toFixed(3)}` : ""}</td></tr>`;
+  }).join("")}</table>` : "";
+
+  /* collapse a "<h2>Title</h2>rest" section into an expandable <details> */
+  const collapsible = (html, open) => {
+    if (!html) return "";
+    const m = html.match(/^\s*<h2>([\s\S]*?)<\/h2>([\s\S]*)$/);
+    return m ? `<details class="sec"${open ? " open" : ""}><summary>${m[1]}</summary>${m[2]}</details>` : html;
+  };
   let fixHtml;
   if (fix.ok) {
     const mslA = fix.solA.X[2] + (fix.ref.alt || 0);
@@ -4451,20 +4507,24 @@ ${xTicks}${yTicks}${refs}${altLine}
         if (!w) return null;
         return angSizeFromPoints(w.A?.p1, w.A?.p2, w.natW, w.natH, +w.fovH) ?? (isNum(w.A?.angManual) ? +w.A.angManual : null);
       })();
-      const top = cands.slice(0, 6);
-      const rows = top.map((c) => {
+      /* only aircraft that actually fell inside a photo frame — an airliner
+         50° off the pointing is not "in the picture" and just clutters the report */
+      const framed = cands.filter((c) => c.per && c.per[0] && inAnyFrame(c.per[0].az, c.per[0].el));
+      const rows = framed.slice(0, 8).map((c) => {
         const p = c.per[0];
         return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? c.span.toFixed(0) + " m" : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${Math.round(c.gs * 2.23694)} mph` : ""}</td></tr>`;
       }).join("");
-      const best = cands[0];
+      const best = framed[0];
       const verdict = !cands.length
         ? `No airborne transponder aircraft were within ${snap.nm} nm at check time. ADS-B absence rules out airliners and most GA — not military or non-transponder traffic.`
-        : best.sepMax < 2.5
-          ? `<b>${e2(best.flight || best.reg || best.hex)}</b> sat within ${best.sepMax.toFixed(1)}° of every witness sight-line at check time — a strong mundane candidate; compare its predicted angular size against the measurement above.`
-          : `No aircraft sat on the sight-line (closest: ${e2(best.flight || best.reg || best.hex)}, ${best.sepMax.toFixed(1)}° off at the worst witness).`;
+        : !framed.length
+          ? `No transponder aircraft fell inside any photo frame (${cands.length} were airborne nearby; closest was ${cands[0].sepMax.toFixed(1)}° outside the frame).`
+          : best.sepMax < 2.5
+            ? `<b>${e2(best.flight || best.reg || best.hex)}</b> was in frame, within ${best.sepMax.toFixed(1)}° of every witness sight-line — a strong mundane candidate; compare its predicted angular size against the measurement above.`
+            : `${framed.length} aircraft fell in frame; the nearest to the marked object (${e2(best.flight || best.reg || best.hex)}) was ${best.sepMax.toFixed(1)}° off.`;
       adsbHtml = `<h2>Aircraft check (ADS-B)</h2>
-<p class="cap">Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
-${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
+<p class="cap">Transponder aircraft that fell <b>inside the photo frame</b>. Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
+${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
 <p>${verdict}</p>`;
     }
   }
@@ -4593,21 +4653,22 @@ ${detailBlock}`;
           }
         }
         for (const c of cand) {
+          if (!objInFrame(w, c.az, c.alt)) continue; // only what's actually in this photo's frame
           const sep = Math.acos(Math.min(1, Math.max(-1,
             d[0] * dirFromAzEl(c.az, c.alt)[0] + d[1] * dirFromAzEl(c.az, c.alt)[1] + d[2] * dirFromAzEl(c.az, c.alt)[2]))) * R2D;
-          if (sep <= 5) hits.push({ wit: w.name, ...c, sep });
+          hits.push({ wit: w.name, ...c, sep });
         }
       }
       hits.sort((a, b) => a.sep - b.sep);
       const venusHit = hits.find((h) => h.label.includes("Venus"));
       const satHit = hits.find((h) => h.label.startsWith("🛰"));
       const satStale = satHit && satHit.stale > 5 ? ` (TLE epoch ≈ ${Math.round(satHit.stale)} d from the sighting — position approximate)` : "";
-      skyHtml = `<h2>Sky-object check</h2>` + (hits.length
-        ? `<table><tr><th>Object</th><th>Witness</th><th>Off sight-line</th><th>At az/el</th></tr>` +
+      skyHtml = `<h2>Sky-object check</h2><p class="cap">Bright planets, stars, satellites, the Sun &amp; Moon that fell <b>inside the photo frame</b> at the sighting time. "Off sight-line" is how far each sat from the marked object.</p>` + (hits.length
+        ? `<table><tr><th>Object (in frame)</th><th>Witness</th><th>Off sight-line</th><th>At az/el</th></tr>` +
         hits.map((h) => `<tr><td>${e2(h.label)}</td><td>${e2(h.wit)}</td><td>${h.sep.toFixed(1)}°</td><td>${h.az.toFixed(1)}° / ${h.alt.toFixed(1)}°</td></tr>`).join("") +
-        `</table>` + (venusHit ? `<p>⚠ <b>Venus sat ${venusHit.sep.toFixed(1)}° from the sight-line</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
-        + (satHit ? `<p>🛰 <b>${e2(satHit.label.slice(2).trim())} was ${satHit.sep.toFixed(1)}° from the sight-line</b> and sunlit${satStale} — a steady point gliding across the sky in minutes is a satellite's signature.</p>` : "")
-        : `<p class="cap">No bright planet, star, satellite, Sun or Moon within 5° of any witness sight-line at the sighting time.</p>`);
+        `</table>` + (venusHit ? `<p>⚠ <b>Venus was in frame, ${venusHit.sep.toFixed(1)}° from the marked object</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
+        + (satHit ? `<p>🛰 <b>${e2(satHit.label.slice(2).trim())} was in frame, ${satHit.sep.toFixed(1)}° from the marked object</b> and sunlit${satStale} — a steady point gliding across the sky in minutes is a satellite's signature.</p>` : "")
+        : `<p class="cap">No bright planet, star, satellite, Sun or Moon fell within the photo frame at the sighting time.</p>`);
     }
   }
   /* --- wind check: does the motion match balloon drift at the fix altitude? --- */
@@ -4650,16 +4711,20 @@ The object (${motionSrc}) moved <b>${n1(objSpeed)} m/s toward ${Math.round(objHe
   {
     const obs0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon));
     const when = +(origAct.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
+    /* a placed photo lets us drop events whose direction isn't in frame (a
+       fireball on the far horizon isn't in a straight-up shot); no frame → keep */
+    const frameSrc = origAct.find((s) => isNum(s.fovH) && s.natW && (s.mediaAim || isNum(s.A?.az)) && isNum(s.lat));
+    const evVisible = (la, lo, el) => (la == null || lo == null || !frameSrc) ? true : objInFrame(frameSrc, brg(+frameSrc.lat, +frameSrc.lon, la, lo), el);
     if (obs0) {
       const fmtDt = (h) => Math.abs(h) < 48 ? `${h >= 0 ? "+" : ""}${h.toFixed(1)} h` : `${h >= 0 ? "+" : ""}${(h / 24).toFixed(1)} d`;
       try {
-        const L = (await fetchLaunches(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 14 * 24).slice(0, 8);
+        const L = (await fetchLaunches(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 14 * 24 && evVisible(x.lat, x.lon, 2)).slice(0, 8);
         if (L.length) launchHtml = `<h2>Launch check (rocket launches)</h2>
 <p class="cap">Rocket launches near the sighting (Launch Library 2). A fresh Starlink batch is a moving &ldquo;train&rdquo; of dots for days after launch; a twilight launch plume is visible for hundreds of km.</p>
 <table><tr><th>When (Δ)</th><th>Rocket / mission</th><th>Pad</th><th>Range</th></tr>${L.map((x) => `<tr><td>${new Date(x.net).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${e2(x.rocket || x.name)}${x.starlink ? " · <b>🛰 STARLINK</b>" : ""}<br><span class="cap">${e2(x.mission || "")}</span></td><td>${e2(x.padName || "")}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
       } catch (e) { /* offline / rate-limited — omit */ }
       try {
-        const F = (await fetchFireballs(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 24).slice(0, 6);
+        const F = (await fetchFireballs(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 24 && evVisible(x.lat, x.lon, x.altKm != null && x.distKm ? clampN(Math.atan2(x.altKm, x.distKm) * R2D, 0, 85) : 5)).slice(0, 6);
         if (F.length) fireballHtml = `<h2>Fireball check (NASA CNEOS)</h2>
 <p class="cap">Bright bolides logged by US Government sensors near the sighting time. A match within minutes and a few hundred km is a strong meteor explanation.</p>
 <table><tr><th>When (Δ)</th><th>Energy (kt TNT)</th><th>Alt / speed</th><th>Range</th></tr>${F.map((x) => `<tr><td>${new Date(x.t).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${x.energyKt != null ? x.energyKt : "—"}${x.impactKt != null ? ` <span class="cap">(${x.impactKt} total)</span>` : ""}</td><td>${x.altKm != null ? x.altKm + " km" : "—"}${x.velKmS != null ? ` · ${x.velKmS} km/s` : ""}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
@@ -4674,7 +4739,14 @@ h1{font:800 22px ui-monospace,Menlo,monospace;letter-spacing:.12em}h1 span{color
 h2{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#555;margin-top:26px}
 table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top;overflow-wrap:break-word}
 img,svg{max-width:100%;height:auto}
-.cap{color:#666;font-size:12px}@media print{.noprint{display:none}}
+.cap{color:#666;font-size:12px}
+details.sec{border-top:1px solid #e4e4e4;margin-top:14px}
+details.sec>summary{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#555;padding:12px 0;cursor:pointer;list-style:none;display:flex;align-items:center;gap:9px}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::before{content:"\\25B8";color:#C77B14;font-size:12px}
+details.sec[open]>summary::before{content:"\\25BE"}
+details.sec>*:last-child{margin-bottom:14px}
+@media print{.noprint{display:none}details.sec{border-top:none;margin-top:18px}details.sec>summary{cursor:auto}details.sec>summary::before{content:""}}
 @media(max-width:640px){body{margin:16px auto;padding:0 12px}table{table-layout:fixed;font-size:12px}}
 </style></head><body>
 <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:2px"><img src="data:image/svg+xml,${encodeURIComponent(phodarLogoRaw)}" alt="PHODAR" style="height:48px;width:auto;border-radius:8px;display:block"/><span style="font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#555">SIGHTING REPORT</span></div>
@@ -4684,19 +4756,21 @@ img,svg{max-width:100%;height:auto}
 <h2>Result</h2>${fixHtml}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
-${adsbHtml}
-${condHtml}
-${skyHtml}
-${windHtml}
-${launchHtml}
-${fireballHtml}
+${collapsible(alignHtml, true)}
+${collapsible(adsbHtml, false)}
+${collapsible(condHtml, false)}
+${collapsible(skyHtml, false)}
+${collapsible(windHtml, false)}
+${collapsible(launchHtml, false)}
+${collapsible(fireballHtml, false)}
 ${exhibits}
-<h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>
-<h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>
+${collapsible(`<h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>`, false)}
+${collapsible(`<h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>`, false)}
 ${diagHtml}
 <p class="cap"> ${opts.exhibits === "full" || opts.exhibits === "files" ? "Exhibit photos are full resolution; the embedded share data carries 1600 px working copies." : "Bundled photos are 1600 px working copies; analysis used the originals."}</p>
 <p class="noprint"><b>Add your perspective:</b> open Phodar → Import and choose this very file — the sighting data and photos are embedded below.</p>
 <script type="application/json" id="phodar-data">${data}</script>
+<script>(function(){function set(open){document.querySelectorAll('details.sec').forEach(function(d){if(open){if(!d.open){d.dataset.was='0';d.open=true}}else if(d.dataset.was==='0'){d.open=false;delete d.dataset.was}})}window.addEventListener('beforeprint',function(){set(true)});window.addEventListener('afterprint',function(){set(false)});if(window.matchMedia){var mq=window.matchMedia('print');if(mq.addListener)mq.addListener(function(e){set(e.matches)})}})();</script>
 </body></html>`;
 }
 
