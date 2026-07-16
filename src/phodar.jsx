@@ -3,7 +3,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
 import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits } from "./math/format.js";
-import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, solveRollFov } from "./math/projection.js";
+import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -1381,6 +1381,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [pEl, setPEl] = useState(30);
   const [pRoll, setPRoll] = useState(0);
   const [fovM, setFovM] = useState(68);      // photo's own FOV (calibrated by pinch)
+  const [pDist, setPDist] = useState(0);     // radial lens distortion (tan-space k) — 0 unless star-calibrated
   const openPoseRef = useRef(null);          // placement as of aimer-open — Reset target
   const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
@@ -1406,7 +1407,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [calibAnchor, setCalibAnchor] = useState(null); // {name, az, el}
   const [calibMsg, setCalibMsg] = useState("");
   const [calibApplied, setCalibApplied] = useState(false);
-  const calibPrevRef = useRef(null);   // {fov, roll} before the first align — for reset
+  const [calibCount, setCalibCount] = useState(0); // # of stars aligned (2+ enables lens-distortion fit)
+  const calibPrevRef = useRef(null);   // {fov, roll, dist} before the first align — for reset
+  const calibAnchorsRef = useRef([]);  // [{px, py, g}] accumulated star correspondences
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -1494,9 +1497,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         el: ma ? ma.el : (isNum(source?.A?.el) ? +source.A.el : 30),
         roll: ma ? (ma.roll || 0) : 0,
         fov: isNum(source?.fovH) ? +source.fovH : 68,
+        dist: ma && isNum(ma.dist) ? +ma.dist : 0,
       };
       openPoseRef.current = p0; // Reset restores the WHOLE placement to this
-      setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov);
+      setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist);
+      setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); setCalibApplied(false); setCalibCount(0);
+      calibPrevRef.current = null; calibAnchorsRef.current = [];
       setPhotoOn(!!source?.mediaUrl);
       /* start in Place only until this observer has been placed ONCE in the
          sky view (source.placed) — after that, return straight to Look and
@@ -2030,7 +2036,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const { natW, natH, f, r, u, tHm } = photo;
     const fpx = (natW / 2) / tHm;
     const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx;
-    return unit([f[0] + r[0] * x + u[0] * y, f[1] + r[1] * x + u[1] * y, f[2] + r[2] * x + u[2] * y]);
+    const s = 1 + pDist * (x * x + y * y); // radial lens distortion (0 unless star-calibrated)
+    return unit([f[0] + (r[0] * x + u[0] * y) * s, f[1] + (r[1] * x + u[1] * y) * s, f[2] + (r[2] * x + u[2] * y) * s]);
   };
 
   /* known sky objects usable as calibration anchors (bright + labeled) */
@@ -2048,36 +2055,35 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     .filter((o) => o.pr.inFront && o.pr.x > 0.03 && o.pr.x < 0.97 && o.pr.y > 0.03 && o.pr.y < 0.97)
     : [];
 
-  /* two-tap star align — solve the photo's roll + FOV so a known object lands
-     where it really is in the photo, keeping the photo CENTER fixed (the
-     terrain match is at the center, so it survives). Closed form; verified in
-     scripts (recovers roll+FOV exactly from one anchor). See calibcheck. */
-  const alignPhotoToStar = (xf, yf, obj) => {
-    if (!photo) return null;
-    const vS = unproject(xf, yf);                 // world dir the photo currently shows at the tap
-    const g = dirOf(obj.az, obj.el);              // where the object really is
-    const sol = solveRollFov(vS, g, photo, fovM, pRoll);
-    if (!sol) return null;
-    let roll = ((sol.roll + 180) % 360 + 360) % 360 - 180;
-    return { fov: clampN(sol.fov, 8, 135), roll: clampN(roll, -90, 90), dRoll: sol.dRoll };
-  };
   /* pick which object to align to (from a chip), then aim the crosshair on it in
      the photo and press the button — no fiddly tap while zoomed. */
   const pickCalib = (obj) => { setCalibAnchor(obj); setCalibMsg(`Center the crosshair on ${obj.name} in the photo, then press ✓ Set`); };
   const alignAtCrosshair = () => {
-    if (!calibAnchor) return;
-    const sol = alignPhotoToStar(0.5, 0.5, calibAnchor);   // crosshair = screen center
-    if (!sol) { setCalibMsg("Center the crosshair on the object first"); return; }
-    if (calibPrevRef.current == null) calibPrevRef.current = { fov: fovM, roll: pRoll };
+    if (!calibAnchor || !photo) return;
+    const vC = unproject(0.5, 0.5);                        // crosshair world dir = object's apparent spot
+    if (vC[0] * photo.f[0] + vC[1] * photo.f[1] + vC[2] * photo.f[2] <= 0.02) { setCalibMsg("Aim the crosshair onto the object in the photo first"); return; }
+    const pix = dirToPixK(vC, photo.natW, photo.natH, pAz, pEl, pRoll, fovM, pDist); // the object's fixed pixel
+    if (!pix) { setCalibMsg("Couldn't read that spot — re-aim the crosshair on the object"); return; }
+    const g = dirOf(calibAnchor.az, calibAnchor.el);
+    if (calibPrevRef.current == null) calibPrevRef.current = { fov: fovM, roll: pRoll, dist: pDist };
+    const list = [...calibAnchorsRef.current, { px: pix.px, py: pix.py, g }];
+    calibAnchorsRef.current = list;
     const oldFov = fovM;
-    setFovM(sol.fov); setPRoll(sol.roll); setCalibApplied(true);
-    setCalibMsg(`✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · roll ${sol.dRoll >= 0 ? "+" : ""}${sol.dRoll.toFixed(1)}°`);
-    setCalibAnchor(null);   // stay in align mode so a second star can be added
+    const sol = solvePoseAnchors(list, photo.natW, photo.natH, pAz, pEl, { roll: pRoll, fov: fovM, k: pDist });
+    setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
+    setFovM(clampN(sol.fov, 8, 135));
+    setPDist(sol.k);
+    setCalibApplied(true); setCalibCount(list.length);
+    setCalibMsg(list.length >= 2
+      ? `✓ ${list.length} stars aligned · FOV ${sol.fov.toFixed(0)}° · lens ${sol.k >= 0 ? "+" : ""}${sol.k.toFixed(3)} · fit ${sol.rms.toFixed(2)}°`
+      : `✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · add a 2nd star to also fit lens distortion`);
+    setCalibAnchor(null);   // stay in align mode so more stars can be added
   };
   const resetCalib = () => {
     const p = calibPrevRef.current;
-    if (p) { setFovM(p.fov); setPRoll(p.roll); }
-    calibPrevRef.current = null; setCalibApplied(false); setCalibAnchor(null); setCalibMsg("");
+    if (p) { setFovM(p.fov); setPRoll(p.roll); setPDist(p.dist || 0); }
+    calibPrevRef.current = null; calibAnchorsRef.current = []; setCalibCount(0);
+    setCalibApplied(false); setCalibAnchor(null); setCalibMsg("");
   };
 
   const enterPlace = () => {
@@ -2085,6 +2091,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (!source?.mediaAim) { setPAz(viewAz); setPEl(clampN(viewAlt, -20, 88)); }
     if (motionOn) setMotionOn(false);
     if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
+    calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
     setPMode("place");
   };
   const donePlace = () => {
@@ -2173,7 +2180,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const commitPlacement = () => {
     if (!update || !photoOn) return;
-    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1) }, fovH: +fovM.toFixed(1), placed: true };
+    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true };
     /* placement + marked points fully determine the sight-lines — derive
        A (object marks / shape fit) and B (motion mark) automatically, so
        the fix never dies for want of an elevation the user already gave us */
@@ -2182,7 +2189,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bb = photoBasis(pAz, pEl, pRoll);
       const dirAt = (px, py) => {
         const x = (px - source.natW / 2) / fpx, y = (source.natH / 2 - py) / fpx;
-        return dirToAzEl(unit([bb.f[0] + bb.r[0] * x + bb.u[0] * y, bb.f[1] + bb.r[1] * x + bb.u[1] * y, bb.f[2] + bb.r[2] * x + bb.u[2] * y]));
+        const s = 1 + pDist * (x * x + y * y); // match the calibrated lens distortion
+        return dirToAzEl(unit([bb.f[0] + (bb.r[0] * x + bb.u[0] * y) * s, bb.f[1] + (bb.r[1] * x + bb.u[1] * y) * s, bb.f[2] + (bb.r[2] * x + bb.u[2] * y) * s]));
       };
       const c = source.shapeFit ? { x: source.shapeFit.cx, y: source.shapeFit.cy }
         : (source.A?.p1 && source.A?.p2 ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null);
@@ -2857,8 +2865,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm" onClick={() => setPRoll(0)}>⟺ Level</button>
                     <button className="btn sm" onClick={() => {
                       const p0 = openPoseRef.current;
-                      if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); }
-                      else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); }
+                      if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist || 0); }
+                      else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); setPDist(0); }
+                      calibAnchorsRef.current = []; setCalibCount(0);
                     }}>Reset placement</button>
                     {terrOn && terr?.els && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
@@ -2894,7 +2903,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{ marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
             {!calibAnchor ? (
               <>
-                <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 6 }}>Pick the star/planet to align to:</div>
+                <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 6 }}>
+                  {calibCount === 0 ? "Pick the star/planet to align to:" : calibCount === 1 ? "1 star set — add a 2nd (different part of the frame) to also correct lens distortion:" : `${calibCount} stars set — add more to refine, or done:`}
+                </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {calibRefs.length ? calibRefs.map((o) => (
                     <button key={o.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => pickCalib(o)}>{o.sym ? o.sym + " " : ""}{o.name}</button>
@@ -2909,7 +2920,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               </div>
             )}
             {calibApplied && (
-              <div style={{ marginTop: 6 }}><button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ reset alignment</button></div>
+              <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV, roll & distortion">↺ reset alignment</button>
+                {calibCount >= 2 && <span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--mono)" }}>lens {pDist >= 0 ? "+" : ""}{pDist.toFixed(3)}</span>}
+              </div>
             )}
           </div>
         )}

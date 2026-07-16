@@ -51,6 +51,59 @@ export function solveRollFov(vS, g, basis, fovDeg, rollDeg) {
   return { fov, roll: rollDeg + dRoll, dRoll };
 }
 
+/* --- radial-distortion-aware pixel↔direction, and a multi-star pose fit ---
+   A single gnomonic FOV is one radial scale; a real lens's scale drifts with
+   radius (barrel/pincushion), so two stars at different radii can't both land
+   under FOV alone. Adding one radial term k (tan-space: s = 1 + k·ρ²) gives the
+   extra DOF, fitted from ≥2 anchors while the photo center stays fixed. */
+export function pixToDirK(px, py, natW, natH, az, el, roll, fov, k) {
+  const b = photoBasis(az, el, roll);
+  const fpx = (natW / 2) / Math.tan((fov * RAD) / 2);
+  const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx;
+  const s = 1 + (k || 0) * (x * x + y * y);
+  return unit([b.f[0] + b.r[0] * x * s + b.u[0] * y * s, b.f[1] + b.r[1] * x * s + b.u[1] * y * s, b.f[2] + b.r[2] * x * s + b.u[2] * y * s]);
+}
+/* inverse: where does true direction g fall as a pixel, under (pose, k)?
+   Newton-inverts the radial term. Used to capture an anchor's fixed pixel. */
+export function dirToPixK(g, natW, natH, az, el, roll, fov, k) {
+  const b = photoBasis(az, el, roll);
+  const fpx = (natW / 2) / Math.tan((fov * RAD) / 2);
+  const gf = dot(g, b.f); if (gf <= 1e-6) return null;
+  const Xc = dot(g, b.r) / gf, Yc = dot(g, b.u) / gf;   // = x·s, y·s (distorted)
+  const rd = Math.hypot(Xc, Yc);
+  let rho = rd;
+  for (let i = 0; i < 10 && (k || 0) !== 0; i++) { const fr = rho * (1 + k * rho * rho) - rd, dfr = 1 + 3 * k * rho * rho; rho -= fr / dfr; }
+  const sc = rd > 1e-9 ? rho / rd : 1;
+  return { px: natW / 2 + Xc * sc * fpx, py: natH / 2 - Yc * sc * fpx };
+}
+/* Fit (roll, fov, k) to anchors [{px,py,g}] keeping center (az,el) fixed, by
+   coordinate descent with step-halving on summed squared angular error. 1
+   anchor → roll+fov (k held at seed); ≥2 → also k. Returns {roll,fov,k,rms}. */
+export function solvePoseAnchors(anchors, natW, natH, az, el, seed) {
+  let roll = seed.roll, fov = seed.fov, k = seed.k || 0;
+  const fitK = anchors.length >= 2;
+  const sse = (rl, fv, kk) => {
+    let s = 0;
+    for (const a of anchors) { const c = Math.min(1, Math.max(-1, dot(pixToDirK(a.px, a.py, natW, natH, az, el, rl, fv, kk), a.g))); s += Math.acos(c) ** 2; }
+    return s;
+  };
+  const step = { roll: 1.0, fov: 2.0, k: 0.02 };
+  const params = fitK ? ["roll", "fov", "k"] : ["roll", "fov"];
+  for (let iter = 0; iter < 200; iter++) {
+    let any = false;
+    for (const pn of params) {
+      const base = sse(roll, fov, k), st = step[pn];
+      const up = pn === "roll" ? sse(roll + st, fov, k) : pn === "fov" ? sse(roll, fov + st, k) : sse(roll, fov, k + st);
+      const dn = pn === "roll" ? sse(roll - st, fov, k) : pn === "fov" ? sse(roll, fov - st, k) : sse(roll, fov, k - st);
+      if (up < base && up <= dn) { if (pn === "roll") roll += st; else if (pn === "fov") fov += st; else k += st; any = true; }
+      else if (dn < base) { if (pn === "roll") roll -= st; else if (pn === "fov") fov -= st; else k -= st; any = true; }
+    }
+    fov = Math.min(150, Math.max(8, fov)); k = Math.min(0.6, Math.max(-0.6, k));
+    if (!any) { step.roll *= 0.5; step.fov *= 0.5; step.k *= 0.5; if (step.fov < 1e-4) break; }
+  }
+  return { roll, fov, k, rms: Math.sqrt(sse(roll, fov, k) / Math.max(1, anchors.length)) * R2D };
+}
+
 export function angSizeFromPoints(p1, p2, natW, natH, fovH) {
   if (!p1 || !p2 || !natW || !fovH) return null;
   const f = focalPx(natW, fovH);
