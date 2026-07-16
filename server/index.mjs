@@ -310,7 +310,7 @@ async function apiFireballs(q, res) {
    are cached (peaks don't move) so repeats are instant. */
 const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(1000, +q.get("r") || 40000));
+  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
   const hit = peaksCache.get(key);

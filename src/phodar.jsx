@@ -1683,12 +1683,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (!open || !peaksOn || peaks || !hasPos) return;
     let dead = false;
-    fetchPeaks(LAT, LNG, isNum(source?.alt) ? +source.alt : 0)
+    fetchPeaks(LAT, LNG, isNum(source?.alt) ? +source.alt : 0, 120) // wide net: tall far peaks (Shasta, McLoughlin…) sit well past 40 km
       .then((ps) => { if (!dead) setPeaks(ps); })
       .catch((e) => { if (!dead) setPeaks({ err: String(e?.message || e) }); });
     return () => { dead = true; };
   }, [open, peaksOn, peaks, hasPos, LAT, LNG]); // eslint-disable-line
-  const peakMarks = (peaksOn && Array.isArray(peaks)) ? peaks.slice(0, 40) : [];
+  /* show summits that actually appear on the skyline: keep a peak only if its
+     curvature-corrected elevation is at/above the DEM silhouette at its azimuth
+     (so a peak hidden behind nearer, higher terrain is dropped, and a tall far
+     peak poking above the near ridge is kept). Peaks with no OSM height can't
+     be occlusion-tested → keep the nearer named ones. */
+  const peakMarks = (() => {
+    if (!(peaksOn && Array.isArray(peaks))) return [];
+    const tol = 1.0; // ° — generous: only drop summits clearly behind a higher ridge (DEM vs OSM height also disagree a bit)
+    const vis = peaks.filter((pk) => {
+      if (pk.el == null) return pk.distKm <= 60;
+      const skyEl = terr?.els ? skylineElAt(terr.els, pk.az) : -90;
+      return pk.el >= skyEl - tol;
+    });
+    return vis.sort((a, b) => a.distKm - b.distKm).slice(0, 60);
+  })();
 
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
   const [selHex, setSelHex] = useState(null);
@@ -2832,7 +2846,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
           <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ no named peaks within 40 km of the observer
+            ⛰ no named peaks within 120 km of the observer
+          </div>
+        )}
+        {peaksOn && Array.isArray(peaks) && peaks.length > 0 && peakMarks.length === 0 && (
+          <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            ⛰ {peaks.length} named peaks nearby, but none rise above the local terrain
           </div>
         )}
         {acOn && acData?.ac && acData.hist && (
