@@ -28,6 +28,29 @@ export function photoBasis(az, el, roll) {
   return { f, r, u };
 }
 
+/* Two-tap star align: given the world direction the photo currently shows at
+   the tap (vS = unproject(tap)), the object's true direction g, the photo's
+   pose basis {f,r,u} and its current fov/roll (deg), solve the roll + FOV that
+   land g exactly where the object sits in the photo — keeping the photo CENTER
+   (f) fixed, so a terrain match at the center survives. Closed form: the object
+   is at photo-plane coords (Xc,Yc); the target at (Gr,Gu); a rotation by dRoll
+   plus a radial scale s maps one to the other (s → fov, angle → roll).
+   Returns null if either direction is behind the photo center or the object is
+   at the dead center (no radial leverage). */
+export function solveRollFov(vS, g, basis, fovDeg, rollDeg) {
+  const { f, r, u } = basis;
+  const vf = dot(vS, f), gf = dot(g, f);
+  if (vf <= 1e-3 || gf <= 1e-3) return null;
+  const Xc = dot(vS, r) / vf, Yc = dot(vS, u) / vf;
+  const Gr = dot(g, r) / gf, Gu = dot(g, u) / gf;
+  const rc = Math.hypot(Xc, Yc), rt = Math.hypot(Gr, Gu);
+  if (rc < 1e-3) return null;
+  const s = rt / rc;
+  const dRoll = (Math.atan2(Gu, Gr) - Math.atan2(Yc, Xc)) * R2D;
+  const fov = 2 * Math.atan(s * Math.tan((fovDeg * RAD) / 2)) * R2D;
+  return { fov, roll: rollDeg + dRoll, dRoll };
+}
+
 export function angSizeFromPoints(p1, p2, natW, natH, fovH) {
   if (!p1 || !p2 || !natW || !fovH) return null;
   const f = focalPx(natW, fovH);

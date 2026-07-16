@@ -3,7 +3,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
 import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits } from "./math/format.js";
-import { photoBasis, angSizeFromPoints, pixelDirFromAnchor } from "./math/projection.js";
+import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, solveRollFov } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -1396,6 +1396,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
   const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
+  /* two-tap star align: tap a known object, tap where it really sits in the
+     photo → solve the photo's roll + FOV (center kept, so the terrain match
+     is preserved) so the object lands exactly. */
+  const [calibOn, setCalibOn] = useState(false);
+  const [calibAnchor, setCalibAnchor] = useState(null); // {name, az, el}
+  const [calibMsg, setCalibMsg] = useState("");
+  const [calibApplied, setCalibApplied] = useState(false);
+  const calibPrevRef = useRef(null);   // {fov, roll} before the first align — for reset
+  const calibTapRef = useRef(null);    // gesture: a pending tap while aligning
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -1735,6 +1744,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
       else pinchRef.current = g;
+    } else if (calibOn && !placing) {
+      calibTapRef.current = { x: e.clientX, y: e.clientY, moved: false }; // a tap, not a pan
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
     } else if (rotMode && selPt != null && source?.shapeFit) {
@@ -1794,6 +1805,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       return;
     }
+    if (calibTapRef.current) {
+      if (Math.hypot(e.clientX - calibTapRef.current.x, e.clientY - calibTapRef.current.y) > 8) calibTapRef.current.moved = true;
+      return;
+    }
     if (placeRef.current && vp.w) {
       const pr = placeRef.current; // snapshot: pointerup may null the ref before React flushes
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
@@ -1820,9 +1835,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
   };
   const onBgUp = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
     pointersRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     const n = pointersRef.current.size;
+    if (calibTapRef.current) {
+      const t = calibTapRef.current; calibTapRef.current = null;
+      if (!t.moved && rect.width && rect.height) handleCalibTap((t.x - rect.left) / rect.width, (t.y - rect.top) / rect.height);
+      return;
+    }
     if (n < 2) { pinchRef.current = null; twistRef.current = null; }
     if (rotTwistRef.current && n < 2) {
       /* lifting out of a two-finger twist: hand control back to whichever
@@ -1990,10 +2011,56 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return unit([f[0] + r[0] * x + u[0] * y, f[1] + r[1] * x + u[1] * y, f[2] + r[2] * x + u[2] * y]);
   };
 
+  /* known sky objects usable as calibration anchors (bright + labeled) */
+  const skyRefs = (() => {
+    const out = [];
+    if (planetsVisible) for (const p of planets) if (p.alt > 0.5) out.push({ name: p.name, az: p.az, el: p.alt });
+    for (const st of stars) if (st.name && st.mag <= 2.2 && st.alt > 0.5) out.push({ name: st.name, az: st.az, el: st.alt });
+    if (sun.alt > 0.5) out.push({ name: "Sun", az: sun.az, el: sun.alt });
+    if (moon.alt > 0.5) out.push({ name: "Moon", az: moon.az, el: moon.alt });
+    return out;
+  })();
+
+  /* two-tap star align — solve the photo's roll + FOV so a known object lands
+     where it really is in the photo, keeping the photo CENTER fixed (the
+     terrain match is at the center, so it survives). Closed form; verified in
+     scripts (recovers roll+FOV exactly from one anchor). See calibcheck. */
+  const alignPhotoToStar = (xf, yf, obj) => {
+    if (!photo) return null;
+    const vS = unproject(xf, yf);                 // world dir the photo currently shows at the tap
+    const g = dirOf(obj.az, obj.el);              // where the object really is
+    const sol = solveRollFov(vS, g, photo, fovM, pRoll);
+    if (!sol) return null;
+    let roll = ((sol.roll + 180) % 360 + 360) % 360 - 180;
+    return { fov: clampN(sol.fov, 8, 135), roll: clampN(roll, -90, 90), dRoll: sol.dRoll };
+  };
+  const handleCalibTap = (xf, yf) => {
+    if (!calibAnchor) {                            // first tap: pick the nearest labeled object
+      let best = null, bd = 0.13;
+      for (const o of skyRefs) { const pr = project(o.az, o.el); if (!pr.inFront) continue; const d = Math.hypot(pr.x - xf, pr.y - yf); if (d < bd) { bd = d; best = o; } }
+      if (best) { setCalibAnchor(best); setCalibMsg(`Now tap where ${best.name} really is in the photo`); }
+      else setCalibMsg("Tap right on a labeled star or planet first");
+      return;
+    }
+    const sol = alignPhotoToStar(xf, yf, calibAnchor); // second tap: solve + apply
+    if (!sol) { setCalibMsg("Couldn't solve there — tap the object's spot in the photo"); return; }
+    if (calibPrevRef.current == null) calibPrevRef.current = { fov: fovM, roll: pRoll };
+    const oldFov = fovM;
+    setFovM(sol.fov); setPRoll(sol.roll); setCalibApplied(true);
+    setCalibMsg(`✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · roll ${sol.dRoll >= 0 ? "+" : ""}${sol.dRoll.toFixed(1)}°`);
+    setCalibAnchor(null); setCalibOn(false);
+  };
+  const resetCalib = () => {
+    const p = calibPrevRef.current;
+    if (p) { setFovM(p.fov); setPRoll(p.roll); }
+    calibPrevRef.current = null; setCalibApplied(false); setCalibAnchor(null); setCalibMsg("");
+  };
+
   const enterPlace = () => {
     /* first-ever placement: put the photo where you're looking */
     if (!source?.mediaAim) { setPAz(viewAz); setPEl(clampN(viewAlt, -20, 88)); }
     if (motionOn) setMotionOn(false);
+    if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
     setPMode("place");
   };
   const donePlace = () => {
@@ -2604,6 +2671,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {flash}
         </div>
       )}
+      {calibMsg && (
+        <div style={{ position: "absolute", top: 124, left: "50%", transform: "translateX(-50%)", zIndex: 220, maxWidth: "90%", textAlign: "center", background: "rgba(43,34,14,.94)", border: "1px solid var(--amber)", color: "var(--amber)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, fontFamily: "var(--mono)", pointerEvents: "none" }}>
+          {calibMsg}
+        </div>
+      )}
+      {calibOn && calibAnchor && (() => {
+        const pr = project(calibAnchor.az, calibAnchor.el);
+        return pr.inFront ? (
+          <div style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-50%)", width: 26, height: 26, border: "2px solid var(--amber)", borderRadius: "50%", boxShadow: "0 0 8px 2px rgba(240,180,80,.6)", zIndex: 219, pointerEvents: "none" }} />
+        ) : null;
+      })()}
 
       {/* rotation loupe — a magnified view of the selected point's shape at its
           attitude, so you can judge/adjust orientation even when the on-dome
@@ -2714,6 +2792,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       </span>
                     )}
                   </>
+                )}
+                {pMode !== "place" && skyRefs.length > 0 && (
+                  <button className={"btn sm" + (calibOn ? " amber" : "")} title="Align the sky to a known star or planet: tap the object, then tap where it really is in the photo. Solves the lens FOV + roll and keeps the terrain match."
+                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "Tap a labeled star or planet (e.g. Venus)" : ""); }}>
+                    ✦ {calibOn ? "cancel align" : "align to star"}
+                  </button>
+                )}
+                {pMode !== "place" && calibApplied && !calibOn && (
+                  <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>
                 )}
                 {source.mediaKind === "video" && (
                   <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (locked — set it on the measure step)</span>
