@@ -273,6 +273,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   planet chips. Reports gain a "Sky-object check": Sun/Moon/planets/
   bright stars within 5° of any sight-line, with a Venus-specific warning
   (the most-reported "UFO" there is).
+  **Auto star-align: DONE** — `src/checks/platesolve.js` is a LOCAL plate solve
+  (not blind astrometry): `detectStars` finds compact bright blobs in the photo
+  (connected-components; over-size diffuse blobs = clouds are dropped), and
+  `autoStarAlign` coarse-searches small roll/az/el/FOV offsets around the manual
+  placement for the most catalog matches, then ICP-refines with shrinking
+  tolerance via `solvePoseAnchors` → exact az/el/roll/FOV/lens-k. Seeded by the
+  current placement (mirrors "Snap to ridges" but against stars). One-tap
+  "✦ Auto star-align" button in SkyAimer place mode. Asserted in mathcheck
+  (blob detection + full pose recovery from a perturbed seed with clutter).
 - **CelesTrak satellites: DONE** (src/checks/satellites.js — visual-group
   TLEs, satellite.js v5 SGP4 (v7 is WASM-first and breaks vite), Earth-shadow
   lit test, dome markers + pass trails, sky-object-check integration with

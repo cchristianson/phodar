@@ -15,6 +15,7 @@ import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { fetchPeaks } from "./checks/peaks.js";
+import { detectStars, autoStarAlign } from "./checks/platesolve.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
 import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
@@ -2350,6 +2351,32 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     } catch (e) { setFlash("⛰ snap failed on this image"); }
   };
 
+  /* ✦ AUTO STAR-ALIGN — a local plate solve: detect the bright stars in the
+     photo, match them to the catalog (seeded by the current placement), and
+     ICP-refine the pose. Solves az/el/roll/FOV/lens distortion at once, so a
+     rough manual nudge becomes an exact fit. */
+  const autoAlign = async () => {
+    if (!source?.mediaUrl || !source?.natW || !photo) { setFlash("✦ place the photo first, then auto-align"); return; }
+    setFlash("✦ finding stars…");
+    try {
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = source.mediaUrl; });
+      const DW = Math.min(1600, source.natW), sc = DW / source.natW, DH = Math.max(60, Math.round(source.natH * sc));
+      const cv = document.createElement("canvas"); cv.width = DW; cv.height = DH;
+      const ctx = cv.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(im, 0, 0, DW, DH);
+      const det = detectStars(ctx.getImageData(0, 0, DW, DH).data, DW, DH, {}).map((s) => ({ x: s.x / sc, y: s.y / sc }));
+      if (det.length < 5) { setFlash("✦ too few stars in this photo to auto-align — align manually"); return; }
+      const cat = stars.filter((s) => s.alt > 0).map((s) => ({ g: dirOf(s.az, s.alt) }));
+      const sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist });
+      if (!sol) { setFlash(`✦ couldn't match the stars (${det.length} found) — nudge the photo closer to the sky, then retry`); return; }
+      calibAnchorsRef.current = [];
+      setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX));
+      setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
+      setFovM(clampN(sol.fov, 8, 135)); setPDist(sol.k);
+      setFlash(`✦ auto-aligned to ${sol.n} stars · FOV ${sol.fov.toFixed(0)}° · roll ${sol.roll.toFixed(0)}° · fit ${sol.rms.toFixed(2)}°`);
+    } catch (e) { setFlash("✦ auto-align failed on this image"); }
+  };
+
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
 
   const aimColor = which === "B" ? "var(--teal)" : "var(--amber)";
@@ -2911,6 +2938,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </button>
                 {pMode === "place" && (
                   <>
+                    <button className="btn sm amber" onClick={autoAlign} title="Auto star-align: detect the bright stars in the photo, match them to the catalog, and solve the exact pose (az/el/roll/FOV/lens). Nudge the photo roughly into place first.">✦ Auto star-align</button>
                     {terr?.els && <button className="btn sm teal" onClick={snapToRidges}>⛰ Snap to ridges</button>}
                     <button className="btn sm" onClick={() => setPRoll(0)}>⟺ Level</button>
                     <button className="btn sm" onClick={() => {

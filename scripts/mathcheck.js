@@ -17,6 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
+import { detectStars, autoStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -519,6 +520,47 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // object crossing the wind at 5× its speed = not wind-borne
   const nb = balloonVerdict(50, 0, wind);
   approx(nb.verdict === "not wind-borne" ? 1 : 0, 1, 0, "winds: cross-wind fast motion → not wind-borne");
+}
+
+// --- auto star-align (plate solve): detect blobs, and recover a known pose ---
+{
+  // detectStars: bright dots survive, a diffuse cloud is rejected as over-size
+  const w = 80, h = 60, img = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) { img[i * 4] = img[i * 4 + 1] = img[i * 4 + 2] = 6; img[i * 4 + 3] = 255; }
+  const put = (x, y, v) => { const p = (y * w + x) * 4; img[p] = img[p + 1] = img[p + 2] = v; };
+  // a big dim cloud (12×12 ≈ 144 px, above noise but diffuse)
+  for (let y = 40; y < 52; y++) for (let x = 8; x < 20; x++) put(x, y, 46);
+  // four crisp stars (2×2 bright)
+  const dots = [[15, 10], [60, 12], [30, 45], [68, 50]];
+  for (const [x, y] of dots) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) put(x + dx, y + dy, 235);
+  const found = detectStars(img, w, h, {});
+  approx(found.length >= 4 && found.length <= 8 ? 1 : 0, 1, 0, "platesolve: 4 stars found, cloud rejected");
+  const nearDot = found.filter((s) => dots.some(([x, y]) => Math.hypot(s.x - (x + 0.5), s.y - (y + 0.5)) < 2)).length;
+  approx(nearDot, 4, 0, "platesolve: all four star centroids located");
+
+  // autoStarAlign: synth a catalog + detections at a known pose, recover from a
+  // perturbed seed (mirrors the manual placement being a few degrees off)
+  const natW = 4000, natH = 3000;
+  const truth = { az: 230, el: 85, roll: -30, fov: 45, k: 0.02 };
+  let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const cat = [], det = [];
+  for (let i = 0; i < 30; i++) {
+    const px = (0.12 + 0.76 * rnd()) * natW, py = (0.12 + 0.76 * rnd()) * natH;
+    const g = pixToDirK(px, py, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
+    cat.push({ g });
+    const p = dirToPixK(g, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
+    det.push({ x: p.px + (rnd() - 0.5) * 2, y: p.py + (rnd() - 0.5) * 2 }); // ±1 px noise
+  }
+  for (let i = 0; i < 8; i++) det.push({ x: rnd() * natW, y: rnd() * natH }); // clutter / faint non-catalog blobs
+  const sol = autoStarAlign(det, cat, natW, natH, { az: truth.az + 7, el: truth.el - 4, roll: truth.roll + 12, fov: truth.fov * 1.1, k: 0 });
+  approx(sol ? 1 : 0, 1, 0, "platesolve: locked a solution");
+  if (sol) {
+    approx(sol.az, truth.az, 0.6, "platesolve: az recovered");
+    approx(sol.el, truth.el, 0.6, "platesolve: el recovered");
+    approx(sol.roll, truth.roll, 1.2, "platesolve: roll recovered");
+    approx(sol.fov, truth.fov, 1.5, "platesolve: FOV recovered");
+    approx(sol.rms < 0.6 ? 1 : 0, 1, 0, "platesolve: sub-degree fit rms");
+  }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
