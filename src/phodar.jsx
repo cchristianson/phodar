@@ -261,7 +261,7 @@ const css = `
   border-radius:50%; border:2px solid; display:flex; align-items:center;
   justify-content:center; font-size:10px; font-weight:800; font-family:var(--mono);
   touch-action:none; pointer-events:none;}
-.pinmapwrap{position:relative; isolation:isolate; z-index:0; height:240px;
+.pinmapwrap{position:relative; isolation:isolate; z-index:0; height:200px;
   border-radius:10px; border:1px solid var(--line); overflow:hidden;
   background:#08101F;}
 .pinmapwrap .leaflet-container{width:100%; height:100%; background:#08101F;
@@ -3506,7 +3506,7 @@ function PositionEditor({ src, update, others }) {
               </div>
             )}
             {places && places.err && <div className="warn">{places.err}</div>}
-            <div style={{ fontSize: 10, color: "var(--dim)", margin: "5px 0 10px" }}>Search by OpenStreetMap · Nominatim — then drag the pin below to your exact standing spot.</div>
+            <div style={{ fontSize: 10, color: "var(--dim)", margin: "3px 0 7px" }}>OpenStreetMap · Nominatim — then drag the pin to your exact spot.</div>
             <div className="grid3">
               <Num label="Latitude" value={src.lat} onChange={(v) => {
                 const m = String(v).match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
@@ -3518,7 +3518,7 @@ function PositionEditor({ src, update, others }) {
               }} ph="e.g. −123.6480" />
               <Num label="Elev" unit="m, opt" value={src.alt} onChange={(v) => update({ alt: v })} ph="0" />
             </div>
-            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               {ENABLE_GPS_BUTTON && (
                 <button className="btn sm teal" onClick={grabLocation}>{geoBusy ? "Locating…" : "📍 Use my GPS"}</button>
               )}
@@ -3532,32 +3532,36 @@ function PositionEditor({ src, update, others }) {
               )}
               <span style={{ fontSize: 11, color: "var(--dim)" }}>{ENABLE_GPS_BUTTON ? "or long-press the spot in a maps app → paste" : "long-press your spot in a maps app → paste, or drag the map below"}</span>
             </div>
-            {demMsg && <div style={{ fontSize: 12, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6 }}>{demMsg}</div>}
+            {demMsg && <div style={{ fontSize: 11, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 5 }}>{demMsg}</div>}
             {geoErr && <div className="warn">{geoErr}</div>}
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: 8 }}>
               <ML>Sighting date &amp; time</ML>
               <input type="datetime-local" value={toLocalInput(new Date(isNum(src.whenMs) ? +src.whenMs : Date.now()))}
                 onChange={(e) => { const t = new Date(e.target.value).getTime(); if (!isNaN(t)) update({ whenMs: t }); }} />
             </div>
             {posDone && (
-              <div style={{ marginTop: 10 }}>
-                <ML style={{ marginBottom: 2 }}>Viewing direction {isNum(bearing) ? <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(bearing)}° {compass8(bearing)}{tilt >= 3 ? ` · ▲ ${Math.round(tilt)}° up` : tilt <= -3 ? ` · ▼ ${Math.round(-tilt)}° down` : ""}</span> : <span style={{ color: "var(--dim)" }}>— drag to set which way you looked</span>}</ML>
-                <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
-                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{isNum(src.meta?.az) ? "Auto-filled from the photo's compass — adjust if needed." : "The teal ray on the map shows the direction; it seeds the sky-view placement."}</div>
+              <div style={{ marginTop: 8 }}>
+                <PinMap lat={+src.lat} lon={+src.lon}
+                  origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
+                  others={others} bearing={bearing} tilt={tilt}
+                  onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
+                {/* aim sliders live UNDER the map so you set the ray you can see */}
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <ML style={{ marginBottom: 1 }}>Viewing direction</ML>
+                    <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{isNum(bearing) ? `${Math.round(bearing)}° ${compass8(bearing)}` : "drag to set"}</span>
+                  </div>
+                  <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
+                </div>
+                <div style={{ marginTop: 2 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <ML style={{ marginBottom: 1 }}>How high you looked</ML>
+                    <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{Math.round(tilt)}° {tilt >= 75 ? "straight up" : tilt <= 5 ? "horizon" : "up"}</span>
+                  </div>
+                  <input type="range" min={-20} max={90} step={1} value={tilt} onChange={(e) => setTilt(+e.target.value)} />
+                  <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Photo metadata has no up/down angle — set 90° for straight up; fine-tune later in Place mode.</div>
+                </div>
               </div>
-            )}
-            {posDone && (
-              <div style={{ marginTop: 10 }}>
-                <ML style={{ marginBottom: 2 }}>How high you looked <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(tilt)}° {tilt >= 75 ? "(straight up)" : tilt <= 5 ? "(at the horizon)" : "up"}</span></ML>
-                <input type="range" min={-20} max={90} step={1} value={tilt} onChange={(e) => setTilt(+e.target.value)} />
-                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>Metadata carries no up/down angle, so this starts the sky view at the right elevation — set it to 90° for a straight-up night-sky shot. Fine-tune later by dragging in Place mode.</div>
-              </div>
-            )}
-            {posDone && (
-              <PinMap lat={+src.lat} lon={+src.lon}
-                origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
-                others={others} bearing={bearing} tilt={tilt}
-                onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
             )}
     </>
   );
