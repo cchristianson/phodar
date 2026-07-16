@@ -3783,10 +3783,12 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
     }
     let detailBlock = "";
     if (s.detailJpeg) {
-      const cw2 = "max-width:min(330px,100%)";
-      const noOv = `<div style="${cw2}"><img src="${s.detailJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom}, no overlay</div></div>`;
+      const both = !!(s.shapeFit && s.detailCrop);
+      /* both crops share the row as equal halves; a lone crop stays modest */
+      const childCss = both ? "flex:1 1 0;min-width:0" : "max-width:min(330px,100%)";
+      const noOv = `<div style="${childCss}"><img src="${s.detailJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom}, no overlay</div></div>`;
       let withOv = "";
-      if (s.shapeFit && s.detailCrop) {
+      if (both) {
         const pr2 = shapeProjNat(s.shapeFit);
         const colR2 = `hsl(${s.shapeFit.hue ?? 36},85%,42%)`;
         const sw2 = Math.max(0.8, s.detailCrop.w / 240);
@@ -3795,9 +3797,9 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
         ).join("");
         const kindLabel = (SHAPES.find((x) => x.k === s.shapeFit.kind) || {}).label || s.shapeFit.kind;
         const cr = s.detailCrop;
-        withOv = `<div style="${cw2}"><div style="position:relative;border:1px solid #ccc;border-radius:4px;overflow:hidden"><img src="${s.detailJpeg}" style="width:100%;display:block"/><svg viewBox="${cr.x.toFixed(1)} ${cr.y.toFixed(1)} ${cr.w.toFixed(1)} ${cr.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths2}</svg></div><div class="cap">detail — same crop with the ${e2(kindLabel)} shape overlaid (your colour)</div></div>`;
+        withOv = `<div style="${childCss}"><div style="position:relative;border:1px solid #ccc;border-radius:4px;overflow:hidden"><img src="${s.detailJpeg}" style="width:100%;display:block"/><svg viewBox="${cr.x.toFixed(1)} ${cr.y.toFixed(1)} ${cr.w.toFixed(1)} ${cr.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths2}</svg></div><div class="cap">detail — same crop with the ${e2(kindLabel)} shape overlaid (your colour)</div></div>`;
       }
-      detailBlock = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
+      detailBlock = `<div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
     }
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
 <div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block"/>${overlay}</div>
