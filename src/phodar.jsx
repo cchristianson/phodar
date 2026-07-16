@@ -2477,16 +2477,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const idx = n, sel = selPt === idx;
                   const tappable = wizard;
                   const col = sel ? "var(--amber)" : "var(--track)";
-                  /* Display size: legible AND proportional to the object's measured
-                     size, so sliding a point's size visibly grows/shrinks the shape
-                     even for tiny objects (true angular px would be sub-pixel and
-                     just clamp to a dot). Relative differences between points stay
-                     honest — it's an editing marker, true angular size lives in the
-                     compare tool. */
+                  /* TRUE apparent size: angular size → screen px via the LIVE FOV,
+                     so the shape scales with the sky as you zoom in/out (a distant
+                     object really is tiny — zoom in to see it; the rotation loupe
+                     helps while it's small). Floor 1 px; tap target stays ≥32 px. */
                   const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
-                  const angRefDisp = (objAngW != null && objAngW > 0) ? objAngW
-                    : (isNum(sortedTrack[0]?.ang) && +sortedTrack[0].ang > 0 ? +sortedTrack[0].ang : null);
-                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 1, 46) : 13;
+                  const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
+                  const dispPx = angI != null ? clampN(angI * D2R * fpxS, 1, 1400) : 12;
                   const hit = Math.max(dispPx + 22, 32);
                   const sfI = source.shapeFit ? { ...source.shapeFit, rotM: ptRotM(idx), roll: 0 } : null;
                   return (
