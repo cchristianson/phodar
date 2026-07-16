@@ -1364,6 +1364,11 @@ function TrackObj({ sf, px, color }) {
 
 function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
   const [vpRef, vp] = useSize();
+  /* Highest elevation the view/placement may reach. NOT 90°: at exactly the
+     zenith the az/el basis is a gimbal singularity (the "right" vector →0), so
+     the projection breaks. 89.5° is visually straight-up yet numerically stable,
+     and lets you spin azimuth around the pole to bring zenith stars to center. */
+  const EL_MAX = 89.5;
   const [viewAz, setViewAz] = useState(180);
   const [viewAlt, setViewAlt] = useState(30);
   const [fov, setFov] = useState(55);
@@ -1493,12 +1498,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (open) {
       setViewAz(isNum(initAz) ? ((+initAz % 360) + 360) % 360 : 180);
-      setViewAlt(isNum(initAlt) ? clampN(+initAlt, -15, 88) : 30);
+      setViewAlt(isNum(initAlt) ? clampN(+initAlt, -15, EL_MAX) : 30);
       setMotionMsg(""); setCameraMsg("");
       const ma = source?.mediaAim;
       const p0 = {
         az: ma ? ma.az : (isNum(source?.A?.az) ? +source.A.az : (isNum(initAz) ? +initAz : 180)),
-        el: ma ? ma.el : (isNum(source?.A?.el) ? +source.A.el : 30),
+        el: clampN(ma ? ma.el : (isNum(source?.A?.el) ? +source.A.el : 30), -20, EL_MAX), // never exactly 90° — photo basis is singular at the zenith
         roll: ma ? (ma.roll || 0) : 0,
         fov: isNum(source?.fovH) ? +source.fovH : 68,
         dist: ma && isNum(ma.dist) ? +ma.dist : 0,
@@ -1728,7 +1733,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const FRAME = 0.78; // fraction of viewport width the photo occupies while placing
   const placing = pMode === "place" && photoOn && !!source?.natW;
   const effAz = placing ? pAz : viewAz;
-  const effAlt = placing ? clampN(pEl, -20, 88) : viewAlt;
+  const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
     ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAME) * R2D, 12, 135)
     : fov;
@@ -1869,7 +1874,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const pr = placeRef.current; // snapshot: pointerup may null the ref before React flushes
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
       const nAz = (((pr.az + dx * fovH) % 360) + 360) % 360;
-      const nEl = clampN(pr.el - dy * fovV, -20, 88);
+      const nEl = clampN(pr.el - dy * fovV, -20, EL_MAX);
       queuePose("place", nAz, nEl);
       return;
     }
@@ -1887,7 +1892,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dx = (e.clientX - panRef.current.x) / vp.w, dy = (e.clientY - panRef.current.y) / (vp.h || vp.w);
       queuePose("look",
         (((panRef.current.az - dx * fovH) % 360) + 360) % 360,
-        clampN(panRef.current.alt + dy * fovV, -15, 88));
+        clampN(panRef.current.alt + dy * fovV, -15, EL_MAX));
     }
   };
   const onBgUp = (e) => {
@@ -2105,7 +2110,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     calibAnchorsRef.current = list;
     const oldFov = fovM;
     const sol = solvePoseAnchors(list, photo.natW, photo.natH, pAz, pEl, { roll: pRoll, fov: fovM, k: pDist });
-    if (list.length >= 3) { setPAz(sol.az); setPEl(clampN(sol.el, -20, 88)); } // full plate solve moves the pointing too
+    if (list.length >= 3) { setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX)); } // full plate solve moves the pointing too
     setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
     setFovM(clampN(sol.fov, 8, 135));
     setPDist(sol.k);
@@ -2126,7 +2131,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const enterPlace = () => {
     /* first-ever placement: put the photo where you're looking */
-    if (!source?.mediaAim) { setPAz(viewAz); setPEl(clampN(viewAlt, -20, 88)); }
+    if (!source?.mediaAim) { setPAz(viewAz); setPEl(clampN(viewAlt, -20, EL_MAX)); }
     if (motionOn) setMotionOn(false);
     if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
     calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
@@ -2134,7 +2139,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   const donePlace = () => {
     /* hand the (already photo-centered) view back seamlessly — nothing moves */
-    setViewAz(pAz); setViewAlt(clampN(pEl, -15, 88));
+    setViewAz(pAz); setViewAlt(clampN(pEl, -15, EL_MAX));
     setFov(clampN(effFov, 2, 90));
     commitPlacement();
     setPMode("look");
@@ -2337,7 +2342,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (!m || m.rms > 0.8) { setFlash(`⛰ ridges don't match the DEM cleanly (rms ${m ? m.rms.toFixed(2) : "—"}°) — align manually`); return; }
         /* az/el errors add; roll subtracts (signs verified empirically) */
         az = ((az + m.dAz) % 360 + 360) % 360;
-        el = clampN(el + m.dEl, -20, 88);
+        el = clampN(el + m.dEl, -20, EL_MAX);
         roll -= m.dRollDeg;
       }
       setPAz(az); setPEl(el); setPRoll(roll);
@@ -2348,7 +2353,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
 
   const aimColor = which === "B" ? "var(--teal)" : "var(--amber)";
-  const recenter = (b) => { if (placing) { setPAz(b.az); setPEl(clampN(b.alt, -20, 88)); } else { setViewAz(b.az); setViewAlt(clampN(b.alt, -10, 80)); } };
+  const recenter = (b) => { if (placing) { setPAz(b.az); setPEl(clampN(b.alt, -20, EL_MAX)); } else { setViewAz(b.az); setViewAlt(clampN(b.alt, -10, 80)); } };
   const fmtBody = (b) => `${Math.round(b.az)}°/${b.alt.toFixed(0)}°`;
 
   return (
@@ -3402,7 +3407,7 @@ function PositionEditor({ src, update, others }) {
      mediaAim.el directly; the sky view opens at this elevation. */
   const tilt = isNum(src.mediaAim?.el) ? +src.mediaAim.el : 15;
   const setTilt = (deg) => {
-    const el = clampN(+deg, -20, 90);
+    const el = clampN(+deg, -20, 89.5); // cap just below the zenith — the sky view's gimbal limit
     update({ mediaAim: { az: isNum(src.mediaAim?.az) ? +src.mediaAim.az : (isNum(bearing) ? bearing : 0), el: +el.toFixed(1), roll: src.mediaAim?.roll ?? 0 } });
   };
   /* forward geocode by place name so no one has to source coordinates
