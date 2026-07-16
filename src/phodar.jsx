@@ -2479,10 +2479,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(7px,-5px)", fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: calibAnchor?.name === p.name ? 800 : 600, color: calibAnchor?.name === p.name ? "var(--amber)" : "#eaf1ff", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
         ))}
         {planetDots.map((pl) => (
-          <div key={"pl" + pl.name} style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff6d8", boxShadow: "0 0 9px 3px rgba(255,225,150,.75)", margin: "0 auto" }} />
-            <div style={{ fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 700, color: calibAnchor?.name === pl.name ? "var(--amber)" : "#ffe9b0", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
-          </div>
+          /* dot sits EXACTLY on the planet's true az/el (translate -50%,-50%);
+             the label floats below as a SEPARATE element so its height never
+             pushes the marker off the true point (it did when both were stacked
+             in one centered box — the marker landed ~7px high of Venus) */
+          <React.Fragment key={"pl" + pl.name}>
+            <div style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", width: 8, height: 8, borderRadius: "50%", background: "#fff6d8", boxShadow: "0 0 9px 3px rgba(255,225,150,.75)", pointerEvents: "none" }} />
+            <div style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,8px)", textAlign: "center", fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 700, color: calibAnchor?.name === pl.name ? "var(--amber)" : "#ffe9b0", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap", pointerEvents: "none" }}>{pl.sym} {pl.name}</div>
+          </React.Fragment>
         ))}
 
         {/* Sun & Moon — calibration anchors at their true positions */}
