@@ -280,8 +280,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   placement for the most catalog matches, then ICP-refines with shrinking
   tolerance via `solvePoseAnchors` → exact az/el/roll/FOV/lens-k. Seeded by the
   current placement (mirrors "Snap to ridges" but against stars). One-tap
-  "✦ Auto star-align" button in SkyAimer place mode. Asserted in mathcheck
-  (blob detection + full pose recovery from a perturbed seed with clutter).
+  "✦ Auto star-align" button in SkyAimer place mode. **Robust to outliers**:
+  matches catalog→nearest blob (so a UFO / satellite / plane / faint non-catalog
+  blob is simply never matched), and each ICP iteration trims correspondences
+  whose angular residual is far from the consensus (median-based) before the
+  least-squares solve, so a cloud-hidden star mis-matched to a nearby blob can't
+  bias the pose. Clouds hiding stars just lower the inlier count — it solves on
+  whatever remains (≥5). Asserted in mathcheck (blob detection + pose recovery
+  from a perturbed seed WITH two cloud-hidden stars, a UFO blob, and clutter —
+  UFO/clutter excluded, only the visible stars matched).
 - **CelesTrak satellites: DONE** (src/checks/satellites.js — visual-group
   TLEs, satellite.js v5 SGP4 (v7 is WASM-first and breaks vite), Earth-shadow
   lit test, dome markers + pass trails, sky-object-check integration with

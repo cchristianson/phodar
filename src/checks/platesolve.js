@@ -113,25 +113,43 @@ export function autoStarAlign(det, cat, natW, natH, pose0, opts = {}) {
         }
   if (!best || best.n < 4) return null;
 
-  let pose = best.pose;
-  const iters = opts.iters || 8;
+  const anchorsOf = (m) => m.map((p) => ({ px: p.det.x, py: p.det.y, g: p.cat.g }));
+  const solveOn = (m, seed) => solvePoseAnchors(anchorsOf(m), natW, natH, seed.az, seed.el, { roll: seed.roll, fov: seed.fov, k: seed.k });
+  const residDeg = (m, pose) => m.map((p) => {
+    const d = pixToDirK(p.det.x, p.det.y, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+    return Math.acos(Math.min(1, Math.max(-1, dot(d, p.cat.g)))) * R2D;
+  });
+  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
+  const inlierFloor = opts.inlierDeg || 0.4;
+  /* keep only correspondences whose residual is near the consensus — a UFO,
+     satellite, plane, or a cloud-hidden star mis-matched to a nearby blob sits
+     far off and is dropped, so it can't bias the least-squares pose */
+  const trim = (m, pose) => {
+    if (m.length < 5) return m;
+    const res = residDeg(m, pose), thr = Math.max(2.5 * median(res), inlierFloor);
+    const keep = m.filter((_, i) => res[i] <= thr);
+    return keep.length >= 4 ? keep : m;
+  };
+
+  let pose = best.pose, inliers = [];
+  const iters = opts.iters || 10;
   for (let it = 0; it < iters; it++) {
     const tol = (0.06 - (0.06 - 0.016) * (it / (iters - 1))) * natW;
-    const m = greedyMatch(inFrameCatalog(cat, natW, natH, pose), det, tol);
+    let m = greedyMatch(inFrameCatalog(cat, natW, natH, pose), det, tol);
     if (m.length < 4) return null;
-    const anchors = m.map((p) => ({ px: p.det.x, py: p.det.y, g: p.cat.g }));
-    const sol = solvePoseAnchors(anchors, natW, natH, pose.az, pose.el, { roll: pose.roll, fov: pose.fov, k: pose.k });
+    let sol = solveOn(m, pose);
+    const keep = trim(m, sol);                     // robust: reject outlier matches
+    if (keep.length < m.length) { sol = solveOn(keep, sol); m = keep; }
     pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k };
+    inliers = m;
   }
 
-  const matches = greedyMatch(inFrameCatalog(cat, natW, natH, pose), det, (opts.finalTol || 0.02) * natW);
-  if (matches.length < (opts.minMatch || 5)) return null;
-  let sse = 0;
-  for (const m of matches) {
-    const d = pixToDirK(m.det.x, m.det.y, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
-    sse += Math.acos(Math.min(1, Math.max(-1, dot(d, m.cat.g)))) ** 2;
-  }
-  const rms = Math.sqrt(sse / matches.length) * R2D;
-  if (rms > (opts.maxRms || 1.5)) return null;
-  return { az: pose.az, el: pose.el, roll: pose.roll, fov: pose.fov, k: pose.k, rms, n: matches.length };
+  /* final gate on INLIERS only — clouds hiding some stars just means fewer
+     inliers, which is fine as long as enough survive */
+  let m = greedyMatch(inFrameCatalog(cat, natW, natH, pose), det, (opts.finalTol || 0.02) * natW);
+  m = trim(m, pose);
+  if (m.length < (opts.minMatch || 5)) return null;
+  const rms = Math.sqrt(residDeg(m, pose).reduce((s, r) => s + r * r, 0) / m.length);
+  if (rms > (opts.maxRms || 1.2)) return null;
+  return { az: pose.az, el: pose.el, roll: pose.roll, fov: pose.fov, k: pose.k, rms, n: m.length };
 }
