@@ -245,6 +245,12 @@ export function blindStarAlign(det, cat, natW, natH, fovGuess, opts = {}) {
           const center = rot2(bvec[i], bvec[j], cts[asg[0]].g, cts[asg[1]].g)[2];
           const ae = dirToAzEl(center);
           if (!(ae.el > -30 && ae.el < 91)) continue;
+          /* elevation prior: the user reliably knows HOW HIGH they looked (esp.
+             "straight up") even when they can't recall which way they were
+             rotated — so reject centre hypotheses whose elevation is far from
+             it. This kills the wrong-elevation chance poses that a dense catalog
+             throws up, and leaves the rotation (az/roll) fully searched. */
+          if (opts.elPrior != null && Math.abs(ae.el - opts.elPrior) > (opts.elBand || 16)) continue;
           /* roll-invariant pre-score: how many catalog stars sit at a radius
              from the centre that some blob also has? prunes junk centres cheaply */
           let pre = 0;

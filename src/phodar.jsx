@@ -2424,7 +2424,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          partial match (the wide/soft/hazy case) is declined honestly rather than
          presented as a false alignment. Wide fovFactors cover 40–120° from the
          mid guess so an ultra-wide lens is still searched. */
-      const strict = { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4] };
+      /* Elevation prior: you reliably know HOW HIGH you looked (the position-step
+         tilt) even when you can't recall which way you were rotated looking
+         straight up — so anchor elevation near it and let the solver search all
+         rotations. The az/roll are NEVER taken from your guess. */
+      const elPrior = isNum(source?.mediaAim?.el) ? +source.mediaAim.el : (isNum(pEl) ? pEl : null);
+      const strict = { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4], elPrior, elBand: 20 };
       await new Promise((r) => setTimeout(r, 20)); // let the flash paint before the solve blocks
       let sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess, strict);
       if (!sol) sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist }, { minMatch: 10, maxRms: 0.6 });
