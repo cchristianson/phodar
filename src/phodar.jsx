@@ -15,7 +15,8 @@ import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { fetchPeaks } from "./checks/peaks.js";
-import { detectStars, autoStarAlign, blindStarAlign } from "./checks/platesolve.js";
+import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
+import { DEEP_STARS } from "./math/starcatDeep.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
 import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
@@ -2429,9 +2430,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          straight up — so anchor elevation near it and let the solver search all
          rotations. The az/roll are NEVER taken from your guess. */
       const elPrior = isNum(source?.mediaAim?.el) ? +source.mediaAim.el : (isNum(pEl) ? pEl : null);
-      const strict = { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4], elPrior, elBand: 20 };
       await new Promise((r) => setTimeout(r, 20)); // let the flash paint before the solve blocks
-      let sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess, strict);
+      let sol = null;
+      /* BEST path when the FOV is known (EXIF) and we have an elevation prior:
+         lock FOV + elevation, scan the ROTATION against a DEEP catalog. This is
+         what makes a wide "straight-up" frame solvable regardless of rotation. */
+      if (isNum(source?.fovH) && elPrior != null) {
+        const deep = DEEP_STARS.map(([ra, dec, mag]) => { const p = raDecToAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
+        sol = gridStarAlign(det, deep, source.natW, source.natH, { fov: +source.fovH, elPrior, elBand: 10, minGrid: 12, minMatch: 14, maxRms: 0.6 });
+      }
+      /* fallbacks: seedless asterism (no FOV needed), then a seeded refine */
+      if (!sol) sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess, { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4], elPrior, elBand: 20 });
       if (!sol) sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist }, { minMatch: 10, maxRms: 0.6 });
       if (!sol) { setFlash(`✦ couldn't confidently solve this frame (${det.length} points). Wide/soft/hazy night shots are hard to solve blind — tap ✦ align-to-star to set 2–3 named stars yourself, and raise brightness on the photo step to see them.`); return; }
       calibAnchorsRef.current = [];

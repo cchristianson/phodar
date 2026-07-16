@@ -272,3 +272,95 @@ export function blindStarAlign(det, cat, natW, natH, fovGuess, opts = {}) {
   /* hand the seedless hypothesis to the robust ICP solver to polish + fit k */
   return autoStarAlign(det, cat, natW, natH, { az: best.az, el: clampN(best.el, -20, 89.5), roll: best.roll, fov: best.fov, k: 0 }, opts);
 }
+
+/* ---- CONSTRAINED ROTATION GRID solve (FOV known + elevation prior) ----
+   The reliable case for "looking straight up": the EXIF gives the FOV and you
+   know roughly how HIGH you looked, so ONLY the rotation (azimuth + roll) is
+   unknown. Asterism matching is weak on a dense faint field, so instead we scan
+   the rotation directly, verifying by how many DEEP-catalog stars land on a
+   detected blob (spatial-hash lookup, O(1) per star). FOV is LOCKED to a narrow
+   band around the EXIF value — that's what stops the drift to a false wide-angle
+   pose. The winner is polished by the robust ICP solver. Needs a deep catalog. */
+export function gridStarAlign(det, cat, natW, natH, opts = {}) {
+  const elP = opts.elPrior, fovBase = opts.fov;
+  if (!det || det.length < 6 || !cat || cat.length < 8 || elP == null || !(fovBase > 0)) return null;
+  const cx = natW / 2, cy = natH / 2;
+  const elBand = opts.elBand || 5;
+  const fovs = opts.fovs || [fovBase * 0.9, fovBase, fovBase * 1.1]; // NARROW — FOV is known
+  const dts = det.slice(0, opts.nd || 120);
+  const maxHalf = Math.max(...fovs) * 0.62;
+  const cts = cat.filter((c) => c.alt == null || c.alt > 90 - elP - elBand - maxHalf - 3);
+  const fpxAt = (fov) => (natW / 2) / Math.tan((fov * D2R) / 2);
+  const CELL = Math.max(8, 0.6 * D2R * fpxAt(fovBase));
+  const hash = new Map();
+  for (const d of dts) { const k = ((d.x / CELL) | 0) + "," + ((d.y / CELL) | 0); let a = hash.get(k); if (!a) { a = []; hash.set(k, a); } a.push(d); }
+  const near = (px, py, tol) => {
+    const gx = (px / CELL) | 0, gy = (py / CELL) | 0;
+    for (let ax = -1; ax <= 1; ax++) for (let ay = -1; ay <= 1; ay++) {
+      const arr = hash.get((gx + ax) + "," + (gy + ay));
+      if (arr) for (const d of arr) if (Math.abs(px - d.x) < tol && Math.abs(py - d.y) < tol) return true;
+    }
+    return false;
+  };
+  const matchN = (az, el, roll, fov, tolDeg) => {
+    const b = photoBasis(az, el, roll), fpx = fpxAt(fov), tol = tolDeg * D2R * fpx; let m = 0;
+    for (const c of cts) {
+      const gf = c.g[0] * b.f[0] + c.g[1] * b.f[1] + c.g[2] * b.f[2]; if (gf <= 0.12) continue;
+      const px = cx + (c.g[0] * b.r[0] + c.g[1] * b.r[1] + c.g[2] * b.r[2]) / gf * fpx;
+      const py = cy - (c.g[0] * b.u[0] + c.g[1] * b.u[1] + c.g[2] * b.u[2]) / gf * fpx;
+      if (px < 0 || px > natW || py < 0 || py > natH) continue;
+      if (near(px, py, tol)) m++;
+    }
+    return m;
+  };
+  const cand = [];
+  for (const fov of fovs)
+    for (let el = elP - elBand; el <= Math.min(89, elP + elBand); el += 2.5)
+      for (let az = 0; az < 360; az += 4)
+        for (let roll = 0; roll < 360; roll += 6) {
+          const m = matchN(az, el, roll, fov, 0.7);
+          if (m >= (opts.minGrid || 12)) cand.push({ m, az, el, roll, fov });
+        }
+  if (!cand.length) return null;
+  cand.sort((a, b) => b.m - a.m);
+  let best = null;
+  for (const c of cand.slice(0, opts.top || 8))
+    for (let el = c.el - 2; el <= c.el + 2; el += 1)
+      for (let az = c.az - 4; az <= c.az + 4; az += 1.5)
+        for (let roll = c.roll - 6; roll <= c.roll + 6; roll += 2) {
+          const m = matchN(az, el, roll, c.fov, 0.5);
+          if (!best || m > best.m) best = { m, az, el: clampN(el, -20, 89.5), roll: ((roll % 360) + 360) % 360, fov: c.fov };
+        }
+  if (!best) return null;
+  /* polish IN PLACE from the grid pose — no coarse re-search (that drifts to a
+     chance pose on a dense catalog). Match catalog→nearest blob at a shrinking
+     tolerance, trim residual outliers, refit via solvePoseAnchors. */
+  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
+  let P = { az: best.az, el: best.el, roll: best.roll, fov: best.fov, k: 0 };
+  let pairs = [];
+  for (let it = 0; it < 6; it++) {
+    const tol = (0.6 - (0.6 - 0.28) * (it / 5)) * D2R * fpxAt(P.fov);
+    const usedD = new Set(); const cand = [];
+    for (const c of cts) {
+      const p = dirToPixK(c.g, natW, natH, P.az, P.el, P.roll, P.fov, P.k);
+      if (!p || p.px < 0 || p.px > natW || p.py < 0 || p.py > natH) continue;
+      let bd = tol, bi = -1;
+      for (let i = 0; i < dts.length; i++) { const dd = Math.hypot(p.px - dts[i].x, p.py - dts[i].y); if (dd < bd) { bd = dd; bi = i; } }
+      if (bi >= 0) cand.push({ g: c.g, det: dts[bi], di: bi, d: bd });
+    }
+    cand.sort((a, b) => a.d - b.d);
+    pairs = [];
+    for (const c of cand) { if (usedD.has(c.di)) continue; usedD.add(c.di); pairs.push(c); }
+    if (pairs.length < 5) break;
+    const sol = solvePoseAnchors(pairs.map((p) => ({ px: p.det.x, py: p.det.y, g: p.g })), natW, natH, P.az, P.el, { roll: P.roll, fov: P.fov, k: P.k });
+    P = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k };
+  }
+  if (pairs.length < 5) return null;
+  const res = pairs.map((p) => Math.acos(Math.min(1, Math.max(-1, dot(pixToDirK(p.det.x, p.det.y, natW, natH, P.az, P.el, P.roll, P.fov, P.k), p.g)))) * R2D);
+  const thr = Math.max(2.5 * median(res), 0.35);
+  const keep = res.filter((r) => r <= thr);
+  if (keep.length < (opts.minMatch || 10)) return null;
+  const rms = Math.sqrt(keep.reduce((s, r) => s + r * r, 0) / keep.length);
+  if (rms > (opts.maxRms || 0.7)) return null;
+  return { az: P.az, el: clampN(P.el, -20, 89.5), roll: P.roll, fov: P.fov, k: P.k, rms, n: keep.length };
+}
