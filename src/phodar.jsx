@@ -2429,7 +2429,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX));
       setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
       setFovM(clampN(sol.fov, 8, 135)); setPDist(sol.k);
-      setFlash(`✦ auto-aligned to ${sol.n} stars · FOV ${sol.fov.toFixed(0)}° · roll ${sol.roll.toFixed(0)}° · fit ${sol.rms.toFixed(2)}°`);
+      /* be honest about confidence — a wide phone lens + a bright-only catalog
+         can yield a LOOSE partial fit; don't present that as a clean lock */
+      const loose = sol.rms > 0.7 || sol.n < 12;
+      setFlash(loose
+        ? `✦ matched ${sol.n} stars, but the fit is loose (±${sol.rms.toFixed(1)}°) — toggle ★ stars ON and check they sit on the photo's stars; nudge/retry if it's off`
+        : `✦ auto-aligned · ${sol.n} stars · fit ±${sol.rms.toFixed(2)}° · FOV ${sol.fov.toFixed(0)}° — toggle ★ stars to verify`);
     } catch (e) { setFlash("✦ auto-align failed on this image"); }
   };
 
