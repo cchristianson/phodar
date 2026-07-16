@@ -3231,7 +3231,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
    Imagery by default (a rooftop is a better anchor than a street
    name), OSM street as the toggle.
    ============================================================ */
-function PinMap({ lat, lon, origin, others, onChange, bearing }) {
+function PinMap({ lat, lon, origin, others, onChange, bearing, tilt }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef(null);     // {sat, street}
@@ -3349,13 +3349,30 @@ function PinMap({ lat, lon, origin, others, onChange, bearing }) {
       <div className="pinmapwrap">
         <div ref={boxRef} style={{ position: "absolute", inset: 0 }} />
         <div className="map-north">N ↑</div>
-        {isNum(bearing) && (
-          /* which way you were looking — north-up map, so screen rotation = bearing */
-          <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)` }}>
-            <line x1="0" y1="0" x2="0" y2="-78" stroke="#5FD3BC" strokeWidth="2.5" />
-            <polygon points="0,-90 -6,-75 6,-75" fill="#5FD3BC" />
-          </svg>
-        )}
+        {isNum(bearing) && (() => {
+          /* which way you were looking — north-up map, so screen rotation = bearing.
+             A steep sight-line projects SHORT onto the ground (cos foreshortening),
+             so the ray shrinks toward the pin as you aim up; a dot rising at the pin
+             cues "looking up out of the map" and grows to dominate near the zenith. */
+          const t = clampN(isNum(tilt) ? +tilt : 0, -20, 90);
+          const upF = Math.max(0, Math.sin(t * D2R));        // 0 at/below horizon → 1 straight up
+          const grF = Math.max(0.14, Math.cos(t * D2R));     // ground foreshortening (keep a stub)
+          const len = 78 * grF;
+          return (
+            <>
+              <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)`, opacity: 0.55 + 0.45 * grF }}>
+                <line x1="0" y1="0" x2="0" y2={-len} stroke="#5FD3BC" strokeWidth="2.5" />
+                <polygon points={`0,${-(len + 12)} -6,${-len} 6,${-len}`} fill="#5FD3BC" />
+              </svg>
+              {upF > 0.03 && (
+                <svg className="pinmap-ray" width="0" height="0" style={{ transform: "none" }}>
+                  <circle cx="0" cy="0" r={4 + upF * 13} fill="none" stroke="#5FD3BC" strokeWidth="2" opacity={0.3 + 0.55 * upF} />
+                  <circle cx="0" cy="0" r={1.5 + upF * 5} fill="#5FD3BC" opacity={0.5 + 0.5 * upF} />
+                </svg>
+              )}
+            </>
+          );
+        })()}
         <svg className="pinmap-cross" viewBox="-14 -14 28 28" width="28" height="28">
           <circle cx="0" cy="0" r="7" fill="none" stroke="#5FD3BC" strokeWidth="2" />
           <path d="M-12 0H12M0 -12V12" stroke="#5FD3BC" strokeWidth="2" />
@@ -3524,7 +3541,7 @@ function PositionEditor({ src, update, others }) {
             </div>
             {posDone && (
               <div style={{ marginTop: 10 }}>
-                <ML style={{ marginBottom: 2 }}>Viewing direction {isNum(bearing) ? <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(bearing)}° {compass8(bearing)}</span> : <span style={{ color: "var(--dim)" }}>— drag to set which way you looked</span>}</ML>
+                <ML style={{ marginBottom: 2 }}>Viewing direction {isNum(bearing) ? <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(bearing)}° {compass8(bearing)}{tilt >= 3 ? ` · ▲ ${Math.round(tilt)}° up` : tilt <= -3 ? ` · ▼ ${Math.round(-tilt)}° down` : ""}</span> : <span style={{ color: "var(--dim)" }}>— drag to set which way you looked</span>}</ML>
                 <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
                 <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{isNum(src.meta?.az) ? "Auto-filled from the photo's compass — adjust if needed." : "The teal ray on the map shows the direction; it seeds the sky-view placement."}</div>
               </div>
@@ -3539,7 +3556,7 @@ function PositionEditor({ src, update, others }) {
             {posDone && (
               <PinMap lat={+src.lat} lon={+src.lon}
                 origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
-                others={others} bearing={bearing}
+                others={others} bearing={bearing} tilt={tilt}
                 onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
             )}
     </>
