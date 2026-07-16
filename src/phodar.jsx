@@ -9,7 +9,7 @@ import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
-import { loadSats, satsAt, satTrail } from "./checks/satellites.js";
+import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
@@ -1652,6 +1652,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, [satsWanted, satDb, T, LAT, LNG, hasPos]);
   const satStaleDays = satView.length ? Math.round(Math.max(...satView.map((s) => s.epochAgeDays || 0))) : 0;
 
+  /* Starlink layer — opt-in (the full ~7k constellation). One SGP4 per sat at
+     the sighting instant (memoised on T/pos, not on pan/zoom), then keep only
+     the sunlit ones above the horizon and cap the count so the dome stays
+     legible. Markers only (no per-sat trails — too many). */
+  const [starlinkOn, setStarlinkOn] = useState(false);
+  const [slDb, setSlDb] = useState(null); // {sats} | {err}
+  useEffect(() => {
+    if (!open || !starlinkOn || slDb) return;
+    let dead = false;
+    loadSatGroup("starlink").then((db) => { if (!dead) setSlDb(db); })
+      .catch((e) => { if (!dead) setSlDb({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, starlinkOn, slDb]);
+  const slView = useMemo(() => {
+    if (!starlinkOn || !slDb?.sats || !hasPos) return [];
+    return satsAt(slDb.sats, T, LAT, LNG, 0).filter((s) => s.lit).slice(0, 60);
+  }, [starlinkOn, slDb, T, LAT, LNG, hasPos]);
+
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
   const [selHex, setSelHex] = useState(null);
   const [selInfo, setSelInfo] = useState(null); // {route, aircraft} | {busy} | null
@@ -2447,6 +2465,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })}
 
+        {/* Starlink — small unlabeled dots (up to 60 sunlit); a fresh batch
+            reads as a tight arc/train. Distinct violet so they don't read as
+            the brighter visual-group satellites above. */}
+        {slView.length > 0 && (
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
+            {slView.map((s, i) => {
+              const pr = projectD(dirFromAzEl(s.az, s.el));
+              if (!pr.inFront || pr.x < -0.03 || pr.x > 1.03 || pr.y < -0.03 || pr.y > 1.03) return null;
+              return <circle key={"sl" + i} cx={pr.x * 100} cy={pr.y * 100} r="0.32" fill="#c9b6ff" opacity="0.9" />;
+            })}
+          </svg>
+        )}
+
         {/* faint sky-tracks: each aircraft's path ±4 min (archive) or from the
            live polls — drawn for craft near what you're looking at OR near the
            sight-line, and always when selected. (Before Moment A there is no
@@ -2738,6 +2769,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
               onClick={() => setSatMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
               🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? "…" : `${satView.length}${satMode === "auto" ? "" : " on"}`}
+            </button>
+          )}
+          {hasPos && (
+            <button className="btn sm" title="Starlink — the full constellation (opt-in). Sunlit Starlinks above the horizon at the sighting time; a fresh batch appears as a tight train."
+              style={{ background: "rgba(15,23,42,.7)", color: !starlinkOn ? "var(--dim)" : slDb?.err ? "var(--amber)" : "#c9b6ff" }}
+              onClick={() => setStarlinkOn((v) => !v)}>
+              ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? "…" : `Starlink ${slView.length}`) : "Starlink"}
             </button>
           )}
         </div>
