@@ -3505,6 +3505,9 @@ function PositionEditor({ src, update, others }) {
   const [q, setQ] = useState("");
   const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
   const [findBusy, setFindBusy] = useState(false);
+  const [tiltHint, setTiltHint] = useState(false); // side-view angle popup while sliding
+  const tiltHintRef = useRef(0);
+  const pokeTiltHint = () => { setTiltHint(true); clearTimeout(tiltHintRef.current); tiltHintRef.current = setTimeout(() => setTiltHint(false), 1100); };
   const posDone = isNum(src.lat) && isNum(src.lon);
   /* Viewing direction = the placement-center azimuth, held in mediaAim.az —
      the SAME field the sky view uses for photo placement. Both screens read
@@ -3660,12 +3663,36 @@ function PositionEditor({ src, update, others }) {
                   </div>
                   <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
                 </div>
-                <div style={{ marginTop: 2 }}>
+                <div style={{ marginTop: 2, position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <ML style={{ marginBottom: 1 }}>How high you looked</ML>
                     <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{Math.round(tilt)}° {tilt >= 75 ? "straight up" : tilt <= 5 ? "horizon" : "up"}</span>
                   </div>
-                  <input type="range" min={-20} max={90} step={1} value={tilt} onChange={(e) => setTilt(+e.target.value)} />
+                  <input type="range" min={-20} max={90} step={1} value={tilt}
+                    onPointerDown={pokeTiltHint} onChange={(e) => { setTilt(+e.target.value); pokeTiltHint(); }} />
+                  {/* momentary side-view of the sight-line angle while sliding */}
+                  <div style={{ position: "absolute", right: 0, bottom: 26, width: 116, height: 92, background: "rgba(10,15,28,.96)", border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 6px 18px rgba(0,0,0,.5)", opacity: tiltHint ? 1 : 0, transform: tiltHint ? "translateY(0)" : "translateY(4px)", transition: "opacity .18s, transform .18s", pointerEvents: "none", zIndex: 5 }}>
+                    {(() => {
+                      const ox = 20, oy = 70, L = 58, th = tilt * D2R; // observer bottom-left, ray at the tilt angle
+                      const rx = ox + Math.cos(th) * L, ry = oy - Math.sin(th) * L;
+                      const hx = ox + 82; // horizon reference length
+                      const aR = 20; // angle-arc radius
+                      const ax = ox + Math.cos(th) * aR, ay = oy - Math.sin(th) * aR;
+                      const sweep = tilt < 0 ? 1 : 0; // SVG y-down: CCW (up) arc = sweep 0
+                      return (
+                        <svg viewBox="0 0 116 92" width="116" height="92">
+                          <line x1={ox} y1={oy} x2={hx} y2={oy} stroke="#3a4a5c" strokeWidth="1.4" strokeDasharray="3 3" />
+                          <text x={hx - 32} y={oy + 12} fill="var(--dim)" fontFamily="var(--mono)" fontSize="8">horizon</text>
+                          <path d={`M ${ox + aR} ${oy} A ${aR} ${aR} 0 0 ${sweep} ${ax} ${ay}`} fill="none" stroke="var(--amber)" strokeWidth="1.2" opacity="0.8" />
+                          <line x1={ox} y1={oy} x2={rx} y2={ry} stroke="var(--teal)" strokeWidth="2.2" strokeLinecap="round" />
+                          <polygon points={`${rx},${ry} ${rx - Math.cos(th - 0.5) * 8},${ry + Math.sin(th - 0.5) * 8} ${rx - Math.cos(th + 0.5) * 8},${ry + Math.sin(th + 0.5) * 8}`} fill="var(--teal)" />
+                          <circle cx={ox} cy={oy - 5} r="3.2" fill="#dfe8ff" />
+                          <line x1={ox} y1={oy - 2} x2={ox} y2={oy} stroke="#dfe8ff" strokeWidth="2.4" strokeLinecap="round" />
+                          <text x={ox + 26} y={oy - 8} fill="var(--amber)" fontFamily="var(--mono)" fontSize="12" fontWeight="700">{Math.round(tilt)}°</text>
+                        </svg>
+                      );
+                    })()}
+                  </div>
                   <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Photo metadata has no up/down angle — set 90° for straight up; fine-tune later in Place mode.</div>
                 </div>
               </div>
