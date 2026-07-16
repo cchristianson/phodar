@@ -2416,15 +2416,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       ctx.drawImage(im, 0, 0, DW, DH);
       const det = detectStars(ctx.getImageData(0, 0, DW, DH).data, DW, DH, {}).map((s) => ({ x: s.x / sc, y: s.y / sc }));
       if (det.length < 6) { setFlash(`✦ only ${det.length} star(s) detected — too few to solve; a clearer night-sky frame is needed`); return; }
-      /* full catalog above the horizon (independent of the display mag limit /
-         star toggle) so the solver always has every bright star to match */
+      /* full bright catalog above the horizon (independent of the display mag
+         limit / star toggle) */
       const cat = STARS.map(([ra, dec, mag]) => { const p = raDecToAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
-      const fovGuess = isNum(source?.fovH) ? +source.fovH : fovM;
-      /* seedless first (no manual placement needed); seeded fallback */
+      const fovGuess = isNum(source?.fovH) ? +source.fovH : 85; // no EXIF FOV on many night shots → mid guess + a wide search
+      /* STRICT acceptance: only a genuinely TIGHT fit counts as a lock. A loose
+         partial match (the wide/soft/hazy case) is declined honestly rather than
+         presented as a false alignment. Wide fovFactors cover 40–120° from the
+         mid guess so an ultra-wide lens is still searched. */
+      const strict = { minInl: 8, minMatch: 10, maxRms: 0.6, fovFactors: [0.5, 0.65, 0.8, 1.0, 1.2, 1.4] };
       await new Promise((r) => setTimeout(r, 20)); // let the flash paint before the solve blocks
-      let sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess);
-      if (!sol) sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist });
-      if (!sol) { setFlash(`✦ couldn't match the sky (${det.length} points found) — check date/time & location are right, or try a clearer frame`); return; }
+      let sol = blindStarAlign(det, cat, source.natW, source.natH, fovGuess, strict);
+      if (!sol) sol = autoStarAlign(det, cat, source.natW, source.natH, { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist }, { minMatch: 10, maxRms: 0.6 });
+      if (!sol) { setFlash(`✦ couldn't confidently solve this frame (${det.length} points). Wide/soft/hazy night shots are hard to solve blind — tap ✦ align-to-star to set 2–3 named stars yourself, and raise brightness on the photo step to see them.`); return; }
       calibAnchorsRef.current = [];
       setPAz(sol.az); setPEl(clampN(sol.el, -20, EL_MAX));
       setPRoll(clampN(((sol.roll + 180) % 360 + 360) % 360 - 180, -90, 90));
