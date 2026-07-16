@@ -2750,7 +2750,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     );
                     const anchor = objAngW != null ? +objAngW : angRef0;
                     const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, ang: +clampN(a, 1e-3, 60).toFixed(4) } : p)) });
-                    const sv = clampN((Math.log(pAng / anchor) / Math.log(5) + 1) / 2, 0, 1);
+                    const SF = 40; // slider spans 40× farther ↔ 40× closer (buttons go beyond)
+                    const sv = clampN((Math.log(pAng / anchor) / Math.log(SF) + 1) / 2, 0, 1);
                     const rho = Math.tan(angRef0 * D2R / 2) / Math.tan(pAng * D2R / 2);
                     return (
                       <div style={{ marginTop: interior ? 6 : 8 }}>
@@ -2764,7 +2765,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                           <button className="btn sm" onClick={() => setAng(pAng / 1.12)}>−</button>
                           <input type="range" min={0} max={1} step={0.005} value={sv}
                             onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                            onChange={(e) => setAng(anchor * Math.pow(5, 2 * (+e.target.value) - 1))}
+                            onChange={(e) => setAng(anchor * Math.pow(SF, 2 * (+e.target.value) - 1))}
                             style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
                           <button className="btn sm" onClick={() => setAng(pAng * 1.12)}>+</button>
                           {selPt !== 0 && <button className="btn sm" title="same range as point 1" onClick={() => setAng(angRef0)}>= pt1</button>}
