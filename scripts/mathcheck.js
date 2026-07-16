@@ -10,6 +10,8 @@ import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
+import { photoBasis, solveRollFov } from "../src/math/projection.js";
+import { unit, dot } from "../src/math/geodesy.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -315,6 +317,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   }
   approx(best.alt, 90 - lat + sirius[1], 0.15, "Sirius transit altitude");
   approx(Math.abs(((best.az - 180 + 540) % 360) - 180), 0, 1.5, "Sirius transit azimuth ~180");
+}
+
+// --- two-tap star align (solveRollFov): recover roll + FOV from one anchor ---
+// A photo is placed with a WRONG roll/FOV; the user taps a known star where it
+// really sits in the photo. The solve must recover the true roll+FOV exactly,
+// keeping the photo center fixed (so a terrain match at center survives).
+{
+  const natW = 4032, natH = 3024;
+  const pixDir = (px, py, pose) => {
+    const { f, r, u } = photoBasis(pose.az, pose.el, pose.roll);
+    const fpx = (natW / 2) / Math.tan((pose.fov * D2R) / 2);
+    const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx;
+    return unit([f[0] + r[0] * x + u[0] * y, f[1] + r[1] * x + u[1] * y, f[2] + r[2] * x + u[2] * y]);
+  };
+  const dirToPix = (g, pose) => {
+    const { f, r, u } = photoBasis(pose.az, pose.el, pose.roll);
+    const fpx = (natW / 2) / Math.tan((pose.fov * D2R) / 2);
+    const gf = dot(g, f); const X = dot(g, r) / gf, Y = dot(g, u) / gf;
+    return { px: natW / 2 + X * fpx, py: natH / 2 - Y * fpx };
+  };
+  const cases = [
+    { truth: { az: 265, el: 20, roll: 1.5, fov: 78 }, corr: { roll: 0, fov: 83 }, star: { az: 258, el: 33 } },
+    { truth: { az: 90, el: 40, roll: 3, fov: 100 }, corr: { roll: -1, fov: 92 }, star: { az: 80, el: 55 } },
+    { truth: { az: 300, el: 10, roll: 0.5, fov: 50 }, corr: { roll: 0, fov: 50 }, star: { az: 296, el: 18 } },
+  ];
+  cases.forEach((c, i) => {
+    const g = dirFromAzEl(c.star.az, c.star.el);
+    const truePose = { ...c.truth };
+    const pix = dirToPix(g, truePose);                                  // star's fixed pixel
+    const cur = { az: c.truth.az, el: c.truth.el, roll: c.corr.roll, fov: c.corr.fov };
+    const vS = pixDir(pix.px, pix.py, cur);                             // world dir it shows now
+    const sol = solveRollFov(vS, g, photoBasis(cur.az, cur.el, cur.roll), cur.fov, cur.roll);
+    approx(sol.fov, c.truth.fov, 0.05, `star-align case ${i} FOV`);
+    approx(sol.roll, c.truth.roll, 0.05, `star-align case ${i} roll`);
+    const landed = dirToPix(g, { az: cur.az, el: cur.el, roll: sol.roll, fov: sol.fov });
+    approx(Math.hypot(landed.px - pix.px, landed.py - pix.py), 0, 2, `star-align case ${i} lands on pixel`);
+  });
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
