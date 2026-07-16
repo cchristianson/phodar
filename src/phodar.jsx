@@ -2481,7 +2481,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                      so the shape scales with the sky as you zoom in/out (a distant
                      object really is tiny — zoom in to see it; the rotation loupe
                      helps while it's small). Floor 1 px; tap target stays ≥32 px. */
-                  const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
+                  /* a point with no explicit size defaults to the MEASURED object
+                     size, so it scales with zoom correctly by default (a point
+                     dropped before the object was measured otherwise rendered at a
+                     fixed 12 px that ignored zoom). */
+                  const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang
+                    : (objAngW != null && objAngW > 0 ? +objAngW : null);
                   const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
                   const dispPx = angI != null ? clampN(angI * D2R * fpxS, 1, 1400) : 12;
                   const hit = Math.max(dispPx + 22, 32);
