@@ -135,30 +135,40 @@ function TrajectoryStereoSection({ stereo }) {
 function SoloTrackSection({ solo, t, setT }) {
   const D = Math.pow(10, Math.log10(50) + clampN(+t, 0, 1) * (Math.log10(50000) - Math.log10(50)));
   const gAt = (k, d) => (k.peakA != null ? (d * k.peakA) / 9.81 : null);
+  const anyRad = solo.some((s) => s.rad);
   return (
     <Section title="Trajectory — single observer (needs assumed distance)">
       <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 10 }}>
-        One viewpoint gives the angular path only. Every result below scales with the distance you assume — and radial motion is invisible, so speeds and g are lower bounds on the transverse component.
+        {anyRad
+          ? <>Because you sized the object at each point, the <b style={{ color: "var(--track)" }}>radial (closer/farther) motion is captured</b> — the 3D path and its speed are real. Only the overall <b>scale</b> is unknown, so pick the distance to point 1 and everything below follows.</>
+          : <>One viewpoint gives the angular path only. Every result below scales with the distance you assume — and radial motion is invisible, so speeds and g are lower bounds on the transverse component. (Size the object at each trajectory point to capture closer/farther motion.)</>}
       </div>
-      <ML>Assumed distance</ML>
+      <ML>{anyRad ? "Assumed distance to point 1" : "Assumed distance"}</ML>
       <div className="readout amber" style={{ fontSize: 22 }}>{fmtLenShort(D)}</div>
       <input type="range" min={0} max={1} step={0.001} value={t} onChange={(e) => setT(e.target.value)} />
       <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
         <span>50 m</span><span>50 km</span>
       </div>
       {solo.map((s, i) => {
-        const k = s.k;
+        const rad = s.rad;
+        const k = rad ? rad.k3d : s.k;
         const g = gAt(k, D);
         const felt = g != null ? Math.sqrt(g * g + 1) : null;
+        const near = rad ? D * rad.rho[rad.iNear] : null, far = rad ? D * rad.rho[rad.iFar] : null;
         return (
           <div key={i}>
             <div className="hr" />
-            <ML style={{ color: "var(--track)" }}>{s.name} — {k.n} pts · {k.dur.toFixed(1)} s · peak {n1(k.peakSpeed * R2D)}°/s across the sky</ML>
+            <ML style={{ color: "var(--track)" }}>{s.name} — {k.n} pts · {k.dur.toFixed(1)} s · {rad ? <>3D path (radial + transverse)</> : <>peak {n1(s.k.peakSpeed * R2D)}°/s across the sky</>}</ML>
+            {rad && (
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", margin: "6px 0 2px" }}>
+                range {fmtLenShort(near)} → {fmtLenShort(far)} · <span style={{ color: "var(--track)" }}>{rad.rangeRatio.toFixed(2)}× span</span> (pt {rad.iNear + 1} closest, pt {rad.iFar + 1} farthest)
+              </div>
+            )}
             <div className="grid2" style={{ marginTop: 6 }}>
               <div>
-                <ML>Speed at {fmtLenShort(D)}</ML>
+                <ML>{rad ? "True speed" : "Speed"} at {fmtLenShort(D)}</ML>
                 <div className="readout" style={{ fontSize: 22 }}>{n1(D * k.peakSpeed * 2.23694)} mph</div>
-                <div className="readsub">avg {n1(D * k.avgSpeed * 2.23694)} mph</div>
+                <div className="readsub">avg {n1(D * k.avgSpeed * 2.23694)} mph{rad ? " · incl. radial" : ""}</div>
               </div>
               <div>
                 <ML>Maneuver load</ML>
@@ -1319,6 +1329,33 @@ function GhostSil({ shape, w }) {
   return <svg width={ww} height={ww} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}><circle cx="50" cy="50" r="47" fill="#000" stroke="#fff" strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg>;
 }
 
+/* The user's FITTED shape drawn at a given apparent pixel size — used at each
+   trajectory point so the object visibly swells (closer) or shrinks (farther).
+   Falls back to a ring when no shape is fitted. Major axis spans `px`. */
+function TrackObj({ sf, px, color }) {
+  const d = Math.max(px, 5);
+  if (!sf) return (
+    <svg width={d} height={d} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
+      <circle cx="50" cy="50" r="46" fill="rgba(7,11,20,.30)" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+  const pr = shapeProjNat(sf);
+  const cx = sf.cx, cy = sf.cy;
+  let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9;
+  for (const c of pr.curves) for (const p of c) { const x = p.x - cx, y = p.y - cy; if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; }
+  const majorNat = Math.hypot(pr.p1.x - pr.p2.x, pr.p1.y - pr.p2.y) || 1;
+  const scale = d / majorNat;
+  const half = Math.max(Math.abs(mnx), Math.abs(mxx), Math.abs(mny), Math.abs(mxy), 1);
+  return (
+    <svg width={2 * half * scale} height={2 * half * scale} viewBox={`${-half} ${-half} ${2 * half} ${2 * half}`} style={{ display: "block", overflow: "visible" }}>
+      {pr.curves.map((c, i) => (
+        <polyline key={i} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke"
+          points={c.map((p) => `${(p.x - cx).toFixed(1)},${(p.y - cy).toFixed(1)}`).join(" ")} />
+      ))}
+    </svg>
+  );
+}
+
 function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
   const [vpRef, vp] = useSize();
   const [viewAz, setViewAz] = useState(180);
@@ -2023,8 +2060,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const dt = lastDtRef.current || 2;
     const tN = sortedTrack.length ? +(sortedTrack[sortedTrack.length - 1].t + dt).toFixed(2) : 0;
     /* new points default to a realistic arc (r 0.3) — a hard corner is a
-       deliberate claim the witness makes by selecting the point */
-    const track = [...sortedTrack, { t: tN, az: +az.toFixed(2), el: +el.toFixed(2), r: 0.3 }];
+       deliberate claim the witness makes by selecting the point.
+       Seed the apparent SIZE from the previous point (or the measured size);
+       resizing a point later signifies it moving closer/farther (radial). */
+    const prevAng = sortedTrack.length ? sortedTrack[sortedTrack.length - 1].ang : null;
+    const seedAng = isNum(prevAng) ? +prevAng : (objAngW != null ? +objAngW : null);
+    const np = { t: tN, az: +az.toFixed(2), el: +el.toFixed(2), r: 0.3 };
+    if (seedAng != null) np.ang = +seedAng.toFixed(4);
+    const track = [...sortedTrack, np];
     update(syncAB(track));
     /* timing is freshest right after the drop — open the editor for it */
     setSelSeg(track.length >= 2 ? track.length - 1 : null);
@@ -2401,13 +2444,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const idx = n, sel = selPt === idx;
                   const tappable = wizard;
                   const col = sel ? "var(--amber)" : "var(--track)";
+                  /* apparent size at this point: angular size → screen px */
+                  const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
+                  const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
+                  const pxI = angI != null ? clampN(angI * D2R * fpxS, 6, 380) : 12;
                   return (
                     <div key={"tj" + i}
                       onPointerDown={tappable ? (e) => e.stopPropagation() : undefined}
                       onClick={tappable ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); } : undefined}
                       style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: tappable ? "auto" : "none", cursor: tappable ? "pointer" : "default", textAlign: "center", padding: 6 }}>
-                      <div style={{ width: 11, height: 11, borderRadius: "50%", border: `2px solid ${col}`, background: "rgba(7,11,20,.55)", margin: "0 auto" }} />
-                      <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
+                        <TrackObj sf={source.shapeFit} px={pxI} color={col} />
+                        <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
+                      </div>
                     </div>
                   );
                 });
@@ -2646,6 +2695,40 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm" style={{ color: "var(--red)", borderColor: "#5A2C24" }} onClick={deletePt}>🗑 Delete</button>
                     <button className="btn sm teal" onClick={() => setSelPt(null)}>✓ Done</button>
                   </div>
+                  {(() => {
+                    /* apparent SIZE at this point → captures radial (closer/farther) motion.
+                       Anchored on the measured object size; range shown relative to point 1. */
+                    const angRef0 = isNum(sortedTrack[0]?.ang) ? +sortedTrack[0].ang : (objAngW != null ? +objAngW : null);
+                    const pAng = isNum(sortedTrack[selPt].ang) ? +sortedTrack[selPt].ang : (objAngW != null ? +objAngW : null);
+                    if (angRef0 == null || pAng == null) return (
+                      <div style={{ fontSize: 10, color: "var(--amber)", margin: "6px 0 2px", lineHeight: 1.5 }}>
+                        Fit a shape (or mark the object's width on the photo in step 1) to size it here — resizing each point is what captures closer/farther motion.
+                      </div>
+                    );
+                    const anchor = objAngW != null ? +objAngW : angRef0;
+                    const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, ang: +clampN(a, 1e-3, 60).toFixed(4) } : p)) });
+                    const sv = clampN((Math.log(pAng / anchor) / Math.log(5) + 1) / 2, 0, 1);
+                    const rho = Math.tan(angRef0 * D2R / 2) / Math.tan(pAng * D2R / 2);
+                    return (
+                      <div style={{ marginTop: interior ? 6 : 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>apparent size · bigger = closer</span>
+                          <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
+                            {selPt === 0 ? "range reference" : `≈ ${rho.toFixed(2)}× pt 1${rho < 0.97 ? " · closer" : rho > 1.03 ? " · farther" : ""}`}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                          <button className="btn sm" onClick={() => setAng(pAng / 1.12)}>−</button>
+                          <input type="range" min={0} max={1} step={0.005} value={sv}
+                            onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                            onChange={(e) => setAng(anchor * Math.pow(5, 2 * (+e.target.value) - 1))}
+                            style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
+                          <button className="btn sm" onClick={() => setAng(pAng * 1.12)}>+</button>
+                          {selPt !== 0 && <button className="btn sm" title="same range as point 1" onClick={() => setAng(angRef0)}>= pt1</button>}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {interior && (
                     <>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
@@ -3797,7 +3880,13 @@ ${xTicks}${yTicks}${refs}${altLine}
     (tr.stereo.k.peakLoad != null ? row("Peak felt load", tr.stereo.k.peakLoad.toFixed(2) + " g") : "") +
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
     `</table>` + reportTrajSvg(tr.stereo.k) : "";
-  const soloKin = (!tr.stereo?.k && tr.solo?.length) ? `<p class="cap">Single-view angular trajectory: ${tr.solo[0].k.n} pts over ${tr.solo[0].k.dur.toFixed(1)} s, peak angular rate ${(tr.solo[0].k.peakSpeed * R2D).toFixed(2)} °/s (distance-free).</p>` : "";
+  const soloKin = (!tr.stereo?.k && tr.solo?.length) ? (() => {
+    const s0 = tr.solo[0];
+    const base = `Single-view angular trajectory: ${s0.k.n} pts over ${s0.k.dur.toFixed(1)} s, peak angular rate ${(s0.k.peakSpeed * R2D).toFixed(2)} °/s.`;
+    return s0.rad
+      ? `<p class="cap">${base} The object was sized along the path, so radial (closer/farther) motion is recovered: its range varied over a <b>${s0.rad.rangeRatio.toFixed(2)}× span</b> (point ${s0.rad.iNear + 1} closest, point ${s0.rad.iFar + 1} farthest). The 3D path shape and speed profile are real — only the absolute scale needs an assumed distance (see the size ⇄ distance chart above).</p>`
+      : `<p class="cap">${base} Distance-free — size the object at each trajectory point in the sky view to also capture closer/farther motion.</p>`;
+  })() : "";
 
   /* --- ADS-B: rank the captured traffic snapshot against the final sight-lines --- */
   let adsbHtml = "";

@@ -7,7 +7,7 @@
    kinematics that scale with an assumed distance.
    ============================================================ */
 
-import { R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "./geodesy.js";
+import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
 import { pixelDirFromAnchor } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
@@ -124,13 +124,48 @@ export function kinematics(times, pos) {
   };
 }
 
+/* Single-observer 3D path from per-point angular SIZE. One witness can't know
+   absolute distance, but the RATIO of angular sizes fixes the relative range
+   at each moment (range ∝ 1/tan(halfAngle)), which recovers radial (toward/
+   away) motion — the piece a pure angular path misses. Positions are in units
+   of the reference point's range (ρ_ref = 1); multiply by an assumed reference
+   distance for absolute metres. Speeds/accelerations then include the radial
+   component, not just the transverse one. */
+export function soloTrack(s) {
+  const raw = (s.track || []).filter((p) => isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
+  if (raw.length < 3) return null;
+  const ang = raw.map((p) => (isNum(p.ang) && +p.ang > 0 ? +p.ang : null));
+  if (!ang.some((a) => a != null)) return null;               // no size info → no radial reconstruction
+  const iRef = ang.findIndex((a) => a != null);
+  const tanRef = Math.tan((ang[iRef] * D2R) / 2);
+  const rho = ang.map((a) => (a != null ? tanRef / Math.tan((a * D2R) / 2) : null));
+  const times = raw.map((p) => +p.t);
+  /* fill any point that was never sized: linear in time, nearest at the ends */
+  for (let i = 0; i < rho.length; i++) {
+    if (rho[i] != null) continue;
+    let a = i - 1; while (a >= 0 && rho[a] == null) a--;
+    let b = i + 1; while (b < rho.length && rho[b] == null) b++;
+    if (a < 0 && b >= rho.length) rho[i] = 1;
+    else if (a < 0) rho[i] = rho[b];
+    else if (b >= rho.length) rho[i] = rho[a];
+    else rho[i] = rho[a] + (rho[b] - rho[a]) * ((times[i] - times[a]) / ((times[b] - times[a]) || 1));
+  }
+  const pos = raw.map((p, i) => scl(dirFromAzEl(+p.az, +p.el), rho[i]));
+  const k3d = kinematics(times, pos);
+  if (!k3d) return null;
+  let iNear = 0, iFar = 0;
+  rho.forEach((r, i) => { if (r < rho[iNear]) iNear = i; if (r > rho[iFar]) iFar = i; });
+  return { k3d, rho, times, pos, iRef, iNear, iFar, rangeRatio: rho[iFar] / rho[iNear], nAng: ang.filter((a) => a != null).length };
+}
+
 export function analyzeTracks(sources) {
-  /* solo angular kinematics on the unit sphere (scale by distance later) */
+  /* solo angular kinematics on the unit sphere (scale by distance later);
+     `rad` adds the 3D reconstruction when the points carry angular sizes */
   const solo = sources.map((s) => {
     const dirs = trackDirections(s);
     if (!dirs || dirs.length < 3) return null;
     const k = kinematics(dirs.map((d) => d.ct), dirs.map((d) => d.d));
-    return k ? { name: s.name, k } : null;
+    return k ? { name: s.name, k, rad: soloTrack(s) } : null;
   }).filter(Boolean);
 
   /* stereo: interpolate each observer's direction to common sample times */
