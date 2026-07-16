@@ -2810,6 +2810,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             🛰 TLE epoch ≈ {satStaleDays} d from the sighting — satellite positions degrade; treat as approximate
           </div>
         )}
+        {peaksOn && peaks?.err && (
+          <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            ⛰ peaks unavailable — {peaks.err}
+          </div>
+        )}
+        {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
+          <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            ⛰ no named peaks within 40 km of the observer
+          </div>
+        )}
         {acOn && acData?.ac && acData.hist && (
           <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             ✈ archived traffic at the sighting time ({new Date(T).toLocaleString()})
