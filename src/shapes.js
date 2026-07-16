@@ -28,7 +28,7 @@ export const rotZ3 = (d) => { const a = d * D2R, c = Math.cos(a), s = Math.sin(a
 export const mul3 = (A, B) => { const R = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { let v = 0; for (let k = 0; k < 3; k++) v += A[i * 3 + k] * B[k * 3 + j]; R[i * 3 + j] = v; } return R; };
 export const app3 = (M, p) => [M[0] * p[0] + M[1] * p[1] + M[2] * p[2], M[3] * p[0] + M[4] * p[1] + M[5] * p[2], M[6] * p[0] + M[7] * p[1] + M[8] * p[2]];
 
-export function shapeWire(kind, aspect) { // unit major dimension, centered at origin
+export function shapeWire(kind, aspect, opts) { // unit major dimension, centered at origin
   const C = [];
   const circ = (r, axis, off = 0, n = 40) => Array.from({ length: n + 1 }, (_, i) => {
     const a = (i / n) * Math.PI * 2, u = Math.cos(a) * r, v = Math.sin(a) * r;
@@ -73,15 +73,18 @@ export function shapeWire(kind, aspect) { // unit major dimension, centered at o
     }
     C.push([[-0.37, 0, 0], [-0.47, 0, -0.17], [-0.52, 0, -0.17], [-0.50, 0, 0], [-0.37, 0, 0]]);                                   // vertical fin
   } else if (kind === "bird") {
-    // gliding bird — wingspan = 1, head along +X, slight dihedral
+    // gliding bird — head along +X, slight dihedral. wingF scales the
+    // lateral span (wingtip reach); wingX sweeps the wing root fore/aft.
+    const wingF = opts && isFinite(opts.wing) ? opts.wing : 1;
+    const wingX = opts && isFinite(opts.wingX) ? opts.wingX : 0;
     C.push([[0.17, 0], [0.13, 0.03], [-0.12, 0.025], [-0.14, 0], [-0.12, -0.025], [0.13, -0.03], [0.17, 0]]
       .map(([x, y]) => [x, y, 0]));                                   // body planform
     C.push([[0.17, 0], [0.12, -0.035], [-0.12, -0.03], [-0.14, 0], [-0.11, 0.028], [0.13, 0.03], [0.17, 0]]
       .map(([x, z]) => [x, 0, z]));                                   // body profile
     for (const s of [1, -1]) {
       C.push([
-        [0.06, s * 0.03, 0], [0.05, s * 0.30, -0.02], [0.02, s * 0.5, -0.05],
-        [-0.08, s * 0.5, -0.05], [-0.07, s * 0.28, -0.02], [-0.06, s * 0.03, 0], [0.06, s * 0.03, 0],
+        [0.06 + wingX, s * 0.03, 0], [0.05 + wingX, s * 0.30 * wingF, -0.02 * wingF], [0.02 + wingX, s * 0.5 * wingF, -0.05 * wingF],
+        [-0.08 + wingX, s * 0.5 * wingF, -0.05 * wingF], [-0.07 + wingX, s * 0.28 * wingF, -0.02 * wingF], [-0.06 + wingX, s * 0.03, 0], [0.06 + wingX, s * 0.03, 0],
       ]);                                                             // wing with dihedral
     }
     C.push([[-0.12, 0.02, 0], [-0.23, 0.08, 0], [-0.25, 0, 0], [-0.23, -0.08, 0], [-0.12, -0.02, 0], [-0.12, 0.02, 0]]); // tail fan
@@ -114,7 +117,7 @@ export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
   const s = sf.sizeNat || 100;
-  const curves = shapeWire(sf.kind, sf.aspect).map((c) => c.map((p) => {
+  const curves = shapeWire(sf.kind, sf.aspect, sf).map((c) => c.map((p) => {
     const q = app3(R, p);
     return { x: sf.cx + q[0] * s, y: sf.cy + q[1] * s, z: q[2] };
   }));
