@@ -1756,7 +1756,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const ratio = g.dist / t.dist;
         t.dist = g.dist;
         if (ratio < 0.67 || ratio > 1.5) return;
-        setFov((f) => clampN(f / ratio, 10, 90));
+        setFov((f) => clampN(f / ratio, 2, 90));
       }
       return;
     }
@@ -1802,7 +1802,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   useEffect(() => {
     const el = vpRef.current; if (!el || !open) return;
-    const onWheel = (ev) => { ev.preventDefault(); setFov((f) => clampN(Math.round(f * (ev.deltaY > 0 ? 1.08 : 1 / 1.08)), 10, 90)); };
+    const onWheel = (ev) => { ev.preventDefault(); setFov((f) => clampN(+(f * (ev.deltaY > 0 ? 1.08 : 1 / 1.08)).toFixed(1), 2, 90)); };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [open]); // eslint-disable-line
@@ -1953,7 +1953,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const donePlace = () => {
     /* hand the (already photo-centered) view back seamlessly — nothing moves */
     setViewAz(pAz); setViewAlt(clampN(pEl, -15, 88));
-    setFov(clampN(effFov, 10, 90));
+    setFov(clampN(effFov, 2, 90));
     commitPlacement();
     setPMode("look");
   };
@@ -2486,8 +2486,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
                   const angRefDisp = (objAngW != null && objAngW > 0) ? objAngW
                     : (isNum(sortedTrack[0]?.ang) && +sortedTrack[0].ang > 0 ? +sortedTrack[0].ang : null);
-                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 10, 46) : 13;
-                  const hit = Math.max(dispPx + 14, 30);
+                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 4, 46) : 13;
+                  const hit = Math.max(dispPx + 18, 30);
                   const sfI = source.shapeFit ? { ...source.shapeFit, rotM: ptRotM(idx), roll: 0 } : null;
                   return (
                     <div key={"tj" + i}
@@ -2616,8 +2616,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
       {pMode !== "place" && (
         <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
-          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(f - 12, 10, 90))}>+</button>
-          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(f + 12, 10, 90))}>−</button>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f * 0.72).toFixed(1), 2, 90))}>+</button>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f / 0.72).toFixed(1), 2, 90))}>−</button>
         </div>
       )}
 
