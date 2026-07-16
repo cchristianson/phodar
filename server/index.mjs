@@ -309,16 +309,24 @@ async function apiFireballs(q, res) {
 async function apiPeaks(q, res) {
   const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(1000, +q.get("r") || 40000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
-  const ql = `[out:json][timeout:20];(node["natural"="peak"](around:${r},${lat},${lon});node["natural"="volcano"](around:${r},${lat},${lon}););out qt 400;`;
-  const eps = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  const ql = `[out:json][timeout:25];(node["natural"="peak"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)});node["natural"="volcano"](around:${r},${lat.toFixed(5)},${lon.toFixed(5)}););out qt;`;
+  const eps = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  let last = "no mirror tried";
   for (const ep of eps) {
     try {
-      const rr = await fetch(ep, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(ql), signal: AbortSignal.timeout(25000) });
-      if (!rr.ok) continue;
-      return json(res, 200, await rr.json());
-    } catch (e) { /* try the next mirror */ }
+      // GET is widely cached/accepted by the mirrors and avoids POST-body quirks
+      const rr = await fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(28000) });
+      if (!rr.ok) { last = `${ep.split("/")[2]} → HTTP ${rr.status}`; continue; }
+      const j = await rr.json();
+      return json(res, 200, j);
+    } catch (e) { last = `${ep.split("/")[2]} → ${String(e.message || e)}`; }
   }
-  return json(res, 502, { error: "overpass unreachable" });
+  return json(res, 502, { error: `overpass unreachable (${last})` });
 }
 const server = http.createServer(async (req, res) => {
   try {
