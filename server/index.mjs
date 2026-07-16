@@ -303,6 +303,23 @@ async function apiFireballs(q, res) {
     return json(res, 200, await r.json());
   } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
 }
+/* named-peak proxy — OSM Overpass summits/volcanoes near the observer. CORS
+   is unreliable on the Overpass mirrors, so proxy it. Two mirrors for
+   resilience. */
+async function apiPeaks(q, res) {
+  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(1000, +q.get("r") || 40000));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const ql = `[out:json][timeout:20];(node["natural"="peak"](around:${r},${lat},${lon});node["natural"="volcano"](around:${r},${lat},${lon}););out qt 400;`;
+  const eps = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  for (const ep of eps) {
+    try {
+      const rr = await fetch(ep, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(ql), signal: AbortSignal.timeout(25000) });
+      if (!rr.ok) continue;
+      return json(res, 200, await rr.json());
+    } catch (e) { /* try the next mirror */ }
+  }
+  return json(res, 502, { error: "overpass unreachable" });
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
@@ -310,6 +327,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
     if (u.pathname === "/api/launches") return await apiLaunches(u.searchParams, res);
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
+    if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));
