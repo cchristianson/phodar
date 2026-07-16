@@ -19,25 +19,33 @@
 import * as sat from "satellite.js";
 import { D2R, R2D } from "../math/geodesy.js";
 
-const TLE_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle";
-const CACHE_KEY = "phodar-tle-visual";
 const CACHE_MS = 6 * 3600 * 1000;
+/* CelesTrak GROUPs. "visual" = ~160 brightest (default). "starlink" = the full
+   constellation (~7k) — opt-in, heavier: one SGP4 per sat, filtered to lit +
+   above the horizon and capped before drawing. Both CORS-open, no key. */
+const GROUPS = {
+  visual: "phodar-tle-visual",
+  starlink: "phodar-tle-starlink",
+};
+const groupUrl = (g) => `https://celestrak.org/NORAD/elements/gp.php?GROUP=${g}&FORMAT=tle`;
 
-let satsP = null;
-export async function loadSats() {
-  if (satsP) return satsP;
-  satsP = (async () => {
+const groupP = {};
+export async function loadSatGroup(group = "visual") {
+  if (groupP[group]) return groupP[group];
+  const cacheKey = GROUPS[group];
+  if (!cacheKey) throw new Error("unknown satellite group: " + group);
+  groupP[group] = (async () => {
     let text = null, fetchedAt = 0;
     try {
-      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      const c = JSON.parse(localStorage.getItem(cacheKey) || "null");
       if (c && Date.now() - c.t < CACHE_MS) { text = c.text; fetchedAt = c.t; }
     } catch (e) { }
     if (!text) {
-      const r = await fetch(TLE_URL, { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(groupUrl(group), { signal: AbortSignal.timeout(20000) });
       if (!r.ok) throw new Error(`TLE fetch HTTP ${r.status}`);
       text = await r.text();
       fetchedAt = Date.now();
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: fetchedAt, text })); } catch (e) { }
+      try { localStorage.setItem(cacheKey, JSON.stringify({ t: fetchedAt, text })); } catch (e) { /* the starlink set may exceed the quota — fine, just refetch next time */ }
     }
     const lines = text.split(/\r?\n/);
     const out = [];
@@ -50,9 +58,10 @@ export async function loadSats() {
     }
     return { sats: out, fetchedAt };
   })();
-  satsP.catch(() => { satsP = null; });
-  return satsP;
+  groupP[group].catch(() => { groupP[group] = null; });
+  return groupP[group];
 }
+export const loadSats = () => loadSatGroup("visual");
 
 /* sun unit vector in ECI (TEME ≈ ECI at this accuracy) for the shadow test */
 function sunEci(date) {
