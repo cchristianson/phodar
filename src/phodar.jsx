@@ -2416,7 +2416,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       ctx.drawImage(im, 0, 0, DW, DH);
       const det = detectStars(ctx.getImageData(0, 0, DW, DH).data, DW, DH, {}).map((s) => ({ x: s.x / sc, y: s.y / sc }));
       if (det.length < 6) { setFlash(`✦ only ${det.length} star(s) detected — too few to solve; a clearer night-sky frame is needed`); return; }
-      const cat = stars.filter((s) => s.alt > 0).map((s) => ({ g: dirOf(s.az, s.alt), mag: s.mag }));
+      /* full catalog above the horizon (independent of the display mag limit /
+         star toggle) so the solver always has every bright star to match */
+      const cat = STARS.map(([ra, dec, mag]) => { const p = raDecToAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
       const fovGuess = isNum(source?.fovH) ? +source.fovH : fovM;
       /* seedless first (no manual placement needed); seeded fallback */
       await new Promise((r) => setTimeout(r, 20)); // let the flash paint before the solve blocks
@@ -2858,7 +2860,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       </div>
 
       {flash && (
-        <div style={{ position: "absolute", top: "calc(96px + env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)", zIndex: 220, background: "rgba(14,43,38,.92)", border: "1px solid #2A6157", color: "var(--teal)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: "calc(96px + env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)", zIndex: 220, maxWidth: "92%", textAlign: "center", background: "rgba(14,43,38,.92)", border: "1px solid #2A6157", color: "var(--teal)", borderRadius: 14, padding: "7px 16px", fontSize: 12, fontWeight: 700, lineHeight: 1.35, pointerEvents: "none" }}>
           {flash}
         </div>
       )}
