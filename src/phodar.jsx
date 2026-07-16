@@ -2477,19 +2477,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const idx = n, sel = selPt === idx;
                   const tappable = wizard;
                   const col = sel ? "var(--amber)" : "var(--track)";
-                  /* apparent size at this point: angular size → screen px */
+                  /* Display size: legible AND proportional to the object's measured
+                     size, so sliding a point's size visibly grows/shrinks the shape
+                     even for tiny objects (true angular px would be sub-pixel and
+                     just clamp to a dot). Relative differences between points stay
+                     honest — it's an editing marker, true angular size lives in the
+                     compare tool. */
                   const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
-                  const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
-                  const pxI = angI != null ? clampN(angI * D2R * fpxS, 6, 380) : 12;
+                  const angRefDisp = (objAngW != null && objAngW > 0) ? objAngW
+                    : (isNum(sortedTrack[0]?.ang) && +sortedTrack[0].ang > 0 ? +sortedTrack[0].ang : null);
+                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 10, 46) : 13;
+                  const hit = Math.max(dispPx + 14, 30);
                   const sfI = source.shapeFit ? { ...source.shapeFit, rotM: ptRotM(idx), roll: 0 } : null;
                   return (
                     <div key={"tj" + i}
                       onPointerDown={tappable ? (e) => e.stopPropagation() : undefined}
                       onClick={tappable ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); setRotMode(false); } : undefined}
-                      style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: tappable ? "auto" : "none", cursor: tappable ? "pointer" : "default", textAlign: "center", padding: 6 }}>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
-                        <TrackObj sf={sfI} px={pxI} color={col} />
-                        <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
+                      style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", width: hit, height: hit, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: tappable ? "auto" : "none", cursor: tappable ? "pointer" : "default" }}>
+                      {/* shape centered exactly on the point so the path line runs
+                          THROUGH it; the number floats below without moving that center */}
+                      <div style={{ position: "relative", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
+                        <TrackObj sf={sfI} px={dispPx} color={col} />
+                        <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1, whiteSpace: "nowrap" }}>{idx + 1}</div>
                       </div>
                     </div>
                   );
