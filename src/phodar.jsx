@@ -2486,8 +2486,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
                   const angRefDisp = (objAngW != null && objAngW > 0) ? objAngW
                     : (isNum(sortedTrack[0]?.ang) && +sortedTrack[0].ang > 0 ? +sortedTrack[0].ang : null);
-                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 4, 46) : 13;
-                  const hit = Math.max(dispPx + 18, 30);
+                  const dispPx = angI != null ? clampN((angRefDisp ? angI / angRefDisp : 1) * 22, 1, 46) : 13;
+                  const hit = Math.max(dispPx + 22, 32);
                   const sfI = source.shapeFit ? { ...source.shapeFit, rotM: ptRotM(idx), roll: 0 } : null;
                   return (
                     <div key={"tj" + i}
@@ -2548,6 +2548,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       {flash && (
         <div style={{ position: "absolute", top: 96, left: "50%", transform: "translateX(-50%)", zIndex: 220, background: "rgba(14,43,38,.92)", border: "1px solid #2A6157", color: "var(--teal)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {flash}
+        </div>
+      )}
+
+      {/* rotation loupe — a magnified view of the selected point's shape at its
+          attitude, so you can judge/adjust orientation even when the on-dome
+          icon is a couple of pixels (mirrors the shape loupe in image prep) */}
+      {wizard && rotMode && selPt != null && source?.shapeFit && (
+        <div style={{ position: "absolute", top: 118, right: 12, zIndex: 220, background: "rgba(7,11,20,.82)", border: "1px solid var(--amber)", borderRadius: 12, padding: "8px 10px 6px", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div style={{ width: 118, height: 118, display: "flex", alignItems: "center", justifyContent: "center", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
+            <TrackObj sf={{ ...source.shapeFit, rotM: ptRotM(selPt), roll: 0 }} px={94} color="var(--amber)" />
+          </div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--amber)", letterSpacing: ".08em" }}>PT {selPt + 1} ATTITUDE</div>
         </div>
       )}
 
