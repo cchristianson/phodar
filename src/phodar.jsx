@@ -2757,7 +2757,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
         {/* aiming crosshair — fixed at screen center (hidden while placing) */}
         {pMode !== "place" && (
-        <svg style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", overflow: "visible" }} width="64" height="64" viewBox="-32 -32 64 64">
+        <svg style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", overflow: "visible", opacity: 0.75 }} width="48" height="48" viewBox="-32 -32 64 64">
           <circle cx="0" cy="0" r="14" fill="none" stroke={aimColor} strokeWidth="1.6" />
           <line x1="0" y1="-26" x2="0" y2="-8" stroke={aimColor} strokeWidth="1.6" />
           <line x1="0" y1="8" x2="0" y2="26" stroke={aimColor} strokeWidth="1.6" />
@@ -2867,7 +2867,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
           <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ no named peaks or hills within 120 km of the observer
+            ⛰ no named peaks or hills within 120 km of {LAT.toFixed(3)}, {LNG.toFixed(3)}
           </div>
         )}
         {acOn && acData?.ac && acData.hist && (
