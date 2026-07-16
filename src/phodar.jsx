@@ -14,7 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
-import { SHAPES, I3, rotX3, rotY3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
+import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
@@ -407,6 +407,7 @@ function MediaMeasure({ src, update, wizard }) {
 
   const rotRef = useRef(null);   // body-drag → 3D trackball
   const hDragRef = useRef(null); // center-grab → move
+  const twistRef = useRef(null); // second finger anchors a view-axis twist (roll) once rotation is underway
   /* sessions saved by the old 2D fitter lack sizeNat/rotM — upgrade in place */
   useEffect(() => {
     const sf = src.shapeFit;
@@ -663,7 +664,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (pd.mode === "shape") {
       if (!src.shapeFit) return;
       if (dragging) {
-        rotRef.current = { R0: src.shapeFit.rotM || I3, sx: pd.sx, sy: pd.sy }; // drag = rotate in 3D
+        rotRef.current = { R0: src.shapeFit.rotM || I3, sx: pd.sx, sy: pd.sy, pid: pd.id }; // drag = rotate in 3D
         setDrag(true); setFinger(null);
       } else {
         const nsf = { ...src.shapeFit, cx: (curNat || pd.nat).x, cy: (curNat || pd.nat).y };
@@ -689,9 +690,28 @@ function MediaMeasure({ src, update, wizard }) {
     setTouching(true);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
     if (ptsRef.current.size >= 2) {
+      /* Second finger, and a shape rotation is ALREADY underway → don't pinch:
+         use this finger as an anchor and let the twist between the two fingers
+         roll the shape about the view axis (fine control the 1-finger drag
+         can't give). Only when the first finger already started rotating —
+         otherwise a second finger is a pinch, as before. */
+      if (drag && active === "shape" && rotRef.current && !hDragRef.current && src.shapeFit) {
+        killPending();
+        const anchorId = e.pointerId;
+        const driverId = rotRef.current.pid;
+        const anc = ptsRef.current.get(anchorId);
+        const drv = ptsRef.current.get(driverId) || anc;
+        twistRef.current = {
+          anchorId, driverId,
+          a0: Math.atan2(drv.y - anc.y, drv.x - anc.x),
+          R0: rotRef.current.cur || src.shapeFit.rotM || I3, // continue from the live orientation, no jump
+        };
+        return;
+      }
       /* second finger: a pinch — discard any undecided touch, place nothing */
       killPending();
       setDrag(false); setFinger(null);
+      twistRef.current = null;
       const [pa, pb2] = [...ptsRef.current.values()];
       pinchRef.current = {
         d: Math.hypot(pa.x - pb2.x, pa.y - pb2.y) || 1,
@@ -725,6 +745,17 @@ function MediaMeasure({ src, update, wizard }) {
     if (ptsRef.current.has(e.pointerId)) ptsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!scale || !wrapRef.current) return;
     const r = wrapRef.current.getBoundingClientRect();
+    if (twistRef.current && ptsRef.current.size >= 2 && src.shapeFit) {
+      const tw = twistRef.current;
+      const anc = ptsRef.current.get(tw.anchorId), drv = ptsRef.current.get(tw.driverId);
+      if (anc && drv) {
+        const a1 = Math.atan2(drv.y - anc.y, drv.x - anc.x);
+        const nsf = { ...src.shapeFit, rotM: mul3(rotZ3((a1 - tw.a0) * R2D), tw.R0) }; // roll about the view axis
+        tw.cur = nsf.rotM; // live orientation, so lifting back to one finger continues from here
+        syncShape(nsf); shapeLoupeFor(nsf);
+      }
+      return;
+    }
     if (pinchRef.current && ptsRef.current.size >= 2) {
       const [pa, pb2] = [...ptsRef.current.values()];
       const pz = pinchRef.current;
@@ -755,6 +786,7 @@ function MediaMeasure({ src, update, wizard }) {
         const k = 0.45; // deg per px — front face follows the finger
         const dR = mul3(rotX3(-(e.clientY - rr.sy) * k), rotY3((e.clientX - rr.sx) * k));
         const nsf = { ...src.shapeFit, rotM: mul3(dR, rr.R0) };
+        rr.cur = nsf.rotM; // live orientation, so a second-finger twist starts from here
         syncShape(nsf); shapeLoupeFor(nsf);
       }
       return;
@@ -767,6 +799,15 @@ function MediaMeasure({ src, update, wizard }) {
     ptsRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     if (ptsRef.current.size < 2) pinchRef.current = null;
+    if (twistRef.current && ptsRef.current.size < 2) {
+      /* lifting out of a two-finger twist: hand control back to whichever
+         finger remains, seeded at the post-twist orientation so it doesn't jump */
+      const cur = twistRef.current.cur || twistRef.current.R0;
+      twistRef.current = null;
+      const rem = [...ptsRef.current.entries()][0];
+      if (rem && active === "shape" && src.shapeFit && drag)
+        rotRef.current = { R0: cur, sx: rem[1].x, sy: rem[1].y, pid: rem[0] };
+    }
     if (pendingRef.current && pendingRef.current.id === e.pointerId) {
       if (e.type === "pointercancel") killPending(); // OS ate the touch — place nothing
       else commitPending(false);                     // clean tap
@@ -786,7 +827,7 @@ function MediaMeasure({ src, update, wizard }) {
   /* safety valve: app-switch or system gesture mid-touch must release the lock */
   useEffect(() => {
     const hardReset = () => {
-      ptsRef.current.clear(); pinchRef.current = null;
+      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null;
       killPending(); setTouching(false); setDrag(false); setFinger(null);
     };
     window.addEventListener("blur", hardReset);
@@ -951,7 +992,7 @@ function MediaMeasure({ src, update, wizard }) {
                 const aN = fpx ? (pr.minorNat / fpx) * R2D : null;
                 return aM != null ? (
                   <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>
-                    projected {aM.toFixed(3)}°{aN != null ? ` × ${aN.toFixed(3)}° · aspect ${(aM / Math.max(aN, 1e-6)).toFixed(1)}:1` : ""} — drag the shape to rotate it in 3D · tap to move it
+                    projected {aM.toFixed(3)}°{aN != null ? ` × ${aN.toFixed(3)}° · aspect ${(aM / Math.max(aN, 1e-6)).toFixed(1)}:1` : ""} — drag to rotate in 3D · add a second finger to twist (roll) · tap to move it
                   </div>
                 ) : null;
               })()}
