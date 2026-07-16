@@ -1333,7 +1333,7 @@ function GhostSil({ shape, w }) {
    trajectory point so the object visibly swells (closer) or shrinks (farther).
    Falls back to a ring when no shape is fitted. Major axis spans `px`. */
 function TrackObj({ sf, px, color }) {
-  const d = Math.max(px, 5);
+  const d = Math.max(px, 1);
   if (!sf) return (
     <svg width={d} height={d} viewBox="0 0 100 100" style={{ display: "block", overflow: "visible" }}>
       <circle cx="50" cy="50" r="46" fill="rgba(7,11,20,.30)" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
@@ -2758,9 +2758,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       </div>
                     );
                     const anchor = objAngW != null ? +objAngW : angRef0;
-                    const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, ang: +clampN(a, 1e-3, 60).toFixed(4) } : p)) });
-                    const SF = 40; // slider spans 40× farther ↔ 40× closer (buttons go beyond)
-                    const sv = clampN((Math.log(pAng / anchor) / Math.log(SF) + 1) / 2, 0, 1);
+                    /* slider floor = the angular size that renders as 1 px at MAX
+                       zoom (FOV 2°) — smaller than that is meaningless, so the
+                       slider (and −) stop there. Ceiling: 40× the measured size. */
+                    const fpxSmax = (vp.w || window.innerWidth || 400) / (2 * Math.tan(1 * D2R));
+                    const angMin = 1 / (D2R * fpxSmax);
+                    const angMax = clampN(anchor * 40, angMin * 8, 60);
+                    const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, ang: +clampN(a, angMin, 60).toFixed(5) } : p)) });
+                    const sv = clampN(Math.log(pAng / angMin) / Math.log(angMax / angMin), 0, 1);
                     const rho = Math.tan(angRef0 * D2R / 2) / Math.tan(pAng * D2R / 2);
                     return (
                       <div style={{ marginTop: interior ? 6 : 8 }}>
@@ -2774,7 +2779,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                           <button className="btn sm" onClick={() => setAng(pAng / 1.12)}>−</button>
                           <input type="range" min={0} max={1} step={0.005} value={sv}
                             onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                            onChange={(e) => setAng(anchor * Math.pow(SF, 2 * (+e.target.value) - 1))}
+                            onChange={(e) => setAng(angMin * Math.pow(angMax / angMin, +e.target.value))}
                             style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
                           <button className="btn sm" onClick={() => setAng(pAng * 1.12)}>+</button>
                           {selPt !== 0 && <button className="btn sm" title="same range as point 1" onClick={() => setAng(angRef0)}>= pt1</button>}
