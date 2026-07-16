@@ -136,9 +136,15 @@ export function soloTrack(s) {
   if (raw.length < 3) return null;
   const ang = raw.map((p) => (isNum(p.ang) && +p.ang > 0 ? +p.ang : null));
   if (!ang.some((a) => a != null)) return null;               // no size info → no radial reconstruction
+  /* per-point projection factor: how foreshortened the silhouette is at that
+     orientation (1 = broadside, <1 = foreshortened). Precomputed in the UI so
+     the math stays decoupled from the shape system. Dividing it out means a
+     pure rotation is NOT misread as the object flying closer/farther. */
+  const projF = raw.map((p) => (isNum(p.projF) && +p.projF > 0 ? +p.projF : 1));
   const iRef = ang.findIndex((a) => a != null);
-  const tanRef = Math.tan((ang[iRef] * D2R) / 2);
-  const rho = ang.map((a) => (a != null ? tanRef / Math.tan((a * D2R) / 2) : null));
+  const tanRef = Math.tan((ang[iRef] * D2R) / 2), fRef = projF[iRef];
+  /* range ∝ projF / tan(½·apparentSize) ; ρ normalized to the reference point */
+  const rho = ang.map((a, i) => (a != null ? (projF[i] * tanRef) / (fRef * Math.tan((a * D2R) / 2)) : null));
   const times = raw.map((p) => +p.t);
   /* fill any point that was never sized: linear in time, nearest at the ends */
   for (let i = 0; i < rho.length; i++) {
@@ -155,7 +161,8 @@ export function soloTrack(s) {
   if (!k3d) return null;
   let iNear = 0, iFar = 0;
   rho.forEach((r, i) => { if (r < rho[iNear]) iNear = i; if (r > rho[iFar]) iFar = i; });
-  return { k3d, rho, times, pos, iRef, iNear, iFar, rangeRatio: rho[iFar] / rho[iNear], nAng: ang.filter((a) => a != null).length };
+  const oriented = projF.some((f) => Math.abs(f - 1) > 1e-3);   // any point's attitude recorded
+  return { k3d, rho, times, pos, iRef, iNear, iFar, rangeRatio: rho[iFar] / rho[iNear], nAng: ang.filter((a) => a != null).length, oriented };
 }
 
 export function analyzeTracks(sources) {

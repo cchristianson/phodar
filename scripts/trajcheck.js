@@ -79,5 +79,23 @@ approx(stereo.avgMiss, 0, 1, "avg ray miss (m)");
   }
 }
 
+// --- aspect correction: a rotating object at CONSTANT range must not be
+// misread as flying closer/farther. Its apparent size shrinks as it turns
+// edge-on (foreshortening); feeding the per-point projection factor must
+// divide that out so the recovered range stays flat (rangeRatio ≈ 1).
+{
+  const trueLong = 10, r = 500, projFs = [1, 0.7, 0.5, 0.7, 1];
+  const track = projFs.map((f, i) => ({
+    t: i * 2,
+    az: 180 + i * 0.3, el: 25,                               // near-fixed line of sight
+    ang: 2 * Math.atan((f * trueLong) / (2 * r)) * R2D,      // foreshortened apparent size
+    projF: f,
+  }));
+  const { solo } = analyzeTracks([{ name: "Rotator", fovH: 68, track, A: {}, B: {} }]);
+  const rad = solo && solo[0] && solo[0].rad;
+  if (!rad) { console.error("  FAIL: aspect-corrected reconstruction missing"); fails++; }
+  else approx(rad.rangeRatio, 1, 0.02, "aspect-corrected: pure rotation ⇒ flat range (ratio ~1)");
+}
+
 if (fails) { console.error(`\ntrajcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("trajcheck: all assertions passed");

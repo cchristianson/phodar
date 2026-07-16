@@ -161,7 +161,7 @@ function SoloTrackSection({ solo, t, setT }) {
             <ML style={{ color: "var(--track)" }}>{s.name} — {k.n} pts · {k.dur.toFixed(1)} s · {rad ? <>3D path (radial + transverse)</> : <>peak {n1(s.k.peakSpeed * R2D)}°/s across the sky</>}</ML>
             {rad && (
               <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", margin: "6px 0 2px" }}>
-                range {fmtLenShort(near)} → {fmtLenShort(far)} · <span style={{ color: "var(--track)" }}>{rad.rangeRatio.toFixed(2)}× span</span> (pt {rad.iNear + 1} closest, pt {rad.iFar + 1} farthest)
+                range {fmtLenShort(near)} → {fmtLenShort(far)} · <span style={{ color: "var(--track)" }}>{rad.rangeRatio.toFixed(2)}× span</span> (pt {rad.iNear + 1} closest, pt {rad.iFar + 1} farthest){rad.oriented ? <span style={{ color: "var(--dim)" }}> · aspect-corrected</span> : ""}
               </div>
             )}
             <div className="grid2" style={{ marginTop: 6 }}>
@@ -1383,6 +1383,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [flash, setFlash] = useState("");
   const [selSeg, setSelSeg] = useState(null);   // Δt chip being edited
   const [selPt, setSelPt] = useState(null);     // trajectory point whose turn radius is being edited
+  const [rotMode, setRotMode] = useState(false); // when on, dragging the dome rotates the selected point's shape
+  const rotDragRef = useRef(null), rotRafRef = useRef(0);
   /* compare ghost — buttons only, NO sliders and NO draggable elements:
      the aimer holds a document-level touch lock (invariant: iOS multi-touch),
      which silently eats native drags on anything inside it. Drop the ghost
@@ -1710,12 +1712,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const n = pointersRef.current.size;
     if (n >= 2) {
-      panRef.current = null; placeRef.current = null;
+      panRef.current = null; placeRef.current = null; rotDragRef.current = null;
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
       else pinchRef.current = g;
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
+    } else if (rotMode && selPt != null && source?.shapeFit) {
+      rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt) };
     } else {
       panRef.current = { x: e.clientX, y: e.clientY, az: viewAz, alt: viewAlt };
     }
@@ -1764,6 +1768,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       queuePose("place", nAz, nEl);
       return;
     }
+    if (rotDragRef.current && vp.w) {
+      /* drag = 3D trackball on the selected point's shape (rAF-coalesced) */
+      const rd = rotDragRef.current, kk = 0.5;
+      rd.pending = mul3(mul3(rotX3(-(e.clientY - rd.y) * kk), rotY3((e.clientX - rd.x) * kk)), rd.R0);
+      if (!rotRafRef.current) rotRafRef.current = requestAnimationFrame(() => {
+        rotRafRef.current = 0;
+        const p = rotDragRef.current; if (p && p.pending) setPtRot(p.idx, p.pending);
+      });
+      return;
+    }
     if (panRef.current && vp.w && !motionOn) {
       const dx = (e.clientX - panRef.current.x) / vp.w, dy = (e.clientY - panRef.current.y) / (vp.h || vp.w);
       queuePose("look",
@@ -1781,7 +1795,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (placing) placeRef.current = { x: p.x, y: p.y, az: pAz, el: pEl };
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
-      panRef.current = null; placeRef.current = null;
+      panRef.current = null; placeRef.current = null; rotDragRef.current = null;
+      if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
       if (placing) commitPlacement();
     }
   };
@@ -2046,6 +2061,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     ? (angSizeFromPoints(source.A?.p1, source.A?.p2, source.natW, source.natH, +source.fovH)
       ?? (isNum(source.A?.angManual) ? +source.A.angManual : null))
     : null;
+  /* --- per-point 3D ORIENTATION (optional): drawing the shape at its attitude
+     records how it was oriented, AND lets the range math divide out
+     foreshortening (a rotating tic-tac isn't flying away). baseRotM folds the
+     shape's own roll in; projMajorFor gives the silhouette's projected extent
+     at an orientation, so projF = extent(rm) / extent(base). --- */
+  const baseRotM = source?.shapeFit ? mul3(source.shapeFit.rotM || I3, rotZ3(source.shapeFit.roll || 0)) : I3;
+  const projMajorFor = (rm) => {
+    if (!source?.shapeFit) return 1;
+    const pr = shapeProjNat({ ...source.shapeFit, rotM: rm, roll: 0 });
+    return Math.hypot(pr.p1.x - pr.p2.x, pr.p1.y - pr.p2.y) || 1;
+  };
+  const baseMajor = source?.shapeFit ? projMajorFor(baseRotM) : 1;
+  const ptRotM = (i) => (Array.isArray(sortedTrack[i]?.rotM) ? sortedTrack[i].rotM : baseRotM);
+  const setPtRot = (i, rm) => {
+    const projF = +(projMajorFor(rm) / baseMajor).toFixed(5);
+    update({ track: sortedTrack.map((p, j) => (j === i ? { ...p, rotM: rm, projF } : p)) });
+  };
+  const resetPtRot = (i) => update({ track: sortedTrack.map((p, j) => { if (j !== i) return p; const { rotM, projF, ...rest } = p; return rest; }) });
   const syncAB = (track) => {
     const p = { track };
     if (track.length) p.A = { ...source.A, az: String(track[0].az), el: String(track[0].el), t: String(track[0].t) };
@@ -2448,13 +2481,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const angI = isNum(sortedTrack[idx]?.ang) ? +sortedTrack[idx].ang : null;
                   const fpxS = (vp.w || window.innerWidth || 1) / (2 * tanH);
                   const pxI = angI != null ? clampN(angI * D2R * fpxS, 6, 380) : 12;
+                  const sfI = source.shapeFit ? { ...source.shapeFit, rotM: ptRotM(idx), roll: 0 } : null;
                   return (
                     <div key={"tj" + i}
                       onPointerDown={tappable ? (e) => e.stopPropagation() : undefined}
-                      onClick={tappable ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); } : undefined}
+                      onClick={tappable ? (e) => { e.stopPropagation(); setSelPt(sel ? null : idx); setSelSeg(null); setRotMode(false); } : undefined}
                       style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: tappable ? "auto" : "none", cursor: tappable ? "pointer" : "default", textAlign: "center", padding: 6 }}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
-                        <TrackObj sf={source.shapeFit} px={pxI} color={col} />
+                        <TrackObj sf={sfI} px={pxI} color={col} />
                         <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1 }}>{idx + 1}</div>
                       </div>
                     </div>
@@ -2685,7 +2719,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               const interior = selPt > 0 && selPt < sortedTrack.length - 1;
               const r = +(sortedTrack[selPt].r ?? 0);
               const setR = (v) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, r: v } : p)) });
-              const deletePt = () => { update(syncAB(sortedTrack.filter((_, i) => i !== selPt))); setSelPt(null); setSelSeg(null); };
+              const deletePt = () => { update(syncAB(sortedTrack.filter((_, i) => i !== selPt))); setSelPt(null); setSelSeg(null); setRotMode(false); };
               return (
                 <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: interior ? 6 : 0 }}>
@@ -2693,7 +2727,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       Point {selPt + 1}{interior ? " — how tight was the turn?" : selPt === 0 ? " (path start)" : " (path end)"}
                     </span>
                     <button className="btn sm" style={{ color: "var(--red)", borderColor: "#5A2C24" }} onClick={deletePt}>🗑 Delete</button>
-                    <button className="btn sm teal" onClick={() => setSelPt(null)}>✓ Done</button>
+                    <button className="btn sm teal" onClick={() => { setSelPt(null); setRotMode(false); }}>✓ Done</button>
                   </div>
                   {(() => {
                     /* apparent SIZE at this point → captures radial (closer/farther) motion.
@@ -2729,6 +2763,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       </div>
                     );
                   })()}
+                  {source?.shapeFit && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <button className={"btn sm" + (rotMode ? " amber" : "")} onClick={() => setRotMode((v) => !v)}>🔄 Rotate</button>
+                        {rotMode && <>
+                          <button className="btn sm" title="roll left" onClick={() => setPtRot(selPt, mul3(rotZ3(-15), ptRotM(selPt)))}>⟲</button>
+                          <button className="btn sm" title="roll right" onClick={() => setPtRot(selPt, mul3(rotZ3(15), ptRotM(selPt)))}>⟳</button>
+                        </>}
+                        {Array.isArray(sortedTrack[selPt]?.rotM) && <button className="btn sm" onClick={() => resetPtRot(selPt)}>reset</button>}
+                        {Array.isArray(sortedTrack[selPt]?.rotM) && !rotMode && (
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--track)" }}>oriented · {(sortedTrack[selPt].projF ?? 1).toFixed(2)}× broadside</span>
+                        )}
+                      </div>
+                      {rotMode && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 4, lineHeight: 1.5 }}>Drag the sky to tumble point {selPt + 1}'s shape; ⟲ ⟳ to roll. Matching its true attitude removes foreshortening from the range — worthwhile for an elongated object, pointless for an orb.</div>}
+                    </div>
+                  )}
                   {interior && (
                     <>
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
