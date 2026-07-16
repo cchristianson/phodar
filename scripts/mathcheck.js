@@ -17,7 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
-import { detectStars, autoStarAlign } from "../src/checks/platesolve.js";
+import { detectStars, autoStarAlign, blindStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -567,6 +567,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(sol.fov, truth.fov, 1.5, "platesolve: FOV recovered (robust)");
     approx(sol.n >= 26 && sol.n <= 28 ? 1 : 0, 1, 0, "platesolve: matched visible stars, excluded UFO/clutter");
     approx(sol.rms < 0.6 ? 1 : 0, 1, 0, "platesolve: sub-degree fit rms");
+  }
+
+  // blindStarAlign: recover the SAME pose with NO seed at all (asterism match),
+  // and with the FOV guess 10% wrong — the human never has to get it close
+  const cat2 = [], det2 = [];
+  for (let i = 0; i < 26; i++) {
+    const px = (0.1 + 0.8 * rnd()) * natW, py = (0.1 + 0.8 * rnd()) * natH;
+    cat2.push({ g: pixToDirK(px, py, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k), mag: 1 + i * 0.09 });
+    const p = dirToPixK(cat2[i].g, natW, natH, truth.az, truth.el, truth.roll, truth.fov, truth.k);
+    det2.push({ x: p.px + (rnd() - 0.5) * 2, y: p.py + (rnd() - 0.5) * 2 });
+  }
+  for (let i = 0; i < 6; i++) det2.push({ x: rnd() * natW, y: rnd() * natH }); // clutter
+  const blind = blindStarAlign(det2, cat2, natW, natH, truth.fov * 0.9); // NO pose seed; FOV guess off by 10%
+  approx(blind ? 1 : 0, 1, 0, "platesolve: seedless (blind) lock");
+  if (blind) {
+    approx(blind.az, truth.az, 0.8, "platesolve: blind az recovered");
+    approx(blind.el, truth.el, 0.8, "platesolve: blind el recovered");
+    approx(blind.roll, truth.roll, 1.5, "platesolve: blind roll recovered");
+    approx(blind.fov, truth.fov, 2.0, "platesolve: blind FOV recovered");
   }
 }
 

@@ -12,8 +12,8 @@
    at a known pose and asserts recovery).
    ============================================================ */
 
-import { R2D, dot, clampN } from "../math/geodesy.js";
-import { dirToPixK, pixToDirK, solvePoseAnchors } from "../math/projection.js";
+import { R2D, D2R, dot, unit, clampN, dirToAzEl } from "../math/geodesy.js";
+import { photoBasis, dirToPixK, pixToDirK, solvePoseAnchors } from "../math/projection.js";
 
 /* Detect compact bright blobs (stars) in an RGBA buffer. Clouds are large
    and diffuse → they form one over-size connected component and are dropped;
@@ -152,4 +152,103 @@ export function autoStarAlign(det, cat, natW, natH, pose0, opts = {}) {
   const rms = Math.sqrt(residDeg(m, pose).reduce((s, r) => s + r * r, 0) / m.length);
   if (rms > (opts.maxRms || 1.2)) return null;
   return { az: pose.az, el: pose.el, roll: pose.roll, fov: pose.fov, k: pose.k, rms, n: m.length };
+}
+
+/* ---- SEEDLESS solve (asterism matching) — no manual placement needed ----
+   Angular distances between stars are invariant to how the camera points/rolls,
+   so we match the PATTERN of bright dots to the catalog directly. With the FOV
+   known (EXIF) and the visible catalog known (location+time), a two-star
+   correspondence pins a full 3-DOF rotation; we verify each hypothesis by how
+   many other catalog stars then land on detected blobs (RANSAC-style), and hand
+   the winning pose to autoStarAlign to polish. Real star-tracker "lost-in-space"
+   method — the human never has to get it close. */
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const angBetween = (a, b) => Math.acos(Math.min(1, Math.max(-1, dot(a, b))));
+const camVec = (px, py, natW, natH, fpx) => unit([(px - natW / 2) / fpx, (natH / 2 - py) / fpx, 1]);
+/* orthonormal frame from two directions (first axis = v1) */
+function frame2(v1, v2) {
+  const E1 = unit(v1);
+  const p = dot(v2, E1);
+  const E2 = unit([v2[0] - p * E1[0], v2[1] - p * E1[1], v2[2] - p * E1[2]]);
+  return [E1, E2, cross(E1, E2)];
+}
+/* rotation rows (world→camera) mapping world w1,w2 onto camera u1,u2.
+   Row i is the WORLD direction that becomes camera axis i (x=right,y=up,z=fwd). */
+function rot2(u1, u2, w1, w2) {
+  const E = frame2(u1, u2), F = frame2(w1, w2);
+  const row = (i) => [
+    E[0][i] * F[0][0] + E[1][i] * F[1][0] + E[2][i] * F[2][0],
+    E[0][i] * F[0][1] + E[1][i] * F[1][1] + E[2][i] * F[2][1],
+    E[0][i] * F[0][2] + E[1][i] * F[1][2] + E[2][i] * F[2][2],
+  ];
+  return [row(0), row(1), row(2)];
+}
+export function blindStarAlign(det, cat, natW, natH, fovGuess, opts = {}) {
+  if (!det || det.length < 5 || !cat || cat.length < 5 || !(fovGuess > 0)) return null;
+  const cx = natW / 2, cy = natH / 2;
+  const dts = det.slice(0, opts.nd || 14);                                        // brightest detected blobs
+  const cts = cat.slice().sort((a, b) => (a.mag ?? 9) - (b.mag ?? 9)).slice(0, opts.nc || 80); // brightest catalog
+  const angTol = (opts.angTol || 0.7) * D2R;                                      // loose: tolerates lens distortion at the seed stage
+  const tolPx = (opts.matchTol || 0.022) * natW;
+  const minInl = opts.minInl || 6;
+  /* catalog pairwise angular distances (pose-invariant), sorted for a range scan */
+  const catPairs = [];
+  for (let a = 0; a < cts.length; a++) for (let b = a + 1; b < cts.length; b++) catPairs.push({ a, b, d: angBetween(cts[a].g, cts[b].g) });
+  catPairs.sort((p, q) => p.d - q.d);
+  const cpD = catPairs.map((p) => p.d);
+  const lb = (x) => { let lo = 0, hi = cpD.length; while (lo < hi) { const m = (lo + hi) >> 1; if (cpD[m] < x) lo = m + 1; else hi = m; } return lo; };
+
+  /* inlier count for a full pose (basis once, then project every catalog star) */
+  const countInliers = (az, el, roll, fov) => {
+    const b = photoBasis(az, el, roll);
+    const fpx = (natW / 2) / Math.tan((fov * D2R) / 2);
+    let inl = 0;
+    for (const c of cts) {
+      const gf = c.g[0] * b.f[0] + c.g[1] * b.f[1] + c.g[2] * b.f[2];
+      if (gf <= 0.03) continue;
+      const px = cx + (c.g[0] * b.r[0] + c.g[1] * b.r[1] + c.g[2] * b.r[2]) / gf * fpx;
+      const py = cy - (c.g[0] * b.u[0] + c.g[1] * b.u[1] + c.g[2] * b.u[2]) / gf * fpx;
+      if (px < 0 || px > natW || py < 0 || py > natH) continue;
+      for (const s of dts) { if (Math.abs(px - s.x) < tolPx && Math.abs(py - s.y) < tolPx) { inl++; break; } }
+    }
+    return inl;
+  };
+
+  const nPair = Math.min(opts.nPairSeed || 7, dts.length);
+  let best = null;
+  for (const ff of (opts.fovFactors || [0.8, 0.9, 1.0, 1.12, 1.28, 1.45])) {
+    const fov = fovGuess * ff;
+    const fpx = (natW / 2) / Math.tan((fov * D2R) / 2);
+    const bvec = dts.map((s) => camVec(s.x, s.y, natW, natH, fpx));
+    const detR = bvec.map((v) => Math.acos(Math.min(1, Math.max(-1, v[2]))));     // each blob's angular radius from centre (roll-invariant)
+    for (let i = 0; i < nPair; i++) for (let j = i + 1; j < nPair; j++) {
+      const dij = angBetween(bvec[i], bvec[j]);
+      for (let idx = lb(dij - angTol); idx < catPairs.length && cpD[idx] <= dij + angTol; idx++) {
+        const cp = catPairs[idx];
+        for (const asg of [[cp.a, cp.b], [cp.b, cp.a]]) {
+          /* a 2-star match fixes the CENTRE reliably; roll is ill-constrained
+             (esp. for stars near the centre) so we don't trust it — sweep it */
+          const center = rot2(bvec[i], bvec[j], cts[asg[0]].g, cts[asg[1]].g)[2];
+          const ae = dirToAzEl(center);
+          if (!(ae.el > -30 && ae.el < 91)) continue;
+          /* roll-invariant pre-score: how many catalog stars sit at a radius
+             from the centre that some blob also has? prunes junk centres cheaply */
+          let pre = 0;
+          for (const c of cts) { const cr = angBetween(center, c.g); for (const dr of detR) if (Math.abs(cr - dr) < angTol) { pre++; break; } }
+          if (pre < minInl) continue;
+          for (let roll = -180; roll < 180; roll += 8) {              // coarse roll sweep + verify
+            const inl = countInliers(ae.az, ae.el, roll, fov);
+            if (!best || inl > best.inl) best = { inl, az: ae.az, el: ae.el, roll, fov };
+          }
+        }
+      }
+    }
+  }
+  if (!best || best.inl < minInl) return null;
+  for (let roll = best.roll - 8; roll <= best.roll + 8; roll += 1) {              // fine roll
+    const inl = countInliers(best.az, best.el, roll, best.fov);
+    if (inl >= best.inl) { best.inl = inl; best.roll = roll; }
+  }
+  /* hand the seedless hypothesis to the robust ICP solver to polish + fit k */
+  return autoStarAlign(det, cat, natW, natH, { az: best.az, el: clampN(best.el, -20, 89.5), roll: best.roll, fov: best.fov, k: 0 }, opts);
 }

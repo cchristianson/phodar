@@ -301,6 +301,16 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   whatever remains (≥5). Asserted in mathcheck (blob detection + pose recovery
   from a perturbed seed WITH two cloud-hidden stars, a UFO blob, and clutter —
   UFO/clutter excluded, only the visible stars matched).
+  **Seedless (blind) solve: DONE** — `blindStarAlign` needs NO manual placement:
+  it matches the ASTERISM (star-to-star angular distances are pose-invariant;
+  FOV known from EXIF, visible catalog known from location+time). Two matched
+  stars fix the centre; roll is ill-constrained near the centre so it's swept
+  (not derived), pruned by a roll-invariant radial pre-score, verified by inlier
+  count (RANSAC-style), then handed to `autoStarAlign` to polish + fit k. SkyAimer
+  "✦ Auto star-align" now tries blind FIRST (fallback: seeded from the current
+  placement). Asserted in mathcheck: full pose recovered from NO seed with the FOV
+  guess 10 % wrong and clutter present. ~1 s desktop; the real bright-star catalog
+  in one field is small, so it's quick on-device.
 - **CelesTrak satellites: DONE** (src/checks/satellites.js — visual-group
   TLEs, satellite.js v5 SGP4 (v7 is WASM-first and breaks vite), Earth-shadow
   lit test, dome markers + pass trails, sky-object-check integration with
