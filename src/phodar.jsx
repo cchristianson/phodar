@@ -985,6 +985,13 @@ function MediaMeasure({ src, update, wizard }) {
                   </div>
                 </>
               )}
+              {src.shapeFit.kind === "jelly" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>tendrils {(src.shapeFit.tent ?? 1).toFixed(2)}×</span>
+                  <input type="range" min={0.3} max={2.2} step={0.02} value={src.shapeFit.tent ?? 1}
+                    onChange={(e) => { const nsf = { ...src.shapeFit, tent: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                </div>
+              )}
               {(() => {
                 const pr = shapeProjNat(src.shapeFit);
                 const aM = angSizeFromPoints(pr.p1, pr.p2, natW, natH, +src.fovH);
