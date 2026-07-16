@@ -1,7 +1,9 @@
 // Exercises the REAL math core (src/math/*) — not a copy. A regression in
 // triangulation, geodesy, or angular sizing fails `npm test` here.
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
-import { intersectLines } from "../src/math/triangulate.js";
+import { intersectLines, aspectSpan } from "../src/math/triangulate.js";
+import { sunPos, moonFrac } from "../src/math/astro.js";
+import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
@@ -450,6 +452,60 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const one = solvePoseAnchors([anchors[0]], natW, natH, az, el, seed);
   approx(one.rms, 0, 0.05, "single-anchor fit: lands (rms→0°)");
   approx(one.k, 0, 1e-9, "single-anchor fit: k stays 0");
+}
+
+// --- aspectSpan: two-view mirror ambiguity (same-span mirror must be reported) ---
+{
+  const D = Math.PI / 180;
+  const mk = (b1, b2, S, psi) => ({
+    ok: true,
+    perSource: [{ size: S * Math.abs(Math.sin((psi - b1) * D)) }, { size: S * Math.abs(Math.sin((psi - b2) * D)) }],
+    obs: [{ s: { A: { az: b1 } } }, { s: { A: { az: b2 } } }],
+  });
+  // bearings 90° apart → the second exact-fit axis has the SAME span (regression:
+  // the old gate required the span to differ and silently dropped this mirror).
+  const r = aspectSpan(mk(20, 110, 30, 70));
+  approx(r.length, 2, 0, "aspectSpan: same-span mirror reported (2 candidates)");
+  approx(r[0].S, 30, 0.6, "aspectSpan: primary span ≈ 30");
+  approx(r[1].S, 30, 0.6, "aspectSpan: mirror span ≈ 30 (same span)");
+  const axes = [r[0].psi, r[1].psi].sort((a, b) => a - b);
+  approx(axes[0], 70, 1.0, "aspectSpan: axis A ≈ 70°");
+  approx(axes[1], 150, 1.0, "aspectSpan: axis B ≈ 150°");
+  // a genuine DIFFERENT-span mirror must ALSO still be reported
+  const r2 = aspectSpan(mk(10, 95, 25, 40));
+  approx(r2.length, 2, 0, "aspectSpan: different-span mirror still reported");
+}
+
+// --- astro azimuth-origin convention + moon fraction (coverage gap) ---
+{
+  const t = Date.UTC(2026, 5, 21, 6, 0);           // arbitrary instant
+  const lat = 42, lon = -123;
+  // a star AT the north celestial pole (Dec=+90) is due NORTH at el = latitude,
+  // at any time — the definitive azimuth-origin check (north, not south).
+  const pole = raDecToAzEl(0, 90, t, lat, lon);
+  approx(pole.alt, lat, 0.05, "astro: pole star elevation = latitude");
+  approx(Math.min(pole.az, 360 - pole.az), 0, 0.2, "astro: pole star azimuth = north (0°)");
+  // moon illumination fraction stays a physical [0,1] across a synodic month
+  let lo = 1, hi = 0;
+  for (let k = 0; k < 30; k++) { const f = moonFrac(t + k * 86400000); lo = Math.min(lo, f); hi = Math.max(hi, f); }
+  approx(lo >= 0 && lo < 0.05 ? 1 : 0, 1, 0, "astro: moonFrac reaches ~new (≥0)");
+  approx(hi <= 1 && hi > 0.9 ? 1 : 0, 1, 0, "astro: moonFrac reaches ~full (≤1)");
+  // the Sun is up by day and its azimuth is a real bearing
+  const s = sunPos(t, lat, lon);
+  approx(s.az >= 0 && s.az < 360 ? 1 : 0, 1, 0, "astro: sun azimuth in [0,360)");
+}
+
+// --- winds check (coverage gap): pressure-level altitude + balloon verdict ---
+{
+  approx(nearestLevel(5600)[0], 500, 0, "winds: ~5.6 km → 500 hPa level");
+  approx(nearestLevel(11800)[0], 200, 0, "winds: ~11.8 km → 200 hPa level");
+  // object moving WITH the wind (same heading, similar speed) = balloon-consistent
+  const wind = { speedMs: 10, fromDeg: 270, driftDeg: 90, hPa: 500, levelM: 5570 };
+  const bc = balloonVerdict(11, 92, wind);
+  approx(bc.verdict === "balloon-consistent" ? 1 : 0, 1, 0, "winds: with-wind motion → balloon-consistent");
+  // object crossing the wind at 5× its speed = not wind-borne
+  const nb = balloonVerdict(50, 0, wind);
+  approx(nb.verdict === "not wind-borne" ? 1 : 0, 1, 0, "winds: cross-wind fast motion → not wind-borne");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

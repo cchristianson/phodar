@@ -226,10 +226,16 @@ export function aspectSpan(fix) {
   const out = [{ S: top.S, psi: top.psi, rms: Math.sqrt(top.r2 / V.length), n: V.length }];
   if (out[0].rms / out[0].S > 0.18) return null; // widths don't fit ONE elongated object — stay silent
   if (V.length === 2) { // mirror ambiguity only exists for exactly two views
+    /* The two views' widths have a SECOND exact-fit long axis (the ratio
+       sin²(ψ−b₁)=R²sin²(ψ−b₂) has two roots). Its span may equal OR differ
+       from the primary's — a same-span mirror (e.g. bearings ~90° apart) is
+       just as real, so DON'T gate on the span differing; report the nearest
+       distinct-axis low-residual candidate. ψ is an axis (mod 180). */
     const thresh = Math.max(top.r2 * 2, (0.02 * top.S) ** 2 * V.length);
     for (const c of cands) {
       if (c.r2 > thresh) break;
-      if (Math.abs(c.psi - top.psi) > 20 && Math.abs(c.S - top.S) / top.S > 0.06) { out.push({ S: c.S, psi: c.psi }); break; }
+      let d = Math.abs(c.psi - top.psi); d = Math.min(d, 180 - d); // axis distance, mod 180
+      if (d > 20) { out.push({ S: c.S, psi: c.psi }); break; }
     }
   }
   return out;

@@ -113,10 +113,6 @@ export function angSizeFromPoints(p1, p2, natW, natH, fovH) {
   return Math.acos(c) * R2D;
 }
 
-export function pixelDeltaAzEl(pA, pB, natW, fovH) {
-  const f = focalPx(natW, fovH);
-  return { dAz: Math.atan((pB.x - pA.x) / f) * R2D, dEl: -Math.atan((pB.y - pA.y) / f) * R2D };
-}
 
 /* Direction of a pixel through the best available camera model.
    With a placed photo (pose) the pose is exact. Without one, we build a
