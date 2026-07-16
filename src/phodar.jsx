@@ -1385,6 +1385,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [selPt, setSelPt] = useState(null);     // trajectory point whose turn radius is being edited
   const [rotMode, setRotMode] = useState(false); // when on, dragging the dome rotates the selected point's shape
   const rotDragRef = useRef(null), rotRafRef = useRef(0);
+  const rotTwistRef = useRef(null); // second finger anchors a view-axis twist (roll) once a point rotation is underway
   /* compare ghost — buttons only, NO sliders and NO draggable elements:
      the aimer holds a document-level touch lock (invariant: iOS multi-touch),
      which silently eats native drags on anything inside it. Drop the ghost
@@ -1712,6 +1713,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const n = pointersRef.current.size;
     if (n >= 2) {
+      /* Second finger while a point rotation is ALREADY underway → don't pinch:
+         anchor with this finger and let the twist between the two fingers roll
+         the shape about the view axis (fine control the 1-finger trackball
+         can't give), mirroring the photo-placement twist. */
+      if (rotDragRef.current && rotMode && selPt != null && source?.shapeFit) {
+        const rd = rotDragRef.current;
+        const anchorId = e.pointerId, driverId = rd.pid;
+        const anc = pointersRef.current.get(anchorId);
+        const drv = pointersRef.current.get(driverId) || anc;
+        if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
+        rotTwistRef.current = {
+          idx: rd.idx, anchorId, driverId,
+          a0: Math.atan2(drv.y - anc.y, drv.x - anc.x),
+          R0: rd.pending || rd.R0, // continue from the live orientation, no jump
+        };
+        rotDragRef.current = null;
+        return;
+      }
       panRef.current = null; placeRef.current = null; rotDragRef.current = null;
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
@@ -1719,7 +1738,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
     } else if (rotMode && selPt != null && source?.shapeFit) {
-      rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt) };
+      rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt), pid: e.pointerId };
     } else {
       panRef.current = { x: e.clientX, y: e.clientY, az: viewAz, alt: viewAlt };
     }
@@ -1728,6 +1747,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const n = pointersRef.current.size;
     if (n >= 2) {
+      /* two-finger view-axis twist rolling the selected point's shape */
+      if (rotTwistRef.current) {
+        const tw = rotTwistRef.current;
+        const anc = pointersRef.current.get(tw.anchorId), drv = pointersRef.current.get(tw.driverId);
+        if (anc && drv) {
+          const a1 = Math.atan2(drv.y - anc.y, drv.x - anc.x);
+          const rm = mul3(rotZ3((a1 - tw.a0) * R2D), tw.R0); // roll about the view axis
+          tw.cur = rm; // live orientation, so lifting back to one finger continues from here
+          if (!rotRafRef.current) rotRafRef.current = requestAnimationFrame(() => {
+            rotRafRef.current = 0;
+            const p = rotTwistRef.current; if (p && p.cur) setPtRot(p.idx, p.cur);
+          });
+        }
+        return;
+      }
       /* incremental per-event deltas from the SAME two pointer ids, with
          angle unwrap and glitch rejection — kills the 90° rotation snaps */
       if (twistRef.current) {
@@ -1790,12 +1824,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     const n = pointersRef.current.size;
     if (n < 2) { pinchRef.current = null; twistRef.current = null; }
+    if (rotTwistRef.current && n < 2) {
+      /* lifting out of a two-finger twist: hand control back to whichever
+         finger remains, seeded at the post-twist orientation so it doesn't jump */
+      const tw = rotTwistRef.current, cur = tw.cur || tw.R0;
+      rotTwistRef.current = null;
+      if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
+      setPtRot(tw.idx, cur); // flush the final twist frame (rAF may have been dropped)
+      const rem = [...pointersRef.current.entries()][0];
+      if (rem && rotMode && selPt != null && source?.shapeFit)
+        rotDragRef.current = { idx: tw.idx, x: rem[1].x, y: rem[1].y, R0: cur, pid: rem[0] };
+    }
     if (n === 1) {
       const p = [...pointersRef.current.values()][0];
       if (placing) placeRef.current = { x: p.x, y: p.y, az: pAz, el: pEl };
+      else if (rotDragRef.current) { /* twist handed control back to this finger — keep the rotate drag */ }
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
-      panRef.current = null; placeRef.current = null; rotDragRef.current = null;
+      panRef.current = null; placeRef.current = null; rotDragRef.current = null; rotTwistRef.current = null;
       if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
       if (placing) commitPlacement();
     }
