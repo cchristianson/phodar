@@ -15,49 +15,63 @@
 import { R2D, D2R, dot, unit, clampN, dirToAzEl } from "../math/geodesy.js";
 import { photoBasis, dirToPixK, pixToDirK, solvePoseAnchors } from "../math/projection.js";
 
-/* Detect compact bright blobs (stars) in an RGBA buffer. Clouds are large
-   and diffuse → they form one over-size connected component and are dropped;
-   stars are tiny bright peaks. Returns [{x,y,bright,area}] brightest-first, in
-   the buffer's own pixel coordinates (scale to native outside). */
+/* Detect compact bright blobs (stars) in an RGBA buffer. A LOCAL-BACKGROUND
+   subtraction (box mean via a summed-area table) is done first, so Milky-Way
+   glow, light-pollution gradients and cloud haze are flattened to ~0 and only
+   point sources survive — the technique real star-finders (DAOFIND, SEP) use.
+   Blobs are then found on the residual; over-size ones (any diffuse patch that
+   still pokes through) are dropped. Returns [{x,y,bright,area}] brightest-first,
+   in the buffer's own pixel coordinates (scale to native outside). */
 export function detectStars(data, w, h, opts = {}) {
   const N = w * h;
   const lum = new Float32Array(N);
-  let sum = 0;
-  for (let i = 0; i < N; i++) {
-    const l = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
-    lum[i] = l; sum += l;
+  for (let i = 0; i < N; i++) lum[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+  /* summed-area table → O(1) local box mean = the sky background under each px */
+  const W1 = w + 1, I = new Float64Array(W1 * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) { row += lum[y * w + x]; I[(y + 1) * W1 + (x + 1)] = I[y * W1 + (x + 1)] + row; }
   }
+  const R = opts.bgR || Math.max(6, Math.round(Math.min(w, h) * 0.03)); // background window ≫ a star, ≪ the frame
+  const boxMean = (x, y) => {
+    const x0 = x - R < 0 ? 0 : x - R, y0 = y - R < 0 ? 0 : y - R, x1 = x + R >= w ? w - 1 : x + R, y1 = y + R >= h ? h - 1 : y + R;
+    const s = I[(y1 + 1) * W1 + (x1 + 1)] - I[y0 * W1 + (x1 + 1)] - I[(y1 + 1) * W1 + x0] + I[y0 * W1 + x0];
+    return s / ((x1 - x0 + 1) * (y1 - y0 + 1));
+  };
+  /* residual over local background — flat sky/glow → ~0, stars → sharp peaks */
+  const res = new Float32Array(N);
+  let sum = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = lum[y * w + x] - boxMean(x, y); const r = v > 0 ? v : 0; res[y * w + x] = r; sum += r; }
   const mean = sum / N;
-  let vs = 0;
-  for (let i = 0; i < N; i++) { const d = lum[i] - mean; vs += d * d; }
+  let vs = 0; for (let i = 0; i < N; i++) { const d = res[i] - mean; vs += d * d; }
   const std = Math.sqrt(vs / N) || 1;
-  const thr = Math.max(mean + (opts.kSigma || 4.5) * std, mean + 10);
-  const maxArea = opts.maxArea || Math.min(160, Math.max(24, Math.round(w * h * 0.00006))); // bigger ⇒ cloud, dropped
+  const thr = mean + (opts.kSigma || 5) * std;
+  const maxArea = opts.maxArea || Math.min(160, Math.max(24, Math.round(w * h * 0.00006))); // bigger ⇒ diffuse, dropped
   const minArea = opts.minArea || 1;
   const seen = new Uint8Array(N);
   const stars = [];
   const stack = [];
   for (let p0 = 0; p0 < N; p0++) {
-    if (seen[p0] || lum[p0] < thr) continue;
+    if (seen[p0] || res[p0] < thr) continue;
     let area = 0, sx = 0, sy = 0, sw = 0, peak = 0, big = false;
     stack.length = 0; stack.push(p0); seen[p0] = 1;
     while (stack.length) {
       const p = stack.pop();
-      const x = p % w, y = (p - x) / w, l = lum[p];
+      const x = p % w, y = (p - x) / w, l = res[p];
       area++; sw += l; sx += x * l; sy += y * l; if (l > peak) peak = l;
       if (area > maxArea) big = true;
       const x0 = x > 0 ? -1 : 0, x1 = x < w - 1 ? 1 : 0, y0 = y > 0 ? -1 : 0, y1 = y < h - 1 ? 1 : 0;
       for (let dy = y0; dy <= y1; dy++) for (let dx = x0; dx <= x1; dx++) {
         if (!dx && !dy) continue;
         const np = (y + dy) * w + (x + dx);
-        if (!seen[np] && lum[np] >= thr) { seen[np] = 1; stack.push(np); }
+        if (!seen[np] && res[np] >= thr) { seen[np] = 1; stack.push(np); }
       }
     }
     if (big || area < minArea) continue;
     stars.push({ x: sx / sw, y: sy / sw, bright: peak, area });
   }
   stars.sort((a, b) => b.bright - a.bright);
-  return stars.slice(0, opts.maxN || 60);
+  return stars.slice(0, opts.maxN || 80);
 }
 
 /* catalog world-dirs → in-frame pixels under a pose */

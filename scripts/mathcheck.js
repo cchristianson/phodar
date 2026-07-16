@@ -538,6 +538,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const nearDot = found.filter((s) => dots.some(([x, y]) => Math.hypot(s.x - (x + 0.5), s.y - (y + 0.5)) < 2)).length;
   approx(nearDot, 4, 0, "platesolve: all four star centroids located");
 
+  // background subtraction: stars survive a strong Milky-Way-like GRADIENT +
+  // broad glow, and the smooth brightness ramp yields no false detections
+  const gw = 120, gh = 90, gimg = new Uint8ClampedArray(gw * gh * 4);
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    const ramp = 12 + 70 * (x / gw) + 40 * Math.exp(-(((x - 80) ** 2 + (y - 45) ** 2) / 600)); // gradient + a soft glow blob
+    const p = (y * gw + x) * 4; gimg[p] = gimg[p + 1] = gimg[p + 2] = ramp; gimg[p + 3] = 255;
+  }
+  const gdots = [[20, 20], [95, 30], [40, 65], [100, 70], [60, 40]];
+  for (const [x, y] of gdots) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) { const p = ((y + dy) * gw + (x + dx)) * 4; gimg[p] = gimg[p + 1] = gimg[p + 2] = 250; }
+  const gfound = detectStars(gimg, gw, gh, {});
+  const gnear = gfound.filter((s) => gdots.some(([x, y]) => Math.hypot(s.x - (x + 0.5), s.y - (y + 0.5)) < 2.5)).length;
+  approx(gnear, 5, 0, "platesolve: stars found through a Milky-Way gradient+glow");
+  approx(gfound.length <= 7 ? 1 : 0, 1, 0, "platesolve: gradient itself makes no false stars");
+
   // autoStarAlign: recover a known pose from a perturbed seed, ROBUST to
   // (a) clouds hiding some catalog stars, (b) a UFO-like bright blob that isn't
   // a catalog star, and (c) faint non-catalog clutter
