@@ -1371,6 +1371,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [cameraMsg, setCameraMsg] = useState("");
   const videoRef = useRef(null), streamRef = useRef(null);
   const panRef = useRef(null);
+  const calibTapRef = useRef(null);   // pending dome tap while aligning — pick nearest named star on release
   const pointersRef = useRef(new Map());
   const pinchRef = useRef(null);
 
@@ -1688,20 +1689,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .catch((e) => { if (!dead) setPeaks({ err: String(e?.message || e) }); });
     return () => { dead = true; };
   }, [open, peaksOn, peaks, hasPos, LAT, LNG]); // eslint-disable-line
-  /* show summits that actually appear on the skyline: keep a peak only if its
-     curvature-corrected elevation is at/above the DEM silhouette at its azimuth
-     (so a peak hidden behind nearer, higher terrain is dropped, and a tall far
-     peak poking above the near ridge is kept). Peaks with no OSM height can't
-     be occlusion-tested → keep the nearer named ones. */
+  /* Show the named summits/hills near the observer. Those that sit ON the
+     terrain silhouette (elevation at/above the DEM skyline at their azimuth)
+     are prioritised, but nothing is HARD-hidden — a peak the app thinks is
+     occluded may just be DEM/OSM height disagreement, and the user wants to see
+     the named peaks either way. Sort: on-silhouette first, then nearest; cap. */
   const peakMarks = (() => {
-    if (!(peaksOn && Array.isArray(peaks))) return [];
-    const tol = 1.0; // ° — generous: only drop summits clearly behind a higher ridge (DEM vs OSM height also disagree a bit)
-    const vis = peaks.filter((pk) => {
-      if (pk.el == null) return pk.distKm <= 60;
-      const skyEl = terr?.els ? skylineElAt(terr.els, pk.az) : -90;
-      return pk.el >= skyEl - tol;
-    });
-    return vis.sort((a, b) => a.distKm - b.distKm).slice(0, 60);
+    if (!(peaksOn && Array.isArray(peaks)) || !peaks.length) return [];
+    const onSil = (pk) => {
+      if (pk.el == null || !terr?.els) return true;
+      return pk.el >= skylineElAt(terr.els, pk.az) - 1.0;
+    };
+    return peaks.slice()
+      .sort((a, b) => (onSil(b) - onSil(a)) || (a.distKm - b.distKm))
+      .slice(0, 60);
   })();
 
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
@@ -1794,7 +1795,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         rotDragRef.current = null;
         return;
       }
-      panRef.current = null; placeRef.current = null; rotDragRef.current = null;
+      panRef.current = null; placeRef.current = null; rotDragRef.current = null; calibTapRef.current = null;
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
       else pinchRef.current = g;
@@ -1804,6 +1805,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt), pid: e.pointerId };
     } else {
       panRef.current = { x: e.clientX, y: e.clientY, az: viewAz, alt: viewAlt };
+      /* while aligning, a single-finger DRAG still pans (above); a TAP (little
+         movement, resolved on release) picks the nearest named star — so the
+         many sky labels never have to become pan-blocking tap targets */
+      if (calibOn && !calibAnchor) calibTapRef.current = { x: e.clientX, y: e.clientY };
     }
   };
   const onBgMove = (e) => {
@@ -1904,6 +1909,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       else if (rotDragRef.current) { /* twist handed control back to this finger — keep the rotate drag */ }
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
+      /* align mode: a tap (barely moved) picks the nearest named star/planet;
+         a drag panned instead and is ignored here */
+      const ct = calibTapRef.current; calibTapRef.current = null;
+      if (ct && calibOn && !calibAnchor && Math.hypot(e.clientX - ct.x, e.clientY - ct.y) < 12 && vpRef.current) {
+        const r = vpRef.current.getBoundingClientRect();
+        const tx = e.clientX - r.left, ty = e.clientY - r.top;
+        let best = null, bestD = Infinity;
+        for (const o of skyRefs) {
+          const pr = project(o.az, o.el); if (!pr.inFront) continue;
+          const d = Math.hypot(pr.x * vp.w - tx, pr.y * vp.h - ty);
+          if (d < bestD) { bestD = d; best = o; }
+        }
+        if (best && bestD < 60) pickCalib(best);
+        else setCalibMsg("No named star near your tap — pan/zoom to bring one into view, then tap it");
+      }
       panRef.current = null; placeRef.current = null; rotDragRef.current = null; rotTwistRef.current = null;
       if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
       if (placing) commitPlacement();
@@ -2022,7 +2042,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   })() : null;
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
-  const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
+  const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
   /* while aligning, label EVERY named star in view (you're picking anchors);
      otherwise keep it to the bright ones so the sky isn't cluttered */
   const starLabels = starDots.filter((p) => p.name && (calibOn ? p.mag <= 3.4 : (p.mag <= 1.6 || (fovH < 42 && p.mag <= 2.6))));
@@ -2066,12 +2086,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return out;
   })();
   /* the subset currently on screen — offered as chips to pick an align anchor */
-  const calibRefs = calibOn ? skyRefs
-    .map((o) => ({ ...o, pr: project(o.az, o.el) }))
-    .filter((o) => o.pr.inFront && o.pr.x > 0.03 && o.pr.x < 0.97 && o.pr.y > 0.03 && o.pr.y < 0.97)
-    .sort((a, b) => (a.mag ?? -9) - (b.mag ?? -9))   // brightest first (Sun/Moon/planets have no mag → first)
-    .slice(0, 14)
-    : [];
 
   /* pick which object to align to (from a chip), then aim the crosshair on it in
      the photo and press the button — no fiddly tap while zoomed. */
@@ -2459,12 +2473,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </svg>
         )}
         {starLabels.map((p) => (
-          <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(7px,-5px)", fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 600, color: "#eaf1ff", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
+          /* labels are non-interactive; while aligning you TAP the sky (dome
+             handles it) and the nearest named star is picked — so the many
+             labels never become pan dead-zones */
+          <div key={"sl" + p.name} style={{ position: "absolute", left: (p.x * 100) + "%", top: (p.y * 100) + "%", transform: "translate(7px,-5px)", fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: calibAnchor?.name === p.name ? 800 : 600, color: calibAnchor?.name === p.name ? "var(--amber)" : "#eaf1ff", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", pointerEvents: "none", whiteSpace: "nowrap" }}>{p.name}</div>
         ))}
         {planetDots.map((pl) => (
           <div key={"pl" + pl.name} style={{ position: "absolute", left: (pl.p.x * 100) + "%", top: (pl.p.y * 100) + "%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff6d8", boxShadow: "0 0 9px 3px rgba(255,225,150,.75)", margin: "0 auto" }} />
-            <div style={{ fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 700, color: "#ffe9b0", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
+            <div style={{ fontSize: 9.5, fontFamily: "var(--mono)", fontWeight: 700, color: calibAnchor?.name === pl.name ? "var(--amber)" : "#ffe9b0", textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", marginTop: 2, whiteSpace: "nowrap" }}>{pl.sym} {pl.name}</div>
           </div>
         ))}
 
@@ -2846,12 +2863,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
           <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ no named peaks within 120 km of the observer
-          </div>
-        )}
-        {peaksOn && Array.isArray(peaks) && peaks.length > 0 && peakMarks.length === 0 && (
-          <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ {peaks.length} named peaks nearby, but none rise above the local terrain
+            ⛰ no named peaks or hills within 120 km of the observer
           </div>
         )}
         {acOn && acData?.ac && acData.hist && (
@@ -2906,7 +2918,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 )}
                 {pMode !== "place" && skyRefs.length > 0 && (
                   <button className={"btn sm" + (calibOn ? " amber" : "")} title="Align the sky to a known star or planet: pick the object, aim the crosshair on it in the photo, press ✓ Set. Solves the lens FOV + roll and keeps the terrain match."
-                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "Pick the star/planet to align to ↓" : ""); }}>
+                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "👆 Tap a named star or planet in the sky" : ""); }}>
                     ✦ {calibOn ? "done aligning" : "align to star"}
                   </button>
                 )}
@@ -2928,21 +2940,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {pMode !== "place" && calibOn && (
           <div style={{ marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
             {!calibAnchor ? (
-              <>
-                <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 6 }}>
-                  {calibCount === 0 ? "Pick the star/planet to align to:" : calibCount === 1 ? "1 star set — add a 2nd (different part of the frame) for lens distortion:" : calibCount === 2 ? "2 stars set — add a 3rd for a FULL plate-solve (matches the whole sky + terrain):" : `${calibCount} stars set — add more to refine, or done:`}
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {calibRefs.length ? calibRefs.map((o) => (
-                    <button key={o.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => pickCalib(o)}>{o.sym ? o.sym + " " : ""}{o.name}</button>
-                  )) : <span style={{ fontSize: 11, color: "var(--dim)" }}>Pan/zoom until a labeled star or planet is on screen.</span>}
-                </div>
-              </>
+              <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", lineHeight: 1.5 }}>
+                👆 <b>Tap a named star or planet in the sky</b> to align to it{calibCount > 0 ? ` (${calibCount} set` + (calibCount === 1 ? " — add a 2nd for lens distortion)" : calibCount === 2 ? " — add a 3rd for a full plate-solve)" : ")") : ""}. Pan/zoom to bring more into view.
+              </div>
             ) : (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                 <span style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)" }}>Aim the ⊕ crosshair onto <b>{calibAnchor.name}</b> in the photo (the ◯ ring marks where it's predicted), then Set. Nothing changes until you Set.</span>
                 <button className="btn sm amber" onClick={alignAtCrosshair}>✓ Set {calibAnchor.name}</button>
-                <button className="btn sm" onClick={() => { setCalibAnchor(null); setCalibMsg("Pick the star/planet to align to ↓"); }}>✕ cancel</button>
+                <button className="btn sm" onClick={() => { setCalibAnchor(null); setCalibMsg("👆 Tap a named star or planet in the sky"); }}>✕ cancel</button>
               </div>
             )}
             {calibApplied && (
