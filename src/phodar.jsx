@@ -2009,7 +2009,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
-  const starLabels = starDots.filter((p) => p.name && (p.mag <= 1.4 || (fovH < 42 && p.mag <= 2.2)));
+  /* while aligning, label EVERY named star in view (you're picking anchors);
+     otherwise keep it to the bright ones so the sky isn't cluttered */
+  const starLabels = starDots.filter((p) => p.name && (calibOn ? p.mag <= 3.4 : (p.mag <= 1.6 || (fovH < 42 && p.mag <= 2.6))));
   const planetDots = planetsVisible && !cameraOn ? planets.map((p) => ({ ...p, p: project(p.az, p.alt) })).filter((x) => x.p.inFront && x.p.x > -0.05 && x.p.x < 1.05 && x.p.y > -0.05 && x.p.y < 1.05) : [];
 
   const bodyPx = vp.w > 0 ? Math.max((vp.w * Math.tan((0.53 * RAD) / 2)) / tanH, 12) : 0;
@@ -2044,7 +2046,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const skyRefs = (() => {
     const out = [];
     if (planetsVisible) for (const p of planets) if (p.alt > 0.5) out.push({ name: p.name, az: p.az, el: p.alt, sym: p.sym });
-    for (const st of stars) if (st.name && st.mag <= 2.2 && st.alt > 0.5) out.push({ name: st.name, az: st.az, el: st.alt });
+    for (const st of stars) if (st.name && st.mag <= 3.4 && st.alt > 0.5) out.push({ name: st.name, az: st.az, el: st.alt, mag: st.mag });
     if (sun.alt > 0.5) out.push({ name: "Sun", az: sun.az, el: sun.alt, sym: "☀" });
     if (moon.alt > 0.5) out.push({ name: "Moon", az: moon.az, el: moon.alt, sym: "☾" });
     return out;
@@ -2053,6 +2055,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const calibRefs = calibOn ? skyRefs
     .map((o) => ({ ...o, pr: project(o.az, o.el) }))
     .filter((o) => o.pr.inFront && o.pr.x > 0.03 && o.pr.x < 0.97 && o.pr.y > 0.03 && o.pr.y < 0.97)
+    .sort((a, b) => (a.mag ?? -9) - (b.mag ?? -9))   // brightest first (Sun/Moon/planets have no mag → first)
+    .slice(0, 14)
     : [];
 
   /* pick which object to align to (from a chip), then aim the crosshair on it in
@@ -2917,9 +2921,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               </>
             ) : (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                <span style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)" }}>Center the ⊕ crosshair on <b>{calibAnchor.name}</b> in the photo →</span>
+                <span style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)" }}>Aim the ⊕ crosshair onto <b>{calibAnchor.name}</b> in the photo (the ◯ ring marks where it's predicted), then Set. Nothing changes until you Set.</span>
                 <button className="btn sm amber" onClick={alignAtCrosshair}>✓ Set {calibAnchor.name}</button>
-                <button className="btn sm" onClick={() => { setCalibAnchor(null); setCalibMsg("Pick the star/planet to align to ↓"); }}>pick another</button>
+                <button className="btn sm" onClick={() => { setCalibAnchor(null); setCalibMsg("Pick the star/planet to align to ↓"); }}>✕ cancel</button>
               </div>
             )}
             {calibApplied && (
