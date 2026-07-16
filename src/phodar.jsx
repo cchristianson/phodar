@@ -324,6 +324,27 @@ const css = `
 }
 `;
 
+/* Non-destructive brightness/contrast for DISPLAY only. Values are percentages
+   (100 = neutral) stored on the source as `imgAdj`; the ORIGINAL pixels are
+   never modified (measurement — star detection, plate solve, marks — always
+   reads the raw image). The pixel pass replicates the CSS `brightness()
+   contrast()` math EXACTLY, so canvas-baked surfaces (the sky-view warp texture,
+   report crops) match CSS-filtered <img> surfaces (measure step, place mode). */
+const imgAdjNeutral = (a) => !a || ((a.bri == null || a.bri === 100) && (a.con == null || a.con === 100));
+const imgAdjFilter = (a) => imgAdjNeutral(a) ? "none" : `brightness(${(a.bri ?? 100) / 100}) contrast(${(a.con ?? 100) / 100})`;
+function applyImgAdj(ctx, w, h, a) {
+  if (imgAdjNeutral(a)) return;
+  const b = (a.bri ?? 100) / 100, c = (a.con ?? 100) / 100;
+  const id = ctx.getImageData(0, 0, w, h), d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    for (let k = 0; k < 3; k++) {
+      let v = (d[i + k] * b - 127.5) * c + 127.5; // brightness then contrast, matching CSS filter order
+      d[i + k] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
 
 function Num({ label, value, onChange, unit, ph, after }) {
@@ -873,6 +894,7 @@ function MediaMeasure({ src, update, wizard }) {
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, S, S);
     try {
       ctx.drawImage(el, p.x - half, p.y - half, half * 2, half * 2, 0, 0, S, S);
+      applyImgAdj(ctx, cv.width, cv.height, src.imgAdj); // match the on-screen brightness/contrast
     } catch (err) { /* ignore */ }
     const col = active === "pb" ? "#5FD3BC" : "#F5A93F";
     ctx.strokeStyle = col; ctx.lineWidth = 1;
@@ -1030,10 +1052,10 @@ function MediaMeasure({ src, update, wizard }) {
                 {media.kind === "video" ? (
                   <video ref={mediaRef} src={media.url} playsInline muted preload="auto"
                     onLoadedMetadata={onLoaded} onLoadedData={paintFirstFrame} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
-                    style={{ width: "100%", display: "block", pointerEvents: "none" }} />
+                    style={{ width: "100%", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} />
                 ) : (
                   <img ref={mediaRef} src={media.url} alt="sighting" onLoad={onLoaded} onError={onMediaError}
-                    style={{ width: "100%", display: "block", pointerEvents: "none", imageRendering: view.z > 4 ? "pixelated" : "auto" }} draggable={false} />
+                    style={{ width: "100%", display: "block", pointerEvents: "none", imageRendering: view.z > 4 ? "pixelated" : "auto", filter: imgAdjFilter(src.imgAdj) }} draggable={false} />
                 )}
               </div>
               {scale > 0 && Object.entries(pts()).map(([k, p]) => {
@@ -1116,6 +1138,29 @@ function MediaMeasure({ src, update, wizard }) {
               );
             })()}
           </div>
+
+          {media && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <ML style={{ marginBottom: 1 }}>Brightness / contrast</ML>
+                <span style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--mono)" }}>display only · original kept</span>
+                  {!imgAdjNeutral(src.imgAdj) && <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => update({ imgAdj: { bri: 100, con: 100 } })}>↺ reset</button>}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Brightness">☀</span>
+                <input type="range" min={20} max={400} step={2} value={src.imgAdj?.bri ?? 100}
+                  onChange={(e) => update({ imgAdj: { bri: +e.target.value, con: src.imgAdj?.con ?? 100 } })} style={{ flex: 1 }} />
+              </div>
+              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Contrast">◐</span>
+                <input type="range" min={50} max={300} step={2} value={src.imgAdj?.con ?? 100}
+                  onChange={(e) => update({ imgAdj: { bri: src.imgAdj?.bri ?? 100, con: +e.target.value } })} style={{ flex: 1 }} />
+              </div>
+              <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Lifts a dark night shot so you can see stars &amp; the object — carries into the sky view and report; measurements still use the original.</div>
+            </div>
+          )}
 
           {media.kind === "video" && (
             <div style={{ marginTop: 8 }}>
@@ -1456,13 +1501,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      a live <video> — which is what made the sky view fast and stable. */
   const MAXT = 1280;
   const bakeTex = (drawable, w, h) => {
+    const adj = source?.imgAdj, needAdj = !imgAdjNeutral(adj);
     let tex = drawable;
     try {
-      if (w > MAXT || h > MAXT) {
-        const sc = MAXT / Math.max(w, h);
+      if (w > MAXT || h > MAXT || needAdj) {   // draw to a canvas to downscale and/or bake the B/C adjustment in
+        const sc = Math.min(1, MAXT / Math.max(w, h));
         const cv = document.createElement("canvas");
         cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
-        cv.getContext("2d").drawImage(drawable, 0, 0, cv.width, cv.height);
+        const cx = cv.getContext("2d", { willReadFrequently: needAdj });
+        cx.drawImage(drawable, 0, 0, cv.width, cv.height);
+        if (needAdj) applyImgAdj(cx, cv.width, cv.height, adj);
         tex = cv;
       }
     } catch (e) { /* keep full-res */ }
@@ -1493,7 +1541,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const im = new Image();
     im.onload = () => bakeTex(im, im.naturalWidth, im.naturalHeight);
     im.src = source.mediaUrl;
-  }, [source?.mediaUrl, source?.mediaKind, source?.A?.videoTime]);
+  }, [source?.mediaUrl, source?.mediaKind, source?.A?.videoTime, source?.imgAdj?.bri, source?.imgAdj?.con]);
 
   /* aim starts on the previously entered direction, if any */
   useEffect(() => {
@@ -2437,7 +2485,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {(() => {
               const imgSrc = source.mediaKind === "video" ? vidFrameUrl : source.mediaUrl;
               return imgSrc
-                ? <img src={imgSrc} alt="" style={{ width: "100%", display: "block", opacity: PH_OP }} />
+                ? <img src={imgSrc} alt="" style={{ width: "100%", display: "block", opacity: PH_OP, filter: imgAdjFilter(source.imgAdj) }} />
                 : <div style={{ width: "100%", aspectRatio: (source.natW && source.natH) ? `${source.natW} / ${source.natH}` : "16 / 9", background: "rgba(15,23,42,.6)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11, fontFamily: "var(--mono)" }}>rendering frame…</div>;
             })()}
             {source?.natW && (
@@ -4367,6 +4415,11 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
     if (opts.exhibits === "full" && origAct[i]?.mediaUrl && origAct[i].mediaKind === "image") imgSrc = origAct[i].mediaUrl;
     else if (opts.exhibits === "files") imgSrc = s.mediaJpeg ? `photos/observer-${i + 1}.jpg` : null;
     if (!imgSrc) return "";
+    /* carry the display brightness/contrast into the report via CSS filter
+       (same non-destructive model as the app) — baked JPEGs stay the raw pixels */
+    const adjF = imgAdjFilter(s.imgAdj);
+    const adjSty = adjF === "none" ? "" : `filter:${adjF};`;
+    const adjCap = adjF === "none" ? "" : " · brightness/contrast adjusted for viewing (original retained)";
     let overlay = "";
     if (s.shapeFit) {
       const pr = shapeProjNat(s.shapeFit);
@@ -4383,7 +4436,7 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
       const both = !!(s.shapeFit && s.detailCrop);
       /* both crops share the row as equal halves; a lone crop stays modest */
       const childCss = both ? "flex:1 1 0;min-width:0" : "max-width:min(330px,100%)";
-      const noOv = `<div style="${childCss}"><img src="${s.detailJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom}, no overlay</div></div>`;
+      const noOv = `<div style="${childCss}"><img src="${s.detailJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px;${adjSty}"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom}, no overlay</div></div>`;
       let withOv = "";
       if (both) {
         const pr2 = shapeProjNat(s.shapeFit);
@@ -4394,13 +4447,13 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
         ).join("");
         const kindLabel = (SHAPES.find((x) => x.k === s.shapeFit.kind) || {}).label || s.shapeFit.kind;
         const cr = s.detailCrop;
-        withOv = `<div style="${childCss}"><div style="position:relative;border:1px solid #ccc;border-radius:4px;overflow:hidden"><img src="${s.detailJpeg}" style="width:100%;display:block"/><svg viewBox="${cr.x.toFixed(1)} ${cr.y.toFixed(1)} ${cr.w.toFixed(1)} ${cr.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths2}</svg></div><div class="cap">detail — same crop with the ${e2(kindLabel)} shape overlaid (your colour)</div></div>`;
+        withOv = `<div style="${childCss}"><div style="position:relative;border:1px solid #ccc;border-radius:4px;overflow:hidden"><img src="${s.detailJpeg}" style="width:100%;display:block;${adjSty}"/><svg viewBox="${cr.x.toFixed(1)} ${cr.y.toFixed(1)} ${cr.w.toFixed(1)} ${cr.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths2}</svg></div><div class="cap">detail — same crop with the ${e2(kindLabel)} shape overlaid (your colour)</div></div>`;
       }
       detailBlock = `<div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
     }
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
-<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block"/>${overlay}</div>
-<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}</div>
+<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}</div>
+<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}</div>
 ${detailBlock}`;
   }).join("");
   let diagHtml = "";
