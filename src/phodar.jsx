@@ -2709,18 +2709,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <div style={{ marginTop: 6 }}>
                 <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--amber)", marginBottom: 4 }}>Object size vs distance</div>
                 {objAngW != null ? (() => {
-                  /* the measured object: sweep assumed distance, read implied size live */
+                  /* the measured object: sweep assumed distance, read implied size AND
+                     altitude above the observer (D·sin(el)) live */
                   const t = clampN(Math.log(objD / 30) / Math.log(80000 / 30), 0, 1); // floor 30 m ≈ 100 ft
                   const size = 2 * objD * Math.tan(objAngW * D2R / 2);
+                  const objEl = isNum(source?.A?.el) ? +source.A.el : effAlt;
+                  const alt = isNum(objEl) ? objD * Math.sin(objEl * D2R) : null;
                   return (
                     <>
-                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide</div>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide{isNum(objEl) ? ` · ${objEl.toFixed(0)}° up` : ""}</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
                         onChange={(e) => setObjD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
                         style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
-                        if it was <b>{fmtLenShort(objD)}</b> away → it's <b>{fmtLenShort(size)}</b> across
+                        if it was <b>{fmtLenShort(objD)}</b> away → <b>{fmtLenShort(size)}</b> across
+                        {alt != null && <> · <b>{fmtLenShort(Math.abs(alt))}</b> {alt >= 0 ? "above" : "below"} you</>}
                         <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
                       </div>
                     </>
@@ -3709,18 +3713,25 @@ async function reportHtml(sources, est, opts = {}) {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
     /* single witness: the honest deliverable is the size↔distance line —
        every assumed distance implies a size; reference objects pin intuition */
-    const wAng = (() => {
+    const w = (() => {
       for (const s of origAct) {
         const a = angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ?? (isNum(s.A?.angManual) ? +s.A.angManual : null);
-        if (a != null && a > 0) return a;
+        if (a != null && a > 0) return { ang: a, el: isNum(s.A?.el) ? +s.A.el : null };
       }
       return null;
     })();
-    if (wAng != null) {
+    if (w != null) {
+      const wAng = w.ang, el = w.el;
       const W = 560, H = 300, L = 62, Rm = 16, T = 34, B = 44;
       const D0 = 50, D1 = 50000;
       const s0 = 2 * D0 * Math.tan(wAng * D2R / 2), s1 = 2 * D1 * Math.tan(wAng * D2R / 2);
-      const sLo = Math.min(s0, 0.2), sHi = Math.max(s1, 120);
+      /* single witness: assumed distance implies BOTH size (2·D·tan(ang/2))
+         and altitude above the observer (D·sin(el)) — both in metres, so they
+         share the log axis. */
+      const drawAlt = el != null && el > 0.2;
+      const sinEl = drawAlt ? Math.sin(el * D2R) : 0;
+      const a0 = drawAlt ? D0 * sinEl : null, a1 = drawAlt ? D1 * sinEl : null;
+      const sLo = Math.min(s0, 0.2, drawAlt ? a0 : Infinity), sHi = Math.max(s1, 120, drawAlt ? a1 : 0);
       const X = (Dm) => L + ((Math.log10(Dm) - Math.log10(D0)) / (Math.log10(D1) - Math.log10(D0))) * (W - L - Rm);
       const Y = (Sm) => T + (1 - (Math.log10(Sm) - Math.log10(sLo)) / (Math.log10(sHi) - Math.log10(sLo))) * (H - T - B);
       const refs = REF_OBJECTS.filter((o) => {
@@ -3728,20 +3739,27 @@ async function reportHtml(sources, est, opts = {}) {
         return Dq >= D0 && Dq <= D1;
       }).map((o) => {
         const Dq = o.size / (2 * Math.tan(wAng * D2R / 2));
-        return `<line x1="${L}" y1="${Y(o.size).toFixed(1)}" x2="${W - Rm}" y2="${Y(o.size).toFixed(1)}" stroke="#ddd" stroke-dasharray="4 4"/>` +
-          `<circle cx="${X(Dq).toFixed(1)}" cy="${Y(o.size).toFixed(1)}" r="3.5" fill="#C77B14"/>` +
-          `<text x="${(X(Dq) + 6).toFixed(1)}" y="${(Y(o.size) - 5).toFixed(1)}" font-size="10" fill="#555">${e2(o.name)} — ${fmtLenShort(Dq)}</text>`;
+        const x = X(Dq), near = x > L + (W - L - Rm) * 0.6;
+        return `<line x1="${L}" y1="${Y(o.size).toFixed(1)}" x2="${W - Rm}" y2="${Y(o.size).toFixed(1)}" stroke="#eee" stroke-dasharray="4 4"/>` +
+          `<circle cx="${x.toFixed(1)}" cy="${Y(o.size).toFixed(1)}" r="3.5" fill="#C77B14"/>` +
+          `<text x="${(near ? x - 6 : x + 6).toFixed(1)}" y="${(Y(o.size) - 5).toFixed(1)}" font-size="10" fill="#555" text-anchor="${near ? "end" : "start"}">${e2(o.name)} — ${fmtLenShort(Dq)}</text>`;
       }).join("");
+      const altRefs = drawAlt ? [{ alt: 120, name: "drone ceiling" }, { alt: 11000, name: "jet cruise" }]
+        .map((r) => ({ ...r, Dr: r.alt / sinEl }))
+        .filter((r) => r.alt >= sLo && r.alt <= sHi && r.Dr >= D0 && r.Dr <= D1)
+        .map((r) => { const x = X(r.Dr), near = x > L + (W - L - Rm) * 0.6; return `<circle cx="${x.toFixed(1)}" cy="${Y(r.alt).toFixed(1)}" r="3.2" fill="#2563c9"/><text x="${(near ? x - 6 : x + 6).toFixed(1)}" y="${(Y(r.alt) + 12).toFixed(1)}" font-size="10" fill="#2563c9" text-anchor="${near ? "end" : "start"}">${r.name} — ${fmtLenShort(r.Dr)}</text>`; }).join("") : "";
       const xTicks = [100, 1000, 10000].map((d) => `<line x1="${X(d)}" y1="${T}" x2="${X(d)}" y2="${H - B}" stroke="#eee"/><text x="${X(d)}" y="${H - B + 16}" font-size="10" fill="#555" text-anchor="middle">${fmtLenShort(d)}</text>`).join("");
-      const yTicks = [1, 10, 100].filter((s) => s >= sLo && s <= sHi).map((s) => `<text x="${L - 6}" y="${(Y(s) + 3).toFixed(1)}" font-size="10" fill="#555" text-anchor="end">${fmtLenShort(s)}</text>`).join("");
+      const yTicks = [1, 10, 100, 1000, 10000].filter((s) => s >= sLo && s <= sHi).map((s) => `<text x="${L - 6}" y="${(Y(s) + 3).toFixed(1)}" font-size="10" fill="#555" text-anchor="end">${fmtLenShort(s)}</text>`).join("");
+      const altLine = drawAlt ? `<line x1="${X(D0)}" y1="${Y(a0).toFixed(1)}" x2="${X(D1)}" y2="${Y(a1).toFixed(1)}" stroke="#2563c9" stroke-width="2.5"/>${altRefs}` : "";
       fixHtml += `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
-<text x="${L}" y="20" font-size="12" font-weight="700" fill="#333">Assumed distance ⇄ implied size (measured ${wAng.toFixed(2)}°)</text>
-${xTicks}${yTicks}${refs}
+<text x="${L}" y="20" font-size="12" font-weight="700" fill="#333">Assumed distance ⇄ implied size${drawAlt ? " &amp; altitude" : ""} (${wAng.toFixed(2)}° wide${drawAlt ? `, ${el.toFixed(0)}° up` : ""})</text>
+<text x="${W - Rm}" y="13" font-size="10" fill="#0e7d6f" text-anchor="end">■ size</text>${drawAlt ? `<text x="${W - Rm}" y="26" font-size="10" fill="#2563c9" text-anchor="end">■ altitude above you</text>` : ""}
+${xTicks}${yTicks}${refs}${altLine}
 <line x1="${X(D0)}" y1="${Y(s0).toFixed(1)}" x2="${X(D1)}" y2="${Y(s1).toFixed(1)}" stroke="#0e7d6f" stroke-width="2.5"/>
 <text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">assumed distance →</text>
-<text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">implied size →</text>
+<text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">size / altitude (m) →</text>
 </svg>
-<p class="cap">One witness can't fix the distance — but every assumed distance implies a size. Dots mark where common objects would sit on this sight-line.</p>`;
+<p class="cap">One witness can't fix the distance — but every assumed distance implies both a size and ${drawAlt ? `an altitude above you (from the ${el.toFixed(0)}° sight-line). Amber dots mark common objects at that size; blue dots mark notable altitudes.` : "a size. Dots mark where common objects would sit on this sight-line. (Add the object's elevation to also read altitude.)"}</p>`;
     }
   }
   /* --- object dimensions: dimensioned front/side/top of the fitted shape.
