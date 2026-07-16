@@ -42,7 +42,7 @@ comments, in this order:
    bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
 3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
-   pinch-zoom, loupe), `PositionEditor` + `PinMap` (Leaflet),
+   pinch-zoom, loupe, brightness/contrast), `PositionEditor` + `PinMap` (Leaflet),
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt
    chips, compare ghosts, aircraft/star/terrain layers), `PlotBoard`,
    charts, `ResultsPanel` (rendered inside `WizFinish`), `AdsbCheck`.
@@ -96,6 +96,18 @@ comments, in this order:
    MBs; localStorage caps ~5 MB). Images/videos persist in IndexedDB via
    `src/mediaStore.js` keyed by source id, re-attached on boot; removal,
    new-sighting and reset clear their entries.
+
+## Image brightness/contrast (display-only, non-destructive)
+`source.imgAdj = {bri, con}` (percentages, 100 = neutral) is a DISPLAY aid set on
+the first image step (MediaMeasure sliders) and carried through the sky view and
+report. It NEVER modifies the original pixels: measurement paths (star detection
+/ `autoStarAlign`, snap-to-ridges, marks) always read the raw `mediaUrl`. Applied
+two ways that are kept in exact visual sync: CSS `filter: brightness() contrast()`
+on `<img>` surfaces (measure, place mode, report exhibits) and a pixel pass
+(`applyImgAdj`, same math order — brightness then contrast) baked into canvas
+surfaces where `ctx.filter` is unreliable on iOS (the sky-view warp texture, the
+measure loupe). Persists via autosave + share JSON; report captions note when a
+photo was adjusted.
 
 ## Field findings baked into the UX (don't "simplify" these away)
 - Phone compass: **sub-degree on foot**, **14–66° wrong** near metal (inside a
