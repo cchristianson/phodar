@@ -1407,7 +1407,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [calibMsg, setCalibMsg] = useState("");
   const [calibApplied, setCalibApplied] = useState(false);
   const calibPrevRef = useRef(null);   // {fov, roll} before the first align — for reset
-  const calibTapRef = useRef(null);    // gesture: a pending tap while aligning
   const lastDtRef = useRef(2);
   const poseRafRef = useRef(0);
   const pendPoseRef = useRef(null);
@@ -1779,8 +1778,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
       else pinchRef.current = g;
-    } else if (calibOn && !placing) {
-      calibTapRef.current = { x: e.clientX, y: e.clientY, moved: false }; // a tap, not a pan
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
     } else if (rotMode && selPt != null && source?.shapeFit) {
@@ -1840,10 +1837,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       return;
     }
-    if (calibTapRef.current) {
-      if (Math.hypot(e.clientX - calibTapRef.current.x, e.clientY - calibTapRef.current.y) > 8) calibTapRef.current.moved = true;
-      return;
-    }
     if (placeRef.current && vp.w) {
       const pr = placeRef.current; // snapshot: pointerup may null the ref before React flushes
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
@@ -1870,15 +1863,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
   };
   const onBgUp = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
     pointersRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     const n = pointersRef.current.size;
-    if (calibTapRef.current) {
-      const t = calibTapRef.current; calibTapRef.current = null;
-      if (!t.moved && rect.width && rect.height) handleCalibTap((t.x - rect.left) / rect.width, (t.y - rect.top) / rect.height);
-      return;
-    }
     if (n < 2) { pinchRef.current = null; twistRef.current = null; }
     if (rotTwistRef.current && n < 2) {
       /* lifting out of a two-finger twist: hand control back to whichever
@@ -2049,12 +2036,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* known sky objects usable as calibration anchors (bright + labeled) */
   const skyRefs = (() => {
     const out = [];
-    if (planetsVisible) for (const p of planets) if (p.alt > 0.5) out.push({ name: p.name, az: p.az, el: p.alt });
+    if (planetsVisible) for (const p of planets) if (p.alt > 0.5) out.push({ name: p.name, az: p.az, el: p.alt, sym: p.sym });
     for (const st of stars) if (st.name && st.mag <= 2.2 && st.alt > 0.5) out.push({ name: st.name, az: st.az, el: st.alt });
-    if (sun.alt > 0.5) out.push({ name: "Sun", az: sun.az, el: sun.alt });
-    if (moon.alt > 0.5) out.push({ name: "Moon", az: moon.az, el: moon.alt });
+    if (sun.alt > 0.5) out.push({ name: "Sun", az: sun.az, el: sun.alt, sym: "☀" });
+    if (moon.alt > 0.5) out.push({ name: "Moon", az: moon.az, el: moon.alt, sym: "☾" });
     return out;
   })();
+  /* the subset currently on screen — offered as chips to pick an align anchor */
+  const calibRefs = calibOn ? skyRefs
+    .map((o) => ({ ...o, pr: project(o.az, o.el) }))
+    .filter((o) => o.pr.inFront && o.pr.x > 0.03 && o.pr.x < 0.97 && o.pr.y > 0.03 && o.pr.y < 0.97)
+    : [];
 
   /* two-tap star align — solve the photo's roll + FOV so a known object lands
      where it really is in the photo, keeping the photo CENTER fixed (the
@@ -2069,21 +2061,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     let roll = ((sol.roll + 180) % 360 + 360) % 360 - 180;
     return { fov: clampN(sol.fov, 8, 135), roll: clampN(roll, -90, 90), dRoll: sol.dRoll };
   };
-  const handleCalibTap = (xf, yf) => {
-    if (!calibAnchor) {                            // first tap: pick the nearest labeled object
-      let best = null, bd = 0.13;
-      for (const o of skyRefs) { const pr = project(o.az, o.el); if (!pr.inFront) continue; const d = Math.hypot(pr.x - xf, pr.y - yf); if (d < bd) { bd = d; best = o; } }
-      if (best) { setCalibAnchor(best); setCalibMsg(`Now tap where ${best.name} really is in the photo`); }
-      else setCalibMsg("Tap right on a labeled star or planet first");
-      return;
-    }
-    const sol = alignPhotoToStar(xf, yf, calibAnchor); // second tap: solve + apply
-    if (!sol) { setCalibMsg("Couldn't solve there — tap the object's spot in the photo"); return; }
+  /* pick which object to align to (from a chip), then aim the crosshair on it in
+     the photo and press the button — no fiddly tap while zoomed. */
+  const pickCalib = (obj) => { setCalibAnchor(obj); setCalibMsg(`Center the crosshair on ${obj.name} in the photo, then press ✓ Set`); };
+  const alignAtCrosshair = () => {
+    if (!calibAnchor) return;
+    const sol = alignPhotoToStar(0.5, 0.5, calibAnchor);   // crosshair = screen center
+    if (!sol) { setCalibMsg("Center the crosshair on the object first"); return; }
     if (calibPrevRef.current == null) calibPrevRef.current = { fov: fovM, roll: pRoll };
     const oldFov = fovM;
     setFovM(sol.fov); setPRoll(sol.roll); setCalibApplied(true);
     setCalibMsg(`✓ Aligned to ${calibAnchor.name} · FOV ${oldFov.toFixed(0)}→${sol.fov.toFixed(0)}° · roll ${sol.dRoll >= 0 ? "+" : ""}${sol.dRoll.toFixed(1)}°`);
-    setCalibAnchor(null); setCalibOn(false);
+    setCalibAnchor(null);   // stay in align mode so a second star can be added
   };
   const resetCalib = () => {
     const p = calibPrevRef.current;
@@ -2871,9 +2860,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   </>
                 )}
                 {pMode !== "place" && skyRefs.length > 0 && (
-                  <button className={"btn sm" + (calibOn ? " amber" : "")} title="Align the sky to a known star or planet: tap the object, then tap where it really is in the photo. Solves the lens FOV + roll and keeps the terrain match."
-                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "Tap a labeled star or planet (e.g. Venus)" : ""); }}>
-                    ✦ {calibOn ? "cancel align" : "align to star"}
+                  <button className={"btn sm" + (calibOn ? " amber" : "")} title="Align the sky to a known star or planet: pick the object, aim the crosshair on it in the photo, press ✓ Set. Solves the lens FOV + roll and keeps the terrain match."
+                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "Pick the star/planet to align to ↓" : ""); }}>
+                    ✦ {calibOn ? "done aligning" : "align to star"}
                   </button>
                 )}
                 {pMode !== "place" && calibApplied && !calibOn && (
@@ -2888,6 +2877,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   </span>
                 )}
               </>
+            )}
+          </div>
+        )}
+        {pMode !== "place" && calibOn && (
+          <div style={{ marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
+            {!calibAnchor ? (
+              <>
+                <div style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 6 }}>Pick the star/planet to align to:</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {calibRefs.length ? calibRefs.map((o) => (
+                    <button key={o.name} className="btn sm" style={{ background: "rgba(15,23,42,.7)" }} onClick={() => pickCalib(o)}>{o.sym ? o.sym + " " : ""}{o.name}</button>
+                  )) : <span style={{ fontSize: 11, color: "var(--dim)" }}>Pan/zoom until a labeled star or planet is on screen.</span>}
+                </div>
+              </>
+            ) : (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)" }}>Center the ⊕ crosshair on <b>{calibAnchor.name}</b> in the photo →</span>
+                <button className="btn sm amber" onClick={alignAtCrosshair}>✓ Set {calibAnchor.name}</button>
+                <button className="btn sm" onClick={() => { setCalibAnchor(null); setCalibMsg("Pick the star/planet to align to ↓"); }}>pick another</button>
+              </div>
+            )}
+            {calibApplied && (
+              <div style={{ marginTop: 6 }}><button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ reset alignment</button></div>
             )}
           </div>
         )}
