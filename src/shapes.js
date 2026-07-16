@@ -117,6 +117,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
     // jellyfish — domed bell up (+z), tentacles trailing down (−z); axis = z,
     // total height ≈ 1, centered by zc. bell diameter = 2·rb.
     const rb = 0.34, hb = 0.34, zt = -0.66, zc = 0.16;
+    const tent = opts && isFinite(opts.tent) ? opts.tent : 1; // tendril-length factor
     const Z = (z) => z + zc;
     // bell horizontal rings (rim → top)
     for (const t of [0, 0.4, 0.68, 0.86, 0.96]) {
@@ -133,7 +134,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       const a = (k / 8) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), dir = k % 2 ? 1 : -1;
       C.push(Array.from({ length: 9 }, (_, j) => {
         const t = j / 8, rr = rb * (0.96 - 0.55 * t), sway = 0.05 * Math.sin(t * Math.PI * 1.8) * dir;
-        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt)];
+        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * tent)];
       }));
     }
     // shorter inner oral arms, frillier
@@ -141,7 +142,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       const a = (k / 4) * Math.PI * 2 + 0.4, ca = Math.cos(a), sa = Math.sin(a), dir = k % 2 ? 1 : -1;
       C.push(Array.from({ length: 8 }, (_, j) => {
         const t = j / 7, rr = rb * (0.4 - 0.28 * t), sway = 0.07 * Math.sin(t * Math.PI * 2.5) * dir;
-        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * 0.62)];
+        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * 0.62 * tent)];
       }));
     }
   } else { // tri — thin equilateral plate
