@@ -208,7 +208,10 @@ const css = `
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
 .phodar{background:var(--bg); color:var(--ink); min-height:100vh;
   font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif; font-size:14px;
-  padding-bottom:84px;}
+  /* clear the iOS notch / Dynamic Island (installed PWA runs under the status
+     bar via black-translucent) and the home indicator + tab bar at the bottom */
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:calc(84px + env(safe-area-inset-bottom));}
 .phodar input,.phodar select{
   background:#0A1122; border:1px solid var(--line); color:var(--ink);
   border-radius:8px; padding:9px 10px; font-size:16px; width:100%;
@@ -2368,7 +2371,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <canvas ref={warpRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
         )}
         {photoHidden && (
-          <div style={{ position: "absolute", left: "50%", top: 56, transform: "translateX(-50%)", background: "rgba(15,23,42,.75)", border: "1px solid var(--line)", borderRadius: 999, padding: "4px 12px", fontSize: 11, fontFamily: "var(--mono)", color: "var(--dim)", pointerEvents: "none" }}>
+          <div style={{ position: "absolute", left: "50%", top: "calc(56px + env(safe-area-inset-top))", transform: "translateX(-50%)", background: "rgba(15,23,42,.75)", border: "1px solid var(--line)", borderRadius: 999, padding: "4px 12px", fontSize: 11, fontFamily: "var(--mono)", color: "var(--dim)", pointerEvents: "none" }}>
             🖼 photo is off-view — pan toward {Math.round(pAz)}° / {Math.round(pEl)}°
           </div>
         )}
@@ -2769,12 +2772,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       </div>
 
       {flash && (
-        <div style={{ position: "absolute", top: 96, left: "50%", transform: "translateX(-50%)", zIndex: 220, background: "rgba(14,43,38,.92)", border: "1px solid #2A6157", color: "var(--teal)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: "calc(96px + env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)", zIndex: 220, background: "rgba(14,43,38,.92)", border: "1px solid #2A6157", color: "var(--teal)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {flash}
         </div>
       )}
       {calibMsg && (
-        <div style={{ position: "absolute", top: 124, left: "50%", transform: "translateX(-50%)", zIndex: 220, maxWidth: "90%", textAlign: "center", background: "rgba(43,34,14,.94)", border: "1px solid var(--amber)", color: "var(--amber)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, fontFamily: "var(--mono)", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", top: "calc(124px + env(safe-area-inset-top))", left: "50%", transform: "translateX(-50%)", zIndex: 220, maxWidth: "90%", textAlign: "center", background: "rgba(43,34,14,.94)", border: "1px solid var(--amber)", color: "var(--amber)", borderRadius: 999, padding: "7px 16px", fontSize: 12, fontWeight: 700, fontFamily: "var(--mono)", pointerEvents: "none" }}>
           {calibMsg}
         </div>
       )}
@@ -2789,7 +2792,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           attitude, so you can judge/adjust orientation even when the on-dome
           icon is a couple of pixels (mirrors the shape loupe in image prep) */}
       {wizard && rotMode && selPt != null && source?.shapeFit && (
-        <div style={{ position: "absolute", top: 118, right: 12, zIndex: 220, background: "rgba(7,11,20,.82)", border: "1px solid var(--amber)", borderRadius: 12, padding: "8px 10px 6px", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+        <div style={{ position: "absolute", top: "calc(118px + env(safe-area-inset-top))", right: 12, zIndex: 220, background: "rgba(7,11,20,.82)", border: "1px solid var(--amber)", borderRadius: 12, padding: "8px 10px 6px", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
           <div style={{ width: 118, height: 118, display: "flex", alignItems: "center", justifyContent: "center", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
             <TrackObj sf={{ ...source.shapeFit, rotM: ptRotM(selPt), roll: 0 }} px={94} color="var(--amber)" />
           </div>
@@ -2797,8 +2800,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         </div>
       )}
 
-      {/* top HUD */}
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "10px 12px", pointerEvents: "none", zIndex: 210 }}>
+      {/* top HUD — pad past the notch/Dynamic Island in the installed PWA */}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "calc(10px + env(safe-area-inset-top)) 12px 10px", pointerEvents: "none", zIndex: 210 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
           {/* left: back + progress, matching the other wizard pages */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "auto", flex: "0 0 auto" }}>
