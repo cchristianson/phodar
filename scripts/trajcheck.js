@@ -51,5 +51,33 @@ approx(k.peakLoad, 3.6, 0.2, "peak felt load g");
 approx(k.peakTurn, 24.4, 1.5, "peak turn rate deg/s");
 approx(stereo.avgMiss, 0, 1, "avg ray miss (m)");
 
+// --- single-observer 3D reconstruction from per-point angular SIZE ---
+// An object flies a straight line at constant velocity past ONE observer.
+// A pure angular path would show spurious angular acceleration near closest
+// approach; feeding the angular-size ratio (radial motion) must recover the
+// true straight-line motion: constant 3D speed and ~zero acceleration.
+{
+  const S = 6, P0 = [-300, 500, 100], V = [40, 0, 0];
+  const track = [], trueR = [];
+  for (let t = 0; t <= 10.001; t += 1) {
+    const P = [P0[0] + V[0] * t, P0[1] + V[1] * t, P0[2] + V[2] * t];
+    const r = Math.hypot(P[0], P[1], P[2]); trueR.push(r);
+    const az = ((Math.atan2(P[0], P[1]) * R2D) + 360) % 360;
+    const el = Math.atan2(P[2], Math.hypot(P[0], P[1])) * R2D;
+    const ang = 2 * Math.atan(S / (2 * r)) * R2D;             // apparent size at that range
+    track.push({ t, az, el, ang });
+  }
+  const { solo } = analyzeTracks([{ name: "Solo", fovH: 68, track, A: {}, B: {} }]);
+  const rad = solo && solo[0] && solo[0].rad;
+  if (!rad) { console.error("  FAIL: solo radial reconstruction missing"); fails++; }
+  else {
+    const rRef = trueR[0];                                    // reference-point range (ρ_ref = 1)
+    approx(rRef * rad.k3d.peakSpeed, 40, 0.6, "solo 3D peak speed m/s (radial+transverse)");
+    approx(rRef * rad.k3d.avgSpeed, 40, 0.6, "solo 3D avg speed m/s");
+    approx(rRef * (rad.k3d.peakA || 0), 0, 0.6, "solo 3D peak accel ~0 (straight, constant-V)");
+    approx(rad.rangeRatio, Math.max(...trueR) / Math.min(...trueR), 0.01, "solo range ratio far/near");
+  }
+}
+
 if (fails) { console.error(`\ntrajcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("trajcheck: all assertions passed");
