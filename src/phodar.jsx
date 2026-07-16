@@ -2512,10 +2512,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </div>
           )}
         </div>
-        <button className="btn sm" style={{ pointerEvents: "auto", background: "rgba(15,23,42,.7)" }}
-          onClick={() => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); }}>
-          {wizard ? "‹ Back" : "✕ Close"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "auto" }}>
+          {wizard && <WizDots n={3} style={{ background: "rgba(15,23,42,.7)", padding: "6px 8px", borderRadius: 6 }} />}
+          <button className="btn sm" style={{ pointerEvents: "auto", background: "rgba(15,23,42,.7)" }}
+            onClick={() => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); }}>
+            {wizard ? "‹ Back" : "✕ Close"}
+          </button>
+        </div>
       </div>
 
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
@@ -4034,6 +4037,18 @@ ${diagHtml}
 </body></html>`;
 }
 
+/* Wizard progress: 4 steps (photo · position · sky · finish). Shown on every
+   step so the dots don't vanish after the first couple. */
+function WizDots({ n, style }) {
+  return (
+    <div style={{ display: "flex", gap: 5, ...style }}>
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} style={{ width: i === n ? 18 : 7, height: 7, borderRadius: 4, background: i <= n ? "var(--amber)" : "var(--line)", transition: "all .2s" }} />
+      ))}
+    </div>
+  );
+}
+
 function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel }) {
   return (
     <div style={{ padding: "14px 12px 96px" }}>
@@ -4041,11 +4056,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
         <button className="btn sm" onClick={onBack}>‹</button>
         <div>
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>{title}</div>
-          <div style={{ display: "flex", gap: 5, marginTop: 4 }}>
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} style={{ width: i === n ? 18 : 7, height: 7, borderRadius: 4, background: i <= n ? "var(--amber)" : "var(--line)", transition: "all .2s" }} />
-            ))}
-          </div>
+          <WizDots n={n} style={{ marginTop: 4 }} />
         </div>
       </div>
       <div className="card" style={{ margin: 0 }}>{children}</div>
@@ -4065,7 +4076,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
   const fix = analyze(sources);
-  const dot = (on, k) => <span key={k} style={{ display: "inline-block", width: 7, height: 7, borderRadius: 4, background: on ? "var(--teal)" : "var(--line)", marginRight: 4 }} />;
+  const dot = (on, k, title) => <span key={k} title={title} style={{ display: "inline-block", width: 7, height: 7, borderRadius: 4, background: on ? "var(--teal)" : "var(--line)", marginRight: 4 }} />;
   return (
     <div style={{ padding: "26px 14px 40px" }}>
       <div style={{ textAlign: "center", marginTop: 16 }}>
@@ -4107,7 +4118,10 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
               <div style={{ flex: 1, fontSize: 13 }}>
                 {s.name || `Observer ${i + 1}`}
                 <div style={{ marginTop: 3 }}>
-                  {dot(!!s.mediaUrl, "m")}{dot(isNum(s.lat), "p")}{dot(isNum(s.A?.az), "d")}{dot((s.track || []).length > 1, "t")}
+                  {/* photo · position · direction are the completable facets;
+                     a trajectory dot only appears (and is always green) when a
+                     track exists — it's optional, so it never blocks "complete" */}
+                  {dot(!!s.mediaUrl, "m", "photo")}{dot(isNum(s.lat) && isNum(s.lon), "p", "position")}{dot(isNum(s.A?.az) && isNum(s.A?.el), "d", "direction")}{(s.track || []).length > 1 ? dot(true, "t", "trajectory") : null}
                 </div>
               </div>
               <button className="btn sm" onClick={() => onResume(s.id)}>Open ▸</button>
@@ -4137,7 +4151,10 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt })
     <div style={{ padding: "14px 12px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <button className="btn sm" onClick={onHome}>‹</button>
-        <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>SIGHTING CAPTURED</div>
+        <div>
+          <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>SIGHTING CAPTURED</div>
+          <WizDots n={4} style={{ marginTop: 4 }} />
+        </div>
       </div>
       <div className="card" style={{ margin: 0 }}>
         {fix.ok ? (
