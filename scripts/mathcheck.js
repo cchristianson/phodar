@@ -12,6 +12,8 @@ import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov } from "../src/math/projection.js";
 import { unit, dot } from "../src/math/geodesy.js";
+import { parseLaunches, haversineKm } from "../src/checks/launches.js";
+import { parseFireballs } from "../src/checks/fireballs.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -354,6 +356,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const landed = dirToPix(g, { az: cur.az, el: cur.el, roll: sol.roll, fov: sol.fov });
     approx(Math.hypot(landed.px - pix.px, landed.py - pix.py), 0, 2, `star-align case ${i} lands on pixel`);
   });
+}
+
+// --- event correlators: launch (LL2) + fireball (CNEOS) parse/rank ---
+{
+  const t0 = Date.UTC(2026, 6, 15, 3, 30); // sighting time
+  const launchBody = {
+    results: [
+      { name: "Falcon 9 | Starlink Group 10-1", net: "2026-07-15T03:00:00Z",
+        rocket: { configuration: { name: "Falcon 9" } }, mission: { name: "Starlink Group 10-1" },
+        pad: { latitude: "28.5618", longitude: "-80.577", location: { name: "Cape Canaveral, FL" } } },
+      { name: "Electron | Some Sat", net: "2026-07-10T12:00:00Z",
+        rocket: { configuration: { name: "Electron" } }, mission: { name: "Some Sat" },
+        pad: { latitude: "-39.26", longitude: "177.86", location: { name: "Mahia, NZ" } } },
+      { name: "bad", net: "not-a-date", pad: {} },
+    ],
+  };
+  const L = parseLaunches(launchBody, 34.05, -118.25, t0);   // observer ~ Los Angeles
+  approx(L.length, 2, 0, "launch: drops undated rows");
+  approx(L[0].dtHours, -0.5, 0.01, "launch: nearest-in-time first (Starlink −0.5 h)");
+  approx(L[0].starlink ? 1 : 0, 1, 0, "launch: Starlink mission flagged");
+  approx(L[0].distKm, 3540, 120, "launch: pad distance (LA→Cape Canaveral ~3540 km)");
+  approx(L[1].starlink ? 1 : 0, 0, 0, "launch: non-Starlink not flagged");
+
+  const fbBody = {
+    fields: ["date", "energy", "impact-e", "lat", "lat-dir", "lon", "lon-dir", "alt", "vel"],
+    data: [
+      ["2026-07-15 03:31:00", "2.5", "0.08", "34.1", "N", "118.0", "W", "42.0", "18.3"],
+      ["2026-07-14 22:00:00", "0.4", "0.01", "10.0", "S", "50.0", "E", "35", "20"],
+    ],
+  };
+  const F = parseFireballs(fbBody, 34.05, -118.25, t0);
+  approx(F.length, 2, 0, "fireball: parsed rows");
+  approx(F[0].dtHours, 60 / 3600 * 1, 0.02, "fireball: nearest first (+1 min)");
+  approx(F[0].lon, -118.0, 0.001, "fireball: W hemisphere → negative lon");
+  approx(F[1].lat, -10.0, 0.001, "fireball: S hemisphere → negative lat");
+  approx(F[0].distKm, 24, 3, "fireball: distance to observer (~24 km)");
+  approx(haversineKm(0, 0, 0, 1), 111.2, 0.5, "haversine: 1° lon at equator ≈ 111 km");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

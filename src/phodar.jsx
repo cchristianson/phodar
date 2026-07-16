@@ -11,6 +11,8 @@ import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmFo
 import { declination } from "./math/geomag.js";
 import { loadSats, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
+import { fetchLaunches } from "./checks/launches.js";
+import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
@@ -4311,6 +4313,29 @@ The object (${motionSrc}) moved <b>${n1(objSpeed)} m/s toward ${Math.round(objHe
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
     }
   }
+  /* known-event correlators (rocket launches, bolides) — run for any single
+     observer with a location + time; both degrade to nothing if the server
+     proxy or the upstream API is unreachable. */
+  let launchHtml = "", fireballHtml = "";
+  {
+    const obs0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon));
+    const when = +(origAct.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
+    if (obs0) {
+      const fmtDt = (h) => Math.abs(h) < 48 ? `${h >= 0 ? "+" : ""}${h.toFixed(1)} h` : `${h >= 0 ? "+" : ""}${(h / 24).toFixed(1)} d`;
+      try {
+        const L = (await fetchLaunches(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 14 * 24).slice(0, 8);
+        if (L.length) launchHtml = `<h2>Launch check (rocket launches)</h2>
+<p class="cap">Rocket launches near the sighting (Launch Library 2). A fresh Starlink batch is a moving &ldquo;train&rdquo; of dots for days after launch; a twilight launch plume is visible for hundreds of km.</p>
+<table><tr><th>When (Δ)</th><th>Rocket / mission</th><th>Pad</th><th>Range</th></tr>${L.map((x) => `<tr><td>${new Date(x.net).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${e2(x.rocket || x.name)}${x.starlink ? " · <b>🛰 STARLINK</b>" : ""}<br><span class="cap">${e2(x.mission || "")}</span></td><td>${e2(x.padName || "")}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
+      } catch (e) { /* offline / rate-limited — omit */ }
+      try {
+        const F = (await fetchFireballs(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 24).slice(0, 6);
+        if (F.length) fireballHtml = `<h2>Fireball check (NASA CNEOS)</h2>
+<p class="cap">Bright bolides logged by US Government sensors near the sighting time. A match within minutes and a few hundred km is a strong meteor explanation.</p>
+<table><tr><th>When (Δ)</th><th>Energy (kt TNT)</th><th>Alt / speed</th><th>Range</th></tr>${F.map((x) => `<tr><td>${new Date(x.t).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${x.energyKt != null ? x.energyKt : "—"}${x.impactKt != null ? ` <span class="cap">(${x.impactKt} total)</span>` : ""}</td><td>${x.altKm != null ? x.altKm + " km" : "—"}${x.velKmS != null ? ` · ${x.velKmS} km/s` : ""}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
+      } catch (e) { /* omit */ }
+    }
+  }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PHODAR sighting report</title><style>
 html,body{max-width:100%;overflow-x:hidden}
@@ -4333,6 +4358,8 @@ ${adsbHtml}
 ${condHtml}
 ${skyHtml}
 ${windHtml}
+${launchHtml}
+${fireballHtml}
 ${exhibits}
 <h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>
 <h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>

@@ -272,11 +272,44 @@ async function apiTile(u, res) {
     res.end(buf);
   } catch (e) { res.writeHead(502, { "cache-control": "no-store" }); res.end("tile fetch failed"); }
 }
+/* rocket-launch correlator proxy — Launch Library 2 (no key; CORS not
+   guaranteed browser-side, so proxy it same-origin). Trimmed to what the
+   client needs. */
+async function apiLaunches(q, res) {
+  const net0 = q.get("net0"), net1 = q.get("net1");
+  if (!net0 || !net1) return json(res, 400, { error: "net0/net1 required" });
+  try {
+    const url = `https://ll.thespacedevs.com/2.2.0/launch/?net__gte=${encodeURIComponent(net0)}&net__lte=${encodeURIComponent(net1)}&limit=40&ordering=net`;
+    const r = await fetch(url, { headers: { "user-agent": "phodar/1 (sighting correlator)" }, signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return json(res, r.status === 429 ? 429 : 502, { error: `upstream ${r.status}` });
+    const j = await r.json();
+    const results = (j.results || []).map((x) => ({
+      name: x.name, net: x.net,
+      rocket: { configuration: { name: x?.rocket?.configuration?.name, full_name: x?.rocket?.configuration?.full_name } },
+      mission: { name: x?.mission?.name },
+      pad: { name: x?.pad?.name, latitude: x?.pad?.latitude, longitude: x?.pad?.longitude, location: { name: x?.pad?.location?.name } },
+    }));
+    return json(res, 200, { results });
+  } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
+}
+/* fireball correlator proxy — NASA CNEOS (no key). Returns the raw
+   {fields, data} shape; the client parses it. */
+async function apiFireballs(q, res) {
+  const dmin = q.get("dmin"), dmax = q.get("dmax");
+  try {
+    const url = `https://ssd-api.jpl.nasa.gov/fireball.api?req-loc=true${dmin ? `&date-min=${encodeURIComponent(dmin)}` : ""}${dmax ? `&date-max=${encodeURIComponent(dmax)}` : ""}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return json(res, 502, { error: `upstream ${r.status}` });
+    return json(res, 200, await r.json());
+  } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
+    if (u.pathname === "/api/launches") return await apiLaunches(u.searchParams, res);
+    if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));
