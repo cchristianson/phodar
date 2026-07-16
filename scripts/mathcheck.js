@@ -17,7 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
-import { detectStars, autoStarAlign, blindStarAlign } from "../src/checks/platesolve.js";
+import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -600,6 +600,28 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(blind.el, truth.el, 0.8, "platesolve: blind el recovered");
     approx(blind.roll, truth.roll, 1.5, "platesolve: blind roll recovered");
     approx(blind.fov, truth.fov, 2.0, "platesolve: blind FOV recovered");
+  }
+
+  // gridStarAlign: the "straight up, don't know the rotation" case — FOV known
+  // (EXIF) + an elevation prior, DENSE catalog, recover the rotation from a
+  // wrong roll/az with the el prior a couple degrees off
+  const zt = { az: 250, el: 87, roll: 40, fov: 70, k: 0.01 };
+  const gcat = [], gdet = [];
+  let gs = 4321; const grnd = () => { gs = (gs * 1103515245 + 12345) & 0x7fffffff; return gs / 0x7fffffff; };
+  for (let i = 0; i < 320; i++) {              // a dense (deep-catalog-like) sky
+    const az = grnd() * 360, el = grnd() * 88 + 1;
+    const g = dirFromAzEl(az, el);
+    gcat.push({ g, mag: 1 + grnd() * 4, alt: el });
+    const p = dirToPixK(g, natW, natH, zt.az, zt.el, zt.roll, zt.fov, zt.k);
+    if (p && p.px > 0 && p.px < natW && p.py > 0 && p.py < natH) gdet.push({ x: p.px + (grnd() - 0.5) * 2, y: p.py + (grnd() - 0.5) * 2 });
+  }
+  for (let i = 0; i < 15; i++) gdet.push({ x: grnd() * natW, y: grnd() * natH }); // clutter
+  const grid = gridStarAlign(gdet, gcat, natW, natH, { fov: zt.fov, elPrior: 89, elBand: 8, minGrid: 10, minMatch: 12, maxRms: 0.6 });
+  approx(grid ? 1 : 0, 1, 0, "platesolve: grid (FOV+el-prior) lock, rotation unknown");
+  if (grid) {
+    approx(grid.az, zt.az, 0.6, "platesolve: grid az recovered");
+    approx(grid.el, zt.el, 0.6, "platesolve: grid el recovered");
+    approx(grid.roll, zt.roll, 1.2, "platesolve: grid roll recovered");
   }
 }
 

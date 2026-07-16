@@ -291,8 +291,19 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   `autoStarAlign` coarse-searches small roll/az/el/FOV offsets around the manual
   placement for the most catalog matches, then ICP-refines with shrinking
   tolerance via `solvePoseAnchors` → exact az/el/roll/FOV/lens-k. Seeded by the
-  current placement (mirrors "Snap to ridges" but against stars). One-tap
-  "✦ Auto star-align" button in SkyAimer place mode. **Robust to outliers**:
+  current placement (mirrors "Snap to ridges" but against stars).
+  **Wide "straight-up" solve (gridStarAlign + src/math/starcatDeep.js): DONE** —
+  the reliable path when EXIF gives the FOV and you know roughly how HIGH you
+  looked (near zenith) but NOT which way you were rotated. Locks FOV to a narrow
+  band around the EXIF value + elevation near the prior, then scans the ROTATION
+  (az+roll) against a DEEP mag-5 catalog (1627 stars — a wide phone frame
+  captures far more than the mag-3.6 display set), verified by a spatial-hash
+  blob lookup, and polishes IN PLACE (no coarse re-search — that drifts on a
+  dense catalog). Validated on a real main-camera zenith photo: 72 stars at
+  0.04° rms. autoAlign runs grid FIRST when fovH + tilt exist, then blind, then
+  seeded. NB: an EXIF-STRIPPED shared copy (no FOV) makes the solver drift to a
+  false wide-angle pose — the FOV constraint is what makes the zenith case work.
+  One-tap "✦ Auto star-align" button in SkyAimer place mode. **Robust to outliers**:
   matches catalog→nearest blob (so a UFO / satellite / plane / faint non-catalog
   blob is simply never matched), and each ICP iteration trims correspondences
   whose angular residual is far from the consensus (median-based) before the
