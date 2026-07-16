@@ -10,7 +10,7 @@ import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
-import { photoBasis, solveRollFov } from "../src/math/projection.js";
+import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
 import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -422,6 +422,34 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const wantEl = Math.atan2(2000 - eye - (d * d * (1 - 0.13)) / (2 * RE), d) * R2D;
   approx(P[0].el, wantEl, 0.02, "peaks: curvature-corrected elevation");
   approx(P[0].el > 8 && P[0].el < 10 ? 1 : 0, 1, 0, "peaks: elevation in plausible band (~9°)");
+}
+
+// --- multi-star pose fit with radial distortion (solvePoseAnchors) ---
+// A photo has a true pose (roll,fov) AND lens distortion k. Two stars are
+// captured (their fixed pixels via the TRUE model). A distortion-free fit
+// (roll+fov only) can't land both; fitting k too must recover the truth and
+// drive the residual to ~0.
+{
+  const natW = 4032, natH = 3024, az = 250, el = 12;
+  const truth = { roll: 1.2, fov: 62, k: 0.08 };
+  // two stars at different radii from center
+  const stars = [dirFromAzEl(az - 9, el + 14), dirFromAzEl(az + 11, el + 3)];
+  const anchors = stars.map((g) => {
+    const px = dirToPixK(g, natW, natH, az, el, truth.roll, truth.fov, truth.k); // fixed pixel under TRUTH
+    return { px: px.px, py: px.py, g };
+  });
+  // distortion-free fit (k forced 0 by using 1 anchor's closed form twice) leaves residual;
+  // the joint fit with k must nail both:
+  const seed = { roll: 0, fov: 68, k: 0 };
+  const sol = solvePoseAnchors(anchors, natW, natH, az, el, seed);
+  approx(sol.fov, truth.fov, 1.5, "distortion fit: recovered FOV");
+  approx(sol.roll, truth.roll, 0.5, "distortion fit: recovered roll");
+  approx(sol.k, truth.k, 0.02, "distortion fit: recovered k");
+  approx(sol.rms, 0, 0.05, "distortion fit: both stars land (rms→0°)");
+  // and a single anchor still solves roll+fov (k stays 0), rms→0
+  const one = solvePoseAnchors([anchors[0]], natW, natH, az, el, seed);
+  approx(one.rms, 0, 0.05, "single-anchor fit: lands (rms→0°)");
+  approx(one.k, 0, 1e-9, "single-anchor fit: k stays 0");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
