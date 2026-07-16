@@ -3614,6 +3614,7 @@ const SHAPE_VIEWS = {
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   bird: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   drone: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "height"], ["Front", "y", "z", "depth", "height"]],
+  jelly: [["Side", "x", "z", "bell width", "height"], ["Top", "x", "y", "diameter", "diameter"]],
 };
 
 /* Build the dimensioned orthographic 3-view figure for a fitted shape.

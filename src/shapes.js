@@ -20,6 +20,7 @@ export const SHAPES = [
   { k: "plane", label: "✈ Plane" },
   { k: "bird", label: "🕊 Bird" },
   { k: "drone", label: "❖ Drone" },
+  { k: "jelly", label: "🪼 Jellyfish" },
 ];
 export const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 export const rotX3 = (d) => { const a = d * D2R, c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
@@ -112,6 +113,37 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       C.push([[mx + sy * rp, my - cx * rp, zt], [mx - sy * rp, my + cx * rp, zt]]);  // prop blade
     }
     for (const s of [1, -1]) C.push([[bx * 0.6, s * bx, -bz], [bx * 0.8, s * bx * 1.5, -bz - 0.1], [-bx * 0.8, s * bx * 1.5, -bz - 0.1], [-bx * 0.6, s * bx, -bz]]); // landing skids
+  } else if (kind === "jelly") {
+    // jellyfish — domed bell up (+z), tentacles trailing down (−z); axis = z,
+    // total height ≈ 1, centered by zc. bell diameter = 2·rb.
+    const rb = 0.34, hb = 0.34, zt = -0.66, zc = 0.16;
+    const Z = (z) => z + zc;
+    // bell horizontal rings (rim → top)
+    for (const t of [0, 0.4, 0.68, 0.86, 0.96]) {
+      const z = hb * t, rr = rb * Math.sqrt(Math.max(0, 1 - t * t));
+      C.push(Array.from({ length: 37 }, (_, i) => { const a = (i / 36) * Math.PI * 2; return [Math.cos(a) * rr, Math.sin(a) * rr, Z(z)]; }));
+    }
+    // bell meridian arcs (rim → over the top → far rim)
+    for (const md of [0, 45, 90, 135]) {
+      const ca = Math.cos(md * D2R), sa = Math.sin(md * D2R);
+      C.push(Array.from({ length: 33 }, (_, i) => { const f = (i / 32) * Math.PI; const rr = rb * Math.cos(f); return [rr * ca, rr * sa, Z(hb * Math.sin(f))]; }));
+    }
+    // outer tentacles hanging from the rim, gently swaying and tapering inward
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), dir = k % 2 ? 1 : -1;
+      C.push(Array.from({ length: 9 }, (_, j) => {
+        const t = j / 8, rr = rb * (0.96 - 0.55 * t), sway = 0.05 * Math.sin(t * Math.PI * 1.8) * dir;
+        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt)];
+      }));
+    }
+    // shorter inner oral arms, frillier
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + 0.4, ca = Math.cos(a), sa = Math.sin(a), dir = k % 2 ? 1 : -1;
+      C.push(Array.from({ length: 8 }, (_, j) => {
+        const t = j / 7, rr = rb * (0.4 - 0.28 * t), sway = 0.07 * Math.sin(t * Math.PI * 2.5) * dir;
+        return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * 0.62)];
+      }));
+    }
   } else { // tri — thin equilateral plate
     const R = 0.5774, th = 0.05;
     const v = [90, 210, 330].map((d) => [Math.cos(d * D2R) * R, Math.sin(d * D2R) * R]);
@@ -120,7 +152,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
   }
   return C;
 }
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: rotX3(-24), plane: rotX3(-55), bird: rotX3(-60), drone: rotX3(-40) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: rotX3(-24), plane: rotX3(-55), bird: rotX3(-60), drone: rotX3(-40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
