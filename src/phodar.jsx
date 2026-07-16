@@ -2612,65 +2612,64 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       )}
 
       {/* top HUD */}
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", pointerEvents: "none", zIndex: 210 }}>
-        <div>
-          <div style={{ fontFamily: "var(--mono)", fontWeight: 800, fontSize: 20, color: aimColor, textShadow: "0 1px 4px rgba(0,0,0,.6)" }}>
-            {effAz.toFixed(1)}° <span style={{ fontSize: 12, color: "#fff" }}>{compass8(effAz)}</span> · {effAlt.toFixed(1)}°<span style={{ fontSize: 12, color: "#fff" }}> up</span>
-          </div>
-          <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,.75)", textShadow: "0 1px 3px rgba(0,0,0,.6)" }}>
-            {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
-          </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 6, pointerEvents: "auto", flexWrap: "wrap" }}>
-            {sun.alt > -1 && <button className="btn sm" title={`Sun ${fmtBody(sun)} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(sun)}>☀</button>}
-            {moon.alt > -1 && <button className="btn sm" title={`Moon ${fmtBody(moon)} · ${Math.round(moon.frac * 100)}% lit — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(moon)}>☾</button>}
-            {hasPos && (
-              <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
-                onClick={() => setAcOn((v) => !v)}>
-                ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : "…") : "off"}
-              </button>
-            )}
-            {hasPos && (
-              <button className="btn sm" title={TERRAIN_ATTRIB} style={{ background: "rgba(15,23,42,.7)", color: !terrOn ? "var(--dim)" : terr?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
-                onClick={() => setTerrOn((v) => !v)}>
-                ⛰ {terrOn ? (terr?.els ? "ridge" : terr?.err ? "?" : "…") : "off"}
-              </button>
-            )}
-            <button className="btn sm" title="Stars & planets: auto follows real twilight; on forces the full field any time"
-              style={{ background: "rgba(15,23,42,.7)", color: starMode === "off" ? "var(--dim)" : (starMode === "on" || limMag > -4) ? "#dfe8ff" : "var(--dim)" }}
-              onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
-              ★ {starMode}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "10px 12px", pointerEvents: "none", zIndex: 210 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          {/* left: back + progress, matching the other wizard pages */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "auto", flex: "0 0 auto" }}>
+            <button className="btn sm" style={{ background: "rgba(15,23,42,.7)" }}
+              onClick={() => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); }}>
+              {wizard ? "‹ Back" : "✕ Close"}
             </button>
-            {hasPos && (
-              <button className="btn sm" title="Satellites (CelesTrak visual group, SGP4 at the sighting time): auto shows when dark; on forces"
-                style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
-                onClick={() => setSatMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
-                🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? "…" : `${satView.length}${satMode === "auto" ? "" : " on"}`}
-              </button>
-            )}
+            {wizard && <WizDots n={3} style={{ background: "rgba(15,23,42,.7)", padding: "6px 8px", borderRadius: 6 }} />}
           </div>
-          {satView.length > 0 && satStaleDays > 5 && (
-            <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-              🛰 TLE epoch ≈ {satStaleDays} d from the sighting — satellite positions degrade; treat as approximate
+          {/* right: readouts */}
+          <div style={{ textAlign: "right", flex: "1 1 auto", minWidth: 0 }}>
+            <div style={{ fontFamily: "var(--mono)", fontWeight: 800, fontSize: 20, color: aimColor, textShadow: "0 1px 4px rgba(0,0,0,.6)", whiteSpace: "nowrap" }}>
+              {effAz.toFixed(1)}° <span style={{ fontSize: 12, color: "#fff" }}>{compass8(effAz)}</span> · {effAlt.toFixed(1)}°<span style={{ fontSize: 12, color: "#fff" }}> up</span>
             </div>
-          )}
-          {acOn && acData?.ac && acData.hist && (
-            <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-              ✈ archived traffic at the sighting time ({new Date(T).toLocaleString()})
+            <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,.75)", textShadow: "0 1px 3px rgba(0,0,0,.6)", whiteSpace: "nowrap" }}>
+              {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
             </div>
-          )}
-          {acOn && acData?.ac && wantHist && !acData.hist && (
-            <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-              ✈ archive unavailable — showing traffic in the air NOW, {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h from the sighting
-            </div>
-          )}
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "auto" }}>
-          {wizard && <WizDots n={3} style={{ background: "rgba(15,23,42,.7)", padding: "6px 8px", borderRadius: 6 }} />}
-          <button className="btn sm" style={{ pointerEvents: "auto", background: "rgba(15,23,42,.7)" }}
-            onClick={() => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); }}>
-            {wizard ? "‹ Back" : "✕ Close"}
+        {/* sky-layer toggles — one row (terrain is always on) */}
+        <div style={{ display: "flex", gap: 6, marginTop: 8, pointerEvents: "auto", flexWrap: "wrap" }}>
+          {sun.alt > -1 && <button className="btn sm" title={`Sun ${fmtBody(sun)} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(sun)}>☀</button>}
+          {moon.alt > -1 && <button className="btn sm" title={`Moon ${fmtBody(moon)} · ${Math.round(moon.frac * 100)}% lit — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(moon)}>☾</button>}
+          {hasPos && (
+            <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
+              onClick={() => setAcOn((v) => !v)}>
+              ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : "…") : "off"}
+            </button>
+          )}
+          <button className="btn sm" title="Stars & planets: auto on at night, off by day — tap to force on/off"
+            style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: starMode === "off" ? "var(--dim)" : (starMode === "on" || limMag > -4) ? "#dfe8ff" : "var(--dim)" }}
+            onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
+            ★
           </button>
+          {hasPos && (
+            <button className="btn sm" title="Satellites (CelesTrak visual group, SGP4 at the sighting time): auto shows when dark; on forces"
+              style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
+              onClick={() => setSatMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
+              🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? "…" : `${satView.length}${satMode === "auto" ? "" : " on"}`}
+            </button>
+          )}
         </div>
+        {satView.length > 0 && satStaleDays > 5 && (
+          <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            🛰 TLE epoch ≈ {satStaleDays} d from the sighting — satellite positions degrade; treat as approximate
+          </div>
+        )}
+        {acOn && acData?.ac && acData.hist && (
+          <div style={{ fontSize: 10, color: "var(--track)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            ✈ archived traffic at the sighting time ({new Date(T).toLocaleString()})
+          </div>
+        )}
+        {acOn && acData?.ac && wantHist && !acData.hist && (
+          <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            ✈ archive unavailable — showing traffic in the air NOW, {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h from the sighting
+          </div>
+        )}
       </div>
 
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
