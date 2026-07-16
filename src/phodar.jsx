@@ -891,6 +891,11 @@ function MediaMeasure({ src, update, wizard }) {
             ))}
             {src.shapeFit && <button className="btn sm" onClick={clearShape} title="remove shape">✕</button>}
           </div>
+          {!src.shapeFit && (
+            <div style={{ marginTop: 5, fontSize: 11.5, color: "var(--dim)", fontStyle: "italic", lineHeight: 1.4 }}>
+              Not sure of the shape? Choose ● Orb — it assumes no particular form and still measures the object's size.
+            </div>
+          )}
           {src.shapeFit && (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>

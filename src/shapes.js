@@ -71,7 +71,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       C.push([[0.13, s * 0.05, 0], [-0.02, s * 0.5, 0], [-0.13, s * 0.5, 0], [-0.11, s * 0.05, 0], [0.13, s * 0.05, 0]]);          // swept wing
       C.push([[-0.40, s * 0.03, 0], [-0.47, s * 0.19, 0], [-0.51, s * 0.19, 0], [-0.485, s * 0.03, 0], [-0.40, s * 0.03, 0]]);     // h-stab
     }
-    C.push([[-0.37, 0, 0], [-0.47, 0, -0.17], [-0.52, 0, -0.17], [-0.50, 0, 0], [-0.37, 0, 0]]);                                   // vertical fin
+    C.push([[-0.37, 0, 0], [-0.47, 0, 0.17], [-0.52, 0, 0.17], [-0.50, 0, 0], [-0.37, 0, 0]]);                                     // vertical fin (points up, +z = spine)
   } else if (kind === "bird") {
     // gliding bird — head along +X, slight dihedral. wingF scales the
     // lateral span (wingtip reach); wingX sweeps the wing root fore/aft.
