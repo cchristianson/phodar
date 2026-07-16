@@ -3393,6 +3393,15 @@ function PositionEditor({ src, update, others }) {
     if (isNum(src.B?.az)) patch.B = { ...src.B, az: rot(src.B.az).toFixed(1) };
     update(patch);
   };
+  /* how high you were looking — the ONE piece the metadata can't give us (iOS
+     hides camera pitch in a proprietary MakerNote), so a straight-up night-sky
+     shot otherwise starts at the default 15° near the horizon. This seeds
+     mediaAim.el directly; the sky view opens at this elevation. */
+  const tilt = isNum(src.mediaAim?.el) ? +src.mediaAim.el : 15;
+  const setTilt = (deg) => {
+    const el = clampN(+deg, -20, 90);
+    update({ mediaAim: { az: isNum(src.mediaAim?.az) ? +src.mediaAim.az : (isNum(bearing) ? bearing : 0), el: +el.toFixed(1), roll: src.mediaAim?.roll ?? 0 } });
+  };
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -3510,6 +3519,13 @@ function PositionEditor({ src, update, others }) {
                 <ML style={{ marginBottom: 2 }}>Viewing direction {isNum(bearing) ? <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(bearing)}° {compass8(bearing)}</span> : <span style={{ color: "var(--dim)" }}>— drag to set which way you looked</span>}</ML>
                 <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
                 <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{isNum(src.meta?.az) ? "Auto-filled from the photo's compass — adjust if needed." : "The teal ray on the map shows the direction; it seeds the sky-view placement."}</div>
+              </div>
+            )}
+            {posDone && (
+              <div style={{ marginTop: 10 }}>
+                <ML style={{ marginBottom: 2 }}>How high you looked <span style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>{Math.round(tilt)}° {tilt >= 75 ? "(straight up)" : tilt <= 5 ? "(at the horizon)" : "up"}</span></ML>
+                <input type="range" min={-20} max={90} step={1} value={tilt} onChange={(e) => setTilt(+e.target.value)} />
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>Metadata carries no up/down angle, so this starts the sky view at the right elevation — set it to 90° for a straight-up night-sky shot. Fine-tune later by dragging in Place mode.</div>
               </div>
             )}
             {posDone && (
@@ -4966,7 +4982,7 @@ export default function App() {
             lat={isNum(wsrc.lat) ? +wsrc.lat : 42.16} lng={isNum(wsrc.lon) ? +wsrc.lon : -123.66}
             whenMs={isNum(wsrc.whenMs) ? +wsrc.whenMs : Date.now()}
             initAz={isNum(wsrc.A?.az) ? +wsrc.A.az : (wsrc.mediaAim && isNum(wsrc.mediaAim.az) ? +wsrc.mediaAim.az : 180)}
-            initAlt={isNum(wsrc.A?.el) ? +wsrc.A.el : 20}
+            initAlt={isNum(wsrc.A?.el) ? +wsrc.A.el : (wsrc.mediaAim && isNum(wsrc.mediaAim.el) ? +wsrc.mediaAim.el : 20)}
             marks={[]} which="A"
             onCapture={(wh, az, el) => {
               if (wh === "A") updateSource(wsrc.id, { A: { ...wsrc.A, az: az.toFixed(2), el: el.toFixed(2) } });
