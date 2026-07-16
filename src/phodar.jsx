@@ -14,7 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
-import { SHAPES, I3, rotX3, rotY3, mul3, SHAPE_R0, shapeProjNat } from "./shapes.js";
+import { SHAPES, I3, rotX3, rotY3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
@@ -924,6 +924,20 @@ function MediaMeasure({ src, update, wizard }) {
                   <input type="range" min={-180} max={180} step={1} value={src.shapeFit.roll || 0}
                     onChange={(e) => { const nsf = { ...src.shapeFit, roll: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
+              )}
+              {src.shapeFit.kind === "bird" && (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>wingspan {(src.shapeFit.wing ?? 1).toFixed(2)}×</span>
+                    <input type="range" min={0.5} max={1.8} step={0.02} value={src.shapeFit.wing ?? 1}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, wing: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>wing pos {(src.shapeFit.wingX ?? 0) >= 0 ? "+" : ""}{(src.shapeFit.wingX ?? 0).toFixed(2)}</span>
+                    <input type="range" min={-0.15} max={0.15} step={0.005} value={src.shapeFit.wingX ?? 0}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, wingX: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                </>
               )}
               {(() => {
                 const pr = shapeProjNat(src.shapeFit);
@@ -3537,6 +3551,62 @@ ${lod ? `<text x="${W - Rm}" y="${T - 3}" font-size="10" fill="#C77B14" text-anc
 </svg>`;
 }
 
+/* Which orthographic views make a shape's size unambiguous. Each entry:
+   [title, horizontalAxis, verticalAxis, hLabel, vLabel]. An orb needs one
+   view; a bird/plane wants three. Axes are the object's OWN model axes
+   (x = fore–aft, y = left–right / span, z = up), so photo foreshortening is
+   removed and the true extents show. */
+const SHAPE_VIEWS = {
+  orb: [["Top", "x", "y", "diameter", "diameter"]],
+  saucer: [["Top", "x", "y", "diameter", "diameter"], ["Side", "x", "z", "diameter", "height"]],
+  capsule: [["Side", "x", "z", "length", "diameter"], ["End", "y", "z", "diameter", "diameter"]],
+  tri: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "thickness"]],
+  plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  bird: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  drone: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "height"], ["Front", "y", "z", "depth", "height"]],
+};
+
+/* Build the dimensioned orthographic 3-view figure for a fitted shape.
+   modelUnitMeters converts model units → metres (null ⇒ show proportions,
+   normalised so the largest extent = 1.00×). Returns { html, ext } where
+   ext is the model-unit extent along each axis. */
+function buildShapeViews(sf, modelUnitMeters, e2) {
+  const wire = shapeWire(sf.kind, sf.aspect, sf);
+  const idx = { x: 0, y: 1, z: 2 };
+  const mn = { x: 1e9, y: 1e9, z: 1e9 }, mx = { x: -1e9, y: -1e9, z: -1e9 };
+  for (const c of wire) for (const p of c) for (const a of ["x", "y", "z"]) {
+    const v = p[idx[a]]; if (v < mn[a]) mn[a] = v; if (v > mx[a]) mx[a] = v;
+  }
+  const ext = { x: mx.x - mn.x, y: mx.y - mn.y, z: mx.z - mn.z };
+  const maxExt = Math.max(ext.x, ext.y, ext.z, 1e-6);
+  const dimTxt = (u) => modelUnitMeters != null ? fmtLenShort(u * modelUnitMeters) : (u / maxExt).toFixed(2) + "×";
+  const views = SHAPE_VIEWS[sf.kind] || SHAPE_VIEWS.plane;
+  /* one common px-per-unit scale so the views read to-scale against each other */
+  let maxH = 1e-6, maxV = 1e-6;
+  for (const [, ha, va] of views) { maxH = Math.max(maxH, ext[ha]); maxV = Math.max(maxV, ext[va]); }
+  const box = 168, ml = 30, mr = 12, mt = 20, mb = 30, innerW = box - ml - mr, innerH = box - mt - mb;
+  const spx = Math.min(innerW / maxH, innerH / maxV);
+  const colR = `hsl(${sf.hue ?? 36},80%,38%)`;
+  const svgs = views.map(([title, ha, va, hl, vl]) => {
+    const hMid = (mn[ha] + mx[ha]) / 2, vMid = (mn[va] + mx[va]) / 2;
+    const cx = ml + innerW / 2, cy = mt + innerH / 2;
+    const SX = (p) => (cx + (p[idx[ha]] - hMid) * spx).toFixed(1);
+    const SY = (p) => (cy - (p[idx[va]] - vMid) * spx).toFixed(1);   // up = up
+    const paths = wire.map((c) => `<polyline fill="none" stroke="${colR}" stroke-width="1.4" points="${c.map((p) => SX(p) + "," + SY(p)).join(" ")}"/>`).join("");
+    const hw = ext[ha] * spx, vh = ext[va] * spx;
+    const bx0 = (cx - hw / 2).toFixed(1), bx1 = (cx + hw / 2).toFixed(1);
+    const by0 = (cy - vh / 2).toFixed(1), by1 = (cy + vh / 2).toFixed(1);
+    const dy = box - 14;
+    const hDim = `<line x1="${bx0}" y1="${dy}" x2="${bx1}" y2="${dy}" stroke="#aaa"/><line x1="${bx0}" y1="${dy - 3}" x2="${bx0}" y2="${dy + 3}" stroke="#aaa"/><line x1="${bx1}" y1="${dy - 3}" x2="${bx1}" y2="${dy + 3}" stroke="#aaa"/><text x="${cx}" y="${dy + 12}" font-size="9.5" fill="#444" text-anchor="middle">${e2(hl)} ${dimTxt(ext[ha])}</text>`;
+    const dx = 11;
+    const vDim = `<line x1="${dx}" y1="${by0}" x2="${dx}" y2="${by1}" stroke="#aaa"/><line x1="${dx - 3}" y1="${by0}" x2="${dx + 3}" y2="${by0}" stroke="#aaa"/><line x1="${dx - 3}" y1="${by1}" x2="${dx + 3}" y2="${by1}" stroke="#aaa"/><text x="${dx + 1}" y="${cy}" font-size="9.5" fill="#444" text-anchor="middle" transform="rotate(-90 ${dx + 1} ${cy})">${e2(vl)} ${dimTxt(ext[va])}</text>`;
+    return `<svg viewBox="0 0 ${box} ${box}" style="width:${box}px;max-width:46vw;height:auto;border:1px solid #e2e2e2;border-radius:6px;background:#fff">
+<text x="${cx}" y="13" font-size="11" font-weight="700" fill="#333" text-anchor="middle">${title}</text>
+${paths}${hDim}${vDim}</svg>`;
+  }).join("");
+  return { html: `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">${svgs}</div>`, ext };
+}
+
 async function reportHtml(sources, est, opts = {}) {
   const fix = analyze(sources);            // numbers from full-res originals
   const tr = analyzeTracks(sources);
@@ -3614,6 +3684,30 @@ ${xTicks}${yTicks}${refs}
 <text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">implied size →</text>
 </svg>
 <p class="cap">One witness can't fix the distance — but every assumed distance implies a size. Dots mark where common objects would sit on this sight-line.</p>`;
+    }
+  }
+  /* --- object dimensions: dimensioned front/side/top of the fitted shape.
+     A raw size number is clear for an orb but ambiguous for a bird — the
+     3-view makes span, length and height explicit, scaled to the fix. --- */
+  let dimsHtml = "";
+  {
+    const sh = packed.find((s) => s.shapeFit && s.shapeFit.sizeNat);
+    if (sh) {
+      const sf = sh.shapeFit;
+      const pr = shapeProjNat(sf);
+      const projMajorUnits = Math.hypot(pr.p1.x - pr.p2.x, pr.p1.y - pr.p2.y) / (sf.sizeNat || 1);
+      const mum = (fix.ok && fix.sizeAvg != null && projMajorUnits > 1e-6) ? fix.sizeAvg / projMajorUnits : null;
+      const { html: viewsHtml, ext } = buildShapeViews(sf, mum, e2);
+      const kindLabel = (SHAPES.find((x) => x.k === sf.kind) || {}).label || sf.kind;
+      const dimRow = (lbl, u) => row(lbl, mum != null ? `${fmtLenShort(u * mum)} (${ft(u * mum)} ft)` : `${(u / Math.max(ext.x, ext.y, ext.z, 1e-6)).toFixed(2)}× (relative — no absolute scale)`);
+      dimsHtml = `<h2>Object dimensions (${sf.kind === "orb" ? "1-view" : SHAPE_VIEWS[sf.kind]?.length === 2 ? "2-view" : "3-view"})</h2>` +
+        viewsHtml +
+        `<table>` +
+        dimRow("Length (fore–aft)", ext.x) +
+        dimRow("Width / span", ext.y) +
+        dimRow("Height", ext.z) +
+        `</table>` +
+        `<p class="cap">${e2(kindLabel)} shape fitted to ${e2(sh.name || "the photo")}. Views are the object's own axes, so photo foreshortening is removed and each true extent shows. ${mum != null ? "Scaled to the triangulated object size." : "Proportions only — an absolute size needs a second viewpoint to triangulate range."}</p>`;
     }
   }
   const kin = tr.stereo?.k ? `<table>` +
@@ -3828,6 +3922,7 @@ img,svg{max-width:100%;height:auto}
 <h2>Observers (${packed.length})</h2>
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
 <h2>Result</h2>${fixHtml}
+${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${adsbHtml}
 ${condHtml}
