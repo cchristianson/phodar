@@ -3417,6 +3417,10 @@ async function packSources(sources) {
             dctx.drawImage(im, cx0, cy0, cw, ch, 0, 0, dc.width, dc.height);
             r.detailJpeg = dc.toDataURL("image/jpeg", 0.85);
             r.detailZoom = +oz.toFixed(1);
+            /* crop rect in the SCALED (post-k) coord frame — matches the
+               packed shapeFit / shapeProjNat, so the report can lay the shape
+               overlay over this zoomed crop with an SVG viewBox */
+            r.detailCrop = { x: cx0 * k, y: cy0 * k, w: cw * k, h: ch * k };
           }
         } catch (e) { /* no detail crop */ }
         const sp = (p) => (p ? { ...p, x: p.x * k, y: p.y * k } : p);
@@ -3777,10 +3781,28 @@ ${cands.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wor
     } else if (s.A?.p1 && s.A?.p2) {
       overlay = `<svg viewBox="0 0 ${s.natW} ${s.natH}" style="position:absolute;left:0;top:0;width:100%;height:100%"><line x1="${s.A.p1.x}" y1="${s.A.p1.y}" x2="${s.A.p2.x}" y2="${s.A.p2.y}" stroke="#C77B14" stroke-width="${Math.max(2, s.natW / 500)}"/><circle cx="${s.A.p1.x}" cy="${s.A.p1.y}" r="${Math.max(6, s.natW / 160)}" fill="none" stroke="#C77B14" stroke-width="${Math.max(2, s.natW / 500)}"/><circle cx="${s.A.p2.x}" cy="${s.A.p2.y}" r="${Math.max(6, s.natW / 160)}" fill="none" stroke="#C77B14" stroke-width="${Math.max(2, s.natW / 500)}"/></svg>`;
     }
+    let detailBlock = "";
+    if (s.detailJpeg) {
+      const cw2 = "max-width:min(330px,100%)";
+      const noOv = `<div style="${cw2}"><img src="${s.detailJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom}, no overlay</div></div>`;
+      let withOv = "";
+      if (s.shapeFit && s.detailCrop) {
+        const pr2 = shapeProjNat(s.shapeFit);
+        const colR2 = `hsl(${s.shapeFit.hue ?? 36},85%,42%)`;
+        const sw2 = Math.max(0.8, s.detailCrop.w / 240);
+        const paths2 = pr2.curves.map((c) =>
+          `<polyline fill="none" stroke="${colR2}" stroke-width="${sw2.toFixed(2)}" opacity="0.8" points="${c.map((p) => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ")}"/>`
+        ).join("");
+        const kindLabel = (SHAPES.find((x) => x.k === s.shapeFit.kind) || {}).label || s.shapeFit.kind;
+        const cr = s.detailCrop;
+        withOv = `<div style="${cw2}"><div style="position:relative;border:1px solid #ccc;border-radius:4px;overflow:hidden"><img src="${s.detailJpeg}" style="width:100%;display:block"/><svg viewBox="${cr.x.toFixed(1)} ${cr.y.toFixed(1)} ${cr.w.toFixed(1)} ${cr.h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths2}</svg></div><div class="cap">detail — same crop with the ${e2(kindLabel)} shape overlaid (your colour)</div></div>`;
+      }
+      detailBlock = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
+    }
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
 <div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block"/>${overlay}</div>
 <div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}</div>
-${s.detailJpeg ? `<div style="margin-top:8px"><img src="${s.detailJpeg}" style="max-width:min(380px,100%);display:block;border:1px solid #ccc;border-radius:4px"/><div class="cap">detail — cropped at the fitted shape, ×${s.detailZoom} enlargement, no overlay</div></div>` : ""}`;
+${detailBlock}`;
   }).join("");
   let diagHtml = "";
   if (fix.ok) {
