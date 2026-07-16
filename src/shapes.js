@@ -82,9 +82,17 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
     C.push([[0.17, 0], [0.12, -0.035], [-0.12, -0.03], [-0.14, 0], [-0.11, 0.028], [0.13, 0.03], [0.17, 0]]
       .map(([x, z]) => [x, 0, z]));                                   // body profile
     for (const s of [1, -1]) {
+      // pointed, swept wing: leading edge sweeps aft to a single tip point,
+      // trailing edge is concave — the classic gliding-bird silhouette
       C.push([
-        [0.06 + wingX, s * 0.03, 0], [0.05 + wingX, s * 0.30 * wingF, -0.02 * wingF], [0.02 + wingX, s * 0.5 * wingF, -0.05 * wingF],
-        [-0.08 + wingX, s * 0.5 * wingF, -0.05 * wingF], [-0.07 + wingX, s * 0.28 * wingF, -0.02 * wingF], [-0.06 + wingX, s * 0.03, 0], [0.06 + wingX, s * 0.03, 0],
+        [0.08 + wingX, s * 0.03, 0],                                  // root leading (shoulder)
+        [0.05 + wingX, s * 0.22 * wingF, -0.018 * wingF],             // leading edge
+        [-0.01 + wingX, s * 0.40 * wingF, -0.035 * wingF],            // leading edge
+        [-0.05 + wingX, s * 0.5 * wingF, -0.05 * wingF],              // POINTED TIP (swept aft)
+        [-0.10 + wingX, s * 0.38 * wingF, -0.035 * wingF],            // trailing edge (concave)
+        [-0.09 + wingX, s * 0.18 * wingF, -0.018 * wingF],            // trailing edge
+        [-0.06 + wingX, s * 0.03, 0],                                 // root trailing
+        [0.08 + wingX, s * 0.03, 0],                                  // close
       ]);                                                             // wing with dihedral
     }
     C.push([[-0.12, 0.02, 0], [-0.23, 0.08, 0], [-0.25, 0, 0], [-0.23, -0.08, 0], [-0.12, -0.02, 0], [-0.12, 0.02, 0]]); // tail fan
