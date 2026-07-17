@@ -190,15 +190,21 @@ export function demSampler(lat, lon) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
   if (demCache.has(key)) return demCache.get(key);
   const p = (async () => {
-    // z11 7×7 (~±49 km ground at mid-latitudes) so DISTANT prominent summits
-    // are captured — the Cascades sit 35–45 km from Bend and fell just outside
-    // the old 5×5 (~±35 km) grid, so the skyline never rose to them.
-    const [fine, coarse] = await Promise.all([loadGrid(lat, lon, 13, 1), loadGrid(lat, lon, 11, 3)]);
+    // THREE nested resolutions so the skyline reaches FAR prominent summits
+    // (from Bend the Cascades run 20 km → Hood ~140 km): z13 fine (~±7 km),
+    // z11 mid (~±35 km), z9 far (~±140 km, coarse but plenty for a 3 km peak).
+    const [fine, mid, far] = await Promise.all([
+      loadGrid(lat, lon, 13, 1),
+      loadGrid(lat, lon, 11, 2),
+      loadGrid(lat, lon, 9, 2),
+    ]);
     const mLat = 111320, mLon = 111320 * Math.max(0.2, Math.cos(lat * D2R));
     const sampleEN = (e, n) => {
       const la = lat + n / mLat, lo = lon + e / mLon;
-      const f = gridSample(fine, la, lo);
-      return f != null ? f : gridSample(coarse, la, lo);
+      let v = gridSample(fine, la, lo);
+      if (v == null) v = gridSample(mid, la, lo);
+      if (v == null) v = gridSample(far, la, lo);
+      return v;
     };
     const h0 = sampleEN(0, 0);
     if (h0 == null) throw new Error("observer off the DEM grid");
@@ -215,7 +221,7 @@ export async function predictedSkyline(lat, lon) {
   if (skyCache.has(key)) return skyCache.get(key);
   const p = (async () => {
     const { sampleEN, h0 } = await demSampler(lat, lon);
-    const sk = skylineFromSampler(sampleEN, h0, 48000); // march far enough to reach 35–45 km summits
+    const sk = skylineFromSampler(sampleEN, h0, 140000); // reach distant Cascade-scale summits
     return { ...sk, h0 };
   })();
   skyCache.set(key, p);
