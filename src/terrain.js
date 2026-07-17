@@ -171,10 +171,19 @@ function gridSample(g, lat, lon) {
 }
 
 /* ---------- public API (cached per ~100 m of observer position) ---------- */
-const skyCache = new Map();
-export async function predictedSkyline(lat, lon) {
+
+/* DEM ground field for an observer: resolves to
+     { sampleEN(eastM, northM) → surface height (m, MSL) | null off-grid,
+       h0 → observer ground height, mLat, mLon }
+   Exported (and cached) so other calibration layers — e.g. buildings.js —
+   can composite added heights ON TOP of the ground and reuse
+   skylineFromSampler unchanged, in the SAME ENU frame. The mLat/mLon
+   equirectangular scales are handed out so those layers place their
+   footprints on exactly this field. */
+const demCache = new Map();
+export function demSampler(lat, lon) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
-  if (skyCache.has(key)) return skyCache.get(key);
+  if (demCache.has(key)) return demCache.get(key);
   const p = (async () => {
     const [fine, coarse] = await Promise.all([loadGrid(lat, lon, 13, 1), loadGrid(lat, lon, 11, 2)]);
     const mLat = 111320, mLon = 111320 * Math.max(0.2, Math.cos(lat * D2R));
@@ -185,6 +194,19 @@ export async function predictedSkyline(lat, lon) {
     };
     const h0 = sampleEN(0, 0);
     if (h0 == null) throw new Error("observer off the DEM grid");
+    return { sampleEN, h0, mLat, mLon };
+  })();
+  demCache.set(key, p);
+  p.catch(() => demCache.delete(key));
+  return p;
+}
+
+const skyCache = new Map();
+export async function predictedSkyline(lat, lon) {
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  if (skyCache.has(key)) return skyCache.get(key);
+  const p = (async () => {
+    const { sampleEN, h0 } = await demSampler(lat, lon);
     const sk = skylineFromSampler(sampleEN, h0);
     return { ...sk, h0 };
   })();

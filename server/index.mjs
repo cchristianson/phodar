@@ -348,6 +348,45 @@ async function apiPeaks(q, res) {
     return json(res, 502, { error: `overpass unreachable (${errs.join("; ")})` });
   }
 }
+/* building-footprint proxy — OSM Overpass building ways WITH GEOMETRY around
+   the observer, for the urban skyline (buildings.js). Same CORS-unreliable
+   reason as /api/peaks, so proxy + race the mirrors + cache. Radius is capped
+   tighter than peaks (city footprints are dense — `out geom` can be MBs). An
+   empty result is legitimate here (rural — no buildings), returned as 200 []. */
+const bldgCache = new Map(); // key → { t, body }
+async function apiBuildings(q, res) {
+  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(3000, Math.max(200, +q.get("r") || 2500));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${r}`;
+  const hit = bldgCache.get(key);
+  if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
+  const la = lat.toFixed(5), lo = lon.toFixed(5);
+  const ql = `[out:json][timeout:25];(way["building"](around:${r},${la},${lo}););out geom;`;
+  const eps = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(24000) })
+    .then(async (rr) => {
+      const host = ep.split("/")[2];
+      if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
+      const j = await rr.json();
+      if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`); // let a mirror WITH data win the race
+      return j;
+    });
+  try {
+    const j = await Promise.any(eps.map(attempt));
+    bldgCache.set(key, { t: Date.now(), body: j }); // only non-empty is cached
+    return json(res, 200, j);
+  } catch (e) {
+    const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
+    if (errs.some((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; 0 buildings in range" });
+    return json(res, 502, { error: `overpass unreachable (${errs.join("; ")})` });
+  }
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
@@ -356,6 +395,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/launches") return await apiLaunches(u.searchParams, res);
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
+    if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));

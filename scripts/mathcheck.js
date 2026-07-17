@@ -17,6 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
+import { heightMeters, parseOverpassBuildings, buildingHeightSampler } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
@@ -152,6 +153,63 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const phantom = ridges.some((r) => r.pts.some(([a]) => Math.abs(a - 270) < 20));
   if (!phantom) console.log("  ok   flat ground west has no ridge layers");
   else { fails++; console.error("  FAIL phantom ridge on flat ground"); }
+}
+
+// --- urban building silhouette: OSM footprints + heights composited onto the
+//     DEM ground make the SAME skyline ray-march work over rooftops in town ---
+{
+  // height-tag parsing: metric, imperial, "N m", floor-count fallback, junk
+  approx(heightMeters({ height: "45" }).m, 45, 1e-9, "height '45' → 45 m");
+  approx(heightMeters({ height: "20 m" }).m, 20, 1e-9, "height '20 m' → 20 m");
+  approx(heightMeters({ height: "82'" }).m, 82 * 0.3048, 1e-6, "height 82' → metres");
+  const lv = heightMeters({ "building:levels": "3" });
+  if (lv && Math.abs(lv.m - 9) < 1e-9 && lv.est) console.log("  ok   3 levels → 9 m (est)");
+  else { fails++; console.error(`  FAIL levels→height: ${JSON.stringify(lv)}`); }
+  if (heightMeters({ amenity: "cafe" }) == null) console.log("  ok   no height tag → null (dropped)");
+  else { fails++; console.error("  FAIL untagged building got a height"); }
+
+  // a synthetic Overpass response near an observer at 45°N, 122°W
+  const oLat = 45, oLon = -122;
+  const dN = (m) => oLat + m / 111320, dE = (m) => oLon + m / (111320 * Math.cos(oLat * D2R));
+  // a 20 m square building centred 300 m due NORTH, 45 m tall
+  const box = (n, e, half, tags, id) => ({
+    type: "way", id, tags,
+    geometry: [[e - half, n - half], [e + half, n - half], [e + half, n + half], [e - half, n + half], [e - half, n - half]]
+      .map(([ee, nn]) => ({ lat: dN(nn), lon: dE(ee) })),
+  });
+  const oj = {
+    elements: [
+      box(300, 0, 10, { building: "yes", height: "45" }, 1),      // the silhouette
+      box(200, -400, 10, { building: "house", "building:levels": "2" }, 2), // est, off to the west
+      box(250, 300, 10, { building: "yes" }, 3),                    // NO height → dropped
+      { type: "node", id: 9, lat: dN(100), lon: dE(0), tags: { building: "yes", height: "9" } }, // not a way → ignored
+    ],
+  };
+  const parsed = parseOverpassBuildings(oj, oLat, oLon);
+  if (parsed.buildings.length === 2 && parsed.dropped === 1 && parsed.est === 1)
+    console.log(`  ok   parse: 2 placed, 1 dropped (no height), 1 estimated`);
+  else { fails++; console.error(`  FAIL parse counts: ${JSON.stringify({ n: parsed.buildings.length, dropped: parsed.dropped, est: parsed.est })}`); }
+  // the north building lands at ENU (~0 east, ~300 north)
+  const b0 = parsed.buildings.find((b) => Math.abs(b.h - 45) < 1e-6);
+  const cN = (b0.bbox[1] + b0.bbox[3]) / 2, cE = (b0.bbox[0] + b0.bbox[2]) / 2;
+  if (Math.abs(cN - 300) < 2 && Math.abs(cE) < 2) console.log(`  ok   north building at ENU (${cE.toFixed(1)}, ${cN.toFixed(1)})`);
+  else { fails++; console.error(`  FAIL building ENU: (${cE.toFixed(1)}, ${cN.toFixed(1)})`); }
+
+  // composite the rooftop heights onto FLAT ground at 0 m and ray-march
+  const bh = buildingHeightSampler(parsed.buildings);
+  const composite = (e, n) => 0 + bh(e, n);
+  const { els } = skylineFromSampler(composite, 0);
+  const curv = (d) => (d * d * 0.87) / (2 * 6371000);
+  const expN = Math.atan2(45 - 1.6 - curv(300), 300) * 180 / Math.PI; // eye 1.6 m
+  approx(skylineElAt(els, 0), expN, 0.4, "rooftop silhouette el @az 0 (due N)");
+  // off the building the skyline is the flat horizon (nothing to the east/south)
+  if (Math.abs(skylineElAt(els, 90)) < 0.2 && Math.abs(skylineElAt(els, 180)) < 0.2)
+    console.log("  ok   flat horizon where no building stands (E/S)");
+  else { fails++; console.error(`  FAIL phantom rooftop off-bearing: E ${skylineElAt(els, 90).toFixed(2)}° S ${skylineElAt(els, 180).toFixed(2)}°`); }
+  // the far pruning: a building beyond maxM contributes nothing to the field
+  const far = buildingHeightSampler(parsed.buildings, 100); // 300 m building pruned out
+  if (far(0, 300) === 0) console.log("  ok   building beyond maxM pruned from the height field");
+  else { fails++; console.error("  FAIL distant building not pruned"); }
 }
 
 // --- detectSkyline: the true horizon must win over foreground foliage.

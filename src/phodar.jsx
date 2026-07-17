@@ -14,6 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
+import { predictedUrbanSkyline } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -1681,6 +1682,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      az + pitch + roll lock simultaneously, day or night. --- */
   const [terrOn, setTerrOn] = useState(true);
   const [terr, setTerr] = useState(null); // {els, h0} | {err} | null
+  /* urban skyline: composite OSM building rooftops onto the DEM ground so the
+     same predicted line + snap works in town (no mountains). Opt-in — most
+     sightings are rural, and the Overpass fetch + rasterization isn't free. */
+  const [bldgOn, setBldgOn] = useState(false);
   /* ridge/terrain line hue — a display preference (the default green washes
      out over green hillsides for some photos); persisted across sessions.
      Default 106° ≈ the original rgba(158,224,138). */
@@ -1694,11 +1699,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (!open || !terrOn || !hasPos) return;
     let dead = false;
     setTerr((t) => t && t.els ? t : null);
-    predictedSkyline(LAT, LNG)
+    (bldgOn ? predictedUrbanSkyline(LAT, LNG) : predictedSkyline(LAT, LNG))
       .then((sk) => { if (!dead) setTerr(sk); })
       .catch((e) => { if (!dead) setTerr({ err: String(e?.message || e) }); });
     return () => { dead = true; };
-  }, [open, terrOn, hasPos, LAT, LNG]);
+  }, [open, terrOn, hasPos, LAT, LNG, bldgOn]);
 
   /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
      at the SIGHTING time. auto = shown when the sky is dark enough;
@@ -2977,6 +2982,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? "…" : `peaks ${peakMarks.length}`) : "peaks"}
             </button>
           )}
+          {hasPos && (
+            <button className="btn sm" title="Urban skyline — add OSM building rooftops to the predicted skyline so you can align a photo shot in town (no mountains). Only buildings with a known height are placed; the count shows coverage."
+              style={{ background: "rgba(15,23,42,.7)", color: !bldgOn ? "var(--dim)" : terr?.err ? "var(--amber)" : ridgeCol(0.95) }}
+              onClick={() => setBldgOn((v) => !v)}>
+              🏙 {bldgOn ? (terr?.err ? "?" : !terr?.els ? "…" : terr?.buildings ? `${terr.buildings.n} bldgs` : "on") : "buildings"}
+            </button>
+          )}
         </div>
         {satView.length > 0 && satStaleDays > 5 && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
@@ -2991,6 +3003,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
           <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             ⛰ no named peaks or hills within 120 km of {LAT.toFixed(3)}, {LNG.toFixed(3)}
+          </div>
+        )}
+        {bldgOn && terr?.buildings && (
+          <div style={{ fontSize: 10, color: terr.buildings.n === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {terr.buildings.n === 0
+              ? `🏙 no OSM buildings with a known height nearby${terr.buildings.dropped ? ` (${terr.buildings.dropped} had footprints but no height tag)` : ""} — the line is DEM terrain only`
+              : `🏙 ${terr.buildings.n} rooftop${terr.buildings.n === 1 ? "" : "s"} on the skyline${terr.buildings.est ? ` · ${terr.buildings.est} estimated from floor count` : ""}${terr.buildings.dropped ? ` · ${terr.buildings.dropped} dropped (no height)` : ""}`}
+          </div>
+        )}
+        {bldgOn && terr?.err && (
+          <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            🏙 urban skyline unavailable — {terr.err}
           </div>
         )}
         {acOn && acData?.ac && acData.hist && (
