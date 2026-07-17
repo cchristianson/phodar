@@ -355,26 +355,33 @@ async function apiPeaks(q, res) {
    empty result is legitimate here (rural — no buildings), returned as 200 []. */
 const bldgCache = new Map(); // key → { t, body }
 async function apiBuildings(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(3000, Math.max(200, +q.get("r") || 2500));
+  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(2000, Math.max(200, +q.get("r") || 1200));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${r}`;
   const hit = bldgCache.get(key);
   if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
-  const la = lat.toFixed(5), lo = lon.toFixed(5);
-  const ql = `[out:json][timeout:25];(way["building"](around:${r},${la},${lo}););out geom;`;
+  // a BBOX query is dramatically faster in Overpass than around() for dense
+  // building sets — the around() form distance-tests every element and was
+  // timing out (returning 200 [] with a "remark"), which looked like "no data".
+  const dLat = r / 111320, dLon = r / (111320 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  const s = (lat - dLat).toFixed(6), w = (lon - dLon).toFixed(6), n = (lat + dLat).toFixed(6), e = (lon + dLon).toFixed(6);
+  const ql = `[out:json][timeout:40];(way["building"](${s},${w},${n},${e}););out geom;`;
   const eps = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
   ];
-  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(24000) })
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting skyline)", accept: "application/json" }, signal: AbortSignal.timeout(42000) })
     .then(async (rr) => {
       const host = ep.split("/")[2];
       if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
       const j = await rr.json();
       if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
-      if (j.elements.length === 0) throw new Error(`${host} EMPTY`); // let a mirror WITH data win the race
+      // Overpass answers a timed-out/overloaded query with 200 elements:[] + a
+      // `remark`. Treat that as BUSY (retryable), NOT as genuine emptiness.
+      if (j.remark && /timed out|runtime error|memory/i.test(j.remark)) throw new Error(`${host} BUSY`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`); // a mirror WITH data wins the race
       return j;
     });
   try {
@@ -383,8 +390,10 @@ async function apiBuildings(q, res) {
     return json(res, 200, j);
   } catch (e) {
     const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
-    if (errs.some((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; 0 buildings in range" });
-    return json(res, 502, { error: `overpass unreachable (${errs.join("; ")})` });
+    // 200 [] ONLY when every mirror genuinely returned zero buildings (rural).
+    // If any was busy/timeout/unreachable, 502 so the client says "retry".
+    if (errs.every((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; 0 buildings in range" });
+    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
 const server = http.createServer(async (req, res) => {

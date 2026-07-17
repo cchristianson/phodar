@@ -172,7 +172,7 @@ export function buildingHeightSampler(buildings, maxM = 4000, capN = 600) {
 /* browser fetch → parsed buildings in the observer's ENU frame.
    opts.assumeM places untagged footprints at that assumed height. */
 export async function fetchBuildings(lat, lon, radiusM = 2500, opts) {
-  var r = await fetch(`/api/buildings?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&r=${Math.round(radiusM)}`, { signal: AbortSignal.timeout(30000) });
+  var r = await fetch(`/api/buildings?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&r=${Math.round(radiusM)}`, { signal: AbortSignal.timeout(50000) });
   if (!r.ok) throw new Error(`buildings HTTP ${r.status}`);
   var j = await r.json();
   if (j.error) throw new Error(j.error);
