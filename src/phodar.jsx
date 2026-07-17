@@ -1780,13 +1780,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [peaksOn, setPeaksOn] = useState(false);
   const [peaks, setPeaks] = useState(null); // [] | {err}
   useEffect(() => {
-    if (!open || !peaksOn || peaks || !hasPos) return;
+    if (!open || !peaksOn || !hasPos) { setPeaks(null); return; }
     let dead = false;
+    setPeaks(null); // spinner while (re)fetching — toggle-off/on is a clean retry
     fetchPeaks(LAT, LNG, isNum(source?.alt) ? +source.alt : 0, 120) // wide net: tall far peaks (Shasta, McLoughlin…) sit well past 40 km
       .then((ps) => { if (!dead) setPeaks(ps); })
       .catch((e) => { if (!dead) setPeaks({ err: String(e?.message || e) }); });
     return () => { dead = true; };
-  }, [open, peaksOn, peaks, hasPos, LAT, LNG]); // eslint-disable-line
+  }, [open, peaksOn, hasPos, LAT, LNG]); // eslint-disable-line
   /* Show the named summits/hills near the observer. Those that sit ON the
      terrain silhouette (elevation at/above the DEM skyline at their azimuth)
      are prioritised, but nothing is HARD-hidden — a peak the app thinks is
@@ -3147,12 +3148,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {peaksOn && peaks?.err && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ peaks unavailable — {peaks.err}
+            ⛰ peaks unavailable — {/busy|timed|502/i.test(peaks.err) ? "Overpass was busy. Toggle ⛰ off/on to retry." : peaks.err}
           </div>
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
           <div style={{ fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            ⛰ no named peaks or hills within 120 km of {LAT.toFixed(3)}, {LNG.toFixed(3)}
+            ⛰ no named peaks or hills within 120 km of {LAT.toFixed(3)}, {LNG.toFixed(3)} — if you expected some, Overpass may be busy; toggle ⛰ off/on to retry
           </div>
         )}
         {bldgOn && bldg?.buildings && (
