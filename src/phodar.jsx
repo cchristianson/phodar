@@ -2160,49 +2160,57 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
   const bldgBoxes = (bldgOn && bldg?.boxes && !cameraOn) ? (() => {
     const K = 0.13, eye = camH;
-    /* 1) project each in-view box → roof/base points (screen units), its solid
-          occluding silhouette (hull of all 8 corners) + a 2D bbox. bldg.boxes
-          is already nearest-first, so occluders are the ones earlier in `proj`. */
-    const proj = [];
+    const xy = (p) => (p[0] * 100).toFixed(2) + " " + (p[1] * 100).toFixed(2);
+    /* Project each in-view building. We KNOW the footprint exactly, but almost
+       never the height — so draw the accurate footprint (ground outline) for
+       every building, and extrude a full box ONLY where the height is real
+       (measured or floor-count). Guessing one uniform height for thousands of
+       untagged buildings produced a meaningless "barcode" of same-top boxes;
+       the ground outlines instead read as a floor-plan you can match. */
+    const foot = [], known = []; // footprint paths; known-height boxes to extrude
     for (const b of bldg.boxes) {
       let cE = 0, cN = 0;
       for (const p of b.ring) { cE += p[0]; cN += p[1]; }
       cE /= b.ring.length; cN /= b.ring.length;
-      const cAz = ((Math.atan2(cE, cN) * R2D) + 360) % 360;
-      const da = ((cAz - effAz + 540) % 360) - 180;
+      const da = ((((Math.atan2(cE, cN) * R2D) + 360) % 360) - effAz + 540) % 360 - 180;
       if (Math.abs(da) > 115) continue; // outside the visible dome window
-      const roof = [], base = [], all = []; let ok = true;
+      const base = [], roof = [], all = []; let ok = true;
       for (const [e, n] of b.ring) {
         const dist = Math.hypot(e, n);
         const az = ((Math.atan2(e, n) * R2D) + 360) % 360;
         const curv = (dist * dist * (1 - K)) / (2 * 6371000);
-        const rp = project(az, Math.atan2(b.h - eye - curv, dist) * R2D);
         const bp = project(az, Math.atan2(-eye - curv, dist) * R2D);
-        if (!rp.inFront || !bp.inFront) { ok = false; break; }
-        roof.push([rp.x, rp.y]); base.push([bp.x, bp.y]); all.push([rp.x, rp.y], [bp.x, bp.y]);
+        if (!bp.inFront) { ok = false; break; }
+        base.push([bp.x, bp.y]); all.push([bp.x, bp.y]);
+        if (!b.assumed) {
+          const rp = project(az, Math.atan2(b.h - eye - curv, dist) * R2D);
+          if (!rp.inFront) { ok = false; break; }
+          roof.push([rp.x, rp.y]); all.push([rp.x, rp.y]);
+        }
       }
-      if (!ok || roof.length < 3) continue;
-      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-      for (const [x, y] of all) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
-      proj.push({ roof, base, hull: convexHull2(all), bbox: [x0, y0, x1, y1], faint: b.assumed });
+      if (!ok || base.length < 3) continue;
+      foot.push("M " + base.map(xy).join(" L ") + " Z");
+      if (!b.assumed) {
+        let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+        for (const [x, y] of all) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+        known.push({ base, roof, hull: convexHull2(all), bbox: [x0, y0, x1, y1] });
+      }
     }
-    /* 2) draw each box's edges, clipping away the parts hidden behind nearer
-          boxes (hidden-line removal). Foremost box → full wireframe; farther
-          ones → only what pokes out. Occluder set capped for a dense downtown. */
-    const out = [];
-    for (let i = 0; i < proj.length; i++) {
-      const B = proj[i], hulls = [];
-      for (let j = 0; j < i && hulls.length < 40; j++) if (bboxHit(B.bbox, proj[j].bbox)) hulls.push(proj[j].hull);
-      const edges = [];
-      for (let k = 0; k < B.roof.length; k++) edges.push([B.roof[k], B.roof[(k + 1) % B.roof.length]]); // roofline
-      for (let k = 0; k < B.roof.length; k++) edges.push([B.base[k], B.roof[k]]); // vertical corners
+    const out = foot.map((d) => ({ d, faint: true })); // accurate footprints, faint
+    /* extrude the known-height boxes with hidden-line removal against nearer ones */
+    for (let i = 0; i < known.length; i++) {
+      const B = known[i], hulls = [];
+      for (let j = 0; j < i && hulls.length < 40; j++) if (bboxHit(B.bbox, known[j].bbox)) hulls.push(known[j].hull);
+      const edges = [], N = B.base.length;
+      for (let k = 0; k < N; k++) edges.push([B.roof[k], B.roof[(k + 1) % N]]); // roofline
+      for (let k = 0; k < N; k++) edges.push([B.base[k], B.roof[k]]);             // vertical corners
       let d = "";
       for (const [p, q] of edges) for (const [t0, t1] of visibleSegs(p, q, hulls)) {
         const ax = p[0] + (q[0] - p[0]) * t0, ay = p[1] + (q[1] - p[1]) * t0;
         const bx = p[0] + (q[0] - p[0]) * t1, by = p[1] + (q[1] - p[1]) * t1;
         d += `M ${(ax * 100).toFixed(2)} ${(ay * 100).toFixed(2)} L ${(bx * 100).toFixed(2)} ${(by * 100).toFixed(2)} `;
       }
-      if (d) out.push({ d, faint: B.faint });
+      if (d) out.push({ d, faint: false });
     }
     return out;
   })() : [];
@@ -2225,14 +2233,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      peakMarks is prominence-ordered, so keep the tallest and drop any whose
      label would pile onto an already-kept one; cap the on-screen labels. */
   const peakDraw = (() => {
-    const kept = [];
+    const cand = [];
     for (const pk of peakMarks) {
-      const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
+      // sit the marker ON the drawn terrain silhouette at its azimuth (its own
+      // ele can differ slightly from the DEM line; the line is what you align to)
+      const elv = terr?.els ? skylineElAt(terr.els, pk.az) : (pk.el != null ? pk.el : 0);
       const pr = project(pk.az, elv);
-      if (!(pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02)) continue;
-      if (kept.some((k) => Math.abs(k.pr.x - pr.x) < 0.11 && Math.abs(k.pr.y - pr.y) < 0.05)) continue;
-      kept.push({ pk, pr });
-      if (kept.length >= 14) break;
+      if (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) cand.push({ pk, pr });
+    }
+    cand.sort((a, b) => a.pr.x - b.pr.x); // left→right so labels pack into rows
+    const kept = [];
+    for (const c of cand) {
+      if (kept.some((k) => Math.abs(k.pr.x - c.pr.x) < 0.02 && Math.abs(k.pr.y - c.pr.y) < 0.02)) continue; // same spot
+      // lowest row (tier) whose recent label doesn't overlap this one horizontally
+      let row = 0;
+      while (row < 3 && kept.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.17)) row++;
+      if (row >= 3) continue; // too crowded here — drop the least prominent
+      kept.push({ ...c, row });
+      if (kept.length >= 20) break;
     }
     return kept;
   })();
@@ -2705,13 +2723,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {/* named peaks on the skyline — el from the summit's own height, or the
             drawn ridge elevation when OSM has no `ele` tag */}
-        {peakDraw.map(({ pk, pr }, i) => {
+        {peakDraw.map(({ pk, pr, row }, i) => {
+          const lift = row * 16; // stack labels into tiers so names don't collide horizontally
           return (
-            <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", textAlign: "center", pointerEvents: "none" }}>
+            <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
               <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>
                 {pk.name}{pk.eleM != null ? ` ${fmtLenShort(pk.eleM)}` : ""}
               </div>
-              <div style={{ width: 0, height: 0, margin: "1px auto 0", borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `6px solid ${ridgeCol(0.98)}` }} />
+              {lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.55) }} />}
+              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `6px solid ${ridgeCol(0.98)}` }} />
             </div>
           );
         })}
@@ -3141,7 +3161,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               ? `🏙 no buildings returned near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — either OSM has none mapped here, or Overpass was busy. Toggle 🏙 off/on to retry.`
               : bldg.buildings.shown === 0
                 ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the ${fmtLenShort(12)}–${fmtLenShort(BLDG_RADIUS_M)} draw range`
-                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldgPeak ? ` · tallest ${bldgPeak.el.toFixed(1)}° at ${compass8(bldgPeak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~${fmtLenShort(6)}`}
+                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"}${bldg.buildings.n > bldg.buildings.shown ? ` (nearest of ${bldg.buildings.n})` : ""} — ${bldg.buildings.known + bldg.buildings.est} extruded (real height)${bldg.buildings.assumed ? `, ${bldg.buildings.assumed} as ground footprints (OSM has no height)` : ""}`}
           </div>
         )}
         {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (() => {
