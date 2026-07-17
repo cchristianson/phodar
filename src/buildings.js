@@ -20,8 +20,7 @@
    Parsing + the height field are pure and unit-tested in mathcheck.
    ============================================================ */
 
-import { D2R } from "./math/geodesy.js";
-import { skylineFromSampler, demSampler, AZ_STEP, N_AZ } from "./terrain.js";
+import { D2R, R2D, RE } from "./math/geodesy.js";
 
 export const BUILDINGS_ATTRIB = "Buildings: OpenStreetMap contributors (ODbL)";
 const M_PER_LEVEL = 3.0; // metres per storey when only building:levels is known
@@ -137,50 +136,61 @@ export async function fetchBuildings(lat, lon, radiusM = 2500, opts) {
   return parseOverpassBuildings(j, lat, lon, opts);
 }
 
-/* Building-only rooftop silhouette for the sky view — a DEDICATED layer, NOT
-   folded into the DEM terrain line (which kept it invisible: distant tagged
-   houses are sub-degree and vanished into the green line, near warehouses were
-   dropped for lacking a height tag). This marches a building-only height field
-   from close in, so rooftops stand as their own bold silhouette regardless of
-   the terrain behind them, and it stays OUT of "Snap to ridges" so that
-   calibration keeps trusting surveyed DEM terrain, not assumed rooftops.
+/* Nearest-N building footprints as INDIVIDUAL boxes for the sky view — the
+   union silhouette merged everything into one jagged line; drawing each
+   footprint as its own projected wireframe (roof outline + vertical corner
+   edges) lets you match distinct buildings to the photo. Pure geometry — the
+   dome does the projection so it needs no DEM (building base is taken at the
+   observer's ground plane; flat-city assumption, fine for a visual aid).
 
-   Returns { els: Float32Array(N_AZ) — rooftop elevation° per azimuth, GAP_EL
-   where no footprint stands along that ray; peak: {el, az}; h0; buildings:
-   coverage summary }. Cached per ~100 m of observer position + settings. */
-export const GAP_EL = -999; // azimuth with no rooftop along it (draw skips these)
+   Excludes the footprint the observer STANDS IN/ON (origin inside it) — that's
+   the building you're shooting from, not a silhouette in front of you (it was
+   the source of the "too tall" near-spike from a window shot) — and anything
+   closer than `minM`. Returns nearest `capN`, sorted near→far. */
+export function buildingBoxes(parsed, opts) {
+  var maxM = (opts && opts.maxM) || 2500, capN = (opts && opts.capN) || 160, minM = (opts && opts.minM) || 12;
+  var bs = parsed.buildings || parsed, out = [];
+  for (var i = 0; i < bs.length; i++) {
+    var b = bs[i];
+    if (inRing(b.ring, b.bbox, 0, 0)) continue;          // the building you're in/on
+    var d2 = bboxDist2(b.bbox);
+    if (d2 < minM * minM || d2 > maxM * maxM) continue;
+    out.push({ ring: b.ring, h: b.h, dist: Math.sqrt(d2), est: !!b.est, assumed: !!b.assumed, bbox: b.bbox });
+  }
+  out.sort(function (a, b) { return a.dist - b.dist; });
+  return out.slice(0, capN);
+}
+
+/* the tallest rooftop's elevation + azimuth (flat ground, eye 1.6 m) — a UI
+   diagnostic so a glance says whether the silhouette actually computed. */
+export function boxesPeak(boxes) {
+  var peak = { el: -999, az: 0 };
+  for (var i = 0; i < boxes.length; i++) {
+    var ring = boxes[i].ring, h = boxes[i].h;
+    for (var j = 0; j < ring.length; j++) {
+      var e = ring[j][0], n = ring[j][1], dist = Math.hypot(e, n);
+      if (dist < 1) continue;
+      var el = Math.atan2(h - 1.6 - (dist * dist * 0.87) / (2 * RE), dist) * R2D;
+      if (el > peak.el) { peak.el = el; peak.az = ((Math.atan2(e, n) * R2D) + 360) % 360; }
+    }
+  }
+  return peak;
+}
+
+/* browser: nearest building boxes for the observer + a coverage summary.
+   Cached per ~100 m of observer position + settings. */
 const bldgCache = new Map();
-export function predictedBuildingSilhouette(lat, lon, radiusM = 2500, opts) {
-  var assumeM = opts && opts.assumeM != null ? opts.assumeM : 6; // default: place untagged footprints at ~2 storeys
-  var capN = opts && opts.capN != null ? opts.capN : 600;
+export function predictedBuildingBoxes(lat, lon, radiusM = 2500, opts) {
+  var assumeM = opts && opts.assumeM != null ? opts.assumeM : 6; // untagged footprints → ~2 storeys
+  var capN = opts && opts.capN != null ? opts.capN : 160;
   var key = `${lat.toFixed(3)},${lon.toFixed(3)},${Math.round(radiusM)},${assumeM},${capN}`;
   if (bldgCache.has(key)) return bldgCache.get(key);
   var p = (async () => {
-    var pair = await Promise.all([demSampler(lat, lon), fetchBuildings(lat, lon, radiusM, { assumeM: assumeM })]);
-    var ground = pair[0].sampleEN, h0 = pair[0].h0, bl = pair[1];
-    var bh = buildingHeightSampler(bl.buildings, radiusM, capN);
-    // building-ONLY sampler: rooftop MSL where a footprint covers the point,
-    // null elsewhere so the ray-march leaves that azimuth at its GAP sentinel.
-    var bSampler = function (e, n) {
-      var add = bh(e, n);
-      if (add <= 0) return null;
-      var g = ground(e, n);
-      return (g == null ? h0 : g) + add;
-    };
-    // march from 8 m to just past the footprint radius (rooftops are near)
-    var sk = skylineFromSampler(bSampler, h0, Math.min(35000, radiusM + 500), 8);
-    var els = new Float32Array(N_AZ);
-    var peak = { el: GAP_EL, az: 0 };
-    for (var i = 0; i < N_AZ; i++) {
-      // skylineFromSampler leaves best at its -89 init where the ray hit no
-      // rooftop; normalize that to the explicit GAP sentinel for drawing.
-      var e = sk.els[i] <= -80 ? GAP_EL : sk.els[i];
-      els[i] = e;
-      if (e > peak.el) { peak.el = e; peak.az = i * AZ_STEP; }
-    }
+    var bl = await fetchBuildings(lat, lon, radiusM, { assumeM: assumeM });
+    var boxes = buildingBoxes(bl, { maxM: radiusM, capN: capN, minM: 12 });
     return {
-      els: els, peak: peak, h0: h0,
-      buildings: { n: bl.buildings.length, known: bl.known, est: bl.est, assumed: bl.assumed, dropped: bl.dropped, capped: bl.buildings.length > capN },
+      boxes: boxes, peak: boxesPeak(boxes),
+      buildings: { n: bl.buildings.length, shown: boxes.length, known: bl.known, est: bl.est, assumed: bl.assumed, dropped: bl.dropped },
     };
   })();
   bldgCache.set(key, p);
