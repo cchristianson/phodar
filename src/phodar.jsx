@@ -19,7 +19,7 @@ import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
-import { fetchWindAt, fetchWindProfile, balloonVerdict } from "./checks/winds.js";
+import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -4986,18 +4986,29 @@ ${detailBlock}`;
       objHeading = fix.motion.heading;
       motionSrc = "Moment A→B";
     }
-    if (objSpeed != null && objSpeed > 0.2) {
+    {
       try {
         const when = +(origAct.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
         const altMSL = fix.solA.X[2] + (fix.ref.alt || 0);
-        const wind = await fetchWindAt(fix.ref.lat, fix.ref.lon, when, altMSL);
-        const v = balloonVerdict(objSpeed, objHeading, wind);
-        const cls = v.verdict === "balloon-consistent" ? "" : "cap";
-        windHtml = `<h2>Wind check (balloon test)</h2>
-<p class="${cls}">Wind at ${wind.hPa} hPa (≈ ${fmtLenShort(wind.levelM)} MSL; fix ≈ ${fmtLenShort(altMSL)}): <b>${fmtSpeedShort(wind.speedMs)} from ${Math.round(wind.fromDeg)}°</b> → drift toward ${Math.round(wind.driftDeg)}°.
-The object (${motionSrc}) moved <b>${fmtSpeedShort(objSpeed)} toward ${Math.round(objHeading)}°</b> — heading off by ${Math.round(v.dHead)}°, speed ${isFinite(v.ratio) ? v.ratio.toFixed(1) + "×" : "≫"} the wind.
-<b>${v.verdict === "balloon-consistent" ? "⚠ Consistent with a wind-borne object (balloon signature)." : v.verdict === "partially wind-like" ? "Partially wind-like — not conclusive either way." : "Not wind-borne: a balloon cannot do this."}</b>
-<span class="cap">(${wind.src})</span></p>`;
+        const prof = await fetchWindProfile(fix.ref.lat, fix.ref.lon, when);
+        const haveMotion = objSpeed != null && objSpeed > 0.2;
+        // the level nearest the object's triangulated altitude (its balloon level)
+        const nearest = prof.levels.reduce((b, L) => Math.abs(L.levelM - altMSL) < Math.abs(b.levelM - altMSL) ? L : b, prof.levels[0]);
+        const nv = haveMotion ? balloonVerdict(objSpeed, objHeading, nearest) : null;
+        const consistent = haveMotion ? prof.levels.filter((L) => balloonVerdict(objSpeed, objHeading, L).verdict === "balloon-consistent") : [];
+        // full profile table, high altitude → surface, matching levels highlighted
+        const rows = prof.levels.slice().reverse().map((L) => {
+          const v = haveMotion ? balloonVerdict(objSpeed, objHeading, L) : null;
+          const bg = v?.verdict === "balloon-consistent" ? " style=\"background:rgba(95,211,188,.18)\"" : v?.verdict === "partially wind-like" ? " style=\"background:rgba(245,169,63,.14)\"" : "";
+          const cmp = v ? `${Math.round(v.dHead)}° · ${isFinite(v.ratio) ? v.ratio.toFixed(1) + "×" : "≫"} · ${v.verdict === "balloon-consistent" ? "✓ match" : v.verdict === "partially wind-like" ? "~ partial" : "✗"}` : "—";
+          return `<tr${bg}><td>${fmtLenShort(L.levelM)}${L === nearest ? " <b>← object</b>" : ""}</td><td>${fmtSpeedShort(L.speedMs)} from ${Math.round(L.fromDeg)}° → drift ${Math.round(L.driftDeg)}°</td><td>${cmp}</td></tr>`;
+        }).join("");
+        const verdictLine = haveMotion
+          ? `<p class="${nv.verdict === "balloon-consistent" ? "" : "cap"}">At the object's altitude (${fmtLenShort(altMSL)} MSL, ≈ ${nearest.hPa} hPa) the wind drifts <b>${fmtSpeedShort(nearest.speedMs)} toward ${Math.round(nearest.driftDeg)}°</b>; the object (${motionSrc}) moved <b>${fmtSpeedShort(objSpeed)} toward ${Math.round(objHeading)}°</b> — heading off ${Math.round(nv.dHead)}°, speed ${isFinite(nv.ratio) ? nv.ratio.toFixed(1) + "×" : "≫"}. <b>${nv.verdict === "balloon-consistent" ? "⚠ Consistent with a wind-borne object (balloon signature)." : nv.verdict === "partially wind-like" ? "Partially wind-like — not conclusive." : "Not wind-borne at its altitude: a balloon cannot do this."}</b>${nv.verdict !== "balloon-consistent" && consistent.length ? ` <span class="cap">The wind DOES match the motion at ${consistent.map((L) => fmtLenShort(L.levelM)).join(", ")}, but the object was triangulated at ${fmtLenShort(altMSL)} — so a balloon is ruled out unless that altitude is wrong.</span>` : ""}</p>`
+          : `<p class="cap">No usable object motion to compare against — the winds-aloft profile is shown for reference.</p>`;
+        windHtml = `<h2>Wind check (balloon test)</h2>${verdictLine}
+<table class="tbl"><thead><tr><th>Altitude (MSL)</th><th>Wind → drift</th><th>Δhdg · speed · match</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="cap">Winds aloft from ${prof.src}. A free balloon rides the wind at its altitude — matching heading (within ±25°) and speed (0.5–1.6×). Highlighted rows match the object's motion.</p>`;
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
     }
   }
