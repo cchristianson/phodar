@@ -85,6 +85,49 @@ export function parseOverpassBuildings(json, obsLat, obsLon, opts) {
   return { buildings: out, dropped: dropped, est: est, assumed: assumed, known: known };
 }
 
+/* ---- hidden-line removal for the box wireframes (draw as if solid) --------
+   Each box's occluding silhouette is the convex hull of its 8 projected
+   corners; every edge is clipped against the hulls of NEARER boxes so a
+   foremost building keeps its full wireframe while ones behind show only the
+   parts poking above/between it. Pure 2D screen coords — unit-tested. */
+export function convexHull2(pts) {
+  var P = pts.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+  if (P.length < 3) return P.slice();
+  var cr = function (o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); };
+  var lo = [], i; for (i = 0; i < P.length; i++) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], P[i]) <= 0) lo.pop(); lo.push(P[i]); }
+  var up = []; for (i = P.length - 1; i >= 0; i--) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], P[i]) <= 0) up.pop(); up.push(P[i]); }
+  lo.pop(); up.pop(); return lo.concat(up);
+}
+/* interval [t0,t1] ⊂ [0,1] of segment p→q that lies INSIDE convex hull H (else null) */
+export function segInsideHull(p, q, H) {
+  if (H.length < 3) return null;
+  var cx = 0, cy = 0, i; for (i = 0; i < H.length; i++) { cx += H[i][0]; cy += H[i][1]; } cx /= H.length; cy /= H.length;
+  var dx = q[0] - p[0], dy = q[1] - p[1], tLo = 0, tHi = 1;
+  for (i = 0; i < H.length; i++) {
+    var A = H[i], B = H[(i + 1) % H.length];
+    var nx = -(B[1] - A[1]), ny = (B[0] - A[0]);
+    var s = ((cx - A[0]) * nx + (cy - A[1]) * ny) >= 0 ? 1 : -1; // orient half-plane so inside ≥ 0
+    var a = (dx * nx + dy * ny) * s, b = ((p[0] - A[0]) * nx + (p[1] - A[1]) * ny) * s;
+    if (Math.abs(a) < 1e-9) { if (b < 0) return null; continue; }
+    var t = -b / a;
+    if (a > 0) { if (t > tLo) tLo = t; } else { if (t < tHi) tHi = t; }
+    if (tLo > tHi) return null;
+  }
+  return tLo < tHi ? [tLo, tHi] : null;
+}
+/* visible sub-segments of p→q after subtracting everything inside any hull */
+export function visibleSegs(p, q, hulls) {
+  var occ = [], i;
+  for (i = 0; i < hulls.length; i++) { var iv = segInsideHull(p, q, hulls[i]); if (iv) occ.push(iv); }
+  if (!occ.length) return [[0, 1]];
+  occ.sort(function (a, b) { return a[0] - b[0]; });
+  var out = [], cur = 0;
+  for (i = 0; i < occ.length; i++) { var s = occ[i][0], e = occ[i][1]; if (s > cur + 1e-3) out.push([cur, s]); if (e > cur) cur = e; if (cur >= 1) break; }
+  if (cur < 1 - 1e-3) out.push([cur, 1]);
+  return out;
+}
+export const bboxHit = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+
 /* point-in-polygon (even-odd ray cast) with a bbox fast-reject */
 function inRing(ring, bbox, e, n) {
   if (e < bbox[0] || e > bbox[2] || n < bbox[1] || n > bbox[3]) return false;
