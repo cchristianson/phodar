@@ -5,6 +5,8 @@ import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzE
 import { isNum, n1, fmtLen, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits, isImperialUnits } from "./math/format.js";
 /* storeys for a height in metres — a friendly cross-check beside the length */
 const storeys = (m) => Math.max(1, Math.round(m / 3.3));
+/* wind-speed → colour ramp for the winds-aloft overlay (calm→gale) */
+const windColor = (ms) => ms < 2.5 ? "#5FD3BC" : ms < 7 ? "#8FB4FF" : ms < 13 ? "#F5A93F" : "#E8604C";
 /* the COMPLEMENTARY unit for a secondary readout (so an imperial user doesn't
    see "20 ft / 20 ft"): imperial primary ⇒ metric sub, and vice-versa */
 const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} ft`;
@@ -17,7 +19,7 @@ import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
-import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
+import { fetchWindAt, fetchWindProfile, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -1737,6 +1739,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return () => { dead = true; };
   }, [open, bldgOn, hasPos, LAT, LNG]);
 
+  /* winds aloft (opt-in) — the balloon test made visual: a vertical profile of
+     which way, and how fast, the wind pushes at each altitude AT THE SIGHTING
+     TIME. If an object drifted with one of these, it's likely a balloon. */
+  const [windOn, setWindOn] = useState(false);
+  const [windProf, setWindProf] = useState(null); // {levels, src} | {err} | null
+  useEffect(() => {
+    if (!open || !windOn || !hasPos) { setWindProf(null); return; }
+    let dead = false;
+    setWindProf(null);
+    fetchWindProfile(LAT, LNG, T)
+      .then((w) => { if (!dead) setWindProf(w); })
+      .catch((e) => { if (!dead) setWindProf({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, windOn, hasPos, LAT, LNG, T]);
+
   /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
      at the SIGHTING time. auto = shown when the sky is dark enough;
      on = any time; off = hidden. --- */
@@ -2719,6 +2736,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {bldgLbl && (
           <div style={{ position: "absolute", left: (bldgLbl.x * 100) + "%", top: (bldgLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: "rgba(255,178,74,0.98)", textShadow: "0 1px 2px rgba(0,0,0,.85)", pointerEvents: "none" }}>BUILDINGS</div>
         )}
+        {/* winds-aloft profile — the balloon test made visual. Arrows point the
+            way the wind PUSHES (drift) at each altitude, true-north-up; colour +
+            number give speed. An object riding one of these is likely a balloon. */}
+        {windOn && windProf?.levels && (
+          <div style={{ position: "absolute", left: 8, top: "calc(150px + env(safe-area-inset-top))", background: "rgba(7,11,20,.8)", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 8px 5px", pointerEvents: "none", zIndex: 200, fontFamily: "var(--mono)" }}>
+            <div style={{ fontSize: 8.5, letterSpacing: ".08em", color: "#9fdcff", fontWeight: 700, marginBottom: 3 }}>🎈 WINDS ALOFT · N↑</div>
+            {windProf.levels.slice().reverse().map((L, i) => {
+              const spd = isImperialUnits() ? L.speedMs * 2.23694 : L.speedMs * 3.6;
+              const unit = isImperialUnits() ? "mph" : "km/h";
+              const altLbl = isImperialUnits() ? `${(Math.round(L.levelM * 3.28084 / 100) * 100).toLocaleString()} ft` : `${(L.levelM / 1000).toFixed(1)} km`;
+              const col = windColor(L.speedMs);
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 8.5, color: "var(--dim)", height: 15 }}>
+                  <span style={{ width: 46, textAlign: "right" }}>{altLbl}</span>
+                  <svg width="13" height="13" viewBox="-7 -7 14 14" style={{ transform: `rotate(${L.driftDeg}deg)`, flex: "0 0 auto" }}>
+                    <line x1="0" y1="5.5" x2="0" y2="-3" stroke={col} strokeWidth="1.5" />
+                    <polygon points="0,-6.5 -3,-1.5 3,-1.5" fill={col} />
+                  </svg>
+                  <span style={{ width: 48, color: col, fontWeight: 700 }}>{Math.round(spd)} {unit}</span>
+                </div>
+              );
+            })}
+            <div style={{ fontSize: 7.5, color: "var(--dim)", marginTop: 3, maxWidth: 128, lineHeight: 1.2 }}>arrow = way it drifts · balloons ride these</div>
+          </div>
+        )}
+        {windOn && windProf?.err && (
+          <div style={{ position: "absolute", left: 8, top: "calc(150px + env(safe-area-inset-top))", background: "rgba(7,11,20,.8)", border: "1px solid var(--amber)", borderRadius: 10, padding: "6px 8px", pointerEvents: "none", zIndex: 200, fontFamily: "var(--mono)", fontSize: 9, color: "var(--amber)", maxWidth: 150 }}>🎈 winds unavailable — {windProf.err}</div>
+        )}
         {/* named peaks on the skyline — el from the summit's own height, or the
             drawn ridge elevation when OSM has no `ele` tag */}
         {peakDraw.map(({ pk, pr, row }, i) => {
@@ -3139,6 +3184,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               style={{ background: "rgba(15,23,42,.7)", color: !bldgOn ? "var(--dim)" : bldg?.err ? "var(--amber)" : "rgba(255,178,74,0.95)" }}
               onClick={() => setBldgOn((v) => !v)}>
               🏙 {bldgOn ? (bldg?.err ? "?" : !bldg?.boxes ? <Spin /> : bldg?.buildings ? `${bldg.buildings.shown} bldgs` : "on") : "buildings"}
+            </button>
+          )}
+          {hasPos && (
+            <button className="btn sm" title="Winds aloft at the sighting time — a vertical profile of which way and how fast the wind pushes at each altitude. A balloon drifts WITH the wind at its altitude, so compare the object's motion to these."
+              style={{ background: "rgba(15,23,42,.7)", color: !windOn ? "var(--dim)" : windProf?.err ? "var(--amber)" : "#9fdcff" }}
+              onClick={() => setWindOn((v) => !v)}>
+              🎈 {windOn ? (windProf?.err ? "?" : !windProf?.levels ? <Spin /> : "wind") : "wind"}
             </button>
           )}
         </div>
