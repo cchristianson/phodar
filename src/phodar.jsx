@@ -3634,7 +3634,16 @@ function PositionEditor({ src, update, others }) {
   const [tiltHint, setTiltHint] = useState(false); // side-view angle popup while sliding
   const tiltHintRef = useRef(0);
   const pokeTiltHint = () => { setTiltHint(true); clearTimeout(tiltHintRef.current); tiltHintRef.current = setTimeout(() => setTiltHint(false), 1100); };
+  const [camHint, setCamHint] = useState(false); // side-view height popup while sliding
+  const camHintRef = useRef(0);
+  const pokeCamHint = () => { setCamHint(true); clearTimeout(camHintRef.current); camHintRef.current = setTimeout(() => setCamHint(false), 1100); };
   const posDone = isNum(src.lat) && isNum(src.lon);
+  /* camera height above ground — the metadata can't be trusted for this (phone
+     GPS altitude ≈ terrain even from an upstairs window), so it's a manual
+     override for the building layer. Unset ⇒ the sky view still auto-estimates
+     from GPS-altitude−terrain and falls back to 1.6 m eye height. */
+  const camH = isNum(src.camH) ? +src.camH : 1.6;
+  const setCamH = (m) => update({ camH: +clampN(+m, 0, 120).toFixed(1) });
   /* Viewing direction = the placement-center azimuth, held in mediaAim.az —
      the SAME field the sky view uses for photo placement. Both screens read
      and write it, so they always mirror: change the ray here and the sky view
@@ -3820,6 +3829,41 @@ function PositionEditor({ src, update, others }) {
                     })()}
                   </div>
                   <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Photo metadata has no up/down angle — set 90° for straight up; fine-tune later in Place mode.</div>
+                </div>
+                <div style={{ marginTop: 6, position: "relative" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <ML style={{ marginBottom: 1 }}>Camera height off the ground</ML>
+                    <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{camH.toFixed(1)} m {camH <= 2 ? "(standing)" : camH <= 4 ? "(≈1 floor)" : `(≈${Math.max(1, Math.round(camH / 3.3))} floors)`}</span>
+                  </div>
+                  <input type="range" min={0} max={60} step={0.5} value={camH}
+                    onPointerDown={pokeCamHint} onChange={(e) => { setCamH(+e.target.value); pokeCamHint(); }} />
+                  {/* momentary side-view of the camera height while sliding */}
+                  <div style={{ position: "absolute", right: 0, bottom: 26, width: 116, height: 92, background: "rgba(10,15,28,.96)", border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 6px 18px rgba(0,0,0,.5)", opacity: camHint ? 1 : 0, transform: camHint ? "translateY(0)" : "translateY(4px)", transition: "opacity .18s, transform .18s", pointerEvents: "none", zIndex: 5 }}>
+                    {(() => {
+                      const gy = 78, px = 30, pw = 30; // ground y, structure x + width
+                      const pixH = clampN(camH * 3.2, 3, 62); // scale metres → px (cap so tall shots still fit)
+                      const top = gy - pixH;
+                      const eyeH = clampN(1.6 * 3.2, 4, 62); // reference person for scale
+                      return (
+                        <svg viewBox="0 0 116 92" width="116" height="92">
+                          <line x1="6" y1={gy} x2="110" y2={gy} stroke="#3a4a5c" strokeWidth="1.4" />
+                          <text x="6" y={gy + 11} fill="var(--dim)" fontFamily="var(--mono)" fontSize="8">ground</text>
+                          {/* the structure the camera sits on */}
+                          <rect x={px} y={top} width={pw} height={pixH} fill="rgba(255,178,74,0.12)" stroke="rgba(255,178,74,0.8)" strokeWidth="1.2" />
+                          {/* camera eye at the top */}
+                          <circle cx={px + pw / 2} cy={top - 3} r="3.2" fill="var(--teal)" />
+                          <line x1={px + pw / 2} y1={top} x2={px + pw / 2} y2={top - 1} stroke="var(--teal)" strokeWidth="2" />
+                          {/* reference person at ground for scale */}
+                          <circle cx="14" cy={gy - eyeH - 2} r="2.2" fill="#dfe8ff" />
+                          <line x1="14" y1={gy - eyeH} x2="14" y2={gy} stroke="#dfe8ff" strokeWidth="1.8" strokeLinecap="round" />
+                          {/* height dimension */}
+                          <line x1={px + pw + 8} y1={gy} x2={px + pw + 8} y2={top} stroke="var(--amber)" strokeWidth="1" strokeDasharray="2 2" />
+                          <text x={px + pw + 12} y={(gy + top) / 2 + 4} fill="var(--amber)" fontFamily="var(--mono)" fontSize="11" fontWeight="700">{camH.toFixed(1)}m</text>
+                        </svg>
+                      );
+                    })()}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony (metadata usually can't tell). Leave at ground for a normal shot.</div>
                 </div>
               </div>
             )}
