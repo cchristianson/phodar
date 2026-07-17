@@ -329,10 +329,11 @@ async function apiPeaks(q, res) {
       if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
       const j = await rr.json();
       if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
-      // A mirror under load answers 200 with elements:[]. That empty used to win
-      // the Promise.any race over a slower mirror that HAD the peaks → treat empty
-      // as a miss so the fastest mirror WITH DATA wins instead.
-      if (j.elements.length === 0) throw new Error(`${host} EMPTY`);
+      // Overpass under load answers a timed-out query 200 elements:[] + a
+      // `remark`. Treat THAT as BUSY (retryable), NOT genuine emptiness — else a
+      // busy day looks like "no peaks within 120 km" in a place full of them.
+      if (j.remark && /timed out|runtime error|memory/i.test(j.remark)) throw new Error(`${host} BUSY`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`); // a mirror WITH data wins the race
       return j;
     });
   try {
@@ -341,11 +342,11 @@ async function apiPeaks(q, res) {
     return json(res, 200, j);
   } catch (e) {
     const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
-    // If at least one mirror was reachable but returned no peaks, that's a genuine
-    // empty area — return 200 [] (NOT cached, so a later retry can still find data).
-    // Only a total reachability failure is a 502 error.
-    if (errs.some((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; 0 peaks in range" });
-    return json(res, 502, { error: `overpass unreachable (${errs.join("; ")})` });
+    // 200 [] ONLY when every mirror genuinely returned zero peaks (real empty
+    // area, not cached so a retry can still find data). If any was busy/timeout/
+    // unreachable, 502 so the client says "busy — retry" instead of "none here".
+    if (errs.every((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; 0 peaks in range" });
+    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
 /* building-footprint proxy — OSM Overpass building ways WITH GEOMETRY around
