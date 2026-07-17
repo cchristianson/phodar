@@ -191,7 +191,7 @@ export async function fetchBuildings(lat, lon, radiusM = 2500, opts) {
    the source of the "too tall" near-spike from a window shot) — and anything
    closer than `minM`. Returns nearest `capN`, sorted near→far. */
 export function buildingBoxes(parsed, opts) {
-  var maxM = (opts && opts.maxM) || 2500, capN = (opts && opts.capN) || 160, minM = (opts && opts.minM) || 12;
+  var maxM = (opts && opts.maxM) || 1200, capN = (opts && opts.capN) || 160, minM = (opts && opts.minM) || 12;
   var bs = parsed.buildings || parsed, out = [];
   for (var i = 0; i < bs.length; i++) {
     var b = bs[i];
@@ -223,7 +223,11 @@ export function boxesPeak(boxes) {
 /* browser: nearest building boxes for the observer + a coverage summary.
    Cached per ~100 m of observer position + settings. */
 const bldgCache = new Map();
-export function predictedBuildingBoxes(lat, lon, radiusM = 2500, opts) {
+export const BLDG_RADIUS_M = 1200; // fetch/draw radius — smaller than terrain: a
+// 2.5 km `out geom` in a city is many MB and rate-limits the public Overpass
+// mirrors (especially after a server redeploy clears the cache); near rooftops
+// are what matter for alignment anyway.
+export function predictedBuildingBoxes(lat, lon, radiusM = BLDG_RADIUS_M, opts) {
   var assumeM = opts && opts.assumeM != null ? opts.assumeM : 6; // untagged footprints → ~2 storeys
   var capN = opts && opts.capN != null ? opts.capN : 160;
   var key = `${lat.toFixed(3)},${lon.toFixed(3)},${Math.round(radiusM)},${assumeM},${capN}`;
@@ -237,6 +241,9 @@ export function predictedBuildingBoxes(lat, lon, radiusM = 2500, opts) {
     };
   })();
   bldgCache.set(key, p);
-  p.catch(() => bldgCache.delete(key));
+  // Don't keep an EMPTY result cached: 0 buildings is often a busy-Overpass
+  // hiccup (mirrors answer 200 [] under load), not genuine absence — so a
+  // toggle-off/on retries the fetch instead of being stuck on "none found".
+  p.then((r) => { if (!r || r.buildings.n === 0) bldgCache.delete(key); }, () => bldgCache.delete(key));
   return p;
 }
