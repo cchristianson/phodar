@@ -397,6 +397,30 @@ async function apiBuildings(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* winds-aloft proxy — Open-Meteo pressure-level winds. Browser-direct was
+   flaky for OLD sightings (they need the ERA5 archive host, which can be slow to
+   warm and inconsistent about CORS → "Load failed"). Forward the client's query
+   to the forecast host first, then the archive, server-side (no CORS, 30 s). */
+async function apiWinds(q, res) {
+  if (!q.get("latitude") || !q.get("hourly")) return json(res, 400, { error: "lat/lon + hourly required" });
+  const qs = q.toString();
+  const hosts = [
+    ["https://api.open-meteo.com/v1/forecast", "open-meteo forecast"],
+    ["https://archive-api.open-meteo.com/v1/archive", "open-meteo ERA5 archive"],
+  ];
+  let lastErr = null;
+  for (const [host, name] of hosts) {
+    try {
+      const r = await fetch(`${host}?${qs}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30000) });
+      const j = await r.json();
+      if (j && j.error) { lastErr = j.reason || "error"; continue; } // e.g. date outside this host's range → try the other
+      if (!j || !j.hourly) { lastErr = `${name} no hourly`; continue; }
+      j._src = name;
+      return json(res, 200, j);
+    } catch (e) { lastErr = String(e.message || e); }
+  }
+  return json(res, 502, { error: `winds unreachable (${lastErr})` });
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
@@ -406,6 +430,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
+    if (u.pathname === "/api/winds") return await apiWinds(u.searchParams, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));
