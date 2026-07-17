@@ -21,7 +21,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
-import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit } from "./buildings.js";
+import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -2213,6 +2213,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const p = project(bldgPeak.az, bldgPeak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
+  /* peaks projected into THIS view — the header count reflects what actually
+     renders (peaks span all 360°, only those you're facing are on screen) */
+  const peakDraw = peakMarks.map((pk) => {
+    const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
+    const pr = project(pk.az, elv);
+    return (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) ? { pk, pr } : null;
+  }).filter(Boolean);
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
@@ -2682,14 +2689,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {/* named peaks on the skyline — el from the summit's own height, or the
             drawn ridge elevation when OSM has no `ele` tag */}
-        {peakMarks.map((pk, i) => {
-          const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
-          const pr = project(pk.az, elv);
-          if (!pr.inFront || pr.x < 0.01 || pr.x > 0.99 || pr.y < -0.02 || pr.y > 1.02) return null;
+        {peakDraw.map(({ pk, pr }, i) => {
           return (
             <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", textAlign: "center", pointerEvents: "none" }}>
               <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>
-                {pk.name}{pk.eleM != null ? ` ${Math.round(pk.eleM)}m` : ""}
+                {pk.name}{pk.eleM != null ? ` ${fmtLenShort(pk.eleM)}` : ""}
               </div>
               <div style={{ width: 0, height: 0, margin: "1px auto 0", borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `6px solid ${ridgeCol(0.98)}` }} />
             </div>
@@ -3089,7 +3093,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <button className="btn sm" title="Named peaks (OpenStreetMap) placed on the terrain skyline — a labeled summit on the horizon is also a compass check"
               style={{ background: "rgba(15,23,42,.7)", color: !peaksOn ? "var(--dim)" : peaks?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
               onClick={() => setPeaksOn((v) => !v)}>
-              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakMarks.length}`) : "peaks"}
+              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakDraw.length}${Array.isArray(peaks) && peaks.length > peakDraw.length ? `/${peaks.length}` : ""}`) : "peaks"}
             </button>
           )}
           {hasPos && (
@@ -3118,9 +3122,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {bldgOn && bldg?.buildings && (
           <div style={{ fontSize: 10, color: bldg.buildings.shown === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             {bldg.buildings.n === 0
-              ? `🏙 no OSM building footprints mapped near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — OSM coverage is thin outside cities`
+              ? `🏙 no buildings returned near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — either OSM has none mapped here, or Overpass was busy. Toggle 🏙 off/on to retry.`
               : bldg.buildings.shown === 0
-                ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the ${fmtLenShort(12)}–${fmtLenShort(2500)} draw range`
+                ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the ${fmtLenShort(12)}–${fmtLenShort(BLDG_RADIUS_M)} draw range`
                 : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldgPeak ? ` · tallest ${bldgPeak.el.toFixed(1)}° at ${compass8(bldgPeak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~${fmtLenShort(6)}`}
           </div>
         )}
@@ -3136,7 +3140,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
           );
         })()}
-        )}
         {bldgOn && bldg?.err && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             🏙 buildings unavailable — {bldg.err}
