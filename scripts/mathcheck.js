@@ -224,6 +224,24 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(fromClose, expNear, 1.2, "near house renders when marched from 8 m"); // tol spans the 16 m footprint depth
   if (fromFloor < 0.2) console.log(`  ok   same house invisible under the 200 m DEM floor (${fromFloor.toFixed(2)}°) — the bug`);
   else { fails++; console.error(`  FAIL near house leaked into the 200 m-floor march: ${fromFloor.toFixed(2)}°`); }
+
+  // assumed heights: an UNTAGGED footprint (the warehouse next door) is dropped
+  // by default but placed at the assumed height when asked — the coverage fix.
+  const untagged = { elements: [box(80, 0, 12, { building: "warehouse" }, 1)] }; // no height/levels
+  const noAssume = parseOverpassBuildings(untagged, oLat, oLon);
+  const withAssume = parseOverpassBuildings(untagged, oLat, oLon, { assumeM: 6 });
+  if (noAssume.buildings.length === 0 && noAssume.dropped === 1) console.log("  ok   untagged footprint dropped without assumeM");
+  else { fails++; console.error(`  FAIL untagged drop: ${JSON.stringify({ n: noAssume.buildings.length, d: noAssume.dropped })}`); }
+  if (withAssume.buildings.length === 1 && withAssume.assumed === 1 && withAssume.buildings[0].h === 6 && withAssume.buildings[0].assumed)
+    console.log("  ok   untagged footprint placed at assumed 6 m with assumeM");
+  else { fails++; console.error(`  FAIL assumeM place: ${JSON.stringify({ n: withAssume.buildings.length, a: withAssume.assumed, h: withAssume.buildings[0] && withAssume.buildings[0].h })}`); }
+
+  // capN keeps the NEAREST footprints so a dense city can't stall the march
+  const many = { elements: [box(50, 0, 5, { building: "yes", height: "10" }, 1), box(400, 0, 5, { building: "yes", height: "10" }, 2)] };
+  const two = parseOverpassBuildings(many, oLat, oLon);
+  const cap1 = buildingHeightSampler(two.buildings, 2500, 1); // keep nearest 1 only
+  if (cap1(0, 50) === 10 && cap1(0, 400) === 0) console.log("  ok   capN keeps the nearest footprint, drops the farther");
+  else { fails++; console.error(`  FAIL capN: near ${cap1(0, 50)}, far ${cap1(0, 400)}`); }
 }
 
 // --- detectSkyline: the true horizon must win over foreground foliage.

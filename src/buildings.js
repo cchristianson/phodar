@@ -21,7 +21,7 @@
    ============================================================ */
 
 import { D2R } from "./math/geodesy.js";
-import { skylineFromSampler, demSampler } from "./terrain.js";
+import { skylineFromSampler, demSampler, AZ_STEP, N_AZ } from "./terrain.js";
 
 export const BUILDINGS_ATTRIB = "Buildings: OpenStreetMap contributors (ODbL)";
 const M_PER_LEVEL = 3.0; // metres per storey when only building:levels is known
@@ -47,14 +47,19 @@ export function heightMeters(tags) {
 }
 
 /* Overpass `out geom` JSON → buildings in the observer's local ENU frame:
-     { buildings: [{ ring: [[e,n],…] metres, h: metres, est: bool,
-                     bbox: [e0,n0,e1,n1] }], dropped, est }
-   `dropped` counts building ways with a footprint but no usable height.
-   ENU uses the SAME equirectangular constants terrain.js's demSampler does,
-   so the height field composites exactly onto the DEM ground. */
-export function parseOverpassBuildings(json, obsLat, obsLon) {
+     { buildings: [{ ring: [[e,n],…] metres, h: metres, est, assumed,
+                     bbox: [e0,n0,e1,n1] }], known, est, assumed, dropped }
+   With `opts.assumeM` (metres) set, a footprint with NO usable height tag is
+   still placed at that assumed height (`assumed: true`) instead of dropped —
+   OSM height coverage is thin (a lot of warehouses/houses have only a
+   footprint), and an approximate rooftop is far more useful for VISUAL
+   alignment than nothing. Without assumeM, untagged footprints are dropped.
+   `known` = explicit-height, `est` = floor-count, `assumed` = defaulted.
+   ENU uses the SAME equirectangular constants terrain.js's demSampler does. */
+export function parseOverpassBuildings(json, obsLat, obsLon, opts) {
+  var assumeM = (opts && opts.assumeM) || 0;
   var mLat = 111320, mLon = 111320 * Math.max(0.2, Math.cos(obsLat * D2R));
-  var out = [], dropped = 0, est = 0;
+  var out = [], dropped = 0, est = 0, assumed = 0, known = 0;
   var els = (json && json.elements) || [];
   for (var k = 0; k < els.length; k++) {
     var el = els[k];
@@ -62,7 +67,10 @@ export function parseOverpassBuildings(json, obsLat, obsLon) {
     var geom = el.geometry;
     if (!Array.isArray(geom) || geom.length < 3) continue;
     var hm = heightMeters(el.tags);
-    if (hm == null) { dropped++; continue; }
+    if (hm == null) {
+      if (assumeM > 0) hm = { m: assumeM, est: false, assumed: true };
+      else { dropped++; continue; }
+    }
     var e0 = Infinity, n0 = Infinity, e1 = -Infinity, n1 = -Infinity, ring = [];
     for (var g = 0; g < geom.length; g++) {
       var pt = geom[g];
@@ -72,10 +80,10 @@ export function parseOverpassBuildings(json, obsLat, obsLon) {
       if (e < e0) e0 = e; if (n < n0) n0 = n; if (e > e1) e1 = e; if (n > n1) n1 = n;
     }
     if (ring.length < 3) continue;
-    if (hm.est) est++;
-    out.push({ ring: ring, h: hm.m, est: hm.est, bbox: [e0, n0, e1, n1] });
+    if (hm.assumed) assumed++; else if (hm.est) est++; else known++;
+    out.push({ ring: ring, h: hm.m, est: !!hm.est, assumed: !!hm.assumed, bbox: [e0, n0, e1, n1] });
   }
-  return { buildings: out, dropped: dropped, est: est };
+  return { buildings: out, dropped: dropped, est: est, assumed: assumed, known: known };
 }
 
 /* point-in-polygon (even-odd ray cast) with a bbox fast-reject */
@@ -97,12 +105,18 @@ function bboxDist2(b) {
 }
 
 /* added-height sampler: (e,n) → tallest covering rooftop height above the
-   ground it stands on, or 0 where no footprint covers the point. Buildings
-   whose nearest edge is beyond `maxM` are pruned up front (city silhouettes
-   are near, and it keeps the per-sample loop cheap during the ray-march). */
-export function buildingHeightSampler(buildings, maxM = 4000) {
+   ground it stands on, or 0 where no footprint covers the point. Pruned to the
+   `capN` NEAREST footprints within `maxM` — city silhouettes are near, far
+   buildings are sub-degree, and a fixed cap bounds the per-sample cost so a
+   dense downtown (thousands of footprints) can't stall the ray-march. */
+export function buildingHeightSampler(buildings, maxM = 4000, capN = 600) {
   var lim2 = maxM * maxM;
-  var near = buildings.filter(function (b) { return bboxDist2(b.bbox) <= lim2; });
+  var near = buildings
+    .map(function (b) { return { b: b, d2: bboxDist2(b.bbox) }; })
+    .filter(function (x) { return x.d2 <= lim2; })
+    .sort(function (a, b) { return a.d2 - b.d2; })
+    .slice(0, capN)
+    .map(function (x) { return x.b; });
   return function (e, n) {
     var hi = 0;
     for (var i = 0; i < near.length; i++) {
@@ -113,35 +127,63 @@ export function buildingHeightSampler(buildings, maxM = 4000) {
   };
 }
 
-/* browser fetch → parsed buildings in the observer's ENU frame */
-export async function fetchBuildings(lat, lon, radiusM = 2500) {
+/* browser fetch → parsed buildings in the observer's ENU frame.
+   opts.assumeM places untagged footprints at that assumed height. */
+export async function fetchBuildings(lat, lon, radiusM = 2500, opts) {
   var r = await fetch(`/api/buildings?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&r=${Math.round(radiusM)}`, { signal: AbortSignal.timeout(30000) });
   if (!r.ok) throw new Error(`buildings HTTP ${r.status}`);
   var j = await r.json();
   if (j.error) throw new Error(j.error);
-  return parseOverpassBuildings(j, lat, lon);
+  return parseOverpassBuildings(j, lat, lon, opts);
 }
 
-/* Predicted skyline INCLUDING urban rooftops: DEM ground + OSM building
-   heights through the shared ray-march. Same return shape as terrain's
-   predictedSkyline ({ els, dists, ridges, h0 }) PLUS a `buildings` coverage
-   summary { n, dropped, est }, so the sky view draws and snaps to it with no
-   changes. Cached per ~100 m of observer position + radius. */
-const urbanCache = new Map();
-export function predictedUrbanSkyline(lat, lon, radiusM = 2500) {
-  var key = `${lat.toFixed(3)},${lon.toFixed(3)},${Math.round(radiusM)}`;
-  if (urbanCache.has(key)) return urbanCache.get(key);
+/* Building-only rooftop silhouette for the sky view — a DEDICATED layer, NOT
+   folded into the DEM terrain line (which kept it invisible: distant tagged
+   houses are sub-degree and vanished into the green line, near warehouses were
+   dropped for lacking a height tag). This marches a building-only height field
+   from close in, so rooftops stand as their own bold silhouette regardless of
+   the terrain behind them, and it stays OUT of "Snap to ridges" so that
+   calibration keeps trusting surveyed DEM terrain, not assumed rooftops.
+
+   Returns { els: Float32Array(N_AZ) — rooftop elevation° per azimuth, GAP_EL
+   where no footprint stands along that ray; peak: {el, az}; h0; buildings:
+   coverage summary }. Cached per ~100 m of observer position + settings. */
+export const GAP_EL = -999; // azimuth with no rooftop along it (draw skips these)
+const bldgCache = new Map();
+export function predictedBuildingSilhouette(lat, lon, radiusM = 2500, opts) {
+  var assumeM = opts && opts.assumeM != null ? opts.assumeM : 6; // default: place untagged footprints at ~2 storeys
+  var capN = opts && opts.capN != null ? opts.capN : 600;
+  var key = `${lat.toFixed(3)},${lon.toFixed(3)},${Math.round(radiusM)},${assumeM},${capN}`;
+  if (bldgCache.has(key)) return bldgCache.get(key);
   var p = (async () => {
-    var pair = await Promise.all([demSampler(lat, lon), fetchBuildings(lat, lon, radiusM)]);
+    var pair = await Promise.all([demSampler(lat, lon), fetchBuildings(lat, lon, radiusM, { assumeM: assumeM })]);
     var ground = pair[0].sampleEN, h0 = pair[0].h0, bl = pair[1];
-    var bh = buildingHeightSampler(bl.buildings, radiusM);
-    var composite = function (e, n) { var gnd = ground(e, n); return gnd == null ? null : gnd + bh(e, n); };
-    // march from 8 m (not the DEM's 200 m foreground skip): near buildings —
-    // the house across the street — are the whole point of the urban skyline.
-    var sk = skylineFromSampler(composite, h0, 35000, 8);
-    return Object.assign({}, sk, { h0: h0, buildings: { n: bl.buildings.length, dropped: bl.dropped, est: bl.est } });
+    var bh = buildingHeightSampler(bl.buildings, radiusM, capN);
+    // building-ONLY sampler: rooftop MSL where a footprint covers the point,
+    // null elsewhere so the ray-march leaves that azimuth at its GAP sentinel.
+    var bSampler = function (e, n) {
+      var add = bh(e, n);
+      if (add <= 0) return null;
+      var g = ground(e, n);
+      return (g == null ? h0 : g) + add;
+    };
+    // march from 8 m to just past the footprint radius (rooftops are near)
+    var sk = skylineFromSampler(bSampler, h0, Math.min(35000, radiusM + 500), 8);
+    var els = new Float32Array(N_AZ);
+    var peak = { el: GAP_EL, az: 0 };
+    for (var i = 0; i < N_AZ; i++) {
+      // skylineFromSampler leaves best at its -89 init where the ray hit no
+      // rooftop; normalize that to the explicit GAP sentinel for drawing.
+      var e = sk.els[i] <= -80 ? GAP_EL : sk.els[i];
+      els[i] = e;
+      if (e > peak.el) { peak.el = e; peak.az = i * AZ_STEP; }
+    }
+    return {
+      els: els, peak: peak, h0: h0,
+      buildings: { n: bl.buildings.length, known: bl.known, est: bl.est, assumed: bl.assumed, dropped: bl.dropped, capped: bl.buildings.length > capN },
+    };
   })();
-  urbanCache.set(key, p);
-  p.catch(() => urbanCache.delete(key));
+  bldgCache.set(key, p);
+  p.catch(() => bldgCache.delete(key));
   return p;
 }

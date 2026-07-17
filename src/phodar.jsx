@@ -14,7 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
-import { predictedUrbanSkyline } from "./buildings.js";
+import { predictedBuildingSilhouette, GAP_EL } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -1682,10 +1682,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      az + pitch + roll lock simultaneously, day or night. --- */
   const [terrOn, setTerrOn] = useState(true);
   const [terr, setTerr] = useState(null); // {els, h0} | {err} | null
-  /* urban skyline: composite OSM building rooftops onto the DEM ground so the
-     same predicted line + snap works in town (no mountains). Opt-in — most
-     sightings are rural, and the Overpass fetch + rasterization isn't free. */
+  /* urban building silhouette: a DEDICATED rooftop line (OSM footprints +
+     heights) drawn beside the terrain line, for aligning a photo shot in town
+     where there are no mountains. Opt-in — most sightings are rural, and the
+     Overpass fetch isn't free. Kept separate from `terr` so "Snap to ridges"
+     stays terrain-only (assumed rooftop heights must not drive calibration). */
   const [bldgOn, setBldgOn] = useState(false);
+  const [bldg, setBldg] = useState(null); // {els, peak, buildings} | {err} | null
   /* ridge/terrain line hue — a display preference (the default green washes
      out over green hillsides for some photos); persisted across sessions.
      Default 106° ≈ the original rgba(158,224,138). */
@@ -1699,11 +1702,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (!open || !terrOn || !hasPos) return;
     let dead = false;
     setTerr((t) => t && t.els ? t : null);
-    (bldgOn ? predictedUrbanSkyline(LAT, LNG) : predictedSkyline(LAT, LNG))
+    predictedSkyline(LAT, LNG)
       .then((sk) => { if (!dead) setTerr(sk); })
       .catch((e) => { if (!dead) setTerr({ err: String(e?.message || e) }); });
     return () => { dead = true; };
-  }, [open, terrOn, hasPos, LAT, LNG, bldgOn]);
+  }, [open, terrOn, hasPos, LAT, LNG]);
+
+  /* building silhouette (opt-in) — its own dedicated rooftop line */
+  useEffect(() => {
+    if (!open || !bldgOn || !hasPos) return;
+    let dead = false;
+    setBldg((b) => b && b.els ? b : null);
+    predictedBuildingSilhouette(LAT, LNG)
+      .then((b) => { if (!dead) setBldg(b); })
+      .catch((e) => { if (!dead) setBldg({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, bldgOn, hasPos, LAT, LNG]);
 
   /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
      at the SIGHTING time. auto = shown when the sky is dark enough;
@@ -2105,6 +2119,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }).filter(Boolean) : [];
   const terrainLbl = (terrainPath) ? (() => {
     const p = project(effAz, skylineElAt(terr.els, effAz));
+    return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
+  })() : null;
+  /* building rooftop silhouette — its OWN bold line (amber, distinct from the
+     green terrain), gap-aware: azimuths with no footprint along them break the
+     stroke instead of drawing a slanted line down to the sentinel. */
+  const bldgElAt = (az) => {
+    if (!bldg?.els) return null;
+    const x = (((az % 360) + 360) % 360) / 0.4; // AZ_STEP
+    const i0 = Math.floor(x) % bldg.els.length, i1 = (i0 + 1) % bldg.els.length, f = x - Math.floor(x);
+    const a = bldg.els[i0], b = bldg.els[i1];
+    if (a <= GAP_EL + 1 || b <= GAP_EL + 1) return null; // gap on either side
+    return a * (1 - f) + b * f;
+  };
+  const bldgPath = (bldgOn && bldg?.els) ? (() => {
+    const pts = [];
+    for (let a = -130; a <= 130; a += 0.4) {
+      const el = bldgElAt(effAz + a);
+      pts.push(el == null ? { inFront: false } : project(effAz + a, el));
+    }
+    return gpath(pts);
+  })() : null;
+  const bldgLbl = (bldgOn && bldg?.peak && bldg.peak.el > GAP_EL + 1) ? (() => {
+    const p = project(bldg.peak.az, bldg.peak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
   const horizonY = project(effAz, 0).y;
@@ -2566,9 +2603,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
           {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
+          {bldgPath && <path d={bldgPath} fill="none" stroke="rgba(255,178,74,0.95)" strokeWidth="2.1" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
         </svg>
         {terrainLbl && (
           <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: ridgeCol(0.95), textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
+        )}
+        {bldgLbl && (
+          <div style={{ position: "absolute", left: (bldgLbl.x * 100) + "%", top: (bldgLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: "rgba(255,178,74,0.98)", textShadow: "0 1px 2px rgba(0,0,0,.85)", pointerEvents: "none" }}>BUILDINGS</div>
         )}
         {/* named peaks on the skyline — el from the summit's own height, or the
             drawn ridge elevation when OSM has no `ele` tag */}
@@ -2983,10 +3024,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </button>
           )}
           {hasPos && (
-            <button className="btn sm" title="Urban skyline — add OSM building rooftops to the predicted skyline so you can align a photo shot in town (no mountains). Only buildings with a known height are placed; the count shows coverage."
-              style={{ background: "rgba(15,23,42,.7)", color: !bldgOn ? "var(--dim)" : terr?.err ? "var(--amber)" : ridgeCol(0.95) }}
+            <button className="btn sm" title="Building silhouette — OSM rooftops drawn as their own amber line, for aligning a photo shot in town (no mountains). Untagged footprints are shown at an assumed height; it does NOT drive Snap to ridges."
+              style={{ background: "rgba(15,23,42,.7)", color: !bldgOn ? "var(--dim)" : bldg?.err ? "var(--amber)" : "rgba(255,178,74,0.95)" }}
               onClick={() => setBldgOn((v) => !v)}>
-              🏙 {bldgOn ? (terr?.err ? "?" : !terr?.els ? "…" : terr?.buildings ? `${terr.buildings.n} bldgs` : "on") : "buildings"}
+              🏙 {bldgOn ? (bldg?.err ? "?" : !bldg?.els ? "…" : bldg?.buildings ? `${bldg.buildings.n} bldgs` : "on") : "buildings"}
             </button>
           )}
         </div>
@@ -3005,16 +3046,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             ⛰ no named peaks or hills within 120 km of {LAT.toFixed(3)}, {LNG.toFixed(3)}
           </div>
         )}
-        {bldgOn && terr?.buildings && (
-          <div style={{ fontSize: 10, color: terr.buildings.n === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            {terr.buildings.n === 0
-              ? `🏙 no OSM buildings with a known height nearby${terr.buildings.dropped ? ` (${terr.buildings.dropped} had footprints but no height tag)` : ""} — the line is DEM terrain only`
-              : `🏙 ${terr.buildings.n} rooftop${terr.buildings.n === 1 ? "" : "s"} on the skyline${terr.buildings.est ? ` · ${terr.buildings.est} estimated from floor count` : ""}${terr.buildings.dropped ? ` · ${terr.buildings.dropped} dropped (no height)` : ""}`}
+        {bldgOn && bldg?.buildings && (
+          <div style={{ fontSize: 10, color: bldg.buildings.n === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {bldg.buildings.n === 0
+              ? `🏙 no OSM building footprints found near ${LAT.toFixed(3)}, ${LNG.toFixed(3)}`
+              : `🏙 ${bldg.buildings.n} rooftop${bldg.buildings.n === 1 ? "" : "s"} (amber line)${bldg.peak && bldg.peak.el > GAP_EL + 1 ? ` · tallest ${bldg.peak.el.toFixed(1)}° at ${compass8(bldg.peak.az)}` : ""}${bldg.buildings.capped ? " · nearest 600 shown" : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
           </div>
         )}
-        {bldgOn && terr?.err && (
+        {bldgOn && bldg?.err && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            🏙 urban skyline unavailable — {terr.err}
+            🏙 buildings unavailable — {bldg.err}
           </div>
         )}
         {acOn && acData?.ac && acData.hist && (
