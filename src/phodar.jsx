@@ -2248,10 +2248,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (kept.some((k) => Math.abs(k.pr.x - c.pr.x) < 0.02 && Math.abs(k.pr.y - c.pr.y) < 0.02)) continue; // same spot
       // lowest row (tier) whose recent label doesn't overlap this one horizontally
       let row = 0;
-      while (row < 3 && kept.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.17)) row++;
-      if (row >= 3) continue; // too crowded here — drop the least prominent
+      while (row < 4 && kept.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.14)) row++;
+      if (row >= 4) continue; // too crowded here — drop the least prominent
       kept.push({ ...c, row });
-      if (kept.length >= 20) break;
+      if (kept.length >= 22) break;
     }
     return kept;
   })();
@@ -2725,14 +2725,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {/* named peaks on the skyline — el from the summit's own height, or the
             drawn ridge elevation when OSM has no `ele` tag */}
         {peakDraw.map(({ pk, pr, row }, i) => {
-          const lift = row * 16; // stack labels into tiers so names don't collide horizontally
+          const lift = row * 26; // tier the labels well apart so names don't collide
+          // summit ELEVATION (MSL) in the user's unit — NOT via fmtLenShort, which
+          // rolls >5280 ft into miles and made "Middle Sister 1.90 mi" (its height!)
+          const ele = pk.eleM != null ? (isImperialUnits() ? Math.round(pk.eleM * 3.28084).toLocaleString() + " ft" : Math.round(pk.eleM).toLocaleString() + " m") : null;
           return (
             <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
-              <div style={{ fontSize: 9, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>
-                {pk.name}{pk.eleM != null ? ` ${fmtLenShort(pk.eleM)}` : ""}
+              <div style={{ lineHeight: 1.05, textAlign: "center" }}>
+                <div style={{ fontSize: 8, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>{pk.name}</div>
+                {ele && <div style={{ fontSize: 7, fontFamily: "var(--mono)", color: ridgeCol(0.78), textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap" }}>{ele}</div>}
               </div>
-              {lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.55) }} />}
-              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `6px solid ${ridgeCol(0.98)}` }} />
+              {lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.5) }} />}
+              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "3px solid transparent", borderRight: "3px solid transparent", borderBottom: `5px solid ${ridgeCol(0.98)}` }} />
             </div>
           );
         })}
