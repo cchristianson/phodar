@@ -17,7 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
-import { heightMeters, parseOverpassBuildings, buildingHeightSampler } from "../src/buildings.js";
+import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
@@ -242,6 +242,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const cap1 = buildingHeightSampler(two.buildings, 2500, 1); // keep nearest 1 only
   if (cap1(0, 50) === 10 && cap1(0, 400) === 0) console.log("  ok   capN keeps the nearest footprint, drops the farther");
   else { fails++; console.error(`  FAIL capN: near ${cap1(0, 50)}, far ${cap1(0, 400)}`); }
+
+  // individual boxes: exclude the footprint the observer stands in (the "too
+  // tall" near-spike from a window shot), skip < minM, sort near→far, cap.
+  const scene = parseOverpassBuildings({ elements: [
+    box(0, 0, 30, { building: "yes", height: "12" }, 1),     // observer INSIDE this one (origin covered)
+    box(6, 0, 3, { building: "yes", height: "8" }, 2),       // 6 m away → inside minM, skipped
+    box(300, 0, 10, { building: "yes", height: "20" }, 3),   // far, tall
+    box(80, 0, 10, { building: "yes", height: "9" }, 4),     // near, short
+  ] }, oLat, oLon);
+  const boxes = buildingBoxes(scene, { maxM: 2500, capN: 160, minM: 12 });
+  if (boxes.length === 2) console.log("  ok   boxes exclude observer's own footprint + the < 12 m neighbour");
+  else { fails++; console.error(`  FAIL box count ${boxes.length} (want 2), dists ${boxes.map((b) => b.dist.toFixed(0))}`); }
+  if (boxes[0] && Math.abs(boxes[0].dist - 80) < 15 && Math.abs(boxes[1].dist - 300) < 15)
+    console.log("  ok   boxes sorted nearest → farthest");
+  else { fails++; console.error(`  FAIL box order: ${boxes.map((b) => b.dist.toFixed(0))}`); }
+  const cap = buildingBoxes(scene, { maxM: 2500, capN: 1, minM: 12 });
+  if (cap.length === 1 && Math.abs(cap[0].dist - 80) < 15) console.log("  ok   buildingBoxes capN keeps only the nearest");
+  else { fails++; console.error(`  FAIL box capN: ${cap.map((b) => b.dist.toFixed(0))}`); }
+  // boxesPeak → the tallest rooftop in ANGLE: the NEAR 9 m building at ~71 m
+  // (5.98°) out-angles the 20 m building at ~290 m (3.6°); the peak lands on
+  // that footprint's nearest corner, ~8° off due north.
+  const bpk = boxesPeak(boxes);
+  const dCorner = Math.hypot(10, 70);
+  const expPk = Math.atan2(9 - 1.6 - (dCorner * dCorner * 0.87) / (2 * 6371000), dCorner) * 180 / Math.PI;
+  approx(bpk.el, expPk, 0.4, "boxesPeak tallest rooftop elevation (near building wins by angle)");
+  if (Math.abs(((bpk.az + 180) % 360) - 180) < 12) console.log(`  ok   boxesPeak azimuth near due N (${bpk.az.toFixed(1)}°)`);
+  else { fails++; console.error(`  FAIL boxesPeak az ${bpk.az}`); }
 }
 
 // --- detectSkyline: the true horizon must win over foreground foliage.

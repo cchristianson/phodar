@@ -14,7 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
-import { predictedBuildingSilhouette, GAP_EL } from "./buildings.js";
+import { predictedBuildingBoxes } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -209,6 +209,11 @@ const css = `
   --mono:ui-monospace,'SF Mono','Roboto Mono',Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+/* inline loading spinner — replaces the old "…" load indicators everywhere */
+.spin{display:inline-block; width:1em; height:1em; vertical-align:-0.15em;
+  border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+  animation:spin .7s linear infinite; opacity:.9;}
+@keyframes spin{to{transform:rotate(360deg)}}
 .phodar{background:var(--bg); color:var(--ink); min-height:100vh;
   font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif; font-size:14px;
   /* clear the iOS notch / Dynamic Island (installed PWA runs under the status
@@ -348,6 +353,10 @@ function applyImgAdj(ctx, w, h, a) {
 }
 
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
+
+/* small inline spinner for loading states (replaces "…" so it's obvious the
+   user should wait). Inherits color from its context via currentColor. */
+const Spin = ({ style }) => <span className="spin" style={style} aria-label="loading" />;
 
 function Num({ label, value, onChange, unit, ph, after }) {
   return (
@@ -960,7 +969,7 @@ function MediaMeasure({ src, update, wizard }) {
       {loadErr && <div className="warn">{loadErr}</div>}
       {loading && !natW && (
         <div style={{ marginTop: 10, padding: "18px 12px", border: "1px dashed var(--line)", borderRadius: 10, textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
-          Loading media…
+          <Spin style={{ marginRight: 6 }} />Loading media
         </div>
       )}
       {media && !loadErr && (
@@ -1688,7 +1697,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      Overpass fetch isn't free. Kept separate from `terr` so "Snap to ridges"
      stays terrain-only (assumed rooftop heights must not drive calibration). */
   const [bldgOn, setBldgOn] = useState(false);
-  const [bldg, setBldg] = useState(null); // {els, peak, buildings} | {err} | null
+  const [bldg, setBldg] = useState(null); // {boxes, peak, buildings} | {err} | null
   /* ridge/terrain line hue — a display preference (the default green washes
      out over green hillsides for some photos); persisted across sessions.
      Default 106° ≈ the original rgba(158,224,138). */
@@ -1712,8 +1721,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (!open || !bldgOn || !hasPos) return;
     let dead = false;
-    setBldg((b) => b && b.els ? b : null);
-    predictedBuildingSilhouette(LAT, LNG)
+    setBldg((b) => b && b.boxes ? b : null);
+    predictedBuildingBoxes(LAT, LNG)
       .then((b) => { if (!dead) setBldg(b); })
       .catch((e) => { if (!dead) setBldg({ err: String(e?.message || e) }); });
     return () => { dead = true; };
@@ -2121,26 +2130,39 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const p = project(effAz, skylineElAt(terr.els, effAz));
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
-  /* building rooftop silhouette — its OWN bold line (amber, distinct from the
-     green terrain), gap-aware: azimuths with no footprint along them break the
-     stroke instead of drawing a slanted line down to the sentinel. */
-  const bldgElAt = (az) => {
-    if (!bldg?.els) return null;
-    const x = (((az % 360) + 360) % 360) / 0.4; // AZ_STEP
-    const i0 = Math.floor(x) % bldg.els.length, i1 = (i0 + 1) % bldg.els.length, f = x - Math.floor(x);
-    const a = bldg.els[i0], b = bldg.els[i1];
-    if (a <= GAP_EL + 1 || b <= GAP_EL + 1) return null; // gap on either side
-    return a * (1 - f) + b * f;
-  };
-  const bldgPath = (bldgOn && bldg?.els) ? (() => {
-    const pts = [];
-    for (let a = -130; a <= 130; a += 0.4) {
-      const el = bldgElAt(effAz + a);
-      pts.push(el == null ? { inFront: false } : project(effAz + a, el));
+  /* building rooftops — each OSM footprint as its own projected wireframe box
+     (roof outline + vertical corner edges), amber, so distinct buildings can be
+     matched to the photo instead of one merged silhouette. Base is the
+     observer's ground plane (flat-city assumption); brighter for measured/
+     floor-count heights, fainter for assumed ones. */
+  const bldgBoxes = (bldgOn && bldg?.boxes && !cameraOn) ? (() => {
+    const K = 0.13, eye = 1.6, out = [];
+    for (const b of bldg.boxes) {
+      let cE = 0, cN = 0;
+      for (const p of b.ring) { cE += p[0]; cN += p[1]; }
+      cE /= b.ring.length; cN /= b.ring.length;
+      const cAz = ((Math.atan2(cE, cN) * R2D) + 360) % 360;
+      const da = ((cAz - effAz + 540) % 360) - 180;
+      if (Math.abs(da) > 120) continue; // outside the visible dome window
+      const roof = [], base = []; let ok = true;
+      for (const [e, n] of b.ring) {
+        const dist = Math.hypot(e, n);
+        const az = ((Math.atan2(e, n) * R2D) + 360) % 360;
+        const curv = (dist * dist * (1 - K)) / (2 * 6371000);
+        const rp = project(az, Math.atan2(b.h - eye - curv, dist) * R2D);
+        const bp = project(az, Math.atan2(-eye - curv, dist) * R2D);
+        if (!rp.inFront || !bp.inFront) { ok = false; break; }
+        roof.push(rp); base.push(bp);
+      }
+      if (!ok || roof.length < 3) continue;
+      const xy = (p) => (p.x * 100).toFixed(2) + " " + (p.y * 100).toFixed(2);
+      let d = "M " + roof.map(xy).join(" L ") + " Z";
+      for (let i = 0; i < roof.length; i++) d += " M " + xy(base[i]) + " L " + xy(roof[i]);
+      out.push({ d, faint: b.assumed });
     }
-    return gpath(pts);
-  })() : null;
-  const bldgLbl = (bldgOn && bldg?.peak && bldg.peak.el > GAP_EL + 1) ? (() => {
+    return out;
+  })() : [];
+  const bldgLbl = (bldgOn && bldg?.peak && bldg.peak.el > -900) ? (() => {
     const p = project(bldg.peak.az, bldg.peak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
@@ -2568,7 +2590,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               const imgSrc = source.mediaKind === "video" ? vidFrameUrl : source.mediaUrl;
               return imgSrc
                 ? <img src={imgSrc} alt="" style={{ width: "100%", display: "block", opacity: PH_OP, filter: imgAdjFilter(source.imgAdj) }} />
-                : <div style={{ width: "100%", aspectRatio: (source.natW && source.natH) ? `${source.natW} / ${source.natH}` : "16 / 9", background: "rgba(15,23,42,.6)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11, fontFamily: "var(--mono)" }}>rendering frame…</div>;
+                : <div style={{ width: "100%", aspectRatio: (source.natW && source.natH) ? `${source.natW} / ${source.natH}` : "16 / 9", background: "rgba(15,23,42,.6)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11, fontFamily: "var(--mono)" }}><Spin style={{ marginRight: 6 }} />rendering frame</div>;
             })()}
             {source?.natW && (
               <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
@@ -2603,7 +2625,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
           {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
-          {bldgPath && <path d={bldgPath} fill="none" stroke="rgba(255,178,74,0.95)" strokeWidth="2.1" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+          {bldgBoxes.map((b, i) => <path key={"bx" + i} d={b.d} fill="none" stroke={b.faint ? "rgba(255,178,74,0.5)" : "rgba(255,178,74,0.95)"} strokeWidth={b.faint ? "1" : "1.4"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
         </svg>
         {terrainLbl && (
           <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: ridgeCol(0.95), textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
@@ -2817,7 +2839,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <button className="btn sm" style={{ background: "transparent", border: "none", color: "var(--dim)", padding: "0 2px" }} onClick={() => setSelHex(null)}>✕</button>
               </div>
               {(a.desc || acr) && <div style={{ color: "var(--dim)", fontSize: 11 }}>{a.desc || `${acr.manufacturer || ""} ${acr.type || ""}`.trim()}{a.reg || acr?.registration ? ` · ${a.reg || acr.registration}` : ""}{acr?.registered_owner ? ` · ${acr.registered_owner}` : ""}</div>}
-              {selInfo?.busy && <div style={{ color: "var(--dim)", fontSize: 11 }}>looking up route…</div>}
+              {selInfo?.busy && <div style={{ color: "var(--dim)", fontSize: 11 }}><Spin style={{ marginRight: 6 }} />looking up route</div>}
               {rt?.airline?.name && <div style={{ color: "var(--track)", fontSize: 11 }}>{rt.airline.name}</div>}
               {rt?.origin && rt?.destination && (
                 <div style={{ margin: "4px 0", fontWeight: 700 }}>
@@ -2994,7 +3016,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {hasPos && (
             <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
               onClick={() => setAcOn((v) => !v)}>
-              ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : "…") : "off"}
+              ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : <Spin />) : "off"}
             </button>
           )}
           <button className="btn sm" title="Stars & planets: auto on at night, off by day — tap to force on/off"
@@ -3006,28 +3028,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <button className="btn sm" title="Satellites (CelesTrak visual group, SGP4 at the sighting time): auto shows when dark; on forces"
               style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
               onClick={() => setSatMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
-              🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? "…" : `${satView.length}${satMode === "auto" ? "" : " on"}`}
+              🛰 {satMode === "off" ? "off" : satDb?.err ? "?" : satsWanted && !satDb ? <Spin /> : `${satView.length}${satMode === "auto" ? "" : " on"}`}
             </button>
           )}
           {hasPos && (
             <button className="btn sm" title="Starlink — the full constellation (opt-in). Sunlit Starlinks above the horizon at the sighting time; a fresh batch appears as a tight train."
               style={{ background: "rgba(15,23,42,.7)", color: !starlinkOn ? "var(--dim)" : slDb?.err ? "var(--amber)" : "#c9b6ff" }}
               onClick={() => setStarlinkOn((v) => !v)}>
-              ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? "…" : `Starlink ${slView.length}`) : "Starlink"}
+              ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? <Spin /> : `Starlink ${slView.length}`) : "Starlink"}
             </button>
           )}
           {hasPos && (
             <button className="btn sm" title="Named peaks (OpenStreetMap) placed on the terrain skyline — a labeled summit on the horizon is also a compass check"
               style={{ background: "rgba(15,23,42,.7)", color: !peaksOn ? "var(--dim)" : peaks?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
               onClick={() => setPeaksOn((v) => !v)}>
-              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? "…" : `peaks ${peakMarks.length}`) : "peaks"}
+              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakMarks.length}`) : "peaks"}
             </button>
           )}
           {hasPos && (
-            <button className="btn sm" title="Building silhouette — OSM rooftops drawn as their own amber line, for aligning a photo shot in town (no mountains). Untagged footprints are shown at an assumed height; it does NOT drive Snap to ridges."
+            <button className="btn sm" title="Buildings — each OSM footprint drawn as its own amber wireframe box (roof outline + corner edges), for aligning a photo shot in town. Untagged footprints use an assumed height; it does NOT drive Snap to ridges."
               style={{ background: "rgba(15,23,42,.7)", color: !bldgOn ? "var(--dim)" : bldg?.err ? "var(--amber)" : "rgba(255,178,74,0.95)" }}
               onClick={() => setBldgOn((v) => !v)}>
-              🏙 {bldgOn ? (bldg?.err ? "?" : !bldg?.els ? "…" : bldg?.buildings ? `${bldg.buildings.n} bldgs` : "on") : "buildings"}
+              🏙 {bldgOn ? (bldg?.err ? "?" : !bldg?.boxes ? <Spin /> : bldg?.buildings ? `${bldg.buildings.shown} bldgs` : "on") : "buildings"}
             </button>
           )}
         </div>
@@ -3047,10 +3069,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
         {bldgOn && bldg?.buildings && (
-          <div style={{ fontSize: 10, color: bldg.buildings.n === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+          <div style={{ fontSize: 10, color: bldg.buildings.shown === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             {bldg.buildings.n === 0
-              ? `🏙 no OSM building footprints found near ${LAT.toFixed(3)}, ${LNG.toFixed(3)}`
-              : `🏙 ${bldg.buildings.n} rooftop${bldg.buildings.n === 1 ? "" : "s"} (amber line)${bldg.peak && bldg.peak.el > GAP_EL + 1 ? ` · tallest ${bldg.peak.el.toFixed(1)}° at ${compass8(bldg.peak.az)}` : ""}${bldg.buildings.capped ? " · nearest 600 shown" : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
+              ? `🏙 no OSM building footprints mapped near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — OSM coverage is thin outside cities`
+              : bldg.buildings.shown === 0
+                ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the 12 m–2.5 km draw range`
+                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldg.peak && bldg.peak.el > -900 ? ` · tallest ${bldg.peak.el.toFixed(1)}° at ${compass8(bldg.peak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
           </div>
         )}
         {bldgOn && bldg?.err && (
@@ -3675,7 +3699,7 @@ function PositionEditor({ src, update, others }) {
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); searchPlace(); } }}
                 placeholder="town, address, or landmark — e.g. Grants Pass, OR"
                 style={{ flex: 1, minWidth: 0 }} />
-              <button className="btn sm teal" onClick={searchPlace} disabled={findBusy || !q.trim()}>{findBusy ? "…" : "🔎 Search"}</button>
+              <button className="btn sm teal" onClick={searchPlace} disabled={findBusy || !q.trim()}>{findBusy ? <Spin /> : "🔎 Search"}</button>
             </div>
             {Array.isArray(places) && places.length > 0 && (
               <div style={{ marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
@@ -3704,7 +3728,7 @@ function PositionEditor({ src, update, others }) {
             </div>
             <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               {ENABLE_GPS_BUTTON && (
-                <button className="btn sm teal" onClick={grabLocation}>{geoBusy ? "Locating…" : "📍 Use my GPS"}</button>
+                <button className="btn sm teal" onClick={grabLocation}>{geoBusy ? <><Spin style={{ marginRight: 6 }} />Locating</> : "📍 Use my GPS"}</button>
               )}
               {!posDone && src.meta && isNum(src.meta.lat) && (
                 <button className="btn sm amber" onClick={() => update({ lat: String(src.meta.lat), lon: String(src.meta.lon), ...(isNum(src.meta.alt) ? { alt: String(src.meta.alt) } : {}) })}>
@@ -3712,7 +3736,7 @@ function PositionEditor({ src, update, others }) {
                 </button>
               )}
               {posDone && (
-                <button className="btn sm" onClick={grabDem} disabled={demBusy}>{demBusy ? "…" : "⛰ Use terrain elevation"}</button>
+                <button className="btn sm" onClick={grabDem} disabled={demBusy}>{demBusy ? <Spin /> : "⛰ Use terrain elevation"}</button>
               )}
               <span style={{ fontSize: 11, color: "var(--dim)" }}>{ENABLE_GPS_BUTTON ? "or long-press the spot in a maps app → paste" : "long-press your spot in a maps app → paste, or drag the map below"}</span>
             </div>
@@ -3870,7 +3894,7 @@ function AdsbCheck({ sources }) {
         it sits off each witness's sight-line. Type → wingspan gives an absolute size check.
       </div>
       <button className="btn teal" style={{ width: "100%", marginTop: 10 }} onClick={run} disabled={busy}>
-        {busy ? "Querying traffic…" : ageMin > 15 ? "🛰 Check archived traffic at the sighting time" : "🛰 Check live aircraft now"}
+        {busy ? <><Spin style={{ marginRight: 6 }} />Querying traffic</> : ageMin > 15 ? "🛰 Check archived traffic at the sighting time" : "🛰 Check live aircraft now"}
       </button>
       {err && <div className="warn">{err}</div>}
       {data && !data.hist && ageMin > 15 && (
