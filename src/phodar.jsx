@@ -1724,11 +1724,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return () => { dead = true; };
   }, [open, terrOn, hasPos, LAT, LNG]);
 
-  /* building silhouette (opt-in) — its own dedicated rooftop line */
+  /* building silhouette (opt-in) — its own dedicated rooftop line. Clearing on
+     toggle-off means a toggle-off/on shows the spinner and re-fetches cleanly
+     (the cache dropped any empty/errored result, so this is a real retry). */
   useEffect(() => {
-    if (!open || !bldgOn || !hasPos) return;
+    if (!open || !bldgOn || !hasPos) { setBldg(null); return; }
     let dead = false;
-    setBldg((b) => b && b.boxes ? b : null);
+    setBldg(null);
     predictedBuildingBoxes(LAT, LNG)
       .then((b) => { if (!dead) setBldg(b); })
       .catch((e) => { if (!dead) setBldg({ err: String(e?.message || e) }); });
@@ -1792,13 +1794,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the named peaks either way. Sort: on-silhouette first, then nearest; cap. */
   const peakMarks = (() => {
     if (!(peaksOn && Array.isArray(peaks)) || !peaks.length) return [];
+    /* keep only peaks ON the visible skyline (not occluded by nearer terrain),
+       then rank by PROMINENCE (elevation), not nearest-first — otherwise the
+       iconic distant summits that dominate the horizon (the Cascades from Bend)
+       get sorted out in favour of tiny local buttes a few km away. */
     const onSil = (pk) => {
       if (pk.el == null || !terr?.els) return true;
       return pk.el >= skylineElAt(terr.els, pk.az) - 1.0;
     };
     return peaks.slice()
-      .sort((a, b) => (onSil(b) - onSil(a)) || (a.distKm - b.distKm))
-      .slice(0, 60);
+      .filter(onSil)
+      .sort((a, b) => (b.eleM || 0) - (a.eleM || 0) || (a.distKm - b.distKm))
+      .slice(0, 150);
   })();
 
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
@@ -2214,12 +2221,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
   /* peaks projected into THIS view — the header count reflects what actually
-     renders (peaks span all 360°, only those you're facing are on screen) */
-  const peakDraw = peakMarks.map((pk) => {
-    const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
-    const pr = project(pk.az, elv);
-    return (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) ? { pk, pr } : null;
-  }).filter(Boolean);
+     renders (peaks span all 360°, only those you're facing are on screen).
+     peakMarks is prominence-ordered, so keep the tallest and drop any whose
+     label would pile onto an already-kept one; cap the on-screen labels. */
+  const peakDraw = (() => {
+    const kept = [];
+    for (const pk of peakMarks) {
+      const elv = pk.el != null ? pk.el : (terr?.els ? skylineElAt(terr.els, pk.az) : 0);
+      const pr = project(pk.az, elv);
+      if (!(pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02)) continue;
+      if (kept.some((k) => Math.abs(k.pr.x - pr.x) < 0.11 && Math.abs(k.pr.y - pr.y) < 0.05)) continue;
+      kept.push({ pk, pr });
+      if (kept.length >= 14) break;
+    }
+    return kept;
+  })();
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
