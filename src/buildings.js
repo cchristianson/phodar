@@ -136,7 +136,9 @@ export function predictedUrbanSkyline(lat, lon, radiusM = 2500) {
     var ground = pair[0].sampleEN, h0 = pair[0].h0, bl = pair[1];
     var bh = buildingHeightSampler(bl.buildings, radiusM);
     var composite = function (e, n) { var gnd = ground(e, n); return gnd == null ? null : gnd + bh(e, n); };
-    var sk = skylineFromSampler(composite, h0);
+    // march from 8 m (not the DEM's 200 m foreground skip): near buildings —
+    // the house across the street — are the whole point of the urban skyline.
+    var sk = skylineFromSampler(composite, h0, 35000, 8);
     return Object.assign({}, sk, { h0: h0, buildings: { n: bl.buildings.length, dropped: bl.dropped, est: bl.est } });
   })();
   urbanCache.set(key, p);

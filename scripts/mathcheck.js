@@ -210,6 +210,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const far = buildingHeightSampler(parsed.buildings, 100); // 300 m building pruned out
   if (far(0, 300) === 0) console.log("  ok   building beyond maxM pruned from the height field");
   else { fails++; console.error("  FAIL distant building not pruned"); }
+
+  // NEAR building (the house across the street) — must render when the urban
+  // march starts close, and is SKIPPED by the DEM's 200 m foreground floor.
+  // This is the exact field bug: "found 62 buildings but none rendered."
+  const njson = { elements: [box(60, 0, 8, { building: "house", height: "10" }, 1)] }; // 10 m tall, 60 m due N
+  const near = parseOverpassBuildings(njson, oLat, oLon);
+  const nbh = buildingHeightSampler(near.buildings);
+  const ncomp = (e, n) => 0 + nbh(e, n);
+  const expNear = Math.atan2(10 - 1.6 - curv(60), 60) * 180 / Math.PI; // ≈ 8° at centre
+  const fromClose = skylineElAt(skylineFromSampler(ncomp, 0, 35000, 8).els, 0);
+  const fromFloor = skylineElAt(skylineFromSampler(ncomp, 0).els, 0); // default 200 m floor
+  approx(fromClose, expNear, 1.2, "near house renders when marched from 8 m"); // tol spans the 16 m footprint depth
+  if (fromFloor < 0.2) console.log(`  ok   same house invisible under the 200 m DEM floor (${fromFloor.toFixed(2)}°) — the bug`);
+  else { fails++; console.error(`  FAIL near house leaked into the 200 m-floor march: ${fromFloor.toFixed(2)}°`); }
 }
 
 // --- detectSkyline: the true horizon must win over foreground foliage.
