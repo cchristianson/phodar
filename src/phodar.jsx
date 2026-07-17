@@ -2,7 +2,14 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
-import { isNum, n1, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits } from "./math/format.js";
+import { isNum, n1, fmtLen, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits, isImperialUnits } from "./math/format.js";
+/* storeys for a height in metres — a friendly cross-check beside the length */
+const storeys = (m) => Math.max(1, Math.round(m / 3.3));
+/* the COMPLEMENTARY unit for a secondary readout (so an imperial user doesn't
+   see "20 ft / 20 ft"): imperial primary ⇒ metric sub, and vice-versa */
+const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} ft`;
+/* compact single-unit speed in the user's system (mph vs km/h) */
+const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -113,7 +120,7 @@ function TrajectoryStereoSection({ stereo }) {
       <div className="grid2" style={{ marginTop: 12 }}>
         <div>
           <ML>Peak speed</ML>
-          <div className="readout" style={{ fontSize: 26 }}>{n1(k.peakSpeed * 2.23694)} mph</div>
+          <div className="readout" style={{ fontSize: 26 }}>{fmtSpeedShort(k.peakSpeed)}</div>
           <div className="readsub">{fmtSpeed(k.peakSpeed)}</div>
         </div>
         <div>
@@ -173,8 +180,8 @@ function SoloTrackSection({ solo, t, setT }) {
             <div className="grid2" style={{ marginTop: 6 }}>
               <div>
                 <ML>{rad ? "True speed" : "Speed"} at {fmtLenShort(D)}</ML>
-                <div className="readout" style={{ fontSize: 22 }}>{n1(D * k.peakSpeed * 2.23694)} mph</div>
-                <div className="readsub">avg {n1(D * k.avgSpeed * 2.23694)} mph{rad ? " · incl. radial" : ""}</div>
+                <div className="readout" style={{ fontSize: 22 }}>{fmtSpeedShort(D * k.peakSpeed)}</div>
+                <div className="readsub">avg {fmtSpeedShort(D * k.avgSpeed)}{rad ? " · incl. radial" : ""}</div>
               </div>
               <div>
                 <ML>Maneuver load</ML>
@@ -3113,18 +3120,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {bldg.buildings.n === 0
               ? `🏙 no OSM building footprints mapped near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — OSM coverage is thin outside cities`
               : bldg.buildings.shown === 0
-                ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the 12 m–2.5 km draw range`
-                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldgPeak ? ` · tallest ${bldgPeak.el.toFixed(1)}° at ${compass8(bldgPeak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
+                ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the ${fmtLenShort(12)}–${fmtLenShort(2500)} draw range`
+                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldgPeak ? ` · tallest ${bldgPeak.el.toFixed(1)}° at ${compass8(bldgPeak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~${fmtLenShort(6)}`}
           </div>
         )}
-        {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (
+        {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (() => {
+          const step = isImperialUnits() ? 0.3048 : 1, stepLbl = isImperialUnits() ? "1 ft" : "1 m";
+          return (
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 3, pointerEvents: "auto" }}>
-            <span style={{ color: "rgba(255,178,74,0.9)" }}>📷 camera ≈ {camH.toFixed(1)} m up</span>
-            <span>{isNum(source?.camH) ? "(set by hand)" : autoCamH != null ? "(GPS alt − terrain, ±5 m — nudge if rooftops sit wrong)" : "(assumed eye height — no GPS altitude in photo)"}</span>
-            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: clampN(camH - 1, 1.6, 300) })}>−1 m</button>
-            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: clampN(camH + 1, 1.6, 300) })}>+1 m</button>
+            <span style={{ color: "rgba(255,178,74,0.9)" }}>📷 camera ≈ {fmtLenShort(camH)} up {camH > 2 ? `(≈${storeys(camH)} fl)` : ""}</span>
+            <span>{isNum(source?.camH) ? "(set by hand)" : autoCamH != null ? "(GPS alt − terrain — nudge if rooftops sit wrong)" : "(assumed eye height — no GPS altitude in photo)"}</span>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH - step, 1.6, 300).toFixed(2) })}>−{stepLbl}</button>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH + step, 1.6, 300).toFixed(2) })}>+{stepLbl}</button>
             {isNum(source?.camH) && autoCamH != null && <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: null })}>auto</button>}
           </div>
+          );
+        })()}
         )}
         {bldgOn && bldg?.err && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
@@ -3733,7 +3744,7 @@ function PositionEditor({ src, update, others }) {
     try {
       const h = await demElevation(+src.lat, +src.lon);
       update({ alt: h.toFixed(0) });
-      setDemMsg(`✓ terrain elevation ${h.toFixed(0)} m — steadier than phone GPS altitude (±5 m wobble)`);
+      setDemMsg(`✓ terrain elevation ${fmtLenShort(h)} — steadier than phone GPS altitude (±5 m wobble)`);
     } catch (e) { setDemMsg("Terrain lookup failed — check the connection."); }
     setDemBusy(false);
   };
@@ -3854,32 +3865,38 @@ function PositionEditor({ src, update, others }) {
                 <div style={{ marginTop: 6, position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <ML style={{ marginBottom: 1 }}>Camera height off the ground</ML>
-                    <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{camH.toFixed(1)} m {camH <= 2 ? "(standing)" : camH <= 4 ? "(≈1 floor)" : `(≈${Math.max(1, Math.round(camH / 3.3))} floors)`}</span>
+                    <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{fmtLenShort(camH)} · {camH <= 2 ? "standing" : `≈${storeys(camH)} floor${storeys(camH) > 1 ? "s" : ""}`}</span>
                   </div>
                   <input type="range" min={0} max={60} step={0.5} value={camH}
                     onPointerDown={pokeCamHint} onChange={(e) => { setCamH(+e.target.value); pokeCamHint(); }} />
                   {/* momentary side-view of the camera height while sliding */}
                   <div style={{ position: "absolute", right: 0, bottom: 26, width: 116, height: 92, background: "rgba(10,15,28,.96)", border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 6px 18px rgba(0,0,0,.5)", opacity: camHint ? 1 : 0, transform: camHint ? "translateY(0)" : "translateY(4px)", transition: "opacity .18s, transform .18s", pointerEvents: "none", zIndex: 5 }}>
                     {(() => {
-                      const gy = 78, px = 30, pw = 30; // ground y, structure x + width
-                      const pixH = clampN(camH * 3.2, 3, 62); // scale metres → px (cap so tall shots still fit)
+                      const gy = 74, px = 28, pw = 28; // ground y, structure x + width
+                      const pixH = clampN(camH * 3.2, 3, 58); // scale metres → px (cap so tall shots still fit)
                       const top = gy - pixH;
-                      const eyeH = clampN(1.6 * 3.2, 4, 62); // reference person for scale
+                      const eyeH = clampN(1.6 * 3.2, 4, 58); // reference person for scale
+                      const floorPx = 3.3 * 3.2; // storey height in px, matching storeys()
+                      const nFloors = storeys(camH);
+                      const floorLines = [];
+                      if (camH > 3.5) for (let k = 1; k < nFloors && k * floorPx < pixH - 2; k++) floorLines.push(gy - k * floorPx);
                       return (
                         <svg viewBox="0 0 116 92" width="116" height="92">
                           <line x1="6" y1={gy} x2="110" y2={gy} stroke="#3a4a5c" strokeWidth="1.4" />
-                          <text x="6" y={gy + 11} fill="var(--dim)" fontFamily="var(--mono)" fontSize="8">ground</text>
-                          {/* the structure the camera sits on */}
+                          <text x="6" y={gy + 10} fill="var(--dim)" fontFamily="var(--mono)" fontSize="8">ground</text>
+                          {/* the structure the camera sits on, divided into storeys */}
                           <rect x={px} y={top} width={pw} height={pixH} fill="rgba(255,178,74,0.12)" stroke="rgba(255,178,74,0.8)" strokeWidth="1.2" />
+                          {floorLines.map((fy, i) => <line key={i} x1={px} y1={fy} x2={px + pw} y2={fy} stroke="rgba(255,178,74,0.45)" strokeWidth="0.8" />)}
                           {/* camera eye at the top */}
                           <circle cx={px + pw / 2} cy={top - 3} r="3.2" fill="var(--teal)" />
                           <line x1={px + pw / 2} y1={top} x2={px + pw / 2} y2={top - 1} stroke="var(--teal)" strokeWidth="2" />
                           {/* reference person at ground for scale */}
-                          <circle cx="14" cy={gy - eyeH - 2} r="2.2" fill="#dfe8ff" />
-                          <line x1="14" y1={gy - eyeH} x2="14" y2={gy} stroke="#dfe8ff" strokeWidth="1.8" strokeLinecap="round" />
-                          {/* height dimension */}
-                          <line x1={px + pw + 8} y1={gy} x2={px + pw + 8} y2={top} stroke="var(--amber)" strokeWidth="1" strokeDasharray="2 2" />
-                          <text x={px + pw + 12} y={(gy + top) / 2 + 4} fill="var(--amber)" fontFamily="var(--mono)" fontSize="11" fontWeight="700">{camH.toFixed(1)}m</text>
+                          <circle cx="13" cy={gy - eyeH - 2} r="2.2" fill="#dfe8ff" />
+                          <line x1="13" y1={gy - eyeH} x2="13" y2={gy} stroke="#dfe8ff" strokeWidth="1.8" strokeLinecap="round" />
+                          {/* height dimension + storeys */}
+                          <line x1={px + pw + 7} y1={gy} x2={px + pw + 7} y2={top} stroke="var(--amber)" strokeWidth="1" strokeDasharray="2 2" />
+                          <text x={px + pw + 11} y={(gy + top) / 2 + 1} fill="var(--amber)" fontFamily="var(--mono)" fontSize="10.5" fontWeight="700">{fmtLenShort(camH)}</text>
+                          <text x={px + pw + 11} y={(gy + top) / 2 + 12} fill="var(--dim)" fontFamily="var(--mono)" fontSize="8.5">{camH <= 2 ? "standing" : `≈${nFloors} fl`}</text>
                         </svg>
                       );
                     })()}
@@ -4014,7 +4031,7 @@ function AdsbCheck({ sources }) {
               <div key={c.hex} style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                   <span style={{ color: "var(--ink)", fontWeight: 700 }}>
-                    {c.flight || c.reg || c.hex}{c.t ? ` · ${c.t}` : ""}{c.span != null ? ` · ${c.span.toFixed(0)} m span` : ""}
+                    {c.flight || c.reg || c.hex}{c.t ? ` · ${c.t}` : ""}{c.span != null ? ` · ${fmtLenShort(c.span)} span` : ""}
                   </span>
                   <span style={{ color: on ? "var(--teal)" : near ? "var(--amber)" : "var(--dim)", fontWeight: 700 }}>
                     {on ? "◉ ON the sight-line" : near ? "◎ near" : `${c.sepMax.toFixed(1)}° off`}
@@ -4030,7 +4047,7 @@ function AdsbCheck({ sources }) {
                   );
                 })}
                 <div style={{ color: "var(--dim)", marginTop: 2 }}>
-                  {c.altM != null ? `FL ${(c.altM / FT_M / 100).toFixed(0)} · ` : ""}{c.gs != null ? `${(c.gs * 2.23694).toFixed(0)} mph` : ""}{c.track != null ? ` · trk ${c.track.toFixed(0)}°` : ""}
+                  {c.altM != null ? `FL ${(c.altM / FT_M / 100).toFixed(0)} · ` : ""}{c.gs != null ? fmtSpeedShort(c.gs) : ""}{c.track != null ? ` · trk ${c.track.toFixed(0)}°` : ""}
                 </div>
               </div>
             );
@@ -4074,7 +4091,7 @@ function ResultsPanel({ sources }) {
           <div>
             <ML>Object altitude (above Obs 1)</ML>
             <div className="readout">{fmtLenShort(r.solA.X[2])}</div>
-            <div className="readsub">{n1(r.solA.X[2] * 3.28084)} ft</div>
+            <div className="readsub">{fmtLenAlt(r.solA.X[2])}</div>
           </div>
           <div>
             <ML>Object ground position</ML>
@@ -4101,7 +4118,7 @@ function ResultsPanel({ sources }) {
       {r.sizeAvg != null && (
         <Section title="Object size (from triangulated range)">
           <div className="readout" style={{ fontSize: 30 }}>{fmtLenShort(r.sizeAvg)}</div>
-          <div className="readsub">{n1(r.sizeAvg * 3.28084)} ft across (longest marked dimension)</div>
+          <div className="readsub">{fmtLenAlt(r.sizeAvg)} across (longest marked dimension)</div>
           <div style={{ marginTop: 8, fontSize: 12, color: "var(--dim)" }}>
             Nearest reference: <b style={{ color: "var(--ink)" }}>{REF_OBJECTS.reduce((best, o) => Math.abs(Math.log(o.size / r.sizeAvg)) < Math.abs(Math.log(best.size / r.sizeAvg)) ? o : best).name}</b>
           </div>
@@ -4114,7 +4131,7 @@ function ResultsPanel({ sources }) {
             <div>
               <ML>Displacement</ML>
               <div className="readout">{fmtLenShort(r.motion.disp)}</div>
-              <div className="readsub">Δalt {n1(r.motion.XB[2] - r.solA.X[2])} m</div>
+              <div className="readsub">Δalt {fmtLenShort(r.motion.XB[2] - r.solA.X[2])}</div>
             </div>
             <div>
               <ML>Δ time</ML>
@@ -4427,7 +4444,7 @@ function reportTrajSvg(k) {
   return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
 <polyline points="${spd}" fill="none" stroke="#0e7d6f" stroke-width="2.2"/>
 ${lod ? `<polyline points="${lod}" fill="none" stroke="#C77B14" stroke-width="2" stroke-dasharray="5 4"/>` : ""}
-<text x="${L}" y="${T - 3}" font-size="10" fill="#0e7d6f">speed (peak ${Math.round(k.peakSpeed)} m/s · ${Math.round(k.peakSpeed * 2.23694)} mph)</text>
+<text x="${L}" y="${T - 3}" font-size="10" fill="#0e7d6f">speed (peak ${fmtSpeedShort(k.peakSpeed)})</text>
 ${lod ? `<text x="${W - Rm}" y="${T - 3}" font-size="10" fill="#C77B14" text-anchor="end">felt load (peak ${k.peakLoad?.toFixed(1)} g, dashed)</text>` : ""}
 <text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">${(t1 - t0).toFixed(1)} s</text>
 </svg>`;
@@ -4498,9 +4515,14 @@ async function reportHtml(sources, est, opts = {}) {
   const e2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const dv = (s) => (s === "" || s == null ? "—" : e2(s));
   const ft = (m) => Math.round(m * 3.28084);
+  /* length as "primary (complementary)" respecting the user's unit choice, so
+     an imperial report reads "20 ft (6 m)" not the redundant "20 ft (20 ft)" */
+  const lp = (m) => `${fmtLenShort(m)}${isImperialUnits() ? ` (${n1(m)} m)` : ` (${ft(m)} ft)`}`;
+  /* speed in the user's primary system with the other as a cross-check */
+  const sp = (ms) => isImperialUnits() ? `${Math.round(ms * 2.23694)} mph (${Math.round(ms * 3.6)} km/h)` : `${Math.round(ms)} m/s (${Math.round(ms * 2.23694)} mph)`;
   const row = (k, v) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`;
   const obsRows = packed.map((s, i) =>
-    `<tr><td>${e2(s.name || "Observer " + (i + 1))}</td><td>${dv(s.lat)}, ${dv(s.lon)} · ${dv(s.alt || 0)} m</td><td>${s.whenMs ? new Date(+s.whenMs).toLocaleString() : "—"}</td><td>${dv(s.A?.az)}° / ${dv(s.A?.el)}°</td><td>${isNum(s.fovH) ? (+s.fovH).toFixed(1) + "°" : "—"}</td><td>${(s.track || []).length}</td></tr>`
+    `<tr><td>${e2(s.name || "Observer " + (i + 1))}</td><td>${dv(s.lat)}, ${dv(s.lon)} · ${fmtLenShort(+(s.alt) || 0)}</td><td>${s.whenMs ? new Date(+s.whenMs).toLocaleString() : "—"}</td><td>${dv(s.A?.az)}° / ${dv(s.A?.el)}°</td><td>${isNum(s.fovH) ? (+s.fovH).toFixed(1) + "°" : "—"}</td><td>${(s.track || []).length}</td></tr>`
   ).join("");
 
   /* --- is an object (az,el) inside a photo's frame? Projects it through the
@@ -4553,7 +4575,7 @@ async function reportHtml(sources, est, opts = {}) {
   if (fix.ok) {
     const mslA = fix.solA.X[2] + (fix.ref.alt || 0);
     const geomTbl = `<table><tr><th>Observer</th><th>Range</th><th>Angular size</th><th>→ True size</th></tr>` +
-      fix.perSource.map((p) => `<tr><td>${e2(p.name || "—")}</td><td>${fmtLenShort(p.dist)}</td><td>${p.ang != null ? fmtDeg(p.ang) : "—"}</td><td>${p.size != null ? `${fmtLenShort(p.size)} (${ft(p.size)} ft)` : "—"}</td></tr>`).join("") +
+      fix.perSource.map((p) => `<tr><td>${e2(p.name || "—")}</td><td>${fmtLenShort(p.dist)}</td><td>${p.ang != null ? fmtDeg(p.ang) : "—"}</td><td>${p.size != null ? lp(p.size) : "—"}</td></tr>`).join("") +
       `</table>`;
     const qualTbl = `<table>` +
       row("Baseline (observer separation)", fmtLenShort(fix.baseline)) +
@@ -4565,13 +4587,13 @@ async function reportHtml(sources, est, opts = {}) {
       `</table>`;
     fixHtml = `<table>` +
       row("Object ground position", `${fix.geoA.lat.toFixed(5)}, ${fix.geoA.lon.toFixed(5)} (± ${fmtLenShort(fix.posErr)})`) +
-      row("Altitude above observer 1", `${fmtLenShort(fix.solA.X[2])} (${ft(fix.solA.X[2])} ft)`) +
-      row("Altitude (MSL)", `${fmtLenShort(mslA)} (${ft(mslA)} ft)`) +
+      row("Altitude above observer 1", lp(fix.solA.X[2])) +
+      row("Altitude (MSL)", lp(mslA)) +
       row("Range from observer 1", fmtLenShort(fix.perSource[0].dist)) +
-      (fix.sizeAvg != null ? row("Object size (avg)", `${fmtLenShort(fix.sizeAvg)} (${ft(fix.sizeAvg)} ft)`) : "") +
+      (fix.sizeAvg != null ? row("Object size (avg)", lp(fix.sizeAvg)) : "") +
       ((asp) => asp ? row("Aspect-corrected span (if elongated)", `${asp.map((x) => `${fmtLenShort(x.S)} @ long-axis ${Math.round(x.psi)}°`).join(" or ")} (${asp[0].n} views${asp[0].rms != null ? `, fit rms ${fmtLenShort(asp[0].rms)}` : ""})`) : "")(aspectSpan(fix)) +
-      (fix.motion?.speed != null ? row("Speed A→B", `${Math.round(fix.motion.speed)} m/s (${Math.round(fix.motion.speed * 2.23694)} mph), heading ${Math.round(fix.motion.heading)}° ${compass8(fix.motion.heading)}${isNum(fix.motion.vRate) ? `, vertical ${fix.motion.vRate >= 0 ? "climb" : "descent"} ${n1(Math.abs(fix.motion.vRate))} m/s` : ""}`) : "") +
-      (fix.motion?.disp != null ? row("Displacement A→B", `${fmtLenShort(fix.motion.disp)}${fix.motion.dt != null ? ` over ${fix.motion.dt.toFixed(2)} s` : ""} (Δalt ${n1(fix.motion.XB[2] - fix.solA.X[2])} m)`) : "") +
+      (fix.motion?.speed != null ? row("Speed A→B", `${sp(fix.motion.speed)}, heading ${Math.round(fix.motion.heading)}° ${compass8(fix.motion.heading)}${isNum(fix.motion.vRate) ? `, vertical ${fix.motion.vRate >= 0 ? "climb" : "descent"} ${fmtSpeedShort(Math.abs(fix.motion.vRate))}` : ""}`) : "") +
+      (fix.motion?.disp != null ? row("Displacement A→B", `${fmtLenShort(fix.motion.disp)}${fix.motion.dt != null ? ` over ${fix.motion.dt.toFixed(2)} s` : ""} (Δalt ${fmtLenShort(fix.motion.XB[2] - fix.solA.X[2])})`) : "") +
       `</table>` +
       (await reportPlotSvg(fix, tr.stereo?.k ? tr.stereo.pos : null)) +
       `<p class="cap">Top-down (satellite basemap): observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>` +
@@ -4643,7 +4665,7 @@ ${xTicks}${yTicks}${refs}${altLine}
       const mum = (fix.ok && fix.sizeAvg != null && projMajorUnits > 1e-6) ? fix.sizeAvg / projMajorUnits : null;
       const { html: viewsHtml, ext } = buildShapeViews(sf, mum, e2);
       const kindLabel = (SHAPES.find((x) => x.k === sf.kind) || {}).label || sf.kind;
-      const dimRow = (lbl, u) => row(lbl, mum != null ? `${fmtLenShort(u * mum)} (${ft(u * mum)} ft)` : `${(u / Math.max(ext.x, ext.y, ext.z, 1e-6)).toFixed(2)}× (relative — no absolute scale)`);
+      const dimRow = (lbl, u) => row(lbl, mum != null ? lp(u * mum) : `${(u / Math.max(ext.x, ext.y, ext.z, 1e-6)).toFixed(2)}× (relative — no absolute scale)`);
       dimsHtml = `<h2>Object dimensions (${sf.kind === "orb" ? "1-view" : SHAPE_VIEWS[sf.kind]?.length === 2 ? "2-view" : "3-view"})</h2>` +
         viewsHtml +
         `<table>` +
@@ -4657,7 +4679,7 @@ ${xTicks}${yTicks}${refs}${altLine}
   const kin = tr.stereo?.k ? `<table>` +
     row("Samples / duration", `${tr.stereo.k.n} pts · ${tr.stereo.k.dur.toFixed(1)} s`) +
     row("Path length", fmtLenShort(tr.stereo.k.path)) +
-    row("Avg / peak speed", `${Math.round(tr.stereo.k.avgSpeed)} / ${Math.round(tr.stereo.k.peakSpeed)} m/s (${Math.round(tr.stereo.k.peakSpeed * 2.23694)} mph peak)`) +
+    row("Avg / peak speed", `${fmtSpeedShort(tr.stereo.k.avgSpeed)} / ${fmtSpeedShort(tr.stereo.k.peakSpeed)} peak`) +
     (tr.stereo.k.peakA != null ? row("Peak acceleration", tr.stereo.k.peakA.toFixed(1) + " m/s²") : "") +
     (tr.stereo.k.peakLoad != null ? row("Peak felt load", tr.stereo.k.peakLoad.toFixed(2) + " g") : "") +
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
@@ -4694,7 +4716,7 @@ ${xTicks}${yTicks}${refs}${altLine}
       const framed = cands.filter((c) => c.per && c.per[0] && inAnyFrame(c.per[0].az, c.per[0].el));
       const rows = framed.slice(0, 8).map((c) => {
         const p = c.per[0];
-        return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? c.span.toFixed(0) + " m" : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${Math.round(c.gs * 2.23694)} mph` : ""}</td></tr>`;
+        return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? fmtLenShort(c.span) : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${fmtSpeedShort(c.gs)}` : ""}</td></tr>`;
       }).join("");
       const best = framed[0];
       const verdict = !cands.length
@@ -4879,8 +4901,8 @@ ${detailBlock}`;
         const v = balloonVerdict(objSpeed, objHeading, wind);
         const cls = v.verdict === "balloon-consistent" ? "" : "cap";
         windHtml = `<h2>Wind check (balloon test)</h2>
-<p class="${cls}">Wind at ${wind.hPa} hPa (≈ ${fmtLenShort(wind.levelM)} MSL; fix ≈ ${fmtLenShort(altMSL)}): <b>${n1(wind.speedMs)} m/s from ${Math.round(wind.fromDeg)}°</b> → drift toward ${Math.round(wind.driftDeg)}°.
-The object (${motionSrc}) moved <b>${n1(objSpeed)} m/s toward ${Math.round(objHeading)}°</b> — heading off by ${Math.round(v.dHead)}°, speed ${isFinite(v.ratio) ? v.ratio.toFixed(1) + "×" : "≫"} the wind.
+<p class="${cls}">Wind at ${wind.hPa} hPa (≈ ${fmtLenShort(wind.levelM)} MSL; fix ≈ ${fmtLenShort(altMSL)}): <b>${fmtSpeedShort(wind.speedMs)} from ${Math.round(wind.fromDeg)}°</b> → drift toward ${Math.round(wind.driftDeg)}°.
+The object (${motionSrc}) moved <b>${fmtSpeedShort(objSpeed)} toward ${Math.round(objHeading)}°</b> — heading off by ${Math.round(v.dHead)}°, speed ${isFinite(v.ratio) ? v.ratio.toFixed(1) + "×" : "≫"} the wind.
 <b>${v.verdict === "balloon-consistent" ? "⚠ Consistent with a wind-borne object (balloon signature)." : v.verdict === "partially wind-like" ? "Partially wind-like — not conclusive either way." : "Not wind-borne: a balloon cannot do this."}</b>
 <span class="cap">(${wind.src})</span></p>`;
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
@@ -5080,9 +5102,9 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt })
           <>
             <ML>Triangulated fix — {fix.obs.length} observers</ML>
             <div style={{ fontFamily: "var(--mono)", fontSize: 13, lineHeight: 1.9 }}>
-              altitude <b style={{ color: "var(--teal)" }}>{fmtLenShort(fix.solA.X[2])}</b> ({Math.round(fix.solA.X[2] * 3.28084)} ft)<br />
-              {fix.sizeAvg != null && <>size <b style={{ color: "var(--teal)" }}>{fmtLenShort(fix.sizeAvg)}</b> ({Math.round(fix.sizeAvg * 3.28084)} ft)<br /></>}
-              {fix.motion?.speed != null && <>speed <b style={{ color: "var(--teal)" }}>{Math.round(fix.motion.speed)} m/s</b> ({Math.round(fix.motion.speed * 2.23694)} mph)<br /></>}
+              altitude <b style={{ color: "var(--teal)" }}>{fmtLenShort(fix.solA.X[2])}</b> ({fmtLenAlt(fix.solA.X[2])})<br />
+              {fix.sizeAvg != null && <>size <b style={{ color: "var(--teal)" }}>{fmtLenShort(fix.sizeAvg)}</b> ({fmtLenAlt(fix.sizeAvg)})<br /></>}
+              {fix.motion?.speed != null && <>speed <b style={{ color: "var(--teal)" }}>{fmtSpeedShort(fix.motion.speed)}</b><br /></>}
               quality <b>{fix.rating}</b> · baseline {fmtLenShort(fix.baseline)} · conv {fix.conv.toFixed(1)}°
             </div>
           </>
