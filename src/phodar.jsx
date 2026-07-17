@@ -2272,14 +2272,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const horizonY = project(effAz, 0).y;
   /* WINDS ALOFT drawn IN the dome — each pressure level is a layer of drift
      arrows draped across the sky, world-anchored (az spokes every 30°) so you
-     pan through them; higher altitude sits higher up (schematic reference
-     distance, since the true height→elevation needs a range we don't have).
-     Arrow points the way that layer's wind pushes, projected into the view;
-     colour = speed. Compare the object's motion to the layer near it. */
+     pan through them; the layers are spread EVENLY from just above the horizon
+     up toward the zenith (higher altitude = higher up), a schematic stack since
+     true height→elevation needs a range we don't have — each arrow still labels
+     its real altitude. Arrow points the way that layer's wind pushes, projected
+     into the view; colour = speed. Compare the object's motion to the layer near it. */
   const windDomeField = (windOn && windProf?.levels && !cameraOn && vp) ? (() => {
-    const D = 6000, out = [];
-    for (const L of windProf.levels) {
-      const elL = clampN(Math.atan2(L.levelM, D) * R2D, 1.2, 84);
+    const out = [], nL = windProf.levels.length;
+    windProf.levels.forEach((L, li) => {
+      // spread the layers EVENLY across the whole dome (surface→near-zenith) so
+      // they never vanish above the aim point; heights are schematic anyway,
+      // and each arrow carries its true altitude label.
+      const elL = nL > 1 ? 7 + (li / (nL - 1)) * 76 : 45; // 7°..83°
       const col = windColor(L.speedMs);
       const beta = L.driftDeg * RAD, hE = Math.sin(beta), hN = Math.cos(beta);
       const kLen = clampN(L.speedMs / 16, 0.2, 1.1) * 0.16; // displacement ∝ speed
@@ -2295,7 +2299,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (!leftmost || b.x < leftmost.x) leftmost = { x: b.x, y: b.y };
       }
       if (leftmost) out.push({ label: true, x: leftmost.x, y: leftmost.y, col, alt: L.levelM, spd: L.speedMs });
-    }
+    });
     return out;
   })() : [];
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
