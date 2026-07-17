@@ -1788,25 +1788,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .catch((e) => { if (!dead) setPeaks({ err: String(e?.message || e) }); });
     return () => { dead = true; };
   }, [open, peaksOn, hasPos, LAT, LNG]); // eslint-disable-line
-  /* Show the named summits/hills near the observer. Those that sit ON the
-     terrain silhouette (elevation at/above the DEM skyline at their azimuth)
-     are prioritised, but nothing is HARD-hidden — a peak the app thinks is
-     occluded may just be DEM/OSM height disagreement, and the user wants to see
-     the named peaks either way. Sort: on-silhouette first, then nearest; cap. */
+  /* Named summits that actually sit ON the drawn DEM silhouette — a peak's own
+     angular elevation (from its OSM `ele`) must land within a small band of the
+     terrain skyline at its azimuth: below it ⇒ occluded by nearer terrain (drop
+     it), well above ⇒ the DEM undersampled/didn't reach it (also drop — it's not
+     on the line you align to). No prominence cap, so EVERY visible silhouette
+     peak is caught; `elv` is where to sit the marker on the line. Until the
+     terrain loads we can't test, so show a nearest-first sample provisionally. */
   const peakMarks = (() => {
     if (!(peaksOn && Array.isArray(peaks)) || !peaks.length) return [];
-    /* keep only peaks ON the visible skyline (not occluded by nearer terrain),
-       then rank by PROMINENCE (elevation), not nearest-first — otherwise the
-       iconic distant summits that dominate the horizon (the Cascades from Bend)
-       get sorted out in favour of tiny local buttes a few km away. */
-    const onSil = (pk) => {
-      if (pk.el == null || !terr?.els) return true;
-      return pk.el >= skylineElAt(terr.els, pk.az) - 1.0;
-    };
-    return peaks.slice()
-      .filter(onSil)
-      .sort((a, b) => (b.eleM || 0) - (a.eleM || 0) || (a.distKm - b.distKm))
-      .slice(0, 150);
+    if (!terr?.els) return peaks.slice().sort((a, b) => a.distKm - b.distKm).slice(0, 40).map((pk) => ({ ...pk, elv: pk.el ?? 0 }));
+    const out = [];
+    for (const pk of peaks) {
+      const sky = skylineElAt(terr.els, pk.az);
+      if (pk.el == null) { out.push({ ...pk, elv: sky }); continue; } // no ele → assume it's the local ridge
+      if (Math.abs(pk.el - sky) <= 0.9) out.push({ ...pk, elv: sky }); // its summit coincides with the drawn skyline → on it
+    }
+    return out;
   })();
 
   /* tap a plane chip → detail card (identity via adsbdb, scheduled route) */
@@ -2234,26 +2232,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      peakMarks is prominence-ordered, so keep the tallest and drop any whose
      label would pile onto an already-kept one; cap the on-screen labels. */
   const peakDraw = (() => {
-    const cand = [];
+    // every on-silhouette peak in view gets a marker (caught); names are added
+    // to as many as fit, tallest-first, tiered so they don't collide (row = -1
+    // ⇒ marker only). elv already places it on the drawn terrain line.
+    const inView = [];
     for (const pk of peakMarks) {
-      // sit the marker ON the drawn terrain silhouette at its azimuth (its own
-      // ele can differ slightly from the DEM line; the line is what you align to)
-      const elv = terr?.els ? skylineElAt(terr.els, pk.az) : (pk.el != null ? pk.el : 0);
-      const pr = project(pk.az, elv);
-      if (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) cand.push({ pk, pr });
+      const pr = project(pk.az, pk.elv);
+      if (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) inView.push({ pk, pr, row: -1 });
     }
-    cand.sort((a, b) => a.pr.x - b.pr.x); // left→right so labels pack into rows
-    const kept = [];
-    for (const c of cand) {
-      if (kept.some((k) => Math.abs(k.pr.x - c.pr.x) < 0.02 && Math.abs(k.pr.y - c.pr.y) < 0.02)) continue; // same spot
-      // lowest row (tier) whose recent label doesn't overlap this one horizontally
+    const byProm = inView.slice().sort((a, b) => (b.pk.eleM || 0) - (a.pk.eleM || 0));
+    const named = [];
+    for (const c of byProm) {
+      if (named.some((k) => Math.abs(k.pr.x - c.pr.x) < 0.02 && Math.abs(k.pr.y - c.pr.y) < 0.02)) continue; // exact dup
       let row = 0;
-      while (row < 4 && kept.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.14)) row++;
-      if (row >= 4) continue; // too crowded here — drop the least prominent
-      kept.push({ ...c, row });
-      if (kept.length >= 22) break;
+      while (row < 4 && named.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.13)) row++;
+      if (row >= 4) continue; // no room for a name here — stays a bare marker
+      c.row = row; named.push(c);
+      if (named.length >= 26) break;
     }
-    return kept;
+    return inView;
   })();
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
@@ -2731,12 +2728,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const ele = pk.eleM != null ? (isImperialUnits() ? Math.round(pk.eleM * 3.28084).toLocaleString() + " ft" : Math.round(pk.eleM).toLocaleString() + " m") : null;
           return (
             <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
-              <div style={{ lineHeight: 1.05, textAlign: "center" }}>
-                <div style={{ fontSize: 8, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>{pk.name}</div>
-                {ele && <div style={{ fontSize: 7, fontFamily: "var(--mono)", color: ridgeCol(0.78), textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap" }}>{ele}</div>}
-              </div>
-              {lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.5) }} />}
-              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "3px solid transparent", borderRight: "3px solid transparent", borderBottom: `5px solid ${ridgeCol(0.98)}` }} />
+              {row >= 0 && (
+                <div style={{ lineHeight: 1.05, textAlign: "center" }}>
+                  <div style={{ fontSize: 8, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>{pk.name}</div>
+                  {ele && <div style={{ fontSize: 7, fontFamily: "var(--mono)", color: ridgeCol(0.78), textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap" }}>{ele}</div>}
+                </div>
+              )}
+              {row >= 0 && lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.5) }} />}
+              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "3px solid transparent", borderRight: "3px solid transparent", borderBottom: `5px solid ${ridgeCol(row >= 0 ? 0.98 : 0.7)}` }} />
             </div>
           );
         })}
@@ -3134,7 +3133,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <button className="btn sm" title="Named peaks (OpenStreetMap) placed on the terrain skyline — a labeled summit on the horizon is also a compass check"
               style={{ background: "rgba(15,23,42,.7)", color: !peaksOn ? "var(--dim)" : peaks?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
               onClick={() => setPeaksOn((v) => !v)}>
-              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakDraw.length}${Array.isArray(peaks) && peaks.length > peakDraw.length ? `/${peaks.length}` : ""}`) : "peaks"}
+              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakDraw.length}${peakMarks.length > peakDraw.length ? `/${peakMarks.length}` : ""}`) : "peaks"}
             </button>
           )}
           {hasPos && (
