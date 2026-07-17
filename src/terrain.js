@@ -190,13 +190,15 @@ export function demSampler(lat, lon) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
   if (demCache.has(key)) return demCache.get(key);
   const p = (async () => {
-    // THREE nested resolutions so the skyline reaches FAR prominent summits
-    // (from Bend the Cascades run 20 km → Hood ~140 km): z13 fine (~±7 km),
-    // z11 mid (~±35 km), z9 far (~±140 km, coarse but plenty for a 3 km peak).
+    // THREE nested resolutions so the skyline reaches essentially every summit
+    // that clears the horizon (from ~1 km up that's ~200 km for a big peak;
+    // farther, earth curvature hides it — and the march already drops anything
+    // blocked by nearer terrain). z13 fine (~±7 km), z10 mid (~±70 km),
+    // z8 far (~±280 km, coarse but a 3 km peak is a few px even there).
     const [fine, mid, far] = await Promise.all([
       loadGrid(lat, lon, 13, 1),
-      loadGrid(lat, lon, 11, 2),
-      loadGrid(lat, lon, 9, 2),
+      loadGrid(lat, lon, 10, 2),
+      loadGrid(lat, lon, 8, 2),
     ]);
     const mLat = 111320, mLon = 111320 * Math.max(0.2, Math.cos(lat * D2R));
     const sampleEN = (e, n) => {
@@ -221,7 +223,7 @@ export async function predictedSkyline(lat, lon) {
   if (skyCache.has(key)) return skyCache.get(key);
   const p = (async () => {
     const { sampleEN, h0 } = await demSampler(lat, lon);
-    const sk = skylineFromSampler(sampleEN, h0, 140000); // reach distant Cascade-scale summits
+    const sk = skylineFromSampler(sampleEN, h0, 220000); // out to the curvature horizon for tall peaks
     return { ...sk, h0 };
   })();
   skyCache.set(key, p);
