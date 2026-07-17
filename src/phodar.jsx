@@ -2270,6 +2270,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return kept;
   })();
   const horizonY = project(effAz, 0).y;
+  /* WINDS ALOFT drawn IN the dome — each pressure level is a layer of drift
+     arrows draped across the sky, world-anchored (az spokes every 30°) so you
+     pan through them; higher altitude sits higher up (schematic reference
+     distance, since the true height→elevation needs a range we don't have).
+     Arrow points the way that layer's wind pushes, projected into the view;
+     colour = speed. Compare the object's motion to the layer near it. */
+  const windDomeField = (windOn && windProf?.levels && !cameraOn && vp) ? (() => {
+    const D = 6000, out = [];
+    for (const L of windProf.levels) {
+      const elL = clampN(Math.atan2(L.levelM, D) * R2D, 1.2, 84);
+      const col = windColor(L.speedMs);
+      const beta = L.driftDeg * RAD, hE = Math.sin(beta), hN = Math.cos(beta);
+      const kLen = clampN(L.speedMs / 16, 0.2, 1.1) * 0.16; // displacement ∝ speed
+      let leftmost = null;
+      for (let az = 0; az < 360; az += 30) {
+        const u = dirOf(az, elL), b = projectD(u);
+        if (!b.inFront || b.x < 0.04 || b.x > 0.96 || b.y < 0.03 || b.y > 0.97) continue;
+        const v = [u[0] + kLen * hE, u[1] + kLen * hN, u[2]];
+        const m = Math.hypot(v[0], v[1], v[2]), t = projectD([v[0] / m, v[1] / m, v[2] / m]);
+        if (!t.inFront) continue;
+        const dx = (t.x - b.x) * vp.w, dy = (t.y - b.y) * vp.h;
+        out.push({ x: b.x, y: b.y, ang: Math.atan2(dy, dx) * R2D, len: clampN(Math.hypot(dx, dy), 13, 58), col });
+        if (!leftmost || b.x < leftmost.x) leftmost = { x: b.x, y: b.y };
+      }
+      if (leftmost) out.push({ label: true, x: leftmost.x, y: leftmost.y, col, alt: L.levelM, spd: L.speedMs });
+    }
+    return out;
+  })() : [];
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
   /* while aligning, label EVERY named star in view (you're picking anchors);
@@ -2739,27 +2767,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {/* winds-aloft profile — the balloon test made visual. Arrows point the
             way the wind PUSHES (drift) at each altitude, true-north-up; colour +
             number give speed. An object riding one of these is likely a balloon. */}
-        {windOn && windProf?.levels && (
-          <div style={{ position: "absolute", left: 8, top: "calc(150px + env(safe-area-inset-top))", background: "rgba(7,11,20,.8)", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 8px 5px", pointerEvents: "none", zIndex: 200, fontFamily: "var(--mono)" }}>
-            <div style={{ fontSize: 8.5, letterSpacing: ".08em", color: "#9fdcff", fontWeight: 700, marginBottom: 3 }}>🎈 WINDS ALOFT · N↑</div>
-            {windProf.levels.slice().reverse().map((L, i) => {
-              const spd = isImperialUnits() ? L.speedMs * 2.23694 : L.speedMs * 3.6;
-              const unit = isImperialUnits() ? "mph" : "km/h";
-              const altLbl = isImperialUnits() ? `${(Math.round(L.levelM * 3.28084 / 100) * 100).toLocaleString()} ft` : `${(L.levelM / 1000).toFixed(1)} km`;
-              const col = windColor(L.speedMs);
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 8.5, color: "var(--dim)", height: 15 }}>
-                  <span style={{ width: 46, textAlign: "right" }}>{altLbl}</span>
-                  <svg width="13" height="13" viewBox="-7 -7 14 14" style={{ transform: `rotate(${L.driftDeg}deg)`, flex: "0 0 auto" }}>
-                    <line x1="0" y1="5.5" x2="0" y2="-3" stroke={col} strokeWidth="1.5" />
-                    <polygon points="0,-6.5 -3,-1.5 3,-1.5" fill={col} />
-                  </svg>
-                  <span style={{ width: 48, color: col, fontWeight: 700 }}>{Math.round(spd)} {unit}</span>
-                </div>
-              );
-            })}
-            <div style={{ fontSize: 7.5, color: "var(--dim)", marginTop: 3, maxWidth: 128, lineHeight: 1.2 }}>arrow = way it drifts · balloons ride these</div>
+        {windDomeField.map((a, i) => a.label ? (
+          <div key={"wl" + i} style={{ position: "absolute", left: (a.x * 100) + "%", top: (a.y * 100) + "%", transform: "translate(-102%,-50%)", fontSize: 7.5, fontFamily: "var(--mono)", fontWeight: 700, color: a.col, textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap", pointerEvents: "none", zIndex: 199 }}>
+            {isImperialUnits() ? `${(Math.round(a.alt * 3.28084 / 100) * 100).toLocaleString()} ft` : `${(a.alt / 1000).toFixed(1)} km`} · {fmtSpeedShort(a.spd)}
           </div>
+        ) : (
+          <div key={"wa" + i} style={{ position: "absolute", left: (a.x * 100) + "%", top: (a.y * 100) + "%", width: a.len, height: 9, marginTop: -4.5, transformOrigin: "0 4.5px", transform: `rotate(${a.ang}deg)`, pointerEvents: "none", zIndex: 199 }}>
+            <svg width={a.len} height="9" style={{ overflow: "visible", filter: "drop-shadow(0 1px 1px rgba(0,0,0,.8))" }}>
+              <line x1="0" y1="4.5" x2={a.len - 5} y2="4.5" stroke={a.col} strokeWidth="1.7" opacity="0.92" />
+              <polygon points={`${a.len},4.5 ${a.len - 6},1.6 ${a.len - 6},7.4`} fill={a.col} opacity="0.92" />
+            </svg>
+          </div>
+        ))}
+        {windOn && windProf?.levels && (
+          <div style={{ position: "absolute", left: 8, top: "calc(146px + env(safe-area-inset-top))", fontSize: 8, fontFamily: "var(--mono)", color: "#9fdcff", textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none", zIndex: 200 }}>🎈 winds aloft — layers by height, arrow = drift · <span style={{ color: "var(--dim)" }}>heights schematic</span></div>
         )}
         {windOn && windProf?.err && (
           <div style={{ position: "absolute", left: 8, top: "calc(150px + env(safe-area-inset-top))", background: "rgba(7,11,20,.8)", border: "1px solid var(--amber)", borderRadius: 10, padding: "6px 8px", pointerEvents: "none", zIndex: 200, fontFamily: "var(--mono)", fontSize: 9, color: "var(--amber)", maxWidth: 150 }}>🎈 winds unavailable — {windProf.err}</div>
