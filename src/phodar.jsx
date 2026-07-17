@@ -2231,26 +2231,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      renders (peaks span all 360°, only those you're facing are on screen).
      peakMarks is prominence-ordered, so keep the tallest and drop any whose
      label would pile onto an already-kept one; cap the on-screen labels. */
-  const peakDraw = (() => {
-    // every on-silhouette peak in view gets a marker (caught); names are added
-    // to as many as fit, tallest-first, tiered so they don't collide (row = -1
-    // ⇒ marker only). elv already places it on the drawn terrain line.
-    const inView = [];
+  /* on-silhouette peaks currently in the view window (for the "N of M" count) */
+  const peakInView = (() => {
+    const iv = [];
     for (const pk of peakMarks) {
       const pr = project(pk.az, pk.elv);
-      if (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) inView.push({ pk, pr, row: -1 });
+      if (pr.inFront && pr.x > 0.01 && pr.x < 0.99 && pr.y > -0.02 && pr.y < 1.02) iv.push({ pk, pr });
     }
-    const byProm = inView.slice().sort((a, b) => (b.pk.eleM || 0) - (a.pk.eleM || 0));
-    const named = [];
-    for (const c of byProm) {
-      if (named.some((k) => Math.abs(k.pr.x - c.pr.x) < 0.02 && Math.abs(k.pr.y - c.pr.y) < 0.02)) continue; // exact dup
+    return iv;
+  })();
+  /* label only the TOP FEW major (tallest) summits — a dense range would bury
+     the view in names — tiered so the handful that show don't collide. */
+  const peakDraw = (() => {
+    const top = peakInView.slice().sort((a, b) => (b.pk.eleM || 0) - (a.pk.eleM || 0)).slice(0, 8);
+    const kept = [];
+    for (const c of top) {
       let row = 0;
-      while (row < 4 && named.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.13)) row++;
-      if (row >= 4) continue; // no room for a name here — stays a bare marker
-      c.row = row; named.push(c);
-      if (named.length >= 26) break;
+      while (row < 3 && kept.some((k) => k.row === row && Math.abs(k.pr.x - c.pr.x) < 0.13)) row++;
+      kept.push({ ...c, row: Math.min(row, 2) });
     }
-    return inView;
+    return kept;
   })();
   const horizonY = project(effAz, 0).y;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
@@ -2728,14 +2728,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const ele = pk.eleM != null ? (isImperialUnits() ? Math.round(pk.eleM * 3.28084).toLocaleString() + " ft" : Math.round(pk.eleM).toLocaleString() + " m") : null;
           return (
             <div key={"pk" + i} style={{ position: "absolute", left: (pr.x * 100) + "%", top: (pr.y * 100) + "%", transform: "translate(-50%,-100%)", display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
-              {row >= 0 && (
-                <div style={{ lineHeight: 1.05, textAlign: "center" }}>
-                  <div style={{ fontSize: 8, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>{pk.name}</div>
-                  {ele && <div style={{ fontSize: 7, fontFamily: "var(--mono)", color: ridgeCol(0.78), textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap" }}>{ele}</div>}
-                </div>
-              )}
-              {row >= 0 && lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.5) }} />}
-              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "3px solid transparent", borderRight: "3px solid transparent", borderBottom: `5px solid ${ridgeCol(row >= 0 ? 0.98 : 0.7)}` }} />
+              <div style={{ lineHeight: 1.05, textAlign: "center" }}>
+                <div style={{ fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: ridgeCol(0.98), textShadow: "0 0 3px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.9)", whiteSpace: "nowrap" }}>{pk.name}</div>
+                {ele && <div style={{ fontSize: 7.5, fontFamily: "var(--mono)", color: ridgeCol(0.78), textShadow: "0 0 3px rgba(0,0,0,.95)", whiteSpace: "nowrap" }}>{ele}</div>}
+              </div>
+              {lift > 0 && <div style={{ width: 1, height: lift, background: ridgeCol(0.5) }} />}
+              <div style={{ width: 0, height: 0, marginTop: 1, borderLeft: "3px solid transparent", borderRight: "3px solid transparent", borderBottom: `5px solid ${ridgeCol(0.98)}` }} />
             </div>
           );
         })}
@@ -3133,7 +3131,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <button className="btn sm" title="Named peaks (OpenStreetMap) placed on the terrain skyline — a labeled summit on the horizon is also a compass check"
               style={{ background: "rgba(15,23,42,.7)", color: !peaksOn ? "var(--dim)" : peaks?.err ? "var(--amber)" : "rgba(158,224,138,0.95)" }}
               onClick={() => setPeaksOn((v) => !v)}>
-              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakDraw.length}${peakMarks.length > peakDraw.length ? `/${peakMarks.length}` : ""}`) : "peaks"}
+              ⛰ {peaksOn ? (peaks?.err ? "?" : !peaks ? <Spin /> : `peaks ${peakDraw.length}${peakInView.length > peakDraw.length ? ` of ${peakInView.length}` : ""}`) : "peaks"}
             </button>
           )}
           {hasPos && (
