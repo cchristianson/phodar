@@ -14,7 +14,7 @@ import { fetchWindAt, balloonVerdict } from "./checks/winds.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
-import { predictedBuildingBoxes } from "./buildings.js";
+import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -2145,15 +2145,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const camH = isNum(source?.camH) ? clampN(+source.camH, 1.6, 300)
     : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
   const bldgBoxes = (bldgOn && bldg?.boxes && !cameraOn) ? (() => {
-    const K = 0.13, eye = camH, out = [];
+    const K = 0.13, eye = camH;
+    /* 1) project each in-view box → roof/base points (screen units), its solid
+          occluding silhouette (hull of all 8 corners) + a 2D bbox. bldg.boxes
+          is already nearest-first, so occluders are the ones earlier in `proj`. */
+    const proj = [];
     for (const b of bldg.boxes) {
       let cE = 0, cN = 0;
       for (const p of b.ring) { cE += p[0]; cN += p[1]; }
       cE /= b.ring.length; cN /= b.ring.length;
       const cAz = ((Math.atan2(cE, cN) * R2D) + 360) % 360;
       const da = ((cAz - effAz + 540) % 360) - 180;
-      if (Math.abs(da) > 120) continue; // outside the visible dome window
-      const roof = [], base = []; let ok = true;
+      if (Math.abs(da) > 115) continue; // outside the visible dome window
+      const roof = [], base = [], all = []; let ok = true;
       for (const [e, n] of b.ring) {
         const dist = Math.hypot(e, n);
         const az = ((Math.atan2(e, n) * R2D) + 360) % 360;
@@ -2161,13 +2165,30 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const rp = project(az, Math.atan2(b.h - eye - curv, dist) * R2D);
         const bp = project(az, Math.atan2(-eye - curv, dist) * R2D);
         if (!rp.inFront || !bp.inFront) { ok = false; break; }
-        roof.push(rp); base.push(bp);
+        roof.push([rp.x, rp.y]); base.push([bp.x, bp.y]); all.push([rp.x, rp.y], [bp.x, bp.y]);
       }
       if (!ok || roof.length < 3) continue;
-      const xy = (p) => (p.x * 100).toFixed(2) + " " + (p.y * 100).toFixed(2);
-      let d = "M " + roof.map(xy).join(" L ") + " Z";
-      for (let i = 0; i < roof.length; i++) d += " M " + xy(base[i]) + " L " + xy(roof[i]);
-      out.push({ d, faint: b.assumed });
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      for (const [x, y] of all) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+      proj.push({ roof, base, hull: convexHull2(all), bbox: [x0, y0, x1, y1], faint: b.assumed });
+    }
+    /* 2) draw each box's edges, clipping away the parts hidden behind nearer
+          boxes (hidden-line removal). Foremost box → full wireframe; farther
+          ones → only what pokes out. Occluder set capped for a dense downtown. */
+    const out = [];
+    for (let i = 0; i < proj.length; i++) {
+      const B = proj[i], hulls = [];
+      for (let j = 0; j < i && hulls.length < 40; j++) if (bboxHit(B.bbox, proj[j].bbox)) hulls.push(proj[j].hull);
+      const edges = [];
+      for (let k = 0; k < B.roof.length; k++) edges.push([B.roof[k], B.roof[(k + 1) % B.roof.length]]); // roofline
+      for (let k = 0; k < B.roof.length; k++) edges.push([B.base[k], B.roof[k]]); // vertical corners
+      let d = "";
+      for (const [p, q] of edges) for (const [t0, t1] of visibleSegs(p, q, hulls)) {
+        const ax = p[0] + (q[0] - p[0]) * t0, ay = p[1] + (q[1] - p[1]) * t0;
+        const bx = p[0] + (q[0] - p[0]) * t1, by = p[1] + (q[1] - p[1]) * t1;
+        d += `M ${(ax * 100).toFixed(2)} ${(ay * 100).toFixed(2)} L ${(bx * 100).toFixed(2)} ${(by * 100).toFixed(2)} `;
+      }
+      if (d) out.push({ d, faint: B.faint });
     }
     return out;
   })() : [];

@@ -17,7 +17,7 @@ import { unit, dot } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
-import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak } from "../src/buildings.js";
+import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 
 let fails = 0;
@@ -269,6 +269,40 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(bpk.el, expPk, 0.4, "boxesPeak tallest rooftop elevation (near building wins by angle)");
   if (Math.abs(((bpk.az + 180) % 360) - 180) < 12) console.log(`  ok   boxesPeak azimuth near due N (${bpk.az.toFixed(1)}°)`);
   else { fails++; console.error(`  FAIL boxesPeak az ${bpk.az}`); }
+}
+
+// --- building hidden-line removal: solid-then-wireframe occlusion ---
+{
+  // a unit square occluder [0,1]×[0,1]
+  const sq = convexHull2([[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0.5]]); // interior pt dropped
+  if (sq.length === 4) console.log("  ok   convexHull2 drops interior points (square → 4 corners)");
+  else { fails++; console.error(`  FAIL hull size ${sq.length}: ${JSON.stringify(sq)}`); }
+
+  // a horizontal segment crossing the square from x=-1 to x=2 at y=0.5:
+  // inside interval is t where x∈[0,1] → t∈[1/3, 2/3]
+  const iv = segInsideHull([-1, 0.5], [2, 0.5], sq);
+  if (iv && Math.abs(iv[0] - 1 / 3) < 1e-6 && Math.abs(iv[1] - 2 / 3) < 1e-6) console.log("  ok   segInsideHull finds the occluded interval");
+  else { fails++; console.error(`  FAIL segInsideHull ${JSON.stringify(iv)}`); }
+
+  // a segment entirely above the square is never occluded
+  if (segInsideHull([-1, 2], [2, 2], sq) == null) console.log("  ok   segment clear of the hull is not occluded");
+  else { fails++; console.error("  FAIL clear segment reported occluded"); }
+
+  // visibleSegs subtracts the occluded middle, leaving the two ends visible
+  const vis = visibleSegs([-1, 0.5], [2, 0.5], [sq]);
+  if (vis.length === 2 && Math.abs(vis[0][1] - 1 / 3) < 1e-6 && Math.abs(vis[1][0] - 2 / 3) < 1e-6)
+    console.log("  ok   visibleSegs keeps the two ends, hides the covered middle");
+  else { fails++; console.error(`  FAIL visibleSegs ${JSON.stringify(vis)}`); }
+
+  // a segment fully inside the occluder disappears entirely (fully hidden edge)
+  const gone = visibleSegs([0.2, 0.5], [0.8, 0.5], [sq]);
+  if (gone.length === 0) console.log("  ok   fully-covered edge is removed");
+  else { fails++; console.error(`  FAIL fully-covered edge survived ${JSON.stringify(gone)}`); }
+
+  // an edge with no occluders stays whole (foremost building keeps full wireframe)
+  const whole = visibleSegs([-1, 0.5], [2, 0.5], []);
+  if (whole.length === 1 && whole[0][0] === 0 && whole[0][1] === 1) console.log("  ok   edge with no occluder stays whole");
+  else { fails++; console.error(`  FAIL unoccluded edge changed ${JSON.stringify(whole)}`); }
 }
 
 // --- detectSkyline: the true horizon must win over foreground foliage.
