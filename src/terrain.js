@@ -190,7 +190,10 @@ export function demSampler(lat, lon) {
   const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
   if (demCache.has(key)) return demCache.get(key);
   const p = (async () => {
-    const [fine, coarse] = await Promise.all([loadGrid(lat, lon, 13, 1), loadGrid(lat, lon, 11, 2)]);
+    // z11 7×7 (~±49 km ground at mid-latitudes) so DISTANT prominent summits
+    // are captured — the Cascades sit 35–45 km from Bend and fell just outside
+    // the old 5×5 (~±35 km) grid, so the skyline never rose to them.
+    const [fine, coarse] = await Promise.all([loadGrid(lat, lon, 13, 1), loadGrid(lat, lon, 11, 3)]);
     const mLat = 111320, mLon = 111320 * Math.max(0.2, Math.cos(lat * D2R));
     const sampleEN = (e, n) => {
       const la = lat + n / mLat, lo = lon + e / mLon;
@@ -212,7 +215,7 @@ export async function predictedSkyline(lat, lon) {
   if (skyCache.has(key)) return skyCache.get(key);
   const p = (async () => {
     const { sampleEN, h0 } = await demSampler(lat, lon);
-    const sk = skylineFromSampler(sampleEN, h0);
+    const sk = skylineFromSampler(sampleEN, h0, 48000); // march far enough to reach 35–45 km summits
     return { ...sk, h0 };
   })();
   skyCache.set(key, p);
