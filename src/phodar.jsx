@@ -2135,8 +2135,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      matched to the photo instead of one merged silhouette. Base is the
      observer's ground plane (flat-city assumption); brighter for measured/
      floor-count heights, fainter for assumed ones. */
+  /* camera height above ground for the building boxes. Handheld ground shots
+     are eye height (1.6 m); a photo from an upper floor / balcony sits metres
+     higher, which is exactly why near rooftops looked "too tall". We recover it
+     from EXIF: GPS altitude (meta.alt, above sea level) minus the DEM ground at
+     the observer (terr.h0). GPS altitude wobbles ±5 m, so we only auto-elevate
+     when the difference is clearly real (> 3 m) and let the user nudge it. */
+  const autoCamH = (isNum(source?.meta?.alt) && terr?.h0 != null) ? +source.meta.alt - terr.h0 : null;
+  const camH = isNum(source?.camH) ? clampN(+source.camH, 1.6, 300)
+    : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
   const bldgBoxes = (bldgOn && bldg?.boxes && !cameraOn) ? (() => {
-    const K = 0.13, eye = 1.6, out = [];
+    const K = 0.13, eye = camH, out = [];
     for (const b of bldg.boxes) {
       let cE = 0, cN = 0;
       for (const p of b.ring) { cE += p[0]; cN += p[1]; }
@@ -2162,8 +2171,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
     return out;
   })() : [];
-  const bldgLbl = (bldgOn && bldg?.peak && bldg.peak.el > -900) ? (() => {
-    const p = project(bldg.peak.az, bldg.peak.el);
+  /* tallest rooftop (using the effective camera height) — for the label + note */
+  const bldgPeak = (bldgOn && bldg?.boxes && bldg.boxes.length) ? (() => {
+    let pk = { el: -999, az: 0 };
+    for (const b of bldg.boxes) for (const [e, n] of b.ring) {
+      const dist = Math.hypot(e, n); if (dist < 1) continue;
+      const el = Math.atan2(b.h - camH - (dist * dist * 0.87) / (2 * 6371000), dist) * R2D;
+      if (el > pk.el) pk = { el, az: ((Math.atan2(e, n) * R2D) + 360) % 360 };
+    }
+    return pk.el > -900 ? pk : null;
+  })() : null;
+  const bldgLbl = bldgPeak ? (() => {
+    const p = project(bldgPeak.az, bldgPeak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
   const horizonY = project(effAz, 0).y;
@@ -3074,7 +3093,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               ? `🏙 no OSM building footprints mapped near ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — OSM coverage is thin outside cities`
               : bldg.buildings.shown === 0
                 ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the 12 m–2.5 km draw range`
-                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldg.peak && bldg.peak.el > -900 ? ` · tallest ${bldg.peak.el.toFixed(1)}° at ${compass8(bldg.peak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
+                : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"} (amber boxes${bldg.buildings.n > bldg.buildings.shown ? `, nearest of ${bldg.buildings.n}` : ""})${bldgPeak ? ` · tallest ${bldgPeak.el.toFixed(1)}° at ${compass8(bldgPeak.az)}` : ""} — ${bldg.buildings.known} measured, ${bldg.buildings.est} from floors, ${bldg.buildings.assumed} assumed ~6 m`}
+          </div>
+        )}
+        {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 3, pointerEvents: "auto" }}>
+            <span style={{ color: "rgba(255,178,74,0.9)" }}>📷 camera ≈ {camH.toFixed(1)} m up</span>
+            <span>{isNum(source?.camH) ? "(set by hand)" : autoCamH != null ? "(GPS alt − terrain, ±5 m — nudge if rooftops sit wrong)" : "(assumed eye height — no GPS altitude in photo)"}</span>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: clampN(camH - 1, 1.6, 300) })}>−1 m</button>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: clampN(camH + 1, 1.6, 300) })}>+1 m</button>
+            {isNum(source?.camH) && autoCamH != null && <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: null })}>auto</button>}
           </div>
         )}
         {bldgOn && bldg?.err && (
