@@ -4,6 +4,28 @@
   "description": "PHOtogrammetric Detection And Ranging — turn sighting photos into triangulated position, size, altitude & speed.",
   "type": "module",
   "license": "MIT",
+  "author": "Court Christianson and Phodar contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cchristianson/phodar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cchristianson/phodar/issues"
+  },
+  "homepage": "https://github.com/cchristianson/phodar#readme",
+  "keywords": [
+    "ufo",
+    "uap",
+    "photogrammetry",
+    "triangulation",
+    "exif",
+    "astronomy",
+    "adsb",
+    "react"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest a capability, cross-check, or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Phodar's north star is **honest measurement + ranked mundane
+        explanations**. Features that add a new cross-check (predicted
+        az/el/size/motion vs. the sight-line) or improve calibration honesty
+        fit especially well — see the roadmap in `CLAUDE.md`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem / use case
+      description: What can't you do today, or what's harder than it should be?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should it do? If it's a cross-check, what free data source feeds it?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New cross-check (aircraft / satellite / astro / weather / terrain / …)
+        - Measurement / geometry accuracy
+        - Sky view / calibration UX
+        - Reports / sharing
+        - Video pipeline
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the roadmap in `CLAUDE.md`.
+          required: true
