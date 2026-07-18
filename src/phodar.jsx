@@ -338,6 +338,32 @@ const css = `
   .rotate-lock .ic{font-size:44px; animation:rot-nudge 1.6s ease-in-out infinite;}
   @keyframes rot-nudge{0%,100%{transform:rotate(0)}50%{transform:rotate(-90deg)}}
 }
+.help-q{width:30px; height:30px; flex:0 0 auto; border-radius:50%; border:1px solid var(--line);
+  background:var(--panel2); color:var(--amber); font-weight:800; font-size:15px; line-height:1;
+  cursor:pointer; pointer-events:auto; display:inline-flex; align-items:center; justify-content:center;}
+.help-q:active{transform:translateY(1px);}
+.help-back{position:fixed; inset:0; z-index:4000; background:rgba(3,6,12,.82);
+  -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); display:flex; justify-content:center;}
+.help-panel{width:100%; max-width:560px; background:var(--bg); border-left:1px solid var(--line);
+  border-right:1px solid var(--line); display:flex; flex-direction:column; height:100%;}
+.help-head{display:flex; align-items:center; gap:10px;
+  padding:calc(10px + env(safe-area-inset-top)) 14px 10px; border-bottom:1px solid var(--line);}
+.help-head .ttl{font-family:var(--mono); font-weight:800; letter-spacing:.14em; font-size:13px; flex:1;}
+.help-scroll{overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+  padding:12px 14px calc(34px + env(safe-area-inset-bottom));}
+.help-index{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px;}
+.help-index .chip{cursor:pointer;}
+.help-sec{margin:0 0 24px; scroll-margin-top:8px;}
+.help-sec h3{font-family:var(--mono); font-size:15px; letter-spacing:.05em; color:var(--ink); margin:0 0 6px;}
+.help-sec h4{font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--amber); margin:13px 0 5px;}
+.help-sec p{font-size:13px; line-height:1.55; color:var(--dim); margin:0 0 8px;}
+.help-item{font-size:13px; line-height:1.5; color:var(--ink); padding:3px 0;}
+.help-item b{color:var(--teal); font-family:var(--mono); font-weight:700;}
+.help-tip{font-size:12px; line-height:1.5; color:var(--amber); background:rgba(245,169,63,.08);
+  border:1px solid #7A5A22; border-radius:8px; padding:6px 9px; margin:9px 0;}
+.help-top{margin-top:8px; background:transparent; border:0; color:var(--dim); font-size:11px;
+  cursor:pointer; padding:2px 0;}
+.help-foot{font-size:12px; color:var(--dim); border-top:1px solid var(--line); padding-top:12px; line-height:1.55;}
 `;
 
 /* Non-destructive brightness/contrast for DISPLAY only. Values are percentages
@@ -362,6 +388,268 @@ function applyImgAdj(ctx, w, h, a) {
 }
 
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
+
+/* ============================================================
+   HELP / GUIDE — one linear manual with a section index. A small "?" sits in
+   the top-right of every screen (HelpButton) and opens this overlay scrolled to
+   that screen's section. Content is data (HELP_SECTIONS); the overlay just
+   renders it. Keep entries in sync when controls change — this is the manual.
+   ============================================================ */
+const HELP_SECTIONS = [
+  {
+    id: "start", icon: "🛰", title: "How Phodar works",
+    intro: "Phodar turns a sighting photo into real numbers. One photo gives honest angular data — which way, how big it looked, how fast it crossed the sky. Two or more viewpoints of the same object triangulate a true fix: position, altitude, real size, speed and heading. You move through four steps, then get a shareable report. Nothing you can't measure is ever invented — Phodar shows warnings instead of confident guesses.",
+    groups: [
+      { h: "The four steps", items: [
+        { t: "1 · The photo", d: "Load your image or video and fit a shape to the object so Phodar knows how large it appeared (its angular size)." },
+        { t: "2 · Your position", d: "Set exactly where you stood — map pin, address search, GPS, or typed coordinates — plus the date & time." },
+        { t: "3 · The sky view", d: "Seat the photo onto an astronomical dome so its true pointing (compass + up-angle) is fixed. This is the calibration step." },
+        { t: "4 · Results", d: "See the fix (or, with one viewpoint, the honest angular numbers), run cross-checks, and grade the quality." },
+      ]},
+      { h: "On the home screen", items: [
+        { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1." },
+        { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours)." },
+        { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
+        { t: "📄 Report", d: "Open the report & share screen." },
+        { t: "units: … — tap to switch", d: "Flip every readout in the app between metric (m · km · m/s) and imperial (ft · mi · mph)." },
+        { t: "Observer row dots", d: "Green marks which facets are done — photo · position · direction · (trajectory). Open ▸ resumes that observer; ✕ removes them." },
+      ]},
+    ],
+    tips: ["One viewpoint is still useful — it pins direction and angular size honestly. It just can't give absolute distance until a second viewpoint is added."],
+  },
+  {
+    id: "photo", icon: "📸", title: "Step 1 — The photo",
+    intro: "Load the sighting media and tell Phodar how big the object appeared by fitting a 3D wireframe shape over it. The projected silhouette of that shape becomes the measured angular size — the seed for real size once distance is known. The original pixels are never altered; brightness/contrast here is display-only.",
+    groups: [
+      { h: "Load the media", items: [
+        { t: "Load photo or video / Replace media", d: "Pick any image or video from your device." },
+        { t: "📷 Shoot now", d: "Open the camera and capture right now — the freshest possible EXIF (GPS, time, bearing)." },
+        { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
+      ]},
+      { h: "Fit a 3D shape (the measurement)", items: [
+        { t: "Shape buttons", d: "● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ✈ Plane · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object. Not sure? Use ● Orb — it assumes no form and still measures size." },
+        { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
+        { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
+        { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
+        { t: "aspect / spin / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, bird wing width & fore/aft, jellyfish tendril length." },
+        { t: "✕ remove shape", d: "Deletes the fitted shape." },
+        { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
+      ]},
+      { h: "See it clearly", items: [
+        { t: "Pinch-zoom / two-finger pan", d: "Magnify a small object; two-finger drag pans; a second finger never places a point. ×N · reset returns to fit." },
+        { t: "Loupe", d: "A magnifier pops up above your fingertip during any drag, showing a sharp, brightness-matched close-up with crosshair for precise placement." },
+        { t: "☀ Brightness / ◐ Contrast", d: "Display-only sliders that lift a dark night shot so you can see the object — carries into the sky view and report; measurements still use the original. ↺ reset restores neutral." },
+      ]},
+      { h: "Video", items: [
+        { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time." },
+        { t: "✓ Use this frame", d: "Lock the current frame as the moment you analyse (the sky view is single-frame — this is the frame it uses)." },
+      ]},
+      { h: "Field of view (FOV)", items: [
+        { t: "FOV … from the lens metadata ✓", d: "When EXIF carries the lens, FOV is set for you." },
+        { t: "Camera field of view", d: "No metadata? Pick a preset (phone main ≈68°, ultra-wide ≈104°, 2×/3×/5×) or enter FOV horizontal by hand. FOV is central to every angle — get it right." },
+      ]},
+    ],
+    tips: [
+      "Shared/messaged copies are usually stripped of EXIF. To keep it: Photos → Share → Options (top) → All Photos Data ON, then AirDrop the original.",
+      "HEIC files can't expose metadata in-browser — export or share as JPEG to auto-fill GPS, time, bearing and FOV.",
+    ],
+  },
+  {
+    id: "position", icon: "📍", title: "Step 2 — Your position",
+    intro: "Where you stood is one end of every sight-line, so it has to be right. Set it any way you like, then refine on the map by dragging the ground under the fixed pin. Also set the date/time (drives the Sun/Moon/star positions) and, optionally, which way and how high you looked.",
+    groups: [
+      { h: "Set your location", items: [
+        { t: "Find your spot by name", d: "Type a town, address, or landmark and 🔎 Search. Results are tagged exact address (teal) or road/area (amber — drag the pin to your spot)." },
+        { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
+        { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
+        { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
+      ]},
+      { h: "The map", items: [
+        { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
+        { t: "🛰 sat / 🗺 street", d: "Toggle between satellite imagery and street map (label shows the mode you'll switch to). +/− zoom." },
+      ]},
+      { h: "Time & aim", items: [
+        { t: "Sighting date & time", d: "When it happened — anchors the Sun, Moon, stars, satellites and archived aircraft to the real sky." },
+        { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout). This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
+        { t: "How high you looked", d: "Your up-angle (−20° to straight-up 90°). A side-view diagram pops up as you slide. Metadata has no up/down angle — set it roughly, fine-tune in the sky view." },
+        { t: "Camera height off the ground", d: "How high the camera was above ground. Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony; leave at ground for a normal shot." },
+      ]},
+    ],
+    tips: ["No GPS in the photo? Long-press your spot in Google/Apple Maps, copy the coordinates, and paste them into the Latitude field."],
+  },
+  {
+    id: "sky", icon: "🔭", title: "Step 3 — The sky view",
+    intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. Two modes: Place (seat the photo) then Look (aim at the object and, optionally, trace its path).",
+    groups: [
+      { h: "The two modes", items: [
+        { t: "✥ Place", d: "The photo is pinned undistorted at centre; you drag the SKY behind it to line its horizon/ridges onto the dome. Pinch changes how much sky it covers (calibrates FOV); twist rolls it." },
+        { t: "✓ Done placing / ✓ Horizon lined up — continue", d: "Leaves Place mode and commits the placement, auto-deriving your sight-lines." },
+        { t: "Look mode", d: "The photo is warped into the sky; drag to pan, pinch or +/− to zoom, and put the crosshair where the object was." },
+      ]},
+      { h: "Get the pointing exact (Place mode)", items: [
+        { t: "✦ Auto star-align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
+        { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
+        { t: "⟺ Level / Reset placement", d: "Level sets roll to 0; Reset restores the whole placement to how the screen opened." },
+        { t: "ridge (hue slider)", d: "Recolours the terrain + ridge lines so they stand out over green hills." },
+        { t: "✦ align to star (Look mode)", d: "Manual alternative: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve." },
+      ]},
+      { h: "Trace the object's path (Look mode)", items: [
+        { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
+        { t: "+Δt time chips", d: "One chip per segment — tap it to set how long that leg took (presets 0.5–10 s, or ±0.1 s). Timing is what turns the path into speed and g-load." },
+        { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
+        { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference." },
+        { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's." },
+      ]},
+      { h: "Aim readout & navigation", items: [
+        { t: "Top-right readout", d: "Live azimuth + compass + up-angle, and FOV — amber while aiming Moment A, teal for B." },
+        { t: "‹ Back / Continue →", d: "Both commit the placement first, so your calibration is never lost when you leave." },
+      ]},
+    ],
+    tips: [
+      "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
+      "See the 🛰 Sky layers section for what every header toggle (aircraft, stars, satellites, peaks, buildings, wind) shows.",
+    ],
+  },
+  {
+    id: "results", icon: "🎯", title: "Step 4 — Results",
+    intro: "With two or more calibrated viewpoints, Phodar intersects the sight-lines and reports the fix — with an honest quality grade and the warnings that matter. With one viewpoint you get angular data and can still run some checks.",
+    groups: [
+      { h: "The fix", items: [
+        { t: "altitude / size / speed", d: "Object height above the reference observer, its true size across, and ground speed if you set Moment A→B (with heading and climb/descent rate)." },
+        { t: "quality · baseline · conv", d: "The grade (excellent/good/fair/poor), how far apart the observers were, and the sight-line convergence angle. Wide separation + healthy convergence = trustworthy numbers." },
+        { t: "Object ground position", d: "The object's lat/lon on the ground, with a ± uncertainty derived from a ±1° pointing error." },
+      ]},
+      { h: "Honesty guards", items: [
+        { t: "⚠ Bearings don't converge", d: "Names which observer's compass looks off and by how much — usually metal near the phone (see Accuracy)." },
+        { t: "⚠ GPS altitudes differ + ⛰ Set every observer's elevation from terrain", d: "Phone-altitude wobble warning, with a one-tap fix that sets every observer's elevation from DEM terrain." },
+        { t: "Solution quality (table)", d: "Baseline, convergence angle, ray-miss distance (how close the sight-lines actually pass), and range/baseline ratio — the raw geometry behind the grade." },
+      ]},
+      { h: "Cross-checks & plots", items: [
+        { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory — read-only." },
+        { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
+      ]},
+    ],
+    tips: ["“No ADS-B aircraft in range” rules out airliners, not everything — some military and older light aircraft carry no transponder. Phodar says so rather than overclaiming."],
+  },
+  {
+    id: "report", icon: "📄", title: "Report & share",
+    intro: "Produce a self-contained white-paper report of the sighting — embedded data, photo exhibits, plots, and every cross-check ranked in one place. It opens offline and can be re-imported into Phodar by another witness.",
+    groups: [
+      { h: "What you can export", items: [
+        { t: "Report (.html)", d: "A single self-contained page: the fix, quality, photo exhibits with detail crops, top-down + trajectory charts, and the sky-object / wind / aircraft checks." },
+        { t: "💾 Share file (.phodar.json)", d: "Just the data — the importable file another observer loads to add their perspective, or that you keep as a backup." },
+        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos in one download, re-importable into Phodar." },
+      ]},
+      { h: "Extra checks in the report", items: [
+        { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
+        { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height (matching heading and speed)." },
+      ]},
+    ],
+    tips: ["Every check outputs the same shape — a predicted direction/size/motion and how far it sits from your sight-line — so the report ranks all the mundane explanations in one table."],
+  },
+  {
+    id: "checks", icon: "🛰", title: "Sky layers & cross-checks",
+    intro: "The header toggles in the sky view each overlay a real, independently-sourced layer on the dome. They serve two jobs: calibration anchors (things whose true position is known, to check your pointing) and mundane-explanation candidates (things a “UFO” might actually be).",
+    groups: [
+      { h: "Calibration anchors", items: [
+        { t: "☀ Sun / ☾ Moon", d: "Drawn where they really were at your time and place; tap to centre on them. The strongest quick check that your bearing is right." },
+        { t: "★ Stars & planets", d: "The real catalog sky — mag-scaled stars, labelled bright stars, glowing planet markers. Auto-on at night. Feeds ✦ Auto star-align." },
+        { t: "Terrain skyline (always on)", d: "The dashed green DEM horizon — mountains and hills as they truly sit. The answer for ⛰ Snap to ridges (a tree/mountain skyline is NOT a true flat horizon)." },
+        { t: "⛰ peaks", d: "Labels named summits sitting on the terrain skyline (name + elevation) — each is also a compass landmark." },
+      ]},
+      { h: "Explanation candidates", items: [
+        { t: "✈ aircraft (ADS-B)", d: "Live or archived-at-the-sighting-time air traffic as heading-rotated ✈ glyphs at true az/el, with range, altitude and faint track trails. Tap one for its identity/route." },
+        { t: "🛰 satellites / ✦ Starlink", d: "CelesTrak orbital elements propagated to your time — passing satellites and (opt-in) sunlit Starlink trains, a common “string of lights” report." },
+        { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
+        { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
+      ]},
+    ],
+    tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
+  },
+  {
+    id: "accuracy", icon: "⚖", title: "Accuracy & honest limits",
+    intro: "Phodar was validated against ground truth (a rooftop weathervane resolved to ~1 inch of its true span). Just as important, it knows its failure modes and warns you instead of guessing. Read these before trusting — or dismissing — a number.",
+    groups: [
+      { h: "What limits accuracy", items: [
+        { t: "Compass near metal", d: "Phone compasses are sub-degree on foot but 14–66° wrong near metal (in a car, under a steel roof). Phodar cross-checks bearings and names the suspect one — recalibrate away from metal if warned." },
+        { t: "GPS altitude wobble", d: "Phone altitude drifts ±5 m. On level ground, set every observer's elevation from terrain (one tap in Results) so a false altitude spread doesn't skew the fix." },
+        { t: "Geometry (baseline & convergence)", d: "Two viewpoints too close together, or nearly in line with the object, give a weak fix. Wider separation and a healthy convergence angle earn a better grade." },
+        { t: "One viewpoint", d: "A single photo can't give absolute distance — only direction, angular size and angular motion. Add a second perspective for real size, altitude and speed." },
+      ]},
+    ],
+    tips: ["When Phodar grades a fix “poor,” believe it over an impressive-looking number. Honest uncertainty is the product."],
+  },
+  {
+    id: "data", icon: "💾", title: "Saving, sharing & privacy",
+    intro: "Your work is saved automatically on this device and stays on it. Nothing is uploaded unless you export and share it yourself.",
+    groups: [
+      { h: "How data lives", items: [
+        { t: "Autosave", d: "Points, positions and settings save to this browser automatically; photos/videos are kept in the browser's local media store and re-attached when you return." },
+        { t: "Import / export", d: "Move a sighting between devices or witnesses with the .phodar.json share file, the report .html, or the .zip bundle — all re-importable from the home screen." },
+        { t: "units", d: "The metric/imperial choice is remembered for next time." },
+      ]},
+      { h: "Privacy", items: [
+        { t: "On-device by design", d: "Location and photos stay local. Only the cross-checks reach out — anonymously — to public data sources (aircraft, terrain, weather, map tiles) for the area and time you set." },
+      ]},
+    ],
+    tips: ["Starting a New sighting or removing an observer clears their stored photos too — export a report or share file first if you want to keep them."],
+  },
+];
+
+function HelpButton({ section, style }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="help-q" title="Help & guide" aria-label="Help and guide" style={style} onClick={() => setOpen(true)}>?</button>
+      {open && <HelpOverlay start={section} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function HelpOverlay({ start, onClose }) {
+  const scRef = useRef(null);
+  const jump = (id) => { const el = document.getElementById("help-" + id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  useEffect(() => {
+    if (!start) return;
+    const el = document.getElementById("help-" + start);
+    if (el) el.scrollIntoView({ block: "start" });
+  }, [start]);
+  return (
+    <div className="help-back" onClick={onClose}>
+      <div className="help-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="help-head">
+          <img src={phodarLogo} alt="PHODAR" style={{ height: 24, width: "auto", borderRadius: 5, display: "block" }} />
+          <span className="ttl">GUIDE</span>
+          <button className="btn sm" onClick={onClose}>✕ Close</button>
+        </div>
+        <div className="help-scroll" ref={scRef}>
+          <div className="help-index">
+            {HELP_SECTIONS.map((s) => (
+              <button key={s.id} className="chip" onClick={() => jump(s.id)}>{s.icon} {s.title}</button>
+            ))}
+          </div>
+          {HELP_SECTIONS.map((s) => (
+            <section key={s.id} id={"help-" + s.id} className="help-sec">
+              <h3>{s.icon} {s.title}</h3>
+              {s.intro && <p>{s.intro}</p>}
+              {(s.groups || []).map((g, gi) => (
+                <div key={gi}>
+                  {g.h && <h4>{g.h}</h4>}
+                  {(g.items || []).map((it, ii) => (
+                    <div key={ii} className="help-item"><b>{it.t}</b>{it.d ? <span> — {it.d}</span> : null}</div>
+                  ))}
+                </div>
+              ))}
+              {(s.tips || []).map((t, ti) => <div key={ti} className="help-tip">💡 {t}</div>)}
+              <button className="help-top" onClick={() => scRef.current && scRef.current.scrollTo({ top: 0, behavior: "smooth" })}>↑ back to index</button>
+            </section>
+          ))}
+          <div className="help-foot">Phodar is honest by design — it shows warnings instead of silent guesses. When it says “quality: poor,” trust that over a confident-looking wrong number.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* small inline spinner for loading states (replaces "…" so it's obvious the
    user should wait). Inherits color from its context via currentColor. */
@@ -1600,7 +1888,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (!open) return;
     const prevent = (e) => {
-      if (e.target && e.target.closest && e.target.closest("input[type=range]")) return;
+      if (e.target && e.target.closest && e.target.closest("input[type=range], .help-scroll")) return;
       if (e.cancelable) e.preventDefault();
     };
     document.addEventListener("touchmove", prevent, { passive: false });
@@ -3167,6 +3455,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
             </div>
           </div>
+          <div style={{ pointerEvents: "auto", flex: "0 0 auto" }}><HelpButton section="sky" style={{ background: "rgba(15,23,42,.7)" }} /></div>
         </div>
         {/* sky-layer toggles — one row (terrain is always on) */}
         <div style={{ display: "flex", gap: 6, marginTop: 8, pointerEvents: "auto", flexWrap: "wrap" }}>
@@ -5119,7 +5408,7 @@ function WizDots({ n, style }) {
   );
 }
 
-function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel }) {
+function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel, help }) {
   return (
     <div style={{ padding: "14px 12px 96px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -5128,6 +5417,7 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>{title}</div>
           <WizDots n={n} style={{ marginTop: 4 }} />
         </div>
+        {help && <HelpButton section={help} style={{ marginLeft: "auto" }} />}
       </div>
       <div className="card" style={{ margin: 0 }}>{children}</div>
       <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.96) 60%, rgba(7,11,20,0))" }}>
@@ -5148,7 +5438,8 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   const fix = analyze(sources);
   const dot = (on, k, title) => <span key={k} title={title} style={{ display: "inline-block", width: 7, height: 7, borderRadius: 4, background: on ? "var(--teal)" : "var(--line)", marginRight: 4 }} />;
   return (
-    <div style={{ padding: "26px 14px 40px" }}>
+    <div style={{ padding: "26px 14px 40px", position: "relative" }}>
+      <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
       <div style={{ textAlign: "center", marginTop: 16 }}>
         <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(460px, 94%)", margin: "0 auto", borderRadius: 12 }} />
         <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>
@@ -5225,6 +5516,7 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt })
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>SIGHTING CAPTURED</div>
           <WizDots n={4} style={{ marginTop: 4 }} />
         </div>
+        <HelpButton section="results" style={{ marginLeft: "auto" }} />
       </div>
       <div className="card" style={{ margin: 0 }}>
         {fix.ok ? (
@@ -5350,6 +5642,7 @@ function ReportView({ sources, est, onBack }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <button className="btn sm" onClick={onBack}>‹</button>
         <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>REPORT &amp; SHARE</div>
+        <HelpButton section="report" style={{ marginLeft: "auto" }} />
       </div>
       <div className="card" style={{ margin: 0 }}>
         <ML>Sighting report</ML>
@@ -5536,14 +5829,14 @@ export default function App() {
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
-          <WizStep n={1} title="THE PHOTO" onBack={() => goView("home")} onNext={() => goView("s2")}
+          <WizStep n={1} title="THE PHOTO" help="photo" onBack={() => goView("home")} onNext={() => goView("s2")}
             nextLabel={wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →"}>
             <MediaMeasure wizard src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
           </WizStep>
         );
       } else if (ui.view === "s2") {
         page = (
-          <WizStep n={2} title="YOUR POSITION" onBack={() => goView("s1")} onNext={() => goView("s3")}
+          <WizStep n={2} title="YOUR POSITION" help="position" onBack={() => goView("s1")} onNext={() => goView("s3")}
             nextDisabled={!(isNum(wsrc.lat) && isNum(wsrc.lon))} nextLabel="Next · place it in the sky →"
             disabledLabel="Enter where you stood — GPS, paste coords, or type — to continue">
             <PositionEditor src={wsrc} update={(p) => updateSource(wsrc.id, p)}
