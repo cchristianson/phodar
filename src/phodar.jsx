@@ -482,13 +482,14 @@ const HELP_SECTIONS = [
     intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. Two modes: Place (seat the photo) then Look (aim at the object and, optionally, trace its path).",
     groups: [
       { h: "The two modes", items: [
-        { t: "✥ Place", d: "The photo is pinned undistorted at centre; you drag the SKY behind it to line its horizon/ridges onto the dome. Pinch changes how much sky it covers (calibrates FOV); twist rolls it." },
+        { t: "✥ Place", d: "The photo is pinned undistorted and fills the space. Drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome." },
         { t: "✓ Done placing / ✓ Horizon lined up — continue", d: "Leaves Place mode and commits the placement, auto-deriving your sight-lines." },
         { t: "Look mode", d: "The photo is warped into the sky; drag to pan, pinch or +/− to zoom, and put the crosshair where the object was." },
       ]},
       { h: "Get the pointing exact (Place mode)", items: [
         { t: "✦ Auto star-align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
         { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
+        { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo", d: "Steps back the last placement change — a gesture or a button. An accidental nudge right before ✓ Done won't cost you the whole alignment." },
         { t: "⟺ Level / Reset placement", d: "Level sets roll to 0; Reset restores the whole placement to how the screen opened." },
         { t: "ridge (hue slider)", d: "Recolours the terrain + ridge lines so they stand out over green hills." },
