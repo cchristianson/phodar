@@ -1720,6 +1720,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [vpRef, vp] = useSize();
   const [topBarRef, topBar] = useSize(); // top HUD height — reserve it while placing
   const [botBarRef, botBar] = useSize(); // bottom controls height — reserve it while placing
+  const placeBotHW = useRef(0);          // high-water bottom-bar height: the band never SHRINKS mid-placement (a shorter instruction line must not rescale the photo)
   /* Highest elevation the view/placement may reach. NOT 90°: at exactly the
      zenith the az/el basis is a gimbal singularity (the "right" vector →0), so
      the projection breaks. 89.5° is visually straight-up yet numerically stable,
@@ -1755,6 +1756,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [panMode, setPanMode] = useState(false);
   const dispPanRef = useRef(null);
   const resetPlaceView = () => { setPZoom(1); setPPan({ x: 0, y: 0 }); setPanMode(false); };
+  useEffect(() => { if (pMode === "place" && botBar.h > placeBotHW.current) placeBotHW.current = botBar.h; }, [pMode, botBar.h]);
   const openPoseRef = useRef(null);          // placement as of aimer-open — Reset target
   const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
@@ -2150,7 +2152,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   let placeDY = 0, FRAMEeff = FRAME;
   if (placing && vp.h > 0 && vp.w > 0) {
     const bandTop = (topBar.h || 90) + 72;          // below header + toggles (+ padding/safe-area)
-    const bandBot = vp.h - (botBar.h || 170) - 60;  // above the bottom control stack
+    const bandBot = vp.h - (Math.max(botBar.h || 0, placeBotHW.current) || 170) - 60;  // above the bottom control stack (high-water so a shrinking hint never re-scales)
     if (bandBot - bandTop > 80) {
       placeDY = ((bandTop + bandBot) / 2 - vp.h / 2) / vp.h; // shift the placement center into the band
       const aspect = (source?.natW && source?.natH) ? source.natH / source.natW : 9 / 16;
@@ -2291,7 +2293,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (Math.abs(t.pendRot) > 0.8) { doRot = t.pendRot; t.pendRot = 0; }
         if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) { doScale = t.pendScale; t.pendScale = 1; }
         if (doRot || doScale !== 1) {
-          if (doScale !== 1) setFovM((f) => clampN(f * doScale, 12, 120));
+          if (doScale !== 1) setFovM((f) => clampN(f / doScale, 12, 120)); // inverted pinch: fingers apart → tighter FOV
           if (doRot) setPRoll((r) => clampN(r - doRot, -90, 90)); // rotate(−roll): photo tracks the fingers
         }
       } else if (pinchRef.current) {
@@ -2316,8 +2318,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (placeRef.current && vp.w) {
       const pr = placeRef.current; // snapshot: pointerup may null the ref before React flushes
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
-      const nAz = (((pr.az + dx * fovH) % 360) + 360) % 360;
-      const nEl = clampN(pr.el - dy * fovV, -20, EL_MAX);
+      const nAz = (((pr.az - dx * fovH) % 360) + 360) % 360; // inverted: drag the SKY with your finger (grab), matching pan mode
+      const nEl = clampN(pr.el + dy * fovV, -20, EL_MAX);
       if (Math.abs(dx) + Math.abs(dy) > 0.01) calibRecRef.current = null; // hand-dragged → no longer a star/terrain-calibrated pose
       queuePose("place", nAz, nEl);
       return;
@@ -2724,6 +2726,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
     calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
     resetPlaceView();
+    placeBotHW.current = 0;                            // fresh band reserve for this placement session
     setPMode("place");
   };
   const donePlace = () => {
