@@ -489,6 +489,7 @@ const HELP_SECTIONS = [
       { h: "Get the pointing exact (Place mode)", items: [
         { t: "✦ Auto star-align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
         { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
+        { t: "↩ Undo", d: "Steps back the last placement change — a gesture or a button. An accidental nudge right before ✓ Done won't cost you the whole alignment." },
         { t: "⟺ Level / Reset placement", d: "Level sets roll to 0; Reset restores the whole placement to how the screen opened." },
         { t: "ridge (hue slider)", d: "Recolours the terrain + ridge lines so they stand out over green hills." },
         { t: "✦ align to star (Look mode)", d: "Manual alternative: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve." },
@@ -1757,6 +1758,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const dispPanRef = useRef(null);
   const resetPlaceView = () => { setPZoom(1); setPPan({ x: 0, y: 0 }); setPanMode(false); };
   useEffect(() => { if (pMode === "place" && botBar.h > placeBotHW.current) placeBotHW.current = botBar.h; }, [pMode, botBar.h]);
+  /* placement UNDO — snapshot the pose before each change (gesture or button) so
+     an accidental nudge right before ✓ Done can be stepped back. Display zoom/pan
+     are cosmetic and intentionally NOT part of it. */
+  const [placeUndo, setPlaceUndo] = useState([]);
+  const pendUndoRef = useRef(null);   // pose at the START of the current touch gesture
+  const placeMovedRef = useRef(false); // did that gesture actually change the pose?
+  const snapPose = () => ({ az: pAz, el: pEl, roll: pRoll, fov: fovM, dist: pDist, px: pPan.x, py: pPan.y, zoom: pZoom });
+  const posesEq = (a, b) => a && b && a.az === b.az && a.el === b.el && a.roll === b.roll && a.fov === b.fov && a.dist === b.dist;
+  const pushUndo = (snap) => setPlaceUndo((st) => posesEq(st[st.length - 1], snap) ? st : [...st, snap].slice(-24));
+  const undoPlace = () => setPlaceUndo((st) => {
+    if (!st.length) return st;
+    const s = st[st.length - 1];
+    setPAz(s.az); setPEl(s.el); setPRoll(s.roll); setFovM(s.fov); setPDist(s.dist);
+    if (s.px != null) setPPan({ x: s.px, y: s.py }); // restore the view (roll pivots shift the pan)
+    if (s.zoom != null) setPZoom(s.zoom);
+    calibRecRef.current = null; // hand-restored → no longer a star/terrain-calibrated pose
+    return st.slice(0, -1);
+  });
   const openPoseRef = useRef(null);          // placement as of aimer-open — Reset target
   const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
@@ -2218,6 +2237,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     e.currentTarget.setPointerCapture(e.pointerId);
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
     const n = pointersRef.current.size;
+    if (placing && n === 1) { pendUndoRef.current = snapPose(); placeMovedRef.current = false; } // arm undo for this gesture
     if (n >= 2) {
       /* Second finger while a point rotation is ALREADY underway → don't pinch:
          anchor with this finger and let the twist between the two fingers roll
@@ -2302,6 +2322,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (Math.abs(t.pendRot) > 0.8) { doRot = t.pendRot; t.pendRot = 0; }
         if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) { doScale = t.pendScale; t.pendScale = 1; }
         if (doRot || doScale !== 1) {
+          placeMovedRef.current = true;
           if (doScale !== 1) setFovM((f) => clampN(f / doScale, 12, 120)); // inverted pinch: fingers apart → tighter FOV
           if (doRot) {
             setPRoll((r) => clampN(r - doRot, -90, 90)); // rotate(−roll): photo tracks the fingers
@@ -2344,7 +2365,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
       const nAz = (((pr.az - dx * fovH) % 360) + 360) % 360; // inverted: drag the SKY with your finger (grab), matching pan mode
       const nEl = clampN(pr.el + dy * fovV, -20, EL_MAX);
-      if (Math.abs(dx) + Math.abs(dy) > 0.01) calibRecRef.current = null; // hand-dragged → no longer a star/terrain-calibrated pose
+      if (Math.abs(dx) + Math.abs(dy) > 0.01) { calibRecRef.current = null; placeMovedRef.current = true; } // hand-dragged → no longer a star/terrain-calibrated pose
       queuePose("place", nAz, nEl);
       return;
     }
@@ -2387,6 +2408,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       else if (rotDragRef.current) { /* twist handed control back to this finger — keep the rotate drag */ }
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
+      /* gesture ended — if it actually moved the pose, bank the pre-gesture state for Undo */
+      if (placing && pendUndoRef.current && placeMovedRef.current) pushUndo(pendUndoRef.current);
+      pendUndoRef.current = null; placeMovedRef.current = false;
       /* align mode: a tap (barely moved) picks the nearest named star/planet;
          a drag panned instead and is ignored here */
       const ct = calibTapRef.current; calibTapRef.current = null;
@@ -2750,6 +2774,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
     calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
     resetPlaceView();
+    setPlaceUndo([]); pendUndoRef.current = null; placeMovedRef.current = false; // fresh undo history
     placeBotHW.current = 0;                            // fresh band reserve for this placement session
     setPMode("place");
   };
@@ -3676,10 +3701,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </button>
                 {pMode === "place" && (
                   <>
-                    <button className="btn sm amber" onClick={autoAlign} title="Auto star-align: detects the stars in the photo and matches their pattern to the sky to solve the exact pose (az/el/roll/FOV/lens) — no need to line it up first. Needs correct date/time & location.">✦ Auto star-align</button>
-                    {terr?.els && <button className="btn sm teal" onClick={snapToRidges}>⛰ Snap to ridges</button>}
-                    <button className="btn sm" onClick={() => setPRoll(0)}>⟺ Level</button>
+                    <button className="btn sm" disabled={!placeUndo.length} style={{ opacity: placeUndo.length ? 1 : 0.4 }} title="Undo the last placement change (a slip won't cost you the whole alignment)" onClick={undoPlace}>↩ Undo</button>
+                    <button className="btn sm amber" onClick={() => { pushUndo(snapPose()); autoAlign(); }} title="Auto star-align: detects the stars in the photo and matches their pattern to the sky to solve the exact pose (az/el/roll/FOV/lens) — no need to line it up first. Needs correct date/time & location.">✦ Auto star-align</button>
+                    {terr?.els && <button className="btn sm teal" onClick={() => { pushUndo(snapPose()); snapToRidges(); }}>⛰ Snap to ridges</button>}
+                    <button className="btn sm" onClick={() => { pushUndo(snapPose()); setPRoll(0); }}>⟺ Level</button>
                     <button className="btn sm" onClick={() => {
+                      pushUndo(snapPose());
                       const p0 = openPoseRef.current;
                       if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist || 0); }
                       else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); setPDist(0); }
