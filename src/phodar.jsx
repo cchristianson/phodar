@@ -1718,6 +1718,8 @@ function TrackObj({ sf, px, color }) {
 
 function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
   const [vpRef, vp] = useSize();
+  const [topBarRef, topBar] = useSize(); // top HUD height — reserve it while placing
+  const [botBarRef, botBar] = useSize(); // bottom controls height — reserve it while placing
   /* Highest elevation the view/placement may reach. NOT 90°: at exactly the
      zenith the az/el basis is a gimbal singularity (the "right" vector →0), so
      the projection breaks. 89.5° is visually straight-up yet numerically stable,
@@ -2131,10 +2133,27 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      so the photo renders as an exactly rigid rectangle — no warp. */
   const FRAME = 0.78; // fraction of viewport width the photo occupies while placing
   const placing = pMode === "place" && photoOn && !!source?.natW;
+  /* Keep the WHOLE pinned photo visible while placing: lift it into the clear
+     band between the top HUD and the bottom controls, and shrink it to fit if
+     it's tall (portrait / wide-FOV). Purely cosmetic — the pose (pAz/pEl/fovM)
+     is untouched, and because the sky shifts by the same placeDY and scales
+     with FRAMEeff, the photo rectangle stays exactly locked to the projected
+     frustum (proven: the frame edges map to ±fovM/2 for any FRAME/offset). */
+  let placeDY = 0, FRAMEeff = FRAME;
+  if (placing && vp.h > 0 && vp.w > 0) {
+    const bandTop = (topBar.h || 90) + 72;          // below header + toggles (+ padding/safe-area)
+    const bandBot = vp.h - (botBar.h || 170) - 60;  // above the bottom control stack
+    if (bandBot - bandTop > 80) {
+      placeDY = ((bandTop + bandBot) / 2 - vp.h / 2) / vp.h; // shift the placement center into the band
+      const aspect = (source?.natW && source?.natH) ? source.natH / source.natW : 9 / 16;
+      const fit = (bandBot - bandTop) * 0.96 / (vp.w * aspect); // width fraction that fits the band height
+      FRAMEeff = clampN(Math.min(FRAME, fit), 0.5, FRAME);
+    }
+  }
   const effAz = placing ? pAz : viewAz;
   const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
-    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAME) * R2D, 12, 135)
+    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAMEeff) * R2D, 12, 135)
     : fov;
   const fovH = effFov;
   const tanH = Math.tan((fovH * RAD) / 2);
@@ -2151,11 +2170,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (zc <= 0.001) return { x: 0, y: 0, inFront: false };
     const xc = d[0] * camR[0] + d[1] * camR[1] + d[2] * camR[2];
     const yc = d[0] * camU[0] + d[1] * camU[1] + d[2] * camU[2];
-    return { x: 0.5 + (xc / zc) / (2 * tanH), y: 0.5 - (yc / zc) / (2 * tanV), inFront: true };
+    return { x: 0.5 + (xc / zc) / (2 * tanH), y: 0.5 - (yc / zc) / (2 * tanV) + placeDY, inFront: true };
   };
   const project = (azDg, altDg) => projectD(dirOf(azDg, altDg));
   const unproject = (xf, yf) => {
-    const sx = (xf - 0.5) * 2 * tanH, sy = -(yf - 0.5) * 2 * tanV;
+    const sx = (xf - 0.5) * 2 * tanH, sy = -(yf - 0.5 - placeDY) * 2 * tanV;
     return unit([
       camR[0] * sx + camU[0] * sy + camF[0],
       camR[1] * sx + camU[1] * sy + camF[1],
@@ -3003,8 +3022,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             guarantees this rigid rectangle equals the projective truth. */}
         {placing && source?.mediaUrl && (
           <div style={{
-            position: "absolute", left: "50%", top: "50%",
-            width: (FRAME * 100) + "%",
+            position: "absolute", left: "50%", top: ((0.5 + placeDY) * 100) + "%",
+            width: (FRAMEeff * 100) + "%",
             transform: `translate(-50%,-50%) rotate(${-pRoll}deg)`,
             pointerEvents: "none",
           }}>
@@ -3436,7 +3455,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       )}
 
       {/* top HUD — pad past the notch/Dynamic Island in the installed PWA */}
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "calc(10px + env(safe-area-inset-top)) 12px 10px", pointerEvents: "none", zIndex: 210 }}>
+      <div ref={topBarRef} style={{ position: "absolute", top: 0, left: 0, right: 0, padding: "calc(10px + env(safe-area-inset-top)) 12px 10px", pointerEvents: "none", zIndex: 210 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
           {/* left: back + progress, matching the other wizard pages */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "auto", flex: "0 0 auto" }}>
@@ -3570,7 +3589,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       )}
 
       {/* bottom controls */}
-      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.92) 55%, rgba(7,11,20,0))", zIndex: 210 }}>
+      <div ref={botBarRef} style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.92) 55%, rgba(7,11,20,0))", zIndex: 210 }}>
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
         {source?.mediaUrl && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
