@@ -1,0 +1,49 @@
+name: Field data / ground truth
+description: Contribute a dataset with known measurements to validate the math
+labels: [field-data]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Ground-truth datasets are as valuable as code.** A known object shot
+        from one or more angles, with EXIF intact and true measurements, lets us
+        harden the pipeline against real conditions — and can become a
+        regression fixture. Thank you.
+  - type: textarea
+    id: object
+    attributes:
+      label: What is the object
+      description: A known thing with a knowable size/position (weathervane, antenna, aircraft, balloon, building feature…).
+    validations:
+      required: true
+  - type: textarea
+    id: truth
+    attributes:
+      label: Ground truth
+      description: The real measurements and how you know them (tape measure, spec sheet, ADS-B, survey…).
+      placeholder: |
+        Span: ~24 in (owner's measurement)
+        Height AGL: 20–25 ft (owner estimate)
+        Position: 42.xxxx, -122.xxxx
+    validations:
+      required: true
+  - type: input
+    id: witnesses
+    attributes:
+      label: Number of viewpoints
+      placeholder: "2 phones, ~14 m apart"
+    validations:
+      required: true
+  - type: checkboxes
+    id: exif
+    attributes:
+      label: Data quality
+      options:
+        - label: The photos still have EXIF (GPS, time, focal length) — not stripped by a messaging app.
+        - label: I can attach the original photos and/or an exported `.phodar.json`.
+          required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes (optional)
+      description: Anything unusual — compass near metal, uncertain altitude, haze, etc.

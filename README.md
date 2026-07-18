@@ -1,5 +1,8 @@
 # PHODAR
 
+[![CI](https://github.com/cchristianson/phodar/actions/workflows/ci.yml/badge.svg)](https://github.com/cchristianson/phodar/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **PHO**togrammetric **D**etection **A**nd **R**anging — turn sighting photos
 into numbers. One witness photo yields honest angular data (direction, angular
 size, angular motion). Two or more witnesses yield a true triangulated fix:
@@ -59,10 +62,16 @@ accelerations, felt g-loads and turn rates follow.
 
 ## Contributing
 
-Start with `CLAUDE.md` (architecture + invariants) and
-`CONTRIBUTING.md`. The backlog's headline items: module split, Leaflet map,
-and the **ADS-B cross-check** (every transponder-equipped aircraft is a free
-calibration target with published position, altitude and type).
+Start with `CLAUDE.md` (architecture + invariants) and `CONTRIBUTING.md`, and
+please be a good neighbor per the [Code of Conduct](CODE_OF_CONDUCT.md). Open a
+bug, feature, or **field-data** issue from the templates, and CI (`npm test` +
+`npm run build`) runs on every pull request. Security issues go through
+[private reporting](SECURITY.md), not the public tracker.
+
+The backlog's headline items: the reference-locked **video pipeline**, the
+remaining module split, and more mundane-explanation cross-checks — each new
+one outputs the same shape (predicted az/el/size/motion vs. the sight-line) so
+the report can rank every boring candidate in one table.
 
 Born on r/UFOs energy; built for anyone who thinks sightings deserve better
 data. MIT licensed.

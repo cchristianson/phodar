@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in the app is wrong or crashes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Phodar is a touch instrument — the more concrete
+        the reproduction, the faster it gets fixed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? What did you expect instead?
+      placeholder: "The wind arrows disappeared above the crosshair when I aimed near-overhead…"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact taps/gestures, in order.
+      placeholder: |
+        1. Upload a photo with EXIF GPS
+        2. Open the sky view, toggle 🎈 wind on
+        3. Aim above 65° elevation
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device / browser
+      description: Most non-obvious bugs are iOS Safari specific — please be exact.
+      options:
+        - iPhone — Safari
+        - iPad — Safari
+        - Android — Chrome
+        - Desktop — Chrome/Firefox/Edge
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: device-detail
+    attributes:
+      label: Device details
+      description: Model + OS version if you know them (e.g. "iPhone 14, iOS 18.5").
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen
+      options:
+        - Measure step (upload / mark / shape fit)
+        - Position step (map / elevation)
+        - Sky view (place / align / terrain / buildings / winds)
+        - Results / report
+        - Import / export / share
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors (optional)
+      description: Anything red in the browser console, pasted as text.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this isn't a duplicate.
+          required: true
+        - label: If it's math-related, I noted whether `npm test` passes on my checkout.
