@@ -2212,7 +2212,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (ks.length < 2) return null;
     const a = pointersRef.current.get(ks[0]), b = pointersRef.current.get(ks[1]);
     if (!a || !b) return null;
-    return { ids: ks, dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x) };
+    return { ids: ks, dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, ang: Math.atan2(b.y - a.y, b.x - a.x), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
   };
   const onBgDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -2294,7 +2294,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) { doScale = t.pendScale; t.pendScale = 1; }
         if (doRot || doScale !== 1) {
           if (doScale !== 1) setFovM((f) => clampN(f / doScale, 12, 120)); // inverted pinch: fingers apart → tighter FOV
-          if (doRot) setPRoll((r) => clampN(r - doRot, -90, 90)); // rotate(−roll): photo tracks the fingers
+          if (doRot) {
+            setPRoll((r) => clampN(r - doRot, -90, 90)); // rotate(−roll): photo tracks the fingers
+            /* pivot the roll on the FINGER MIDPOINT, not the photo center (which
+               is off-screen when zoomed). Orbit the center around the midpoint by
+               the same angle so the content under your fingers stays put. */
+            if (vpRef.current && vp.w) {
+              const rect = vpRef.current.getBoundingClientRect();
+              const vX = cx * vp.w - (g.mx - rect.left), vY = cy * vp.h - (g.my - rect.top); // (center − midpoint), px
+              const phi = doRot * RAD, cph = Math.cos(phi), sph = Math.sin(phi);            // CSS applies +doRot°
+              const dPx = (cph * vX - sph * vY - vX) / vp.w, dPy = (sph * vX + cph * vY - vY) / (vp.h || vp.w);
+              setPPan((p) => ({ x: clampN(p.x + dPx, -2.5, 2.5), y: clampN(p.y + dPy, -2.5, 2.5) }));
+            }
+          }
         }
       } else if (pinchRef.current) {
         const t = pinchRef.current;
@@ -2308,7 +2320,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
     if (dispPanRef.current && vp.w) {
       const d = dispPanRef.current; // display pan: slide the magnified photo+sky together (pose untouched)
-      const lim = 0.5 * Math.max(0, pZoom - 1) + 0.15; // let you reach the edges once zoomed
+      const lim = 2.5; // generous — matches the roll-pivot correction so panning never snaps
       setPPan({
         x: clampN(d.px + (e.clientX - d.x) / vp.w, -lim, lim),
         y: clampN(d.py + (e.clientY - d.y) / (vp.h || vp.w), -lim, lim),
