@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
@@ -1721,7 +1721,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [vpRef, vp] = useSize();
   const [topBarRef, topBar] = useSize(); // top HUD height — reserve it while placing
   const [botBarRef, botBar] = useSize(); // bottom controls height — reserve it while placing
-  const placeBotHW = useRef(0);          // high-water bottom-bar height: the band never SHRINKS mid-placement (a shorter instruction line must not rescale the photo)
+  const [bandPx, setBandPx] = useState(null); // exact clear band {top,bot} in container px while placing; bot is high-water (tallest controls) so a shrinking hint never rescales the photo
   /* Highest elevation the view/placement may reach. NOT 90°: at exactly the
      zenith the az/el basis is a gimbal singularity (the "right" vector →0), so
      the projection breaks. 89.5° is visually straight-up yet numerically stable,
@@ -1757,7 +1757,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [panMode, setPanMode] = useState(false);
   const dispPanRef = useRef(null);
   const resetPlaceView = () => { setPZoom(1); setPPan({ x: 0, y: 0 }); setPanMode(false); };
-  useEffect(() => { if (pMode === "place" && botBar.h > placeBotHW.current) placeBotHW.current = botBar.h; }, [pMode, botBar.h]);
+  /* measure the EXACT gap between the top HUD and the bottom controls (rects
+     include padding + safe-area, unlike contentRect), so the placement can fill
+     it. bot is high-water (keep the highest controls-top seen this session) so a
+     shorter hint line never re-scales the photo. */
+  useLayoutEffect(() => {
+    if (pMode !== "place") return;
+    const c = vpRef.current, tb = topBarRef.current, bb = botBarRef.current;
+    if (!c || !tb || !bb) return;
+    const cr = c.getBoundingClientRect();
+    const top = tb.getBoundingClientRect().bottom - cr.top;
+    const bot = bb.getBoundingClientRect().top - cr.top;
+    setBandPx((p) => {
+      const nBot = p ? Math.min(p.bot, bot) : bot; // high-water: tallest controls
+      if (p && Math.abs(p.top - top) < 1 && p.bot === nBot) return p;
+      return { top, bot: nBot };
+    });
+  }, [pMode, vp.w, vp.h, topBar.h, botBar.h]);
   /* placement UNDO — snapshot the pose before each change (gesture or button) so
      an accidental nudge right before ✓ Done can be stepped back. Display zoom/pan
      are cosmetic and intentionally NOT part of it. */
@@ -2169,15 +2185,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      with FRAMEeff, the photo rectangle stays exactly locked to the projected
      frustum (proven: the frame edges map to ±fovM/2 for any FRAME/offset). */
   let placeDY = 0, FRAMEeff = FRAME;
-  if (placing && vp.h > 0 && vp.w > 0) {
-    const bandTop = (topBar.h || 90) + 72;          // below header + toggles (+ padding/safe-area)
-    const bandBot = vp.h - (Math.max(botBar.h || 0, placeBotHW.current) || 170) - 60;  // above the bottom control stack (high-water so a shrinking hint never re-scales)
-    if (bandBot - bandTop > 80) {
-      placeDY = ((bandTop + bandBot) / 2 - vp.h / 2) / vp.h; // shift the placement center into the band
-      const aspect = (source?.natW && source?.natH) ? source.natH / source.natW : 9 / 16;
-      const fit = (bandBot - bandTop) * 0.96 / (vp.w * aspect); // width fraction that fits the band height
-      FRAMEeff = clampN(Math.min(FRAME, fit), 0.5, FRAME);
-    }
+  if (placing && vp.h > 0 && vp.w > 0 && bandPx && bandPx.bot - bandPx.top > 80) {
+    const bandTop = bandPx.top + 8, bandBot = bandPx.bot - 8; // exact measured gap, small breathing room
+    placeDY = ((bandTop + bandBot) / 2 - vp.h / 2) / vp.h;     // shift the placement center into the band
+    const aspect = (source?.natW && source?.natH) ? source.natH / source.natW : 9 / 16;
+    const fit = (bandBot - bandTop) / (vp.w * aspect);         // width fraction that fills the band height
+    FRAMEeff = clampN(Math.min(0.96, fit), 0.5, 0.96);         // fill up to ~full width; height-bound for tall photos
   }
   /* display zoom (pZoom) + pan (pPan) fold straight into the placement frame and
      centre — magnifying photo+sky together while keeping them locked (the frame
@@ -2775,7 +2788,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
     resetPlaceView();
     setPlaceUndo([]); pendUndoRef.current = null; placeMovedRef.current = false; // fresh undo history
-    placeBotHW.current = 0;                            // fresh band reserve for this placement session
+    setBandPx(null);                                  // re-measure the clear band for this session
     setPMode("place");
   };
   const donePlace = () => {
