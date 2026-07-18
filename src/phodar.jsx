@@ -1747,6 +1747,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [pRoll, setPRoll] = useState(0);
   const [fovM, setFovM] = useState(68);      // photo's own FOV (calibrated by pinch)
   const [pDist, setPDist] = useState(0);     // radial lens distortion (tan-space k) — 0 unless star-calibrated
+  /* place-mode DISPLAY zoom + pan — magnifies the photo+sky together to line up
+     fine detail (a distant ridge, a rooftop). Purely cosmetic: it does NOT touch
+     the pose (pAz/pEl/fovM/pRoll), only how big the locked photo+sky pair draws. */
+  const [pZoom, setPZoom] = useState(1);
+  const [pPan, setPPan] = useState({ x: 0, y: 0 });
+  const [panMode, setPanMode] = useState(false);
+  const dispPanRef = useRef(null);
+  const resetPlaceView = () => { setPZoom(1); setPPan({ x: 0, y: 0 }); setPanMode(false); };
   const openPoseRef = useRef(null);          // placement as of aimer-open — Reset target
   const PH_OP = 0.85; // photo opacity — fixed; the grid/terrain still reads through the warp
   const [flash, setFlash] = useState("");
@@ -2150,10 +2158,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       FRAMEeff = clampN(Math.min(FRAME, fit), 0.5, FRAME);
     }
   }
+  /* display zoom (pZoom) + pan (pPan) fold straight into the placement frame and
+     centre — magnifying photo+sky together while keeping them locked (the frame
+     edges still map to ±fovM/2). Off (zoom 1, pan 0) unless placing. */
+  const FRAMEz = FRAMEeff * (placing ? pZoom : 1);
+  const cx = 0.5 + (placing ? pPan.x : 0);
+  const cy = 0.5 + placeDY + (placing ? pPan.y : 0);
   const effAz = placing ? pAz : viewAz;
   const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
-    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAMEeff) * R2D, 12, 135)
+    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAMEz) * R2D, 12, 135)
     : fov;
   const fovH = effFov;
   const tanH = Math.tan((fovH * RAD) / 2);
@@ -2170,11 +2184,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (zc <= 0.001) return { x: 0, y: 0, inFront: false };
     const xc = d[0] * camR[0] + d[1] * camR[1] + d[2] * camR[2];
     const yc = d[0] * camU[0] + d[1] * camU[1] + d[2] * camU[2];
-    return { x: 0.5 + (xc / zc) / (2 * tanH), y: 0.5 - (yc / zc) / (2 * tanV) + placeDY, inFront: true };
+    return { x: cx + (xc / zc) / (2 * tanH), y: cy - (yc / zc) / (2 * tanV), inFront: true };
   };
   const project = (azDg, altDg) => projectD(dirOf(azDg, altDg));
   const unproject = (xf, yf) => {
-    const sx = (xf - 0.5) * 2 * tanH, sy = -(yf - 0.5 - placeDY) * 2 * tanV;
+    const sx = (xf - cx) * 2 * tanH, sy = -(yf - cy) * 2 * tanV;
     return unit([
       camR[0] * sx + camU[0] * sy + camF[0],
       camR[1] * sx + camU[1] * sy + camF[1],
@@ -2221,10 +2235,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         rotDragRef.current = null;
         return;
       }
-      panRef.current = null; placeRef.current = null; rotDragRef.current = null; calibTapRef.current = null;
+      panRef.current = null; placeRef.current = null; dispPanRef.current = null; rotDragRef.current = null; calibTapRef.current = null;
       const g = twoPtGeom();
       if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
       else pinchRef.current = g;
+    } else if (placing && panMode) {
+      dispPanRef.current = { x: e.clientX, y: e.clientY, px: pPan.x, py: pPan.y };
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
     } else if (rotMode && selPt != null && source?.shapeFit) {
@@ -2286,6 +2302,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (ratio < 0.67 || ratio > 1.5) return;
         setFov((f) => clampN(f / ratio, 2, 90));
       }
+      return;
+    }
+    if (dispPanRef.current && vp.w) {
+      const d = dispPanRef.current; // display pan: slide the magnified photo+sky together (pose untouched)
+      const lim = 0.5 * Math.max(0, pZoom - 1) + 0.15; // let you reach the edges once zoomed
+      setPPan({
+        x: clampN(d.px + (e.clientX - d.x) / vp.w, -lim, lim),
+        y: clampN(d.py + (e.clientY - d.y) / (vp.h || vp.w), -lim, lim),
+      });
       return;
     }
     if (placeRef.current && vp.w) {
@@ -2351,7 +2376,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (best && bestD < 60) pickCalib(best);
         else setCalibMsg("No named star near your tap — pan/zoom to bring one into view, then tap it");
       }
-      panRef.current = null; placeRef.current = null; rotDragRef.current = null; rotTwistRef.current = null;
+      panRef.current = null; placeRef.current = null; dispPanRef.current = null; rotDragRef.current = null; rotTwistRef.current = null;
       if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
       if (placing) commitPlacement();
     }
@@ -2698,12 +2723,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (motionOn) setMotionOn(false);
     if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); }
     calibAnchorsRef.current = []; setCalibCount(0);   // manual place invalidates the star anchors
+    resetPlaceView();
     setPMode("place");
   };
   const donePlace = () => {
-    /* hand the (already photo-centered) view back seamlessly — nothing moves */
+    /* hand the (already photo-centered) view back seamlessly — nothing moves.
+       effFov is the ZOOMED view FOV; divide the display zoom back out so Look
+       mode opens at the true photo framing, not magnified. */
     setViewAz(pAz); setViewAlt(clampN(pEl, -15, EL_MAX));
-    setFov(clampN(effFov, 2, 90));
+    setFov(clampN(2 * Math.atan(Math.tan((effFov * RAD) / 2) * pZoom) * R2D, 2, 90));
+    resetPlaceView();
     commitPlacement();
     setPMode("look");
   };
@@ -3022,8 +3051,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             guarantees this rigid rectangle equals the projective truth. */}
         {placing && source?.mediaUrl && (
           <div style={{
-            position: "absolute", left: "50%", top: ((0.5 + placeDY) * 100) + "%",
-            width: (FRAMEeff * 100) + "%",
+            position: "absolute", left: (cx * 100) + "%", top: (cy * 100) + "%",
+            width: (FRAMEz * 100) + "%",
             transform: `translate(-50%,-50%) rotate(${-pRoll}deg)`,
             pointerEvents: "none",
           }}>
@@ -3588,6 +3617,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         </div>
       )}
 
+      {/* place-mode DISPLAY zoom + pan — magnify photo+sky together to line up a
+          ridge/rooftop, then ✋ pan to reach it. Does not change the calibration. */}
+      {placing && (
+        <div style={{ position: "absolute", right: 10, top: "42%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 206, pointerEvents: "auto" }}>
+          <button className="btn" title="Zoom in (magnify for fine alignment)" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.8)" }}
+            onClick={() => setPZoom((z) => clampN(+(z * 1.5).toFixed(2), 1, 6))}>+</button>
+          <button className="btn" title="Zoom out" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.8)" }}
+            onClick={() => setPZoom((z) => { const nz = clampN(+(z / 1.5).toFixed(2), 1, 6); if (nz <= 1.001) { setPPan({ x: 0, y: 0 }); setPanMode(false); } return nz; })}>−</button>
+          {pZoom > 1.001 && (
+            <button className={"btn" + (panMode ? " amber" : "")} title="Pan mode: drag to move around the magnified view (instead of sliding the sky)"
+              style={{ width: 42, height: 42, padding: 0, fontSize: 17, background: panMode ? undefined : "rgba(15,23,42,.8)" }}
+              onClick={() => setPanMode((v) => !v)}>✋</button>
+          )}
+          {pZoom > 1.001 && (
+            <div style={{ textAlign: "center", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.8)" }}>{pZoom.toFixed(1)}×</div>
+          )}
+        </div>
+      )}
+
       {/* bottom controls */}
       <div ref={botBarRef} style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.92) 55%, rgba(7,11,20,0))", zIndex: 210 }}>
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
@@ -3608,7 +3656,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       const p0 = openPoseRef.current;
                       if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist || 0); }
                       else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); setPDist(0); }
-                      calibAnchorsRef.current = []; setCalibCount(0);
+                      calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                     }}>Reset placement</button>
                     {terrOn && terr?.els && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
@@ -3888,7 +3936,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
-            ? "The photo is pinned, undistorted, center-screen — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Line the photo's horizon onto the horizon line, then ✓ Done — nothing will shift."
+            ? (panMode
+              ? "✋ Pan mode — drag to move around the magnified view. Tap ✋ again to go back to sliding the sky. Zoom does not change your calibration."
+              : "The photo is pinned, undistorted — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Use +/− (right) to zoom in on a ridge, ✋ to pan. Line the horizon up, then ✓ Done — nothing will shift.")
             : wizard
               ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
               : motionOn
