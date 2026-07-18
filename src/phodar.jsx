@@ -2216,7 +2216,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   const onBgDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
     const n = pointersRef.current.size;
     if (n >= 2) {
       /* Second finger while a point rotation is ALREADY underway → don't pinch:
@@ -2239,7 +2239,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       panRef.current = null; placeRef.current = null; dispPanRef.current = null; rotDragRef.current = null; calibTapRef.current = null;
       const g = twoPtGeom();
-      if (placing) twistRef.current = g;       // {ids, dist, ang} — rebaselined every event
+      if (placing && g) {
+        /* pivot mode: fingers landing TOGETHER roll about their midpoint; one
+           finger first THEN the other → the first finger is the pivot and the
+           second swings around it (decided by the gap between the two touches). */
+        const pa = pointersRef.current.get(g.ids[0]), pb = pointersRef.current.get(g.ids[1]);
+        const gap = (pa && pb && pa.t != null && pb.t != null) ? Math.abs(pa.t - pb.t) : 0;
+        g.pivotMode = gap > 140 ? "anchor" : "mid";
+        g.anchorId = (pa && pb && pa.t <= pb.t) ? g.ids[0] : g.ids[1]; // the earlier finger anchors
+      }
+      if (placing) twistRef.current = g;       // {ids, dist, ang, pivotMode, anchorId} — rebaselined every event
       else pinchRef.current = g;
     } else if (placing && panMode) {
       dispPanRef.current = { x: e.clientX, y: e.clientY, px: pPan.x, py: pPan.y };
@@ -2256,7 +2265,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
   };
   const onBgMove = (e) => {
-    if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: pointersRef.current.get(e.pointerId)?.t ?? e.timeStamp });
     const n = pointersRef.current.size;
     if (n >= 2) {
       /* two-finger view-axis twist rolling the selected point's shape */
@@ -2301,7 +2310,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                the same angle so the content under your fingers stays put. */
             if (vpRef.current && vp.w) {
               const rect = vpRef.current.getBoundingClientRect();
-              const vX = cx * vp.w - (g.mx - rect.left), vY = cy * vp.h - (g.my - rect.top); // (center − midpoint), px
+              /* pivot: the first finger (anchor mode) or the finger midpoint (mid mode) */
+              const anc = t.pivotMode === "anchor" ? pointersRef.current.get(t.anchorId) : null;
+              const Px = anc ? anc.x : g.mx, Py = anc ? anc.y : g.my;
+              const vX = cx * vp.w - (Px - rect.left), vY = cy * vp.h - (Py - rect.top); // (center − pivot), px
               const phi = doRot * RAD, cph = Math.cos(phi), sph = Math.sin(phi);            // CSS applies +doRot°
               const dPx = (cph * vX - sph * vY - vX) / vp.w, dPy = (sph * vX + cph * vY - vY) / (vp.h || vp.w);
               setPPan((p) => ({ x: clampN(p.x + dPx, -2.5, 2.5), y: clampN(p.y + dPy, -2.5, 2.5) }));
