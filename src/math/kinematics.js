@@ -9,8 +9,39 @@
 
 import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
-import { pixelDirFromAnchor } from "./projection.js";
+import { pixelDirFromAnchor, angSizeFromPoints } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
+
+/* ─── MULTI-MOMENT TRACK ────────────────────────────────────────────────
+   One observer can hold several timestamped photos ("moments") of the same
+   object — the primary shot plus `s.moments[]`. Each PLACED shot yields one
+   sight direction (its A.az/A.el) at its capture time (whenMs). Two or more
+   placed shots therefore describe an angular trajectory exactly like manually
+   drawn track points do. `sourceTrack` returns that unified point list:
+     • ≥2 placed shots  → one {t,az,el,ang} point per shot, t in seconds from
+       the earliest shot, sorted by time (the multi-photo path);
+     • otherwise        → the source's own manual `track` (the single-photo
+       hand-drawn path — unchanged, so existing sightings behave identically).
+   Pure + deterministic so the whole trajectory pipeline stays testable. */
+export function sourceTrack(s) {
+  if (!s) return [];
+  const shots = [s, ...(s.moments || [])].filter(
+    (m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs)
+  );
+  if (shots.length >= 2) {
+    const t0 = Math.min(...shots.map((m) => +m.whenMs));
+    return shots
+      .map((m) => {
+        const ang = angSizeFromPoints(m.A?.p1, m.A?.p2, m.natW, m.natH, +m.fovH);
+        const pt = { t: (+m.whenMs - t0) / 1000, az: +m.A.az, el: +m.A.el };
+        if (isNum(ang) && +ang > 0) pt.ang = +ang;
+        else if (isNum(m.A?.angManual) && +m.A.angManual > 0) pt.ang = +m.A.angManual;
+        return pt;
+      })
+      .sort((a, b) => a.t - b.t);
+  }
+  return s.track || [];
+}
 
 /* spherical linear interpolation between unit vectors */
 function slerp(a, b, f) {
@@ -60,8 +91,9 @@ function roundCorners(pts) {
    every point, which assumes the camera never moved. When per-frame poses
    land, a point's own `p.pose` should win over the source-level one. */
 export function trackDirections(s) {
-  if (!s.track || s.track.length < 2) return null;
-  const pts = [...s.track].sort((a, b) => a.t - b.t);
+  const track = sourceTrack(s);
+  if (!track || track.length < 2) return null;
+  const pts = [...track].sort((a, b) => a.t - b.t);
   const fov = isNum(s.fovH) ? +s.fovH : null;
   const p0 = pts.find((p) => p.x != null);
   const anchored = isNum(s.A?.az) && isNum(s.A?.el);
@@ -132,7 +164,7 @@ export function kinematics(times, pos) {
    distance for absolute metres. Speeds/accelerations then include the radial
    component, not just the transverse one. */
 export function soloTrack(s) {
-  const raw = (s.track || []).filter((p) => isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
+  const raw = sourceTrack(s).filter((p) => isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
   if (raw.length < 3) return null;
   const ang = raw.map((p) => (isNum(p.ang) && +p.ang > 0 ? +p.ang : null));
   if (!ang.some((a) => a != null)) return null;               // no size info → no radial reconstruction

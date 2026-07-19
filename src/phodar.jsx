@@ -81,7 +81,25 @@ const makeSource = (i) => ({
   A: blankMomentA(),
   B: blankMomentB(),
   statement: "",
+  moments: [],
   open: true,
+});
+
+/* A MOMENT is an additional timestamped photo of the SAME object from the SAME
+   observer. It is shaped like a mini-source so MediaMeasure + SkyAimer can edit
+   it unchanged (they read/write `mediaUrl`, `natW/H`, `fovH`, `A.p1/p2`,
+   `mediaAim`, …). Once placed, its A.az/A.el @ whenMs becomes one point on the
+   observer's single trajectory (see `sourceTrack` in math/kinematics.js). The
+   observer's own primary photo is the implicit first moment. */
+const makeMoment = (fovH) => ({
+  id: Math.random().toString(36).slice(2, 9),
+  whenMs: Date.now(),
+  tSource: "manual",       // 'exif' once a capture time is mined from the file
+  fovH: isNum(fovH) ? fovH : 68,
+  natW: null, natH: null,
+  A: blankMomentA(),
+  B: blankMomentB(),
+  track: [],
 });
 
 
@@ -418,9 +436,13 @@ const HELP_SECTIONS = [
         { t: "📄 Report", d: "Open the report & share screen." },
         { t: "units: … — tap to switch", d: "Flip every readout in the app between metric (m · km · m/s) and imperial (ft · mi · mph)." },
         { t: "Observer row dots", d: "Green marks which facets are done — photo · position · direction · (trajectory). Open ▸ resumes that observer; ✕ removes them." },
+        { t: "＋ Add moment", d: "Under each observer is a moment tree — the primary photo is Moment 1. Add another photo of the SAME object taken a moment later (from the same spot) and place it too; two or more placed photos build that observer's trajectory (direction over time) without any manual drawing. Each moment carries its own capture time (from EXIF, or set by hand)." },
       ]},
     ],
-    tips: ["One viewpoint is still useful — it pins direction and angular size honestly. It just can't give absolute distance until a second viewpoint is added."],
+    tips: [
+      "One viewpoint is still useful — it pins direction and angular size honestly. It just can't give absolute distance until a second viewpoint is added.",
+      "Trajectory has two paths: multiple timestamped photos (moments) placed in the sky, OR — with a single photo/video — draw the path by hand in the sky view. Moments win when you have two or more placed.",
+    ],
   },
   {
     id: "photo", icon: "📸", title: "Step 1 — The photo",
@@ -4855,6 +4877,14 @@ async function packSources(sources) {
   const out = [];
   for (const s of act) {
     const { mediaUrl, mediaKind, mediaNorm, open, ...r } = s;
+    /* moments carry their own (heavy) photos — drop the pixels but KEEP the
+       measurements (whenMs + A.az/el + marks + natW/H/fovH) so the imported
+       sighting still reconstructs the multi-photo trajectory via sourceTrack.
+       Moment marks stay in the moment's own full-res frame — angular size is
+       pixel-ratio invariant, so no rescale is needed. */
+    if (Array.isArray(r.moments) && r.moments.length) {
+      r.moments = r.moments.map(({ mediaUrl: mu, mediaKind: mk, mediaNorm: mn, track, ...mr }) => mr);
+    }
     if (mediaUrl && mediaKind === "image" && r.natW) {
       try {
         const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = mediaUrl; });
@@ -5945,7 +5975,32 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, unitsImp, onToggleUnits }) {
+/* capture-time editor for a moment — auto-filled from EXIF when present, but
+   always adjustable (shared/re-encoded photos often lose their timestamp, and
+   the inter-moment gap is what turns the angular path into a real speed). */
+function MomentTimeCtl({ m, onChange }) {
+  const toLocal = (ms) => {
+    const d = new Date(isNum(ms) ? +ms : Date.now());
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  };
+  const fromExif = isNum(m.meta?.timeMs);
+  return (
+    <div className="card" style={{ margin: "10px 0 0" }}>
+      <ML>When was this moment taken?</ML>
+      <div style={{ fontSize: 11, color: "var(--dim)", margin: "2px 0 6px", lineHeight: 1.4 }}>
+        {fromExif
+          ? "✓ read from the photo — adjust only if it's wrong."
+          : "This photo carried no timestamp. Set it as exactly as you can — the seconds between moments set the object's speed."}
+      </div>
+      <input type="datetime-local" step="1" value={toLocal(m.whenMs)}
+        onChange={(e) => { const t = e.target.value ? Date.parse(e.target.value) : NaN; if (isNum(t)) onChange({ whenMs: t, tSource: "manual" }); }}
+        style={{ width: "100%" }} />
+    </div>
+  );
+}
+
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -5988,24 +6043,59 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
           <ML>This sighting — {real.length} observer{real.length > 1 ? "s" : ""}</ML>
-          {sources.map((s, i) => (
-            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid var(--line)" }}>
-              <div style={{ flex: 1, fontSize: 13 }}>
-                {s.name || `Observer ${i + 1}`}
-                <div style={{ marginTop: 3 }}>
-                  {/* photo · position · direction are the completable facets;
-                     a trajectory dot only appears (and is always green) when a
-                     track exists — it's optional, so it never blocks "complete" */}
-                  {dot(!!s.mediaUrl, "m", "photo")}{dot(isNum(s.lat) && isNum(s.lon), "p", "position")}{dot(isNum(s.A?.az) && isNum(s.A?.el), "d", "direction")}{(s.track || []).length > 1 ? dot(true, "t", "trajectory") : null}
+          {sources.map((s, i) => {
+            const moments = s.moments || [];
+            /* trajectory exists when ≥2 placed shots (primary + moments) OR a
+               drawn manual track — either way the observer has a path */
+            const placedShots = [s, ...moments].filter((m) => isNum(m.A?.az) && isNum(m.A?.el) && isNum(m.whenMs)).length;
+            const hasTraj = placedShots >= 2 || (s.track || []).length > 1;
+            const timeLbl = (ms) => (isNum(ms) ? new Date(+ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "no time");
+            return (
+              <div key={s.id} style={{ padding: "7px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, fontSize: 13 }}>
+                    {s.name || `Observer ${i + 1}`}
+                    <div style={{ marginTop: 3 }}>
+                      {/* photo · position · direction are the completable facets;
+                         a trajectory dot only appears (and is always green) when a
+                         path exists — it's optional, so it never blocks "complete" */}
+                      {dot(!!s.mediaUrl, "m", "photo")}{dot(isNum(s.lat) && isNum(s.lon), "p", "position")}{dot(isNum(s.A?.az) && isNum(s.A?.el), "d", "direction")}{hasTraj ? dot(true, "t", "trajectory") : null}
+                    </div>
+                  </div>
+                  <button className="btn sm" onClick={() => onResume(s.id)}>Open ▸</button>
+                  <button className="btn sm ghost" style={{ color: "var(--red)", padding: "6px 8px" }}
+                    onClick={() => {
+                      if (window.confirm(`Remove ${s.name || `Observer ${i + 1}`} from this sighting? Their photo and measurements go with them.`)) onRemove(s.id);
+                    }}>✕</button>
                 </div>
+                {/* moment tree: the primary photo is the first moment; each extra
+                   photo of the same object (at another time) adds a trajectory point */}
+                {(!!s.mediaUrl || moments.length > 0) && (
+                  <div style={{ marginTop: 6, marginLeft: 4, paddingLeft: 8, borderLeft: "2px solid var(--line)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--dim)", padding: "2px 0" }}>
+                      <span style={{ color: "var(--teal)" }}>◷</span>
+                      <span style={{ flex: 1 }}>📷 Moment 1 · {timeLbl(s.whenMs)}{isNum(s.A?.az) ? "" : " · not placed"}</span>
+                    </div>
+                    {moments.map((m, mi) => (
+                      <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--dim)", padding: "2px 0" }}>
+                        <span style={{ color: isNum(m.A?.az) ? "var(--teal)" : "var(--line)" }}>◷</span>
+                        <span style={{ flex: 1 }}>📷 Moment {mi + 2} · {timeLbl(m.whenMs)}{isNum(m.A?.az) ? "" : " · needs placing"}</span>
+                        <button className="btn sm ghost" style={{ padding: "3px 7px", fontSize: 11 }} onClick={() => onOpenMoment(s.id, m.id)}>{m.mediaUrl ? "Edit" : "Add photo"}</button>
+                        <button className="btn sm ghost" style={{ color: "var(--red)", padding: "3px 6px", fontSize: 11 }}
+                          onClick={() => { if (window.confirm(`Remove Moment ${mi + 2} from ${s.name || `Observer ${i + 1}`}?`)) onRemoveMoment(s.id, m.id); }}>✕</button>
+                      </div>
+                    ))}
+                    {!!s.mediaUrl && (
+                      <button className="btn sm ghost" style={{ marginTop: 4, fontSize: 11.5, padding: "4px 8px" }} onClick={() => onAddMoment(s.id)}>＋ Add moment</button>
+                    )}
+                    {placedShots >= 2 && (
+                      <div style={{ fontSize: 10.5, color: "var(--track)", marginTop: 4 }}>↳ trajectory from {placedShots} placed photos</div>
+                    )}
+                  </div>
+                )}
               </div>
-              <button className="btn sm" onClick={() => onResume(s.id)}>Open ▸</button>
-              <button className="btn sm ghost" style={{ color: "var(--red)", padding: "6px 8px" }}
-                onClick={() => {
-                  if (window.confirm(`Remove ${s.name || `Observer ${i + 1}`} from this sighting? Their photo and measurements go with them.`)) onRemove(s.id);
-                }}>✕</button>
-            </div>
-          ))}
+            );
+          })}
           {fix.ok && (
             <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--teal)", marginTop: 8 }}>
               FIX: {fmtLenShort(fix.solA.X[2])} up{fix.sizeAvg != null ? ` · ${fmtLenShort(fix.sizeAvg)} across` : ""} · {fix.rating}
@@ -6260,13 +6350,20 @@ export default function App() {
       if (d) {
         if (d.sources?.length) {
           setSources(d.sources);
-          /* re-attach media from IndexedDB (autosave strips mediaUrl) */
-          Promise.all(d.sources.map(async (s) => ({ id: s.id, rec: await mediaGet(s.id) }))).then((rs) => {
-            setSources((ss) => ss.map((s) => {
-              const hit = rs.find((r) => r.id === s.id)?.rec;
-              if (!hit || s.mediaUrl) return s;
+          /* re-attach media from IndexedDB (autosave strips mediaUrl) — for the
+             observer's primary photo AND each of its moments (keyed by id) */
+          const ids = d.sources.flatMap((s) => [s.id, ...(s.moments || []).map((m) => m.id)]);
+          Promise.all(ids.map(async (id) => ({ id, rec: await mediaGet(id) }))).then((rs) => {
+            const recFor = (id) => rs.find((r) => r.id === id)?.rec;
+            const attach = (o) => {
+              const hit = recFor(o.id);
+              if (!hit || o.mediaUrl) return o;
               const url = hit.kind === "video" ? URL.createObjectURL(hit.data) : hit.data;
-              return { ...s, mediaUrl: url, mediaKind: hit.kind, mediaNorm: hit.kind === "image" };
+              return { ...o, mediaUrl: url, mediaKind: hit.kind, mediaNorm: hit.kind === "image" };
+            };
+            setSources((ss) => ss.map((s) => {
+              const s2 = attach(s);
+              return (s2.moments || []).length ? { ...s2, moments: s2.moments.map(attach) } : s2;
             }));
           }).catch(() => { });
         }
@@ -6280,14 +6377,45 @@ export default function App() {
   useEffect(() => {
     if (!loadedRef.current) return;
     const id = setTimeout(() => {
-      try { window.storage.set("phodar-v1", JSON.stringify({ sources: sources.map(({ mediaUrl, mediaKind, mediaNorm, ...rest }) => rest), est })); } catch (e) { }
+      try {
+        /* strip heavy media URLs — the observer's own AND each moment's (data
+           URLs are MBs; localStorage caps ~5 MB). The pixels live in IndexedDB
+           and are re-attached on boot; only measurements/points persist here. */
+        const stripMedia = ({ mediaUrl, mediaKind, mediaNorm, ...rest }) => rest;
+        const lean = sources.map((s) => {
+          const s2 = stripMedia(s);
+          return (s2.moments || []).length ? { ...s2, moments: s2.moments.map(stripMedia) } : s2;
+        });
+        window.storage.set("phodar-v1", JSON.stringify({ sources: lean, est }));
+      } catch (e) { }
     }, 800);
     return () => clearTimeout(id);
   }, [sources, est]);
 
   const updateSource = (id, patch) =>
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-  const removeSource = (id) => { mediaDel(id); setSources((ss) => ss.filter((s) => s.id !== id)); };
+  const removeSource = (id) => {
+    const s = sources.find((x) => x.id === id);
+    mediaDel(id);
+    (s?.moments || []).forEach((m) => mediaDel(m.id));
+    setSources((ss) => ss.filter((s) => s.id !== id));
+  };
+  /* ——— moments: additional timestamped photos under ONE observer ——— */
+  const updateMoment = (srcId, momId, patch) =>
+    setSources((ss) => ss.map((s) => (s.id !== srcId ? s
+      : { ...s, moments: (s.moments || []).map((m) => (m.id === momId ? { ...m, ...patch } : m)) })));
+  const addMoment = (srcId) => {
+    const parent = sources.find((s) => s.id === srcId);
+    if (!parent) return;
+    const m = makeMoment(parent.fovH);
+    setSources((ss) => ss.map((s) => (s.id === srcId ? { ...s, moments: [...(s.moments || []), m] } : s)));
+    setUi({ view: "m1", srcId, momId: m.id });
+  };
+  const removeMoment = (srcId, momId) => {
+    mediaDel(momId);
+    setSources((ss) => ss.map((s) => (s.id !== srcId ? s
+      : { ...s, moments: (s.moments || []).filter((m) => m.id !== momId) })));
+  };
   /* a SIGHTING is the event; each witness/perspective is a source within it */
   const addWitness = () => {
     const blank = sources.find(isEmptySource);
@@ -6340,6 +6468,8 @@ export default function App() {
     } catch (e) { return 0; }
   };
     const wsrc = sources.find((s) => s.id === ui.srcId) || null;
+    const wmom = wsrc && ui.momId ? (wsrc.moments || []).find((m) => m.id === ui.momId) : null;
+    const momIdx = wmom ? (wsrc.moments || []).findIndex((m) => m.id === wmom.id) : -1;
     let page = null;
     if (ui.view === "report") {
       page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
@@ -6376,9 +6506,35 @@ export default function App() {
               else updateSource(wsrc.id, { B: { ...wsrc.B, az: az.toFixed(2), el: el.toFixed(2) } });
             }} />
         );
+      } else if (ui.view === "m1" && wmom) {
+        page = (
+          <WizStep n={2} title={`MOMENT ${momIdx + 2} · PHOTO`} help="photo"
+            onBack={() => goView("home")} onNext={() => goView("m2")}
+            nextDisabled={!wmom.mediaUrl} nextLabel="Next · place it in the sky →"
+            disabledLabel="Add this moment's photo to continue">
+            <div style={{ fontSize: 12, color: "var(--dim)", padding: "0 2px 8px", lineHeight: 1.5 }}>
+              Another photo of the <b style={{ color: "var(--ink)" }}>same object</b> from <b style={{ color: "var(--ink)" }}>{wsrc.name}</b>'s spot, at a different time. Mark where the object sits — its direction plus this moment's time add a point to the trajectory.
+            </div>
+            <MediaMeasure wizard src={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)} />
+            {wmom.mediaUrl && <MomentTimeCtl m={wmom} onChange={(p) => updateMoment(wsrc.id, wmom.id, p)} />}
+          </WizStep>
+        );
+      } else if (ui.view === "m2" && wmom) {
+        page = (
+          <SkyAimer open wizard source={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)}
+            onClose={() => goView("home")} onWizardBack={() => goView("m1")} onWizardNext={() => goView("home")}
+            lat={isNum(wsrc.lat) ? +wsrc.lat : 42.16} lng={isNum(wsrc.lon) ? +wsrc.lon : -123.66}
+            whenMs={isNum(wmom.whenMs) ? +wmom.whenMs : Date.now()}
+            initAz={isNum(wmom.A?.az) ? +wmom.A.az : (wmom.mediaAim && isNum(wmom.mediaAim.az) ? +wmom.mediaAim.az : (isNum(wsrc.A?.az) ? +wsrc.A.az : 180))}
+            initAlt={isNum(wmom.A?.el) ? +wmom.A.el : (wmom.mediaAim && isNum(wmom.mediaAim.el) ? +wmom.mediaAim.el : (isNum(wsrc.A?.el) ? +wsrc.A.el : 20))}
+            marks={[]} which="A"
+            onCapture={(wh, az, el) => updateMoment(wsrc.id, wmom.id, { A: { ...wmom.A, az: az.toFixed(2), el: el.toFixed(2) } })} />
+        );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")} unitsImp={unitsImp} onToggleUnits={toggleUnits} />;
+    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")}
+      onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
+      unitsImp={unitsImp} onToggleUnits={toggleUnits} />;
     return (
       <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}>
         <style>{css}</style>
