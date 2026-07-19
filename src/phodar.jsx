@@ -5078,6 +5078,11 @@ async function reportHtml(sources, est, opts = {}) {
       try { wx = await fetchWeatherAt(wla, wlo, wms); } catch (e) { wx = null; }
     }
   }
+  /* Is there an actual LOW cloud DECK? The estimated base (Espy LCL, from
+     surface temp/dew) is a LOW-cloud base, so the range/size cap is only
+     meaningful when there's real low/total cover — not on a clear night or
+     under high cirrus only. */
+  const wxDeck = wx && wx.baseAGL != null && ((wx.low != null ? wx.low : wx.cloud) || 0) >= 40;
   const e2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const dv = (s) => (s === "" || s == null ? "—" : e2(s));
   const ft = (m) => Math.round(m * 3.28084);
@@ -5226,7 +5231,7 @@ async function reportHtml(sources, est, opts = {}) {
       const altLine = drawAlt ? `<line x1="${X(D0)}" y1="${Y(a0).toFixed(1)}" x2="${X(D1)}" y2="${Y(a1).toFixed(1)}" stroke="#2563c9" stroke-width="2.5"/>${altRefs}` : "";
       /* cloud-base cap: if the object was below the deck, its range < base/sin(el),
          so everything to the RIGHT of this line is ruled out for a below-cloud object */
-      const cb = (wx && wx.baseAGL != null && drawAlt) ? cloudRangeBound(wx.baseAGL, el, wAng) : null;
+      const cb = (wxDeck && drawAlt) ? cloudRangeBound(wx.baseAGL, el, wAng) : null;
       const cloudCut = (cb && cb.maxRange >= D0 && cb.maxRange <= D1) ? (() => {
         const xc = X(cb.maxRange);
         return `<rect x="${xc.toFixed(1)}" y="${T}" width="${(W - Rm - xc).toFixed(1)}" height="${H - T - B}" fill="rgba(120,120,120,.10)"/>` +
@@ -5332,7 +5337,24 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
           : best.sepMax < 2.5
             ? `<b>${e2(best.flight || best.reg || best.hex)}</b> was in frame, within ${best.sepMax.toFixed(1)}° of every witness sight-line — a strong mundane candidate; compare its predicted angular size against the measurement above.`
             : `${framed.length} aircraft fell in frame; the nearest to the marked object (${e2(best.flight || best.reg || best.hex)}) was ${best.sepMax.toFixed(1)}° off.`;
+      /* one-line thesis with a likelihood the object was a plane — separation
+         from the sight-line + whether the predicted angular size matches. */
+      const bp = best ? best.per[0] : null;
+      const sizeRatio = (bp && bp.predAng != null && measA != null && measA > 0) ? bp.predAng / measA : null;
+      const sizeOk = sizeRatio != null ? (sizeRatio > 0.4 && sizeRatio < 2.5) : null;
+      const acAssess = !cands.length
+        ? `<b>Assessment — aircraft: ruled out.</b> No transponder traffic was in range (military / non-transponder craft can't be excluded this way).`
+        : !framed.length
+          ? `<b>Assessment — aircraft: unlikely.</b> ${cands.length} were airborne nearby, but none fell inside the photo frame.`
+          : (best.sepMax < 1.2 && sizeOk !== false)
+            ? `<b>Assessment — aircraft: very likely.</b> A transponder aircraft sat just ${best.sepMax.toFixed(1)}° from the marked object${sizeOk ? " and its predicted angular size matches the measurement" : ""}.`
+            : best.sepMax < 2.5
+              ? `<b>Assessment — aircraft: likely.</b> The nearest match was ${best.sepMax.toFixed(1)}° off the sight-line${sizeOk === false ? ", though its predicted size doesn't match well — check the numbers" : ""}.`
+              : best.sepMax < 6
+                ? `<b>Assessment — aircraft: possible.</b> The nearest in-frame aircraft was ${best.sepMax.toFixed(1)}° off the marked object.`
+                : `<b>Assessment — aircraft: unlikely.</b> The nearest in-frame aircraft was ${best.sepMax.toFixed(1)}° from the object.`;
       adsbHtml = `<h2>Aircraft check (ADS-B)</h2>
+<p class="lead">${acAssess}</p>
 <p class="cap">Transponder aircraft that fell <b>inside the photo frame</b>. Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
 ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
 <p>${verdict}${routeTxt}</p>`;
@@ -5482,7 +5504,7 @@ ${detailBlock}`;
       const wxRows = wx ? (() => {
         const cover = wx.cloud != null ? `${Math.round(wx.cloud)}%${[wx.low != null ? `low ${Math.round(wx.low)}%` : "", wx.mid != null ? `mid ${Math.round(wx.mid)}%` : "", wx.high != null ? `high ${Math.round(wx.high)}%` : ""].filter(Boolean).length ? ` (${[wx.low != null ? `low ${Math.round(wx.low)}%` : "", wx.mid != null ? `mid ${Math.round(wx.mid)}%` : "", wx.high != null ? `high ${Math.round(wx.high)}%` : ""].filter(Boolean).join(" · ")})` : ""}` : null;
         return (cover != null ? row("Cloud cover", cover) : "") +
-          (wx.baseAGL != null && (wx.cloud == null || wx.cloud > 15) ? row("Cloud base (est.)", `${fmtLenShort(wx.baseAGL)} above ground <span class="cap">— from temp/dew-point (Espy); an object below the deck was closer than base ÷ sin(elevation)</span>`) : "") +
+          (wxDeck ? row("Cloud base (est.)", `${fmtLenShort(wx.baseAGL)} above ground <span class="cap">— from temp/dew-point (Espy); an object below the deck was closer than base ÷ sin(elevation)</span>`) : "") +
           (wx.visM != null ? row("Visibility", wx.visM >= 20000 ? "≥ 20 km (clear)" : fmtLenShort(wx.visM)) : "") +
           (wx.tempC != null ? row("Air", `${Math.round(wx.tempC)}°C${wx.dewC != null ? ` · dew point ${Math.round(wx.dewC)}°C` : ""}${wx.rh != null ? ` · ${Math.round(wx.rh)}% RH` : ""}`) : "");
       })() : "";
@@ -5533,7 +5555,15 @@ ${detailBlock}`;
       const venusHit = hits.find((h) => h.label.includes("Venus"));
       const satHit = hits.find((h) => h.label.startsWith("🛰"));
       const satStale = satHit && satHit.stale > 5 ? ` (TLE epoch ≈ ${Math.round(satHit.stale)} d from the sighting — position approximate)` : "";
-      skyHtml = `<h2>Sky-object check</h2><p class="cap">Bright planets, stars, satellites, the Sun &amp; Moon that fell <b>inside the photo frame</b> at the sighting time. "Off sight-line" is how far each sat from the marked object.</p>` + (hits.length
+      const near = hits[0], nearName = near ? near.label.replace(/^\S+\s/, "") : "";
+      const skyAssess = !hits.length
+        ? `<b>Assessment — astronomical object: unlikely.</b> No bright planet, star, satellite, Sun or Moon fell in the frame at that time.`
+        : near.sep < 2
+          ? `<b>Assessment — likely ${e2(nearName)}.</b> It sat just ${near.sep.toFixed(1)}° from the marked object — a strong match for a known ${near.label.startsWith("🛰") ? "satellite" : "sky object"}.`
+          : near.sep < 5
+            ? `<b>Assessment — possibly ${e2(nearName)}.</b> The nearest bright body was ${near.sep.toFixed(1)}° from the object.`
+            : `<b>Assessment — astronomical object: unlikely.</b> The nearest bright body in frame was ${near.sep.toFixed(1)}° from the object.`;
+      skyHtml = `<h2>Sky-object check</h2><p class="lead">${skyAssess}</p><p class="cap">Bright planets, stars, satellites, the Sun &amp; Moon that fell <b>inside the photo frame</b> at the sighting time. "Off sight-line" is how far each sat from the marked object.</p>` + (hits.length
         ? `<table><tr><th>Object (in frame)</th><th>Witness</th><th>Off sight-line</th><th>At az/el</th></tr>` +
         hits.map((h) => `<tr><td>${e2(h.label)}</td><td>${e2(h.wit)}</td><td>${h.sep.toFixed(1)}°</td><td>${h.az.toFixed(1)}° / ${h.alt.toFixed(1)}°</td></tr>`).join("") +
         `</table>` + (venusHit ? `<p>⚠ <b>Venus was in frame, ${venusHit.sep.toFixed(1)}° from the marked object</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
@@ -5579,7 +5609,14 @@ ${detailBlock}`;
         const verdictLine = haveMotion
           ? `<p class="${nv.verdict === "balloon-consistent" ? "" : "cap"}">At the object's altitude (${fmtLenShort(altMSL)} MSL, ≈ ${nearest.hPa} hPa) the wind drifts <b>${fmtSpeedShort(nearest.speedMs)} toward ${Math.round(nearest.driftDeg)}°</b>; the object (${motionSrc}) moved <b>${fmtSpeedShort(objSpeed)} toward ${Math.round(objHeading)}°</b> — heading off ${Math.round(nv.dHead)}°, speed ${isFinite(nv.ratio) ? nv.ratio.toFixed(1) + "×" : "≫"}. <b>${nv.verdict === "balloon-consistent" ? "⚠ Consistent with a wind-borne object (balloon signature)." : nv.verdict === "partially wind-like" ? "Partially wind-like — not conclusive." : "Not wind-borne at its altitude: a balloon cannot do this."}</b>${nv.verdict !== "balloon-consistent" && consistent.length ? ` <span class="cap">The wind DOES match the motion at ${consistent.map((L) => fmtLenShort(L.levelM)).join(", ")}, but the object was triangulated at ${fmtLenShort(altMSL)} — so a balloon is ruled out unless that altitude is wrong.</span>` : ""}</p>`
           : `<p class="cap">No usable object motion to compare against — the winds-aloft profile is shown for reference.</p>`;
-        windHtml = `<h2>Wind check (balloon test)</h2>${verdictLine}
+        const balloonAssess = !haveMotion
+          ? `<b>Assessment — balloon: undetermined.</b> No object motion was captured to compare against the wind.`
+          : nv.verdict === "balloon-consistent"
+            ? `<b>Assessment — balloon: consistent.</b> The object's motion matches the wind at its altitude (a free balloon's signature).`
+            : nv.verdict === "partially wind-like"
+              ? `<b>Assessment — balloon: partially consistent.</b> Some wind-like motion, but not a clean match.`
+              : `<b>Assessment — balloon: ruled out.</b> The wind at the object's altitude can't produce this motion.`;
+        windHtml = `<h2>Wind check (balloon test)</h2><p class="lead">${balloonAssess}</p>${verdictLine}
 <table class="tbl"><thead><tr><th>Altitude (MSL)</th><th>Wind → drift</th><th>Δhdg · speed · match</th></tr></thead><tbody>${rows}</tbody></table>
 <p class="cap">Winds aloft from ${prof.src}. A free balloon rides the wind at its altitude — matching heading (within ±25°) and speed (0.5–1.6×). Highlighted rows match the object's motion.</p>`;
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
@@ -5671,6 +5708,7 @@ h2{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppe
 table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top;overflow-wrap:break-word}
 img,svg{max-width:100%;height:auto}
 .cap{color:#666;font-size:12px}
+.lead{background:#f4f6fb;border-left:3px solid #2563c9;border-radius:0 6px 6px 0;padding:8px 12px;margin:2px 0 12px;font-size:13px}
 details.sec{border-top:1px solid #e4e4e4;margin-top:14px}
 details.sec>summary{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#555;padding:12px 0;cursor:pointer;list-style:none;display:flex;align-items:center;gap:9px}
 details.sec>summary::-webkit-details-marker{display:none}
