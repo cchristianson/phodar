@@ -80,6 +80,7 @@ const makeSource = (i) => ({
   natW: null, natH: null,
   A: blankMomentA(),
   B: blankMomentB(),
+  statement: "",
   open: true,
 });
 
@@ -438,6 +439,7 @@ const HELP_SECTIONS = [
         { t: "aspect / spin / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, bird wing width & fore/aft, jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
+        { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
       ]},
       { h: "See it clearly", items: [
         { t: "Pinch-zoom / two-finger pan", d: "Magnify a small object; two-finger drag pans; a second finger never places a point. ×N · reset returns to fit." },
@@ -1605,6 +1607,15 @@ function MediaMeasure({ src, update, wizard }) {
           {ang != null ? `${ang.toFixed(3)}°` : "— fit a shape above —"}
           {ang != null && <span style={{ fontSize: 12, color: "var(--dim)" }}>  ({(ang / 0.52).toFixed(1)}× full-moon width)</span>}
         </div>
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <ML>In your words — what did you see? (optional)</ML>
+        <textarea value={src.statement || ""} onChange={(e) => update({ statement: e.target.value })}
+          placeholder="Shape, colour, brightness, motion, sound, how long it lasted, how it ended…"
+          rows={3}
+          style={{ width: "100%", marginTop: 4, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, color: "var(--ink)", padding: "8px 10px", fontSize: 13, fontFamily: "inherit", lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }} />
+        <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 3 }}>Shown on the report as this observer's witness statement.</div>
       </div>
     </div>
   );
@@ -5860,6 +5871,7 @@ table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}td,th{bord
 img,svg{max-width:100%;height:auto}
 .cap{color:#666;font-size:12px}
 .lead{background:#f4f6fb;border-left:3px solid #2563c9;border-radius:0 6px 6px 0;padding:8px 12px;margin:2px 0 12px;font-size:13px}
+blockquote.stmt{margin:4px 0 0;padding:8px 12px;background:#faf7f0;border-left:3px solid #C77B14;border-radius:0 6px 6px 0;font-size:13px;line-height:1.55;white-space:pre-wrap}
 details.sec{border-top:1px solid #e4e4e4;margin-top:14px}
 details.sec>summary{font:700 12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#555;padding:12px 0;cursor:pointer;list-style:none;display:flex;align-items:center;gap:9px}
 details.sec>summary::-webkit-details-marker{display:none}
@@ -5874,6 +5886,7 @@ details.sec>*:last-child{margin-bottom:14px}
 <h2>Observers (${packed.length})</h2>
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
 <h2>Result</h2>${fixHtml}
+${(() => { const ws = origAct.filter((s) => s.statement && String(s.statement).trim()); return ws.length ? `<h2>Witness accounts</h2>` + ws.map((s, i) => `<div style="margin:0 0 12px"><b>${e2(s.name || "Observer " + (i + 1))}</b>${s.whenMs ? ` <span class="cap">· ${new Date(+s.whenMs).toLocaleString()}</span>` : ""}<blockquote class="stmt">${e2(String(s.statement).trim())}</blockquote></div>`).join("") : ""; })()}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(alignHtml, true)}
