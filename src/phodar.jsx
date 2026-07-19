@@ -4659,7 +4659,7 @@ function ResultsPanel({ sources }) {
 
         <div className="grid2" style={{ marginTop: 12 }}>
           <div>
-            <ML>Object altitude (above Obs 1)</ML>
+            <ML>Object altitude (above observers)</ML>
             <div className="readout">{fmtLenShort(r.solA.X[2])}</div>
             <div className="readsub">{fmtLenAlt(r.solA.X[2])}</div>
           </div>
@@ -5270,9 +5270,9 @@ async function reportHtml(sources, est, opts = {}) {
       `</table>`;
     fixHtml = `<table>` +
       row("Object ground position", `${fix.geoA.lat.toFixed(5)}, ${fix.geoA.lon.toFixed(5)} (± ${fmtLenShort(fix.posErr)})`) +
-      row("Altitude above observer 1", lp(fix.solA.X[2])) +
       row("Altitude (MSL)", lp(mslA)) +
-      row("Range from observer 1", fmtLenShort(fix.perSource[0].dist)) +
+      row("Altitude above the observers", lp(fix.solA.X[2])) +
+      row("Range from each observer", fix.perSource.map((p, i) => `${e2(p.name || "Observer " + (i + 1))}: ${fmtLenShort(p.dist)}`).join(" · ")) +
       (fix.sizeAvg != null ? row("Object size (avg)", lp(fix.sizeAvg)) : "") +
       ((asp) => asp ? row("Aspect-corrected span (if elongated)", `${asp.map((x) => `${fmtLenShort(x.S)} @ long-axis ${Math.round(x.psi)}°`).join(" or ")} (${asp[0].n} views${asp[0].rms != null ? `, fit rms ${fmtLenShort(asp[0].rms)}` : ""})`) : "")(aspectSpan(fix)) +
       (fix.motion?.speed != null ? row("Speed A→B", `${sp(fix.motion.speed)}, heading ${Math.round(fix.motion.heading)}° ${compass8(fix.motion.heading)}${isNum(fix.motion.vRate) ? `, vertical ${fix.motion.vRate >= 0 ? "climb" : "descent"} ${fmtSpeedShort(Math.abs(fix.motion.vRate))}` : ""}`) : "") +
