@@ -5494,7 +5494,16 @@ ${detailBlock}`;
           }
           const m = refFlux ? relMag(obj.flux, refFlux, refMag) : null;
           const satHi = obj.satFrac > 0.15;
-          photomHtml = `<h2>Object photometry</h2><table>` +
+          const photAssess = /red|orange/.test(col)
+            ? "a reddish light — an aircraft's red beacon/nav light, a distant sodium lamp, or Mars"
+            : /green/.test(col)
+              ? "a greenish light — an aircraft's green nav light, or an atmospheric/lens tint"
+              : /blue/.test(col)
+                ? "a blue-white light — an LED, a xenon strobe, or a hot star"
+                : satHi
+                  ? "a very bright, saturated point — consistent with a landing light, a bright planet, or a specular flare"
+                  : "unremarkable in colour and brightness — not diagnostic on its own";
+          photomHtml = `<h2>Object photometry</h2><p class="lead"><b>Assessment — appearance:</b> ${photAssess}.</p><table>` +
             row("Colour", col) +
             row("Brightness", satHi ? `saturated core — very bright relative to the scene` : `peak ${Math.round(100 * obj.peak / 255)}% of clipping`) +
             (m != null ? row("Apparent magnitude (rough)", `${m.toFixed(1)}${satHi ? " (floor)" : ""} <span class="cap">vs ${e2(refName)} (mag ${refMag}) in the same frame</span>`) : "") +
@@ -5525,7 +5534,12 @@ ${detailBlock}`;
           (wx.visM != null ? row("Visibility", wx.visM >= 20000 ? "≥ 20 km (clear)" : fmtLenShort(wx.visM)) : "") +
           (wx.tempC != null ? row("Air", `${Math.round(wx.tempC)}°C${wx.dewC != null ? ` · dew point ${Math.round(wx.dewC)}°C` : ""}${wx.rh != null ? ` · ${Math.round(wx.rh)}% RH` : ""}`) : "");
       })() : "";
-      condHtml = `<h2>Sighting conditions</h2><table>` +
+      const condAssess = wxDeck
+        ? `<b>Assessment — conditions:</b> a low cloud deck (base ≈ ${fmtLenShort(wx.baseAGL)} AGL) was present — it caps a below-cloud object's range and size (see the size chart), and can itself catch and scatter ground light.`
+        : (wx && wx.cloud != null && wx.cloud < 25)
+          ? `<b>Assessment — conditions:</b> mostly clear skies — no cloud ceiling to bound the object's range.`
+          : `<b>Assessment — conditions:</b> Sun/Moon geometry below is exact; use it to sanity-check the reported time and rule the Sun/Moon in or out as the light source.`;
+      condHtml = `<h2>Sighting conditions</h2><p class="lead">${condAssess}</p><table>` +
         row("Local sky", `${tw} — Sun ${Math.abs(sun.alt).toFixed(1)}° ${sun.alt >= 0 ? "above" : "below"} the horizon at az ${Math.round(sun.az)}° ${compass8(sun.az)}`) +
         row("Moon", `${ill}% illuminated · ${moon.alt > 0 ? `${moon.alt.toFixed(0)}° up at az ${Math.round(moon.az)}° ${compass8(moon.az)}` : "below the horizon"}`) +
         (dec != null ? row("Magnetic declination", `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}° (WMM2025 — added to any magnetic compass bearing to get true)`) : "") +
@@ -5654,15 +5668,29 @@ ${detailBlock}`;
       const fmtDt = (h) => Math.abs(h) < 48 ? `${h >= 0 ? "+" : ""}${h.toFixed(1)} h` : `${h >= 0 ? "+" : ""}${(h / 24).toFixed(1)} d`;
       try {
         const L = (await fetchLaunches(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 14 * 24 && evVisible(x.lat, x.lon, 2)).slice(0, 8);
-        if (L.length) launchHtml = `<h2>Launch check (rocket launches)</h2>
+        if (L.length) {
+        const l0 = L[0], nearStar = L.find((x) => x.starlink && Math.abs(x.dtHours) < 72);
+        const launchAssess = nearStar
+          ? `<b>Assessment — rocket / Starlink: plausible.</b> A Starlink batch launched ${fmtDt(nearStar.dtHours)} — a fresh train of dots stays visible for days and is a very common "fleet of lights" report.`
+          : Math.abs(l0.dtHours) < 3
+            ? `<b>Assessment — rocket launch: plausible.</b> A launch ${fmtDt(l0.dtHours)}${l0.distKm != null ? ` within ${Math.round(l0.distKm)} km` : ""} — a twilight plume/upper stage can look anomalous for hundreds of km.`
+            : `<b>Assessment — rocket launch: context only.</b> Launches occurred near the date; a match needs the timing to line up.`;
+        launchHtml = `<h2>Launch check (rocket launches)</h2><p class="lead">${launchAssess}</p>
 <p class="cap">Rocket launches near the sighting (Launch Library 2). A fresh Starlink batch is a moving &ldquo;train&rdquo; of dots for days after launch; a twilight launch plume is visible for hundreds of km.</p>
 <table><tr><th>When (Δ)</th><th>Rocket / mission</th><th>Pad</th><th>Range</th></tr>${L.map((x) => `<tr><td>${new Date(x.net).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${e2(x.rocket || x.name)}${x.starlink ? " · <b>🛰 STARLINK</b>" : ""}<br><span class="cap">${e2(x.mission || "")}</span></td><td>${e2(x.padName || "")}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
+        }
       } catch (e) { /* offline / rate-limited — omit */ }
       try {
         const F = (await fetchFireballs(+obs0.lat, +obs0.lon, when)).filter((x) => Math.abs(x.dtHours) <= 24 && evVisible(x.lat, x.lon, x.altKm != null && x.distKm ? clampN(Math.atan2(x.altKm, x.distKm) * R2D, 0, 85) : 5)).slice(0, 6);
-        if (F.length) fireballHtml = `<h2>Fireball check (NASA CNEOS)</h2>
+        if (F.length) {
+        const f0 = F[0], strong = Math.abs(f0.dtHours) < 0.5 && (f0.distKm == null || f0.distKm < 500);
+        const fireAssess = strong
+          ? `<b>Assessment — fireball / meteor: strong.</b> A bolide was logged ${fmtDt(f0.dtHours)}${f0.distKm != null ? ` and ${Math.round(f0.distKm)} km away` : ""} — a close time-and-place match is a strong meteor explanation.`
+          : `<b>Assessment — fireball / meteor: possible.</b> A bolide was logged ${fmtDt(f0.dtHours)} — check whether the timing matches your sighting.`;
+        fireballHtml = `<h2>Fireball check (NASA CNEOS)</h2><p class="lead">${fireAssess}</p>
 <p class="cap">Bright bolides logged by US Government sensors near the sighting time. A match within minutes and a few hundred km is a strong meteor explanation.</p>
 <table><tr><th>When (Δ)</th><th>Energy (kt TNT)</th><th>Alt / speed</th><th>Range</th></tr>${F.map((x) => `<tr><td>${new Date(x.t).toLocaleString()}<br><span class="cap">${fmtDt(x.dtHours)}</span></td><td>${x.energyKt != null ? x.energyKt : "—"}${x.impactKt != null ? ` <span class="cap">(${x.impactKt} total)</span>` : ""}</td><td>${x.altKm != null ? x.altKm + " km" : "—"}${x.velKmS != null ? ` · ${x.velKmS} km/s` : ""}</td><td>${x.distKm != null ? Math.round(x.distKm) + " km" : "—"}</td></tr>`).join("")}</table>`;
+        }
       } catch (e) { /* omit */ }
     }
   }
@@ -5679,9 +5707,11 @@ ${detailBlock}`;
       const sightW = origAct.find((s) => isNum(s.A?.az) && isNum(s.A?.el));
       const sd = sightW ? dirFromAzEl(+sightW.A.az, +sightW.A.el) : null;
       if (showers.length) {
+        let upCount = 0;
         const rows = showers.map((sh) => {
           const p = raDecToAzEl(sh.ra, sh.dec, when, la, lo);
           const up = p.alt > 0;
+          if (up) upCount++;
           let sepTxt = "—";
           if (up && sd) {
             const rd = dirFromAzEl(p.az, p.alt);
@@ -5691,7 +5721,10 @@ ${detailBlock}`;
           const pk = sh.daysFromPeak === 0 ? "at peak" : `${Math.abs(sh.daysFromPeak)} d ${sh.daysFromPeak < 0 ? "before" : "after"} peak`;
           return `<tr><td>${e2(sh.name)}${sh.fireball ? ' · <b>fireball-rich</b>' : ""}<br><span class="cap">${pk}</span></td><td>${up ? `${Math.round(p.az)}° ${compass8(p.az)} · ${Math.round(p.alt)}° up` : "below horizon"}</td><td>${sepTxt}</td><td>ZHR ${sh.zhr} · ${sh.v} km/s</td></tr>`;
         }).join("");
-        meteorHtml = `<h2>Meteor-shower check</h2>
+        const meteorAssess = upCount
+          ? `<b>Assessment — meteor: possible only for a fast streak.</b> ${upCount} shower radiant${upCount > 1 ? "s are" : " is"} above the horizon, so a quick streak lasting a second or two could be a meteor — but a slow, steady, or hovering light is not.`
+          : `<b>Assessment — meteor: unlikely.</b> Showers are active on the date, but their radiants are below the horizon here — few meteors.`;
+        meteorHtml = `<h2>Meteor-shower check</h2><p class="lead">${meteorAssess}</p>
 <p class="cap">Annual showers active on the sighting date. Meteors radiate OUTWARD from the radiant, so a fast streak pointing back to an above-horizon radiant is likely a shower meteor; the Taurids produce slow, bright fireballs. "Off sight-line" is the radiant's angle from the marked object.</p>
 <table><tr><th>Shower</th><th>Radiant now</th><th>Off sight-line</th><th>Rate · speed</th></tr>${rows}</table>`;
       }
@@ -5709,7 +5742,13 @@ ${detailBlock}`;
         const aps = (await fetchAirports(rla, rlo, 45000)).slice(0, 4);
         if (aps.length) {
           const rows = aps.map((a) => `<tr><td>${e2(a.name)}${a.iata || a.icao ? ` (${e2(a.iata || a.icao)})` : ""}${a.kind ? ` · <span class="cap">${e2(a.kind)}</span>` : ""}</td><td>${fmtLenShort(a.distM)} ${compass8(a.bearing)} (${Math.round(a.bearing)}°)</td></tr>`).join("");
-          airportsHtml = `<h2>Nearby airfields</h2>
+          const near = aps[0];
+          const apAssess = near.distM < 8000
+            ? `<b>Assessment — traffic context: high.</b> ${e2(near.name)} is only ${fmtLenShort(near.distM)} ${compass8(near.bearing)} — its approach/departure corridors put low, slow aircraft nearby, so weigh the aircraft explanation heavily.`
+            : near.distM < 25000
+              ? `<b>Assessment — traffic context: moderate.</b> The nearest field (${e2(near.name)}) is ${fmtLenShort(near.distM)} away — aircraft in transit are plausible.`
+              : `<b>Assessment — traffic context: low.</b> The nearest field is ${fmtLenShort(near.distM)} away — concentrated approach traffic is less likely here.`;
+          airportsHtml = `<h2>Nearby airfields</h2><p class="lead">${apAssess}</p>
 <p class="cap">Aerodromes near ${fix.ok ? "the object's ground position" : "the observer"} (OpenStreetMap). Approach and departure corridors concentrate low, slow, light-carrying traffic — worth weighing alongside the ADS-B check.</p>
 <table><tr><th>Airfield</th><th>Distance · bearing</th></tr>${rows}</table>`;
         }
@@ -5952,6 +5991,11 @@ function ReportView({ sources, est, onBack }) {
   const [msg, setMsg] = useState("");
   const [prevHtml, setPrevHtml] = useState(null);   // iframe preview
   const [manual, setManual] = useState(null);       // { name, text } fallback copy box
+  /* the report is ALWAYS regenerated from the current sources by reportHtml, so
+     importing an older sighting produces a fresh report with the current
+     checks. Safeguard: if the sources change (e.g. an import) while a preview is
+     cached, drop it so the next view rebuilds. */
+  useEffect(() => { setPrevHtml(null); setManual(null); }, [sources]);
   const fix = analyze(sources);
   const copyText = async (txt) => {
     try { await navigator.clipboard.writeText(txt); return true; } catch (e) { }
