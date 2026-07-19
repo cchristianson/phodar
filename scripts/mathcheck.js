@@ -22,6 +22,7 @@ import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../sr
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
+import { parseAirports } from "../src/checks/airports.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -828,6 +829,19 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(e.major > e.minor ? 1 : 0, 1, 0, "ellipse: major axis longer");
   approx(e.bearing, 90, 6, "ellipse: East-elongated cloud → major bears ~90°");
   approx(covEllipse([[0, 0], [1, 1]]) == null ? 1 : 0, 1, 0, "ellipse: needs ≥3 points");
+}
+
+// --- airports: parse, sort by distance, bearing ---
+{
+  const els = [
+    { lat: 42.30, lon: -122.87, tags: { aeroway: "aerodrome", name: "Far Field", icao: "KXXX" } },     // north, ~15 km
+    { center: { lat: 42.15, lon: -122.66 }, tags: { aeroway: "aerodrome", name: "Near Field", iata: "MFR", aerodrome: "international" } }, // ~2 km
+    { lat: 42.16, lon: -123.66, tags: { building: "yes" } }, // not an aerodrome → dropped
+  ];
+  const aps = parseAirports(els, 42.155, -122.661); // observer beside "Near Field"
+  approx(aps.length, 2, 0, "airports: non-aerodrome dropped");
+  approx(aps[0].name === "Near Field" ? 1 : 0, 1, 0, "airports: nearest first");
+  approx(aps[0].bearing >= 0 && aps[0].bearing < 360 ? 1 : 0, 1, 0, "airports: bearing in range");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
