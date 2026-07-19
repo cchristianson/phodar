@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { analyze, arbitrateBearings, aspectSpan } from "./math/triangulate.js";
+import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
@@ -5137,12 +5137,29 @@ async function reportHtml(sources, est, opts = {}) {
     const geomTbl = `<table><tr><th>Observer</th><th>Range</th><th>Angular size</th><th>→ True size</th></tr>` +
       fix.perSource.map((p) => `<tr><td>${e2(p.name || "—")}</td><td>${fmtLenShort(p.dist)}</td><td>${p.ang != null ? fmtDeg(p.ang) : "—"}</td><td>${p.size != null ? lp(p.size) : "—"}</td></tr>`).join("") +
       `</table>`;
+    /* uncertainty ELLIPSE: re-solve with each witness's az/el nudged ±1° and
+       fit a covariance ellipse to the resulting ground points — captures that
+       the error is long along the near-parallel baseline direction, not a
+       single scalar. */
+    const ell = (() => {
+      if (!fix.ok) return null;
+      const wit = sources.filter((s) => isNum(s.A?.az) && isNum(s.A?.el));
+      if (wit.length < 2) return null;
+      const pts = [];
+      for (const wsel of wit) for (const daz of [-1, 0, 1]) for (const del of [-1, 0, 1]) {
+        if (daz === 0 && del === 0) continue;
+        const mod = sources.map((s) => s === wsel ? { ...s, A: { ...s.A, az: +s.A.az + daz, el: +s.A.el + del } } : s);
+        const f = analyze(mod);
+        if (f.ok) pts.push([f.solA.X[0], f.solA.X[1]]);
+      }
+      return covEllipse(pts);
+    })();
     const qualTbl = `<table>` +
       row("Baseline (observer separation)", fmtLenShort(fix.baseline)) +
       row("Ray convergence angle", fix.conv.toFixed(1) + "°") +
       row("Ray miss distance (RMS)", `${fmtLenShort(fix.solA.rmsMiss)} (${(fix.missRatio * 100).toFixed(1)}% of range)`) +
       row("Range / baseline ratio", `${(fix.meanDist / Math.max(1, fix.baseline)).toFixed(1)} : 1`) +
-      row("Position uncertainty", `± ${fmtLenShort(fix.posErr)} (from a ±1° pointing error)`) +
+      (ell ? row("Position uncertainty (1σ ellipse)", `${fmtLenShort(ell.major)} × ${fmtLenShort(ell.minor)} — long axis bears ${Math.round(ell.bearing)}° / ${Math.round((ell.bearing + 180) % 360)}° <span class="cap">(from ±1° pointing; weakest across the baseline)</span>`) : row("Position uncertainty", `± ${fmtLenShort(fix.posErr)} (from a ±1° pointing error)`)) +
       row("Quality rating", fix.rating + (fix.behind ? " — rays cross BEHIND an observer; treat as unreliable (see caveats)" : "")) +
       `</table>`;
     fixHtml = `<table>` +

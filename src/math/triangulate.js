@@ -240,3 +240,24 @@ export function aspectSpan(fix) {
   }
   return out;
 }
+
+/* Covariance ellipse of a 2-D point cloud (e.g. a fix perturbed by ±1° of
+   pointing). Returns 1σ semi-axes and the major-axis bearing (from North,
+   clockwise, mod 180 since an axis is undirected). Pure — asserted. */
+export function covEllipse(pts) {
+  const n = pts.length;
+  if (n < 3) return null;
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p[0]; my += p[1]; }
+  mx /= n; my /= n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const p of pts) { const dx = p[0] - mx, dy = p[1] - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+  sxx /= n; syy /= n; sxy /= n;
+  const tr = sxx + syy, det = sxx * syy - sxy * sxy;
+  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const l1 = tr / 2 + disc, l2 = Math.max(0, tr / 2 - disc);
+  const major = Math.sqrt(Math.max(0, l1)), minor = Math.sqrt(l2);
+  const ang = Math.atan2(l1 - sxx, sxy); // major eigenvector angle from +x (East)
+  let brg = (90 - ang * 180 / Math.PI) % 180; if (brg < 0) brg += 180;
+  return { major, minor, bearing: brg };
+}
