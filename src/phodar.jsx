@@ -548,7 +548,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Extra checks in the report", items: [
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
-        { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose showing each altitude's drift arrow (length = speed) with the object's own motion overlaid, so you can see whether it matches any layer." },
+        { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
         { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
@@ -5496,10 +5496,9 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
       }
       detailBlock = `<div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
     }
-    const windOv = windArrowOverlay(s, windObj);
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
-<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}${windOv}</div>
-<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}${windOv ? ` · blue arrow = wind drift at the object's altitude (${fmtLenShort(windObj.levelM)})` : ""}</div>
+<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}</div>
+<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}</div>
 ${detailBlock}`;
   }).join("");
   let diagHtml = "";
@@ -5536,19 +5535,21 @@ ${detailBlock}`;
      (phone tone-mapping is nonlinear → order-of-magnitude, labelled). --- */
   let photomHtml = "";
   {
-    const s = origAct.find((x) => x.mediaUrl && x.mediaKind !== "video" && x.natW && x.natH && x.A?.p1 && x.A?.p2 && isNum(x.fovH));
-    if (s && typeof document !== "undefined") {
-      try {
-        const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = s.mediaUrl; });
-        const W = s.natW, H = s.natH, cap = 2000, sc = Math.min(1, cap / Math.max(W, H));
-        const cw = Math.round(W * sc), ch = Math.round(H * sc);
-        const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
-        const ctx = cv.getContext("2d"); ctx.drawImage(im, 0, 0, cw, ch);
-        const D = ctx.getImageData(0, 0, cw, ch).data;
-        const ocx = (s.A.p1.x + s.A.p2.x) / 2 * sc, ocy = (s.A.p1.y + s.A.p2.y) / 2 * sc;
-        const orad = clampN(Math.hypot(s.A.p1.x - s.A.p2.x, s.A.p1.y - s.A.p2.y) / 2 * sc, 3, Math.min(cw, ch) * 0.25);
-        const obj = aperture(D, cw, ch, ocx, ocy, orad);
-        if (obj) {
+    const phCands = origAct.filter((x) => x.mediaUrl && x.mediaKind !== "video" && x.natW && x.natH && x.A?.p1 && x.A?.p2 && isNum(x.fovH));
+    if (phCands.length && typeof document !== "undefined") {
+      const results = [];
+      for (const s of phCands) {
+        try {
+          const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = s.mediaUrl; });
+          const W = s.natW, H = s.natH, cap = 2000, sc = Math.min(1, cap / Math.max(W, H));
+          const cw = Math.round(W * sc), ch = Math.round(H * sc);
+          const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+          const ctx = cv.getContext("2d"); ctx.drawImage(im, 0, 0, cw, ch);
+          const D = ctx.getImageData(0, 0, cw, ch).data;
+          const ocx = (s.A.p1.x + s.A.p2.x) / 2 * sc, ocy = (s.A.p1.y + s.A.p2.y) / 2 * sc;
+          const orad = clampN(Math.hypot(s.A.p1.x - s.A.p2.x, s.A.p1.y - s.A.p2.y) / 2 * sc, 3, Math.min(cw, ch) * 0.25);
+          const obj = aperture(D, cw, ch, ocx, ocy, orad);
+          if (!obj) continue;
           const col = colorDesc(obj.r, obj.g, obj.b);
           const ma = s.mediaAim || {};
           const caz = isNum(ma.az) ? +ma.az : (isNum(s.A?.az) ? +s.A.az : null);
@@ -5571,25 +5572,26 @@ ${detailBlock}`;
             cands.sort((a, b) => a.mag - b.mag);
             if (cands.length) { refMag = cands[0].mag; refName = cands[0].name; refFlux = cands[0].flux; }
           }
-          const m = refFlux ? relMag(obj.flux, refFlux, refMag) : null;
-          const satHi = obj.satFrac > 0.15;
-          const photAssess = /red|orange/.test(col)
-            ? "a reddish light — an aircraft's red beacon/nav light, a distant sodium lamp, or Mars"
-            : /green/.test(col)
-              ? "a greenish light — an aircraft's green nav light, or an atmospheric/lens tint"
-              : /blue/.test(col)
-                ? "a blue-white light — an LED, a xenon strobe, or a hot star"
-                : satHi
-                  ? "a very bright, saturated point — consistent with a landing light, a bright planet, or a specular flare"
-                  : "unremarkable in colour and brightness — not diagnostic on its own";
-          photomHtml = `<h2>Object photometry</h2><p class="lead"><b>Assessment — appearance:</b> ${photAssess}.</p><table>` +
-            row("Colour", col) +
-            row("Brightness", satHi ? `saturated core — very bright relative to the scene` : `peak ${Math.round(100 * obj.peak / 255)}% of clipping`) +
-            (m != null ? row("Apparent magnitude (rough)", `${m.toFixed(1)}${satHi ? " (floor)" : ""} <span class="cap">vs ${e2(refName)} (mag ${refMag}) in the same frame</span>`) : "") +
-            `</table>
-<p class="cap">Measured from ${e2(s.name || "the photo")}'s own pixels (aperture on the marked object, sky background subtracted). ${m != null ? `The magnitude is calibrated against a catalogued star in the same frame; phone HDR/tone-mapping is nonlinear, so treat it as order-of-magnitude (±~1 mag)${satHi ? " and a FLOOR, since the object's core is clipped to white" : ""}.` : "No catalogued star was cleanly in frame to anchor an absolute magnitude, so only colour and relative brightness are given."} A steady red/green pair points to aircraft navigation lights; a saturated warm-white point is typical of a landing light or a bright planet.</p>`;
-        }
-      } catch (e) { /* image unreadable / offline — omit */ }
+          results.push({ name: s.name, col, satHi: obj.satFrac > 0.15, peak: obj.peak, m: refFlux ? relMag(obj.flux, refFlux, refMag) : null, refName, refMag });
+        } catch (e) { /* skip this observer's photo */ }
+      }
+      if (results.length) {
+        const r0 = results[0];
+        const photAssess = /red|orange/.test(r0.col)
+          ? "a reddish light — an aircraft's red beacon/nav light, a distant sodium lamp, or Mars"
+          : /green/.test(r0.col)
+            ? "a greenish light — an aircraft's green nav light, or an atmospheric/lens tint"
+            : /blue/.test(r0.col)
+              ? "a blue-white light — an LED, a xenon strobe, or a hot star"
+              : r0.satHi
+                ? "a very bright, saturated point — consistent with a landing light, a bright planet, or a specular flare"
+                : "unremarkable in colour and brightness — not diagnostic on its own";
+        const anyMag = results.some((r) => r.m != null);
+        const rows = results.map((r, i) => `<tr><td>${e2(r.name || "Observer " + (i + 1))}</td><td>${e2(r.col)}</td><td>${r.satHi ? "saturated core" : `peak ${Math.round(100 * r.peak / 255)}%`}</td><td>${r.m != null ? `${r.m.toFixed(1)}${r.satHi ? " (floor)" : ""} <span class="cap">vs ${e2(r.refName)} (${r.refMag})</span>` : "—"}</td></tr>`).join("");
+        photomHtml = `<h2>Object photometry</h2><p class="lead"><b>Assessment — appearance:</b> ${photAssess}.</p>
+<table><tr><th>Observer</th><th>Colour</th><th>Brightness</th><th>Apparent mag (rough)</th></tr>${rows}</table>
+<p class="cap">Measured from each photo's own pixels (aperture on the marked object, sky background subtracted). ${anyMag ? "Where a catalogued star shared the frame, the magnitude is calibrated against it — phone HDR/tone-mapping is nonlinear, so treat it as order-of-magnitude (±~1 mag); a saturated core makes it a floor." : "No catalogued star was cleanly in any frame to anchor an absolute magnitude, so only colour and relative brightness are given."} A steady red/green pair points to aircraft navigation lights; a saturated warm-white point is typical of a landing light or a bright planet.</p>`;
+      }
     }
   }
   /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
@@ -5624,7 +5626,7 @@ ${detailBlock}`;
         (dec != null ? row("Magnetic declination", `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}° (WMM2025 — added to any magnetic compass bearing to get true)`) : "") +
         wxRows +
         `</table>` +
-        `<p class="cap">Computed for ${e2(w.name || "observer 1")} at ${new Date(Tw).toLocaleString()}. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.${wx ? ` Weather from ${wx.src}; cloud base is an estimate.` : ""}</p>`;
+        `<p class="cap">At the sighting location &amp; time (${new Date(Tw).toLocaleString()}); the Sun/Moon and declination are effectively identical for co-located observers. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.${wx ? ` Weather from ${wx.src}; cloud base is an estimate.` : ""}</p>`;
     }
   }
   /* --- sky-object check: Sun, Moon, planets, brightest stars vs each
@@ -5726,8 +5728,21 @@ ${detailBlock}`;
             : nv.verdict === "partially wind-like"
               ? `<b>Assessment — balloon: partially consistent.</b> Some wind-like motion, but not a clean match.`
               : `<b>Assessment — balloon: ruled out.</b> The wind at the object's altitude can't produce this motion.`;
+        /* the object-altitude wind arrow drawn on each placed photo — kept HERE
+           (not on the primary exhibits, where it read like the object's path) */
+        const windObjHere = { driftDeg: nearest.driftDeg, speedMs: nearest.speedMs, levelM: nearest.levelM };
+        const windPhotos = packed.map((s2, i2) => {
+          const ov = windArrowOverlay(s2, windObjHere);
+          if (!ov || !s2.mediaJpeg) return "";
+          const f = imgAdjFilter(s2.imgAdj);
+          return `<div style="position:relative;display:inline-block;max-width:280px;width:100%;vertical-align:top"><img src="${s2.mediaJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px;${f === "none" ? "" : `filter:${f};`}"/>${ov}<div class="cap">${e2(s2.name || "Observer " + (i2 + 1))}</div></div>`;
+        }).filter(Boolean).join("");
+        const windPhotoBlock = windPhotos
+          ? `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">${windPhotos}</div><p class="cap">Blue arrow on each photo = the wind's drift direction at the object's altitude (${fmtLenShort(nearest.levelM)}), projected into that frame. Compare it to the object's apparent motion in the picture: a balloon drifts along the arrow.</p>`
+          : "";
         windHtml = `<h2>Wind check (balloon test)</h2><p class="lead">${balloonAssess}</p>${verdictLine}
 ${reportWindSvg(prof, haveMotion ? objSpeed : null, haveMotion ? objHeading : null, nearest.levelM)}
+${windPhotoBlock}
 <table class="tbl"><thead><tr><th>Altitude (MSL)</th><th>Wind → drift</th><th>Δhdg · speed · match</th></tr></thead><tbody>${rows}</tbody></table>
 <p class="cap">Winds aloft from ${prof.src}. A free balloon rides the wind at its altitude — matching heading (within ±25°) and speed (0.5–1.6×). Highlighted rows match the object's motion.</p>`;
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
