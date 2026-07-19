@@ -20,6 +20,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
+import { activeShowers } from "../src/checks/meteorshowers.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -785,6 +786,15 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(cb.maxRange, 2000, 1e-6, "weather: below-cloud range cap = base/sin(el)");
   approx(cb.maxSize, 2 * 2000 * Math.tan(1 * D2R), 1e-6, "weather: below-cloud size cap");
   approx(cloudRangeBound(1000, 0, 2) == null ? 1 : 0, 1, 0, "weather: no cap at/below horizon");
+}
+
+// --- meteor showers: active-window membership incl. year wrap ---
+{
+  const perseidsAug12 = activeShowers(Date.UTC(2026, 7, 12, 6));
+  approx(perseidsAug12[0]?.name === "Perseids" && perseidsAug12[0].daysFromPeak === 0 ? 1 : 0, 1, 0, "meteors: Perseids active & at peak on Aug 12");
+  const quadJan2 = activeShowers(Date.UTC(2026, 0, 2, 6)); // year-wrap window (Dec 28 → Jan 12)
+  approx(quadJan2.some((s) => s.name === "Quadrantids") ? 1 : 0, 1, 0, "meteors: Quadrantids active Jan 2 (wrapped window)");
+  approx(activeShowers(Date.UTC(2026, 2, 15, 6)).length, 0, 0, "meteors: none active mid-March");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
