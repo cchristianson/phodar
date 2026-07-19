@@ -21,6 +21,7 @@ import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
 import { fetchWeatherAt, cloudRangeBound } from "./checks/weather.js";
+import { activeShowers } from "./checks/meteorshowers.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -5521,6 +5522,37 @@ ${detailBlock}`;
       } catch (e) { /* omit */ }
     }
   }
+  /* meteor-shower check — static radiants, no network. Shows the annual showers
+     active on the sighting date, each radiant's az/el at the time & place, and
+     (if the photo is placed) how far the radiant sat from the sight-line: a
+     streak coming FROM near a radiant is a strong meteor explanation. */
+  let meteorHtml = "";
+  {
+    const obs0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs));
+    if (obs0) {
+      const la = +obs0.lat, lo = +obs0.lon, when = +obs0.whenMs;
+      const showers = activeShowers(when);
+      const sightW = origAct.find((s) => isNum(s.A?.az) && isNum(s.A?.el));
+      const sd = sightW ? dirFromAzEl(+sightW.A.az, +sightW.A.el) : null;
+      if (showers.length) {
+        const rows = showers.map((sh) => {
+          const p = raDecToAzEl(sh.ra, sh.dec, when, la, lo);
+          const up = p.alt > 0;
+          let sepTxt = "—";
+          if (up && sd) {
+            const rd = dirFromAzEl(p.az, p.alt);
+            const sep = Math.acos(Math.min(1, Math.max(-1, sd[0] * rd[0] + sd[1] * rd[1] + sd[2] * rd[2]))) * R2D;
+            sepTxt = `${Math.round(sep)}°`;
+          }
+          const pk = sh.daysFromPeak === 0 ? "at peak" : `${Math.abs(sh.daysFromPeak)} d ${sh.daysFromPeak < 0 ? "before" : "after"} peak`;
+          return `<tr><td>${e2(sh.name)}${sh.fireball ? ' · <b>fireball-rich</b>' : ""}<br><span class="cap">${pk}</span></td><td>${up ? `${Math.round(p.az)}° ${compass8(p.az)} · ${Math.round(p.alt)}° up` : "below horizon"}</td><td>${sepTxt}</td><td>ZHR ${sh.zhr} · ${sh.v} km/s</td></tr>`;
+        }).join("");
+        meteorHtml = `<h2>Meteor-shower check</h2>
+<p class="cap">Annual showers active on the sighting date. Meteors radiate OUTWARD from the radiant, so a fast streak pointing back to an above-horizon radiant is likely a shower meteor; the Taurids produce slow, bright fireballs. "Off sight-line" is the radiant's angle from the marked object.</p>
+<table><tr><th>Shower</th><th>Radiant now</th><th>Off sight-line</th><th>Rate · speed</th></tr>${rows}</table>`;
+      }
+    }
+  }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PHODAR sighting report</title><style>
 html,body{max-width:100%;overflow-x:hidden}
@@ -5553,6 +5585,7 @@ ${collapsible(skyHtml, false)}
 ${collapsible(windHtml, false)}
 ${collapsible(launchHtml, false)}
 ${collapsible(fireballHtml, false)}
+${collapsible(meteorHtml, false)}
 ${exhibits}
 ${collapsible(`<h2>Method</h2><p>Each photo is pixel-normalized and its lens field of view read from EXIF. The object's sky direction is fixed by aligning the photo on an astronomically anchored alt-azimuth grid (Sun/Moon computed for the reported time and place). With two or more observers, sight-lines are intersected by least squares in a local ENU frame; ray convergence and rms miss distance grade the fix. Object size = measured angular size × range. Trajectories interpolate each witness's directions to common instants before triangulating each instant; speeds, accelerations and felt g-loads follow by finite differences with 3-point smoothing.</p>`, false)}
 ${collapsible(`<h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>`, false)}
