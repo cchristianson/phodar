@@ -5059,6 +5059,32 @@ function reportWindSvg(prof, objSpeed, objHeading, nearestM) {
     `<p class="cap">Each coloured arrow is the wind's drift direction at one altitude (length = speed, blue→red = slow→fast); the bold black arrow is the object's own motion. A balloon rides the wind, so its motion would line up with the layer at its height (bold label).</p>`;
 }
 
+/* Overlay SVG (in a placed photo's own natW×natH pixel space) drawing an arrow
+   at the marked object showing which way the wind at the OBJECT'S altitude would
+   carry it across THIS photo — projected through the photo's pose. Returns "" if
+   the photo isn't placed / has no object direction. windObj = {driftDeg, levelM}. */
+function windArrowOverlay(s, windObj) {
+  if (!windObj || !isNum(s.fovH) || !s.natW || !s.natH || !isNum(s.A?.az) || !isNum(s.A?.el)) return "";
+  const ma = s.mediaAim || {};
+  const caz = isNum(ma.az) ? +ma.az : +s.A.az, cel = isNum(ma.el) ? +ma.el : +s.A.el;
+  const roll = isNum(ma.roll) ? +ma.roll : 0, k = isNum(ma.dist) ? +ma.dist : 0;
+  const d0 = dirFromAzEl(+s.A.az, +s.A.el);
+  const v = [Math.sin(windObj.driftDeg * D2R), Math.cos(windObj.driftDeg * D2R), 0]; // drift horizontal (ENU)
+  const d1 = unit([d0[0] + 0.06 * v[0], d0[1] + 0.06 * v[1], d0[2] + 0.06 * v[2]]);  // small drift step
+  const p0 = dirToPixK(d0, s.natW, s.natH, caz, cel, roll, +s.fovH, k);
+  const p1 = dirToPixK(d1, s.natW, s.natH, caz, cel, roll, +s.fovH, k);
+  if (!p0 || !p1) return "";
+  const dx = p1.px - p0.px, dy = p1.py - p0.py, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L;
+  const len = s.natW * 0.16, sw = Math.max(2, s.natW / 360), ah = len * 0.26;
+  const ex = p0.px + ux * len, ey = p0.py + uy * len, bx = ex - ux * ah, by = ey - uy * ah, pxp = -uy, pyp = ux;
+  const col = "#38bdf8";
+  const head = `<path d="M${ex.toFixed(1)},${ey.toFixed(1)} L${(bx + pxp * ah * 0.5).toFixed(1)},${(by + pyp * ah * 0.5).toFixed(1)} L${(bx - pxp * ah * 0.5).toFixed(1)},${(by - pyp * ah * 0.5).toFixed(1)} z" fill="${col}"/>`;
+  const fs = Math.max(12, s.natW / 62);
+  return `<svg viewBox="0 0 ${s.natW} ${s.natH}" style="position:absolute;left:0;top:0;width:100%;height:100%">` +
+    `<line x1="${p0.px.toFixed(1)}" y1="${p0.py.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="${col}" stroke-width="${sw.toFixed(1)}" opacity="0.92"/>${head}` +
+    `<text x="${(p0.px + ux * len * 0.5 + pxp * fs * 1.3).toFixed(1)}" y="${(p0.py + uy * len * 0.5 + pyp * fs * 1.3).toFixed(1)}" font-size="${fs.toFixed(0)}" fill="${col}" stroke="#000" stroke-width="${Math.max(1, s.natW / 1200).toFixed(1)}" paint-order="stroke" font-weight="700" text-anchor="middle">wind @ ${fmtLenShort(windObj.levelM)}</text></svg>`;
+}
+
 /* Which orthographic views make a shape's size unambiguous. Each entry:
    [title, horizontalAxis, verticalAxis, hLabel, vLabel]. An orb needs one
    view; a bird/plane wants three. Axes are the object's OWN model axes
@@ -5139,6 +5165,19 @@ async function reportHtml(sources, est, opts = {}) {
      meaningful when there's real low/total cover — not on a clear night or
      under high cirrus only. */
   const wxDeck = wx && wx.baseAGL != null && ((wx.low != null ? wx.low : wx.cloud) || 0) >= 40;
+  /* winds-aloft profile, fetched ONCE here (fix only) — reused by the photo-
+     exhibit wind arrows AND the Wind check section. windObj = the layer at the
+     object's altitude (what a balloon at that height would ride). */
+  let windProfR = null, windObj = null;
+  if (fix.ok) {
+    try {
+      const wwhen = +(sources.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
+      windProfR = await fetchWindProfile(fix.ref.lat, fix.ref.lon, wwhen);
+      const altMSL = fix.solA.X[2] + (fix.ref.alt || 0);
+      const nrst = windProfR.levels.reduce((b, L) => Math.abs(L.levelM - altMSL) < Math.abs(b.levelM - altMSL) ? L : b, windProfR.levels[0]);
+      windObj = { driftDeg: nrst.driftDeg, speedMs: nrst.speedMs, levelM: nrst.levelM };
+    } catch (e) { windProfR = null; }
+  }
   const e2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const dv = (s) => (s === "" || s == null ? "—" : e2(s));
   const ft = (m) => Math.round(m * 3.28084);
@@ -5457,9 +5496,10 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
       }
       detailBlock = `<div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
     }
+    const windOv = windArrowOverlay(s, windObj);
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
-<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}</div>
-<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}</div>
+<div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}${windOv}</div>
+<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}${windOv ? ` · blue arrow = wind drift at the object's altitude (${fmtLenShort(windObj.levelM)})` : ""}</div>
 ${detailBlock}`;
   }).join("");
   let diagHtml = "";
@@ -5663,7 +5703,7 @@ ${detailBlock}`;
       try {
         const when = +(origAct.find((s) => isNum(s.whenMs))?.whenMs || Date.now());
         const altMSL = fix.solA.X[2] + (fix.ref.alt || 0);
-        const prof = await fetchWindProfile(fix.ref.lat, fix.ref.lon, when);
+        const prof = windProfR || await fetchWindProfile(fix.ref.lat, fix.ref.lon, when);
         const haveMotion = objSpeed != null && objSpeed > 0.2;
         // the level nearest the object's triangulated altitude (its balloon level)
         const nearest = prof.levels.reduce((b, L) => Math.abs(L.levelM - altMSL) < Math.abs(b.levelM - altMSL) ? L : b, prof.levels[0]);
