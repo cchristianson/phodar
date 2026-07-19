@@ -25,22 +25,40 @@ import { intersectLines } from "./triangulate.js";
    Pure + deterministic so the whole trajectory pipeline stays testable. */
 export function sourceTrack(s) {
   if (!s) return [];
-  const shots = [s, ...(s.moments || [])].filter(
-    (m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs)
-  );
-  if (shots.length >= 2) {
+  const placedShot = (m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs);
+  const momentPt = (m, t0) => {
+    const ang = angSizeFromPoints(m.A?.p1, m.A?.p2, m.natW, m.natH, +m.fovH);
+    const pt = { t: (+m.whenMs - t0) / 1000, az: +m.A.az, el: +m.A.el };
+    if (isNum(ang) && +ang > 0) pt.ang = +ang;
+    else if (isNum(m.A?.angManual) && +m.A.angManual > 0) pt.ang = +m.A.angManual;
+    return pt;
+  };
+  const manual = s.track || [];
+  const extras = (s.moments || []).filter(placedShot);        // moments beyond the primary
+  const shots = [s, ...extras].filter(placedShot);            // primary + placed moments
+
+  // Pure multi-photo path: ≥2 placed shots and no hand-drawn track — each shot
+  // contributes one direction at its capture time.
+  if (shots.length >= 2 && manual.length === 0) {
     const t0 = Math.min(...shots.map((m) => +m.whenMs));
-    return shots
-      .map((m) => {
-        const ang = angSizeFromPoints(m.A?.p1, m.A?.p2, m.natW, m.natH, +m.fovH);
-        const pt = { t: (+m.whenMs - t0) / 1000, az: +m.A.az, el: +m.A.el };
-        if (isNum(ang) && +ang > 0) pt.ang = +ang;
-        else if (isNum(m.A?.angManual) && +m.A.angManual > 0) pt.ang = +m.A.angManual;
-        return pt;
-      })
-      .sort((a, b) => a.t - b.t);
+    return shots.map((m) => momentPt(m, t0)).sort((a, b) => a.t - b.t);
   }
-  return s.track || [];
+
+  // Hybrid path: a hand-drawn track AND ≥1 extra placed moment. The drawn points
+  // live in the primary photo's frame, anchored at the primary's capture time
+  // (their p.t is seconds from that first mark); the extra moments drop onto the
+  // same absolute timeline at their own times. Sorted so points before/between/
+  // after the photos interleave correctly. `s.whenMs` is the primary's clock.
+  if (manual.length && extras.length && isNum(s.whenMs)) {
+    const t0 = Math.min(+s.whenMs, ...extras.map((m) => +m.whenMs));
+    const base = (+s.whenMs - t0) / 1000;
+    const drawn = manual.map((p) => ({ ...p, t: base + (+p.t || 0) }));
+    const mom = extras.map((m) => momentPt(m, t0));
+    return [...drawn, ...mom].sort((a, b) => a.t - b.t);
+  }
+
+  // Single photo (drawn track, or nothing) — unchanged from the original model.
+  return manual;
 }
 
 /* spherical linear interpolation between unit vectors */

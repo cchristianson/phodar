@@ -529,6 +529,7 @@ const HELP_SECTIONS = [
         { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
         { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that)." },
         { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's." },
+        { t: "Drawing vs moments (hybrid)", d: "If this observer has placed photo-moments, points you drop here are timed from THIS photo and interleave with the moments on one trajectory — so you can fill in where the object was between shots. With two or more placed photos and no hand-drawn points, the trajectory is built from the photos alone." },
       ]},
       { h: "Aim readout & navigation", items: [
         { t: "Top-right readout", d: "Live azimuth + compass + up-angle, and FOV — amber while aiming Moment A, teal for B." },
@@ -1760,7 +1761,7 @@ function TrackObj({ sf, px, color }) {
   );
 }
 
-function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext }) {
+function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext, single }) {
   const [vpRef, vp] = useSize();
   const [topBarRef, topBar] = useSize(); // top HUD height — reserve it while placing
   const [botBarRef, botBar] = useSize(); // bottom controls height — reserve it while placing
@@ -3838,8 +3839,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           )}
         </div>
         )}
-        {wizard && pMode !== "place" && (
+        {wizard && !single && pMode !== "place" && (
           <div style={{ marginBottom: 8 }}>
+            {(source?.moments || []).filter((m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs)).length > 0 && (
+              <div style={{ fontSize: 10, color: "var(--track)", marginBottom: 5, lineHeight: 1.35 }}>
+                ↳ This observer has placed photo-moments. Points you drop here are timed from this photo and <b>interleave with the moments</b> on one trajectory — fill in the gaps between shots.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
               {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
                 <button className="btn sm amber" onClick={point1FromMarks}>⌖ Start at marked object</button>
@@ -4067,7 +4073,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               ? "✋ Pan mode — drag to move around the magnified view. Tap ✋ again to go back to sliding the sky. Zoom does not change your calibration."
               : "The photo is pinned, undistorted — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Use +/− (right) to zoom in on a ridge, ✋ to pan. Line the horizon up, then ✓ Done — nothing will shift.")
             : wizard
-              ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
+              ? (single
+                ? "Align this moment's photo to the sky, then Continue — it becomes one direction (its time comes from the moment). Together with the other moments it builds the trajectory."
+                : "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc).")
               : motionOn
                 ? "Point the phone exactly where the object was, then capture."
                 : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}
@@ -4869,6 +4877,31 @@ const download = (name, payload, mime) => {
 const isEmptySource = (s) =>
   !s.mediaUrl && !isNum(s.lat) && !isNum(s.A?.az) && !(s.track || []).length && !s.shapeFit && !s.A?.p1;
 
+/* Pack ONE moment: strip the live media handles, keep the measurements, and
+   bundle a ≤1000px JPEG thumbnail (+ rescaled marks) as report evidence. Marks
+   rescale by the same k so an object overlay drawn against natW/natH lines up;
+   the trajectory math never touches these (it uses az/el + pixel-ratio-invariant
+   angular size). Returns a lean plain object safe to embed/share. */
+async function packMoment(m) {
+  const { mediaUrl, mediaKind, mediaNorm, track, ...r } = m;
+  if (mediaUrl && mediaKind === "image" && r.natW) {
+    try {
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = mediaUrl; });
+      const k = Math.min(1000, r.natW) / r.natW;
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(r.natW * k); cv.height = Math.round(r.natH * k);
+      cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height);
+      const sp = (p) => (p ? { ...p, x: p.x * k, y: p.y * k } : p);
+      r.natW = cv.width; r.natH = cv.height;
+      r.A = { ...r.A, p1: sp(r.A?.p1), p2: sp(r.A?.p2) };
+      if (r.B?.pb) r.B = { ...r.B, pb: sp(r.B.pb) };
+      if (r.shapeFit) r.shapeFit = { ...r.shapeFit, cx: r.shapeFit.cx * k, cy: r.shapeFit.cy * k, sizeNat: r.shapeFit.sizeNat * k };
+      r.mediaJpeg = cv.toDataURL("image/jpeg", 0.72);
+    } catch (e) { /* embed the moment without its thumbnail */ }
+  }
+  return r;
+}
+
 /* Bundle each observer with a 1600px copy of their photo, rescaling ALL
    pixel-space data to match so the export is self-consistent (angles are
    pixel-ratio invariant). Analysis always runs on the full-res originals. */
@@ -4877,13 +4910,14 @@ async function packSources(sources) {
   const out = [];
   for (const s of act) {
     const { mediaUrl, mediaKind, mediaNorm, open, ...r } = s;
-    /* moments carry their own (heavy) photos — drop the pixels but KEEP the
-       measurements (whenMs + A.az/el + marks + natW/H/fovH) so the imported
-       sighting still reconstructs the multi-photo trajectory via sourceTrack.
-       Moment marks stay in the moment's own full-res frame — angular size is
-       pixel-ratio invariant, so no rescale is needed. */
+    /* moments carry their own (heavy) photos — keep the measurements (whenMs +
+       A.az/el + marks + natW/H/fovH) so an imported sighting still reconstructs
+       the multi-photo trajectory via sourceTrack, and bundle a modest thumbnail
+       (≤1000 px) as the report's trajectory evidence. Marks rescale with the
+       thumbnail so the object overlay lines up; angular size is pixel-ratio
+       invariant so the trajectory math is unaffected either way. */
     if (Array.isArray(r.moments) && r.moments.length) {
-      r.moments = r.moments.map(({ mediaUrl: mu, mediaKind: mk, mediaNorm: mn, track, ...mr }) => mr);
+      r.moments = await Promise.all(r.moments.map((m) => packMoment(m)));
     }
     if (mediaUrl && mediaKind === "image" && r.natW) {
       try {
@@ -5537,10 +5571,39 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
       }
       detailBlock = `<div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start">${noOv}${withOv}</div>`;
     }
+    /* moment strip — the additional timestamped photos (Moment 2, 3, …) that
+       build this observer's trajectory, each with its object mark + placed
+       direction, so the path in the trajectory chart has visible provenance */
+    let momStrip = "";
+    const moms = (s.moments || []).filter((m) => m.mediaJpeg);
+    if (moms.length) {
+      const objOv = (m) => {
+        if (m.shapeFit) {
+          const col = `hsl(${m.shapeFit.hue ?? 36},85%,42%)`;
+          const paths = shapeProjNat(m.shapeFit).curves.map((c) =>
+            `<polyline fill="none" stroke="${col}" stroke-width="${Math.max(1, m.natW / 700)}" opacity="0.6" points="${c.map((p) => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ")}"/>`).join("");
+          return `<svg viewBox="0 0 ${m.natW} ${m.natH}" style="position:absolute;left:0;top:0;width:100%;height:100%">${paths}</svg>`;
+        }
+        if (m.A?.p1 && m.A?.p2) {
+          const sw = Math.max(1.5, m.natW / 400);
+          return `<svg viewBox="0 0 ${m.natW} ${m.natH}" style="position:absolute;left:0;top:0;width:100%;height:100%"><line x1="${m.A.p1.x}" y1="${m.A.p1.y}" x2="${m.A.p2.x}" y2="${m.A.p2.y}" stroke="#C77B14" stroke-width="${sw}"/><circle cx="${m.A.p1.x}" cy="${m.A.p1.y}" r="${Math.max(5, m.natW / 130)}" fill="none" stroke="#C77B14" stroke-width="${sw}"/><circle cx="${m.A.p2.x}" cy="${m.A.p2.y}" r="${Math.max(5, m.natW / 130)}" fill="none" stroke="#C77B14" stroke-width="${sw}"/></svg>`;
+        }
+        return "";
+      };
+      const cards = moms.map((m, mi) => {
+        const mAdjSty = imgAdjFilter(m.imgAdj) === "none" ? "" : `filter:${imgAdjFilter(m.imgAdj)};`;
+        const when = m.whenMs ? new Date(+m.whenMs).toLocaleTimeString() : "time unset";
+        const dir = isNum(m.A?.az) && isNum(m.A?.el) ? `${(+m.A.az).toFixed(1)}° az / ${(+m.A.el).toFixed(1)}° el` : "not placed";
+        return `<div style="flex:1 1 200px;min-width:150px;max-width:280px"><div style="position:relative;display:block"><img src="${m.mediaJpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px;${mAdjSty}"/>${objOv(m)}</div><div class="cap">Moment ${mi + 2} · ${when} · ${dir}</div></div>`;
+      }).join("");
+      momStrip = `<div class="cap" style="margin-top:8px">Moments — additional photos building ${e2(s.name || "Observer " + (i + 1))}'s trajectory (direction over time):</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">${cards}</div>`;
+    }
     return `<h2>Exhibit — ${e2(s.name || "Observer " + (i + 1))}</h2>
 <div style="position:relative;display:inline-block;max-width:100%"><img src="${imgSrc}" style="max-width:100%;display:block;${adjSty}"/>${overlay}</div>
-<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${adjCap}</div>
-${detailBlock}`;
+<div class="cap">${s.meta?.model ? e2(s.meta.model) + " · " : ""}${s.whenMs ? new Date(+s.whenMs).toLocaleString() : ""}${s.mediaAim ? ` · placed ${(+s.mediaAim.az).toFixed(1)}° az / ${(+s.mediaAim.el).toFixed(1)}° el` : ""}${s.shapeFit ? ` · ${e2(s.shapeFit.kind)} fit` : ""}${moms.length ? ` · Moment 1 of ${moms.length + 1}` : ""}${adjCap}</div>
+${detailBlock}
+${momStrip}`;
   }).join("");
   let diagHtml = "";
   if (fix.ok) {
@@ -6521,7 +6584,7 @@ export default function App() {
         );
       } else if (ui.view === "m2" && wmom) {
         page = (
-          <SkyAimer open wizard source={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)}
+          <SkyAimer open wizard single source={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)}
             onClose={() => goView("home")} onWizardBack={() => goView("m1")} onWizardNext={() => goView("home")}
             lat={isNum(wsrc.lat) ? +wsrc.lat : 42.16} lng={isNum(wsrc.lon) ? +wsrc.lon : -123.66}
             whenMs={isNum(wmom.whenMs) ? +wmom.whenMs : Date.now()}

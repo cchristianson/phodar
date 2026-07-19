@@ -400,6 +400,30 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const dirs = trackDirections(multi);
   if (dirs && dirs.length >= 3 && Math.abs(dirs[0].az - 40) < 1e-6) console.log("  ok   moment track feeds trackDirections");
   else { fails++; console.error("  FAIL moment trackDirections:", dirs && dirs.length); }
+
+  // hybrid: a hand-drawn point BETWEEN two placed photos interleaves in time.
+  // primary @40s (t0), one extra moment @60s (→20s); a drawn point at +8s from
+  // the primary mark must land at t=8, between the primary (0) and moment (20).
+  const hybrid = {
+    whenMs: 40_000, A: { az: 50, el: 30 }, natW: 4000, natH: 3000, fovH: 65,
+    track: [
+      { t: 0, az: 50, el: 30 },     // the primary-photo mark (Moment 1)
+      { t: 8, az: 58, el: 34 },     // a filled-in point 8 s later, no photo
+    ],
+    moments: [{ whenMs: 60_000, A: { az: 66, el: 41 } }],
+  };
+  const h = sourceTrack(hybrid);
+  if (h.length === 3 && h[0].t === 0 && h[1].t === 8 && h[2].t === 20
+      && h[2].az === 66) console.log("  ok   hybrid: drawn point interleaves between two placed photos");
+  else { fails++; console.error("  FAIL hybrid interleave:", JSON.stringify(h)); }
+
+  // hybrid must NOT trigger for a plain drawn track with no extra moments —
+  // that stays the untouched single-photo path.
+  const plain = { whenMs: 40_000, A: { az: 50, el: 30 }, moments: [],
+    track: [{ t: 0, az: 50, el: 30 }, { t: 2, az: 51, el: 31 }] };
+  const pl = sourceTrack(plain);
+  if (pl.length === 2 && pl[1].t === 2) console.log("  ok   drawn track with no moments stays unchanged");
+  else { fails++; console.error("  FAIL drawn passthrough with primary placed:", JSON.stringify(pl)); }
 }
 
 // --- skyline snap: recover a known pose offset from a synthetic ridge ---
