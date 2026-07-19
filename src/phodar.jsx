@@ -22,6 +22,7 @@ import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
 import { fetchWeatherAt, cloudRangeBound } from "./checks/weather.js";
 import { activeShowers } from "./checks/meteorshowers.js";
+import { aperture, relMag, colorDesc } from "./checks/photometry.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -5375,6 +5376,58 @@ ${detailBlock}`;
   const arbR = arbitrateBearings(sources);
   if (arbR?.best)
     diagHtml += `<p>⚠ Bearings inconsistent: trusting <b>${e2(arbR.best.trustName)}</b>, <b>${e2(arbR.best.otherName)}</b>'s compass reads ≈ ${Math.round(arbR.best.err)}° off (true bearing ≈ ${arbR.best.azOtherTrue.toFixed(1)}°).</p>`;
+  /* --- object photometry: colour + brightness from the photo's own pixels,
+     and a ROUGH apparent magnitude when a catalogued star shares the frame
+     (phone tone-mapping is nonlinear → order-of-magnitude, labelled). --- */
+  let photomHtml = "";
+  {
+    const s = origAct.find((x) => x.mediaUrl && x.mediaKind !== "video" && x.natW && x.natH && x.A?.p1 && x.A?.p2 && isNum(x.fovH));
+    if (s && typeof document !== "undefined") {
+      try {
+        const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = s.mediaUrl; });
+        const W = s.natW, H = s.natH, cap = 2000, sc = Math.min(1, cap / Math.max(W, H));
+        const cw = Math.round(W * sc), ch = Math.round(H * sc);
+        const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+        const ctx = cv.getContext("2d"); ctx.drawImage(im, 0, 0, cw, ch);
+        const D = ctx.getImageData(0, 0, cw, ch).data;
+        const ocx = (s.A.p1.x + s.A.p2.x) / 2 * sc, ocy = (s.A.p1.y + s.A.p2.y) / 2 * sc;
+        const orad = clampN(Math.hypot(s.A.p1.x - s.A.p2.x, s.A.p1.y - s.A.p2.y) / 2 * sc, 3, Math.min(cw, ch) * 0.25);
+        const obj = aperture(D, cw, ch, ocx, ocy, orad);
+        if (obj) {
+          const col = colorDesc(obj.r, obj.g, obj.b);
+          const ma = s.mediaAim || {};
+          const caz = isNum(ma.az) ? +ma.az : (isNum(s.A?.az) ? +s.A.az : null);
+          const cel = isNum(ma.el) ? +ma.el : (isNum(s.A?.el) ? +s.A.el : null);
+          const when = isNum(s.whenMs) ? +s.whenMs : Date.now();
+          let refMag = null, refName = null, refFlux = null;
+          if (caz != null && cel != null && isNum(s.lat) && isNum(s.lon)) {
+            const cands = [];
+            for (const [ra, dec, mag, name] of STARS) {
+              if (mag > 2.2 || !name) continue;
+              const p = raDecToAzEl(ra, dec, when, +s.lat, +s.lon); if (p.alt < 2) continue;
+              const px = dirToPixK(dirFromAzEl(p.az, p.alt), W, H, caz, cel, isNum(ma.roll) ? +ma.roll : 0, +s.fovH, isNum(ma.dist) ? +ma.dist : 0);
+              if (!px) continue;
+              const sx = px.px * sc, sy = px.py * sc;
+              if (sx < 6 || sy < 6 || sx > cw - 6 || sy > ch - 6) continue;
+              if (Math.hypot(sx - ocx, sy - ocy) < orad * 1.5) continue; // not the object itself
+              const ap = aperture(D, cw, ch, sx, sy, 5);
+              if (ap && ap.flux > 0 && ap.satFrac < 0.4) cands.push({ mag, name, flux: ap.flux });
+            }
+            cands.sort((a, b) => a.mag - b.mag);
+            if (cands.length) { refMag = cands[0].mag; refName = cands[0].name; refFlux = cands[0].flux; }
+          }
+          const m = refFlux ? relMag(obj.flux, refFlux, refMag) : null;
+          const satHi = obj.satFrac > 0.15;
+          photomHtml = `<h2>Object photometry</h2><table>` +
+            row("Colour", col) +
+            row("Brightness", satHi ? `saturated core — very bright relative to the scene` : `peak ${Math.round(100 * obj.peak / 255)}% of clipping`) +
+            (m != null ? row("Apparent magnitude (rough)", `${m.toFixed(1)}${satHi ? " (floor)" : ""} <span class="cap">vs ${e2(refName)} (mag ${refMag}) in the same frame</span>`) : "") +
+            `</table>
+<p class="cap">Measured from ${e2(s.name || "the photo")}'s own pixels (aperture on the marked object, sky background subtracted). ${m != null ? `The magnitude is calibrated against a catalogued star in the same frame; phone HDR/tone-mapping is nonlinear, so treat it as order-of-magnitude (±~1 mag)${satHi ? " and a FLOOR, since the object's core is clipped to white" : ""}.` : "No catalogued star was cleanly in frame to anchor an absolute magnitude, so only colour and relative brightness are given."} A steady red/green pair points to aircraft navigation lights; a saturated warm-white point is typical of a landing light or a bright planet.</p>`;
+        }
+      } catch (e) { /* image unreadable / offline — omit */ }
+    }
+  }
   /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
      at the primary observer's time & place. Flags glare, a bright Moon as
      the light source, and pins the local-time / twilight state. --- */
@@ -5580,6 +5633,7 @@ ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(alignHtml, true)}
 ${collapsible(adsbHtml, false)}
+${collapsible(photomHtml, false)}
 ${collapsible(condHtml, false)}
 ${collapsible(skyHtml, false)}
 ${collapsible(windHtml, false)}

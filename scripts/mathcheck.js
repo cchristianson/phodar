@@ -21,6 +21,7 @@ import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBo
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
+import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -795,6 +796,28 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const quadJan2 = activeShowers(Date.UTC(2026, 0, 2, 6)); // year-wrap window (Dec 28 → Jan 12)
   approx(quadJan2.some((s) => s.name === "Quadrantids") ? 1 : 0, 1, 0, "meteors: Quadrantids active Jan 2 (wrapped window)");
   approx(activeShowers(Date.UTC(2026, 2, 15, 6)).length, 0, 0, "meteors: none active mid-March");
+}
+
+// --- photometry: aperture flux, background subtraction, relative magnitude ---
+{
+  const w = 60, h = 60, D = new Uint8ClampedArray(w * h * 4);
+  const put = (x, y, v) => { const i = (y * w + x) * 4; D[i] = D[i + 1] = D[i + 2] = v; D[i + 3] = 255; };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) put(x, y, 20); // sky background = 20
+  // bright source A at (20,30): a 3x3 block at 220 over bg
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) put(20 + dx, 30 + dy, 220);
+  // fainter source B at (40,30): a 3x3 block at 120
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) put(40 + dx, 30 + dy, 120);
+  const A = aperture(D, w, h, 20, 30, 4), B = aperture(D, w, h, 40, 30, 4);
+  approx(A && A.bg > 15 && A.bg < 25 ? 1 : 0, 1, 0, "photometry: background recovered (~20)");
+  approx(A.flux > B.flux ? 1 : 0, 1, 0, "photometry: brighter source has more net flux");
+  // net flux ratio should reflect the (220-20) vs (120-20) contrast over equal areas
+  approx(A.flux / B.flux, 200 / 100, 0.15, "photometry: flux ratio tracks contrast");
+  // if A is the object and B (mag 1.0) the reference, A must come out brighter (smaller mag)
+  const mA = relMag(A.flux, B.flux, 1.0);
+  approx(mA < 1.0 ? 1 : 0, 1, 0, "photometry: brighter object → smaller magnitude");
+  approx(relMag(0, 100, 1) == null ? 1 : 0, 1, 0, "photometry: zero flux → no magnitude");
+  approx(colorDesc(255, 60, 40) === "red / orange" ? 1 : 0, 1, 0, "photometry: red colour classified");
+  approx(colorDesc(240, 240, 240) === "white (saturated core)" ? 1 : 0, 1, 0, "photometry: saturated white classified");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
