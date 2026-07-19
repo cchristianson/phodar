@@ -503,7 +503,7 @@ const HELP_SECTIONS = [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
         { t: "+Δt time chips", d: "One chip per segment — tap it to set how long that leg took (presets 0.5–10 s, or ±0.1 s). Timing is what turns the path into speed and g-load." },
         { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
-        { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference." },
+        { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that)." },
         { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's." },
       ]},
       { h: "Aim readout & navigation", items: [
@@ -2098,6 +2098,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .catch((e) => { if (!dead) setWindProf({ err: String(e?.message || e) }); });
     return () => { dead = true; };
   }, [open, windOn, hasPos, LAT, LNG, T]);
+  /* weather for the size tool's cloud-base cap — fetched only when the tool is
+     open (one call; the report fetches its own). null on any failure. */
+  const [wxSky, setWxSky] = useState(null);
+  useEffect(() => {
+    if (!open || !sizeOn || !hasPos) { setWxSky(null); return; }
+    let dead = false;
+    fetchWeatherAt(LAT, LNG, T).then((w) => { if (!dead) setWxSky(w); }).catch(() => { if (!dead) setWxSky(null); });
+    return () => { dead = true; };
+  }, [open, sizeOn, hasPos, LAT, LNG, T]);
 
   /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
      at the SIGHTING time. auto = shown when the sky is dark enough;
@@ -3990,6 +3999,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   const size = 2 * objD * Math.tan(objAngW * D2R / 2);
                   const objEl = isNum(source?.A?.el) ? +source.A.el : effAlt;
                   const alt = isNum(objEl) ? objD * Math.sin(objEl * D2R) : null;
+                  /* cloud-base cap: below a real deck, range < base/sin(el) */
+                  const deck = wxSky && wxSky.baseAGL != null && ((wxSky.low != null ? wxSky.low : wxSky.cloud) || 0) >= 40;
+                  const cb = (deck && isNum(objEl) && objEl > 0.5) ? cloudRangeBound(wxSky.baseAGL, objEl, objAngW) : null;
                   return (
                     <>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide{isNum(objEl) ? ` · ${objEl.toFixed(0)}° up` : ""}</div>
@@ -4002,6 +4014,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         {alt != null && <> · <b>{fmtLenShort(Math.abs(alt))}</b> {alt >= 0 ? "above" : "below"} you</>}
                         <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
                       </div>
+                      {cb && (
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 11, marginTop: 3, color: objD > cb.maxRange ? "var(--red)" : "var(--teal)" }}>
+                          ☁ cloud base ≈ {fmtLenShort(wxSky.baseAGL)} — if it was BELOW the deck it was within <b>{fmtLenShort(cb.maxRange)}</b>{cb.maxSize != null ? <> (≤ <b>{fmtLenShort(cb.maxSize)}</b> across)</> : null}{objD > cb.maxRange ? " · slider is past that" : ""}
+                        </div>
+                      )}
                     </>
                   );
                 })() : (
