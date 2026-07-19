@@ -5305,6 +5305,20 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
         return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? fmtLenShort(c.span) : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${fmtSpeedShort(c.gs)}` : ""}</td></tr>`;
       }).join("");
       const best = framed[0];
+      /* route enrichment for the best in-frame match only (one adsbdb call) —
+         turns a hex/callsign into "SFO → SEA, B738" */
+      let routeTxt = "";
+      if (best && (best.hex || best.flight)) {
+        try {
+          const info = await fetchAcInfo(best.hex, best.flight);
+          const fr = info && info.route;
+          const nm = (a) => a && (a.municipality || a.iata_code || a.icao_code) || "";
+          const code = (a) => a && (a.iata_code || a.icao_code) || "";
+          if (fr && fr.origin && fr.destination) {
+            routeTxt = ` Route: <b>${e2(nm(fr.origin))}${code(fr.origin) ? ` (${e2(code(fr.origin))})` : ""} → ${e2(nm(fr.destination))}${code(fr.destination) ? ` (${e2(code(fr.destination))})` : ""}</b>${info.aircraft && info.aircraft.type ? `, ${e2(info.aircraft.type)}` : ""} <span class="cap">(adsbdb)</span>.`;
+          }
+        } catch (e) { /* adsbdb offline — omit route */ }
+      }
       const verdict = !cands.length
         ? `No airborne transponder aircraft were within ${snap.nm} nm at check time. ADS-B absence rules out airliners and most GA — not military or non-transponder traffic.`
         : !framed.length
@@ -5315,7 +5329,7 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
       adsbHtml = `<h2>Aircraft check (ADS-B)</h2>
 <p class="cap">Transponder aircraft that fell <b>inside the photo frame</b>. Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
 ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
-<p>${verdict}</p>`;
+<p>${verdict}${routeTxt}</p>`;
     }
   }
   const exhibits = packed.map((s, i) => {
