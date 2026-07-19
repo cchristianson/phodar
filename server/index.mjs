@@ -308,6 +308,44 @@ async function apiFireballs(q, res) {
    parallel (first success wins) — querying them one-by-one could exceed the
    client's timeout when a mirror is slow/queuing ("Fetch is aborted"). Results
    are cached (peaks don't move) so repeats are instant. */
+/* nearby airports/aerodromes (OSM Overpass) → context for the ADS-B check
+   ("nearest field 6 km NW — expect approach/departure traffic"). Same
+   CORS-unreliable reason as /api/peaks: proxy + race mirrors + cache. */
+const airportsCache = new Map();
+async function apiAirports(q, res) {
+  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(2000, +q.get("r") || 40000));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
+  const hit = airportsCache.get(key);
+  if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
+  const la = lat.toFixed(5), lo = lon.toFixed(5);
+  const ql = `[out:json][timeout:20];(node["aeroway"="aerodrome"](around:${r},${la},${lo});way["aeroway"="aerodrome"](around:${r},${la},${lo}););out center tags qt;`;
+  const eps = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting airports)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
+    .then(async (rr) => {
+      const host = ep.split("/")[2];
+      if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
+      const j = await rr.json();
+      if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
+      if (j.remark && /timed out|runtime error|memory/i.test(j.remark)) throw new Error(`${host} BUSY`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`);
+      return j;
+    });
+  try {
+    const j = await Promise.any(eps.map(attempt));
+    airportsCache.set(key, { t: Date.now(), body: j });
+    return json(res, 200, j);
+  } catch (e) {
+    const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
+    if (errs.every((m) => /EMPTY/.test(m))) return json(res, 200, { elements: [], note: "reachable; no airfields in range" });
+    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
+  }
+}
 const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
   const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
@@ -431,6 +469,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/winds") return await apiWinds(u.searchParams, res);
+    if (u.pathname === "/api/airports") return await apiAirports(u.searchParams, res);
     if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));

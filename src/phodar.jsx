@@ -23,6 +23,7 @@ import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
 import { fetchWeatherAt, cloudRangeBound } from "./checks/weather.js";
 import { activeShowers } from "./checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "./checks/photometry.js";
+import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -5637,6 +5638,25 @@ ${detailBlock}`;
       }
     }
   }
+  /* nearby airfields — approach/departure corridors concentrate the low, slow
+     traffic that gets reported; context for the aircraft explanation. */
+  let airportsHtml = "";
+  {
+    const w0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon));
+    const rla = fix.ok ? fix.ref.lat : (w0 ? +w0.lat : null);
+    const rlo = fix.ok ? fix.ref.lon : (w0 ? +w0.lon : null);
+    if (rla != null && rlo != null) {
+      try {
+        const aps = (await fetchAirports(rla, rlo, 45000)).slice(0, 4);
+        if (aps.length) {
+          const rows = aps.map((a) => `<tr><td>${e2(a.name)}${a.iata || a.icao ? ` (${e2(a.iata || a.icao)})` : ""}${a.kind ? ` · <span class="cap">${e2(a.kind)}</span>` : ""}</td><td>${fmtLenShort(a.distM)} ${compass8(a.bearing)} (${Math.round(a.bearing)}°)</td></tr>`).join("");
+          airportsHtml = `<h2>Nearby airfields</h2>
+<p class="cap">Aerodromes near ${fix.ok ? "the object's ground position" : "the observer"} (OpenStreetMap). Approach and departure corridors concentrate low, slow, light-carrying traffic — worth weighing alongside the ADS-B check.</p>
+<table><tr><th>Airfield</th><th>Distance · bearing</th></tr>${rows}</table>`;
+        }
+      } catch (e) { /* overpass busy / offline — omit */ }
+    }
+  }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PHODAR sighting report</title><style>
 html,body{max-width:100%;overflow-x:hidden}
@@ -5664,6 +5684,7 @@ ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(alignHtml, true)}
 ${collapsible(adsbHtml, false)}
+${collapsible(airportsHtml, false)}
 ${collapsible(photomHtml, false)}
 ${collapsible(condHtml, false)}
 ${collapsible(skyHtml, false)}
