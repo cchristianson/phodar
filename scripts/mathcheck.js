@@ -19,6 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
+import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -774,6 +775,16 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(grid.el, zt.el, 0.6, "platesolve: grid el recovered");
     approx(grid.roll, zt.roll, 1.2, "platesolve: grid roll recovered");
   }
+}
+
+// --- weather: cloud base (Espy LCL) + single-witness range/size cap ---
+{
+  approx(cloudBaseAGL(20, 12), 1000, 1e-6, "weather: Espy cloud base 125·(T−Td)");
+  approx(cloudBaseAGL(15, 15), 0, 1e-6, "weather: saturated air → base at ground");
+  const cb = cloudRangeBound(1000, 30, 2); // base 1000 m, 30° up, 2° wide
+  approx(cb.maxRange, 2000, 1e-6, "weather: below-cloud range cap = base/sin(el)");
+  approx(cb.maxSize, 2 * 2000 * Math.tan(1 * D2R), 1e-6, "weather: below-cloud size cap");
+  approx(cloudRangeBound(1000, 0, 2) == null ? 1 : 0, 1, 0, "weather: no cap at/below horizon");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

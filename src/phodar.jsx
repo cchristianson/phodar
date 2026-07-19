@@ -20,6 +20,7 @@ import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmFo
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
+import { fetchWeatherAt, cloudRangeBound } from "./checks/weather.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
@@ -5056,6 +5057,19 @@ async function reportHtml(sources, est, opts = {}) {
   const tr = analyzeTracks(sources);
   const packed = await packSources(sources); // bundle: filtered + 1600px media
   const origAct = sources.filter((s) => !isEmptySource(s)); // aligned with packed
+  /* weather + cloud base at the sighting — one fetch, shared by the single-
+     witness size chart (cloud-base range cap) and the conditions section.
+     Silently omitted if the proxy / Open-Meteo is unreachable. */
+  let wx = null;
+  {
+    const wref = origAct.find((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs));
+    const wla = wref ? +wref.lat : (fix.ok ? fix.ref.lat : null);
+    const wlo = wref ? +wref.lon : (fix.ok ? fix.ref.lon : null);
+    const wms = wref ? +wref.whenMs : null;
+    if (wla != null && wlo != null && wms != null) {
+      try { wx = await fetchWeatherAt(wla, wlo, wms); } catch (e) { wx = null; }
+    }
+  }
   const e2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const dv = (s) => (s === "" || s == null ? "—" : e2(s));
   const ft = (m) => Math.round(m * 3.28084);
@@ -5185,15 +5199,24 @@ async function reportHtml(sources, est, opts = {}) {
       const xTicks = [100, 1000, 10000].map((d) => `<line x1="${X(d)}" y1="${T}" x2="${X(d)}" y2="${H - B}" stroke="#eee"/><text x="${X(d)}" y="${H - B + 16}" font-size="10" fill="#555" text-anchor="middle">${fmtLenShort(d)}</text>`).join("");
       const yTicks = [1, 10, 100, 1000, 10000].filter((s) => s >= sLo && s <= sHi).map((s) => `<text x="${L - 6}" y="${(Y(s) + 3).toFixed(1)}" font-size="10" fill="#555" text-anchor="end">${fmtLenShort(s)}</text>`).join("");
       const altLine = drawAlt ? `<line x1="${X(D0)}" y1="${Y(a0).toFixed(1)}" x2="${X(D1)}" y2="${Y(a1).toFixed(1)}" stroke="#2563c9" stroke-width="2.5"/>${altRefs}` : "";
+      /* cloud-base cap: if the object was below the deck, its range < base/sin(el),
+         so everything to the RIGHT of this line is ruled out for a below-cloud object */
+      const cb = (wx && wx.baseAGL != null && drawAlt) ? cloudRangeBound(wx.baseAGL, el, wAng) : null;
+      const cloudCut = (cb && cb.maxRange >= D0 && cb.maxRange <= D1) ? (() => {
+        const xc = X(cb.maxRange);
+        return `<rect x="${xc.toFixed(1)}" y="${T}" width="${(W - Rm - xc).toFixed(1)}" height="${H - T - B}" fill="rgba(120,120,120,.10)"/>` +
+          `<line x1="${xc.toFixed(1)}" y1="${T}" x2="${xc.toFixed(1)}" y2="${H - B}" stroke="#7a7a7a" stroke-width="1.5" stroke-dasharray="5 3"/>` +
+          `<text x="${(xc - 5).toFixed(1)}" y="${T + 12}" font-size="10" fill="#555" text-anchor="end">cloud base ≈ ${fmtLenShort(cb.maxRange)} if below</text>`;
+      })() : "";
       fixHtml += `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
 <text x="${L}" y="20" font-size="12" font-weight="700" fill="#333">Assumed distance ⇄ implied size${drawAlt ? " &amp; altitude" : ""} (${wAng.toFixed(2)}° wide${drawAlt ? `, ${el.toFixed(0)}° up` : ""})</text>
 <text x="${W - Rm}" y="13" font-size="10" fill="#0e7d6f" text-anchor="end">■ size</text>${drawAlt ? `<text x="${W - Rm}" y="26" font-size="10" fill="#2563c9" text-anchor="end">■ altitude above you</text>` : ""}
-${xTicks}${yTicks}${refs}${altLine}
+${xTicks}${yTicks}${cloudCut}${refs}${altLine}
 <line x1="${X(D0)}" y1="${Y(s0).toFixed(1)}" x2="${X(D1)}" y2="${Y(s1).toFixed(1)}" stroke="#0e7d6f" stroke-width="2.5"/>
 <text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">assumed distance →</text>
 <text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">size / altitude (m) →</text>
 </svg>
-<p class="cap">One witness can't fix the distance — but every assumed distance implies both a size and ${drawAlt ? `an altitude above you (from the ${el.toFixed(0)}° sight-line). Amber dots mark common objects at that size; blue dots mark notable altitudes.` : "a size. Dots mark where common objects would sit on this sight-line. (Add the object's elevation to also read altitude.)"}</p>`;
+<p class="cap">One witness can't fix the distance — but every assumed distance implies both a size and ${drawAlt ? `an altitude above you (from the ${el.toFixed(0)}° sight-line). Amber dots mark common objects at that size; blue dots mark notable altitudes.` : "a size. Dots mark where common objects would sit on this sight-line. (Add the object's elevation to also read altitude.)"}${cb && cb.maxRange >= D0 && cb.maxRange <= D1 ? ` <b>If the object was below the cloud deck</b> (base est. ${fmtLenShort(wx.baseAGL)} AGL), it was within <b>${fmtLenShort(cb.maxRange)}</b>${cb.maxSize != null ? ` and no larger than <b>${fmtLenShort(cb.maxSize)}</b>` : ""} — everything right of the grey line is ruled out. Above the deck flips this into a floor.` : ""}</p>`;
     }
   }
   /* --- object dimensions: dimensioned front/side/top of the fitted shape.
@@ -5365,12 +5388,20 @@ ${detailBlock}`;
       const tw = sun.alt > 0 ? "daylight" : sun.alt > -6 ? "civil twilight" : sun.alt > -12 ? "nautical twilight" : sun.alt > -18 ? "astronomical twilight" : "night (full dark)";
       let dec = null;
       try { dec = declination(la, lo, isNum(w.alt) ? +w.alt : 0, new Date(Tw)); } catch (e) { }
+      const wxRows = wx ? (() => {
+        const cover = wx.cloud != null ? `${Math.round(wx.cloud)}%${[wx.low != null ? `low ${Math.round(wx.low)}%` : "", wx.mid != null ? `mid ${Math.round(wx.mid)}%` : "", wx.high != null ? `high ${Math.round(wx.high)}%` : ""].filter(Boolean).length ? ` (${[wx.low != null ? `low ${Math.round(wx.low)}%` : "", wx.mid != null ? `mid ${Math.round(wx.mid)}%` : "", wx.high != null ? `high ${Math.round(wx.high)}%` : ""].filter(Boolean).join(" · ")})` : ""}` : null;
+        return (cover != null ? row("Cloud cover", cover) : "") +
+          (wx.baseAGL != null && (wx.cloud == null || wx.cloud > 15) ? row("Cloud base (est.)", `${fmtLenShort(wx.baseAGL)} above ground <span class="cap">— from temp/dew-point (Espy); an object below the deck was closer than base ÷ sin(elevation)</span>`) : "") +
+          (wx.visM != null ? row("Visibility", wx.visM >= 20000 ? "≥ 20 km (clear)" : fmtLenShort(wx.visM)) : "") +
+          (wx.tempC != null ? row("Air", `${Math.round(wx.tempC)}°C${wx.dewC != null ? ` · dew point ${Math.round(wx.dewC)}°C` : ""}${wx.rh != null ? ` · ${Math.round(wx.rh)}% RH` : ""}`) : "");
+      })() : "";
       condHtml = `<h2>Sighting conditions</h2><table>` +
         row("Local sky", `${tw} — Sun ${Math.abs(sun.alt).toFixed(1)}° ${sun.alt >= 0 ? "above" : "below"} the horizon at az ${Math.round(sun.az)}° ${compass8(sun.az)}`) +
         row("Moon", `${ill}% illuminated · ${moon.alt > 0 ? `${moon.alt.toFixed(0)}° up at az ${Math.round(moon.az)}° ${compass8(moon.az)}` : "below the horizon"}`) +
         (dec != null ? row("Magnetic declination", `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}° (WMM2025 — added to any magnetic compass bearing to get true)`) : "") +
+        wxRows +
         `</table>` +
-        `<p class="cap">Computed for ${e2(w.name || "observer 1")} at ${new Date(Tw).toLocaleString()}. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.</p>`;
+        `<p class="cap">Computed for ${e2(w.name || "observer 1")} at ${new Date(Tw).toLocaleString()}. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.${wx ? ` Weather from ${wx.src}; cloud base is an estimate.` : ""}</p>`;
     }
   }
   /* --- sky-object check: Sun, Moon, planets, brightest stars vs each
