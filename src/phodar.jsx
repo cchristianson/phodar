@@ -548,7 +548,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Extra checks in the report", items: [
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
-        { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height (matching heading and speed)." },
+        { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose showing each altitude's drift arrow (length = speed) with the object's own motion overlaid, so you can see whether it matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
         { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
@@ -5020,6 +5020,45 @@ ${lod ? `<text x="${W - Rm}" y="${T - 3}" font-size="10" fill="#C77B14" text-anc
 </svg>`;
 }
 
+/* wind-rose for the report's Wind check: a top-down compass with a drift arrow
+   per altitude (length = wind speed, colour blue→red by speed), and the
+   object's OWN motion drawn as a bold black arrow on the same scale — so a
+   reader can SEE whether the object moved like the wind at any layer (a balloon
+   would line up with one). Self-contained SVG; the level nearest the object's
+   altitude is bolded. */
+function reportWindSvg(prof, objSpeed, objHeading, nearestM) {
+  if (!prof || !prof.levels || !prof.levels.length) return "";
+  const W = 340, H = 340, cx = W / 2, cy = H / 2 + 8, R = 120;
+  const levels = prof.levels;
+  const vmax = Math.max(objSpeed || 0, ...levels.map((L) => L.speedMs), 1);
+  const speedColor = (v) => `hsl(${(210 - 210 * Math.min(1, v / vmax)).toFixed(0)},80%,45%)`;
+  const vec = (brg, len) => [cx + len * Math.sin(brg * D2R), cy - len * Math.cos(brg * D2R)];
+  const arrow = (brg, len, col, w, op) => {
+    const [x2, y2] = vec(brg, len), a = brg * D2R, dx = Math.sin(a), dy = -Math.cos(a), px = -dy, py = dx, ah = 7;
+    const bx = x2 - dx * ah, by = y2 - dy * ah;
+    return `<line x1="${cx}" y1="${cy}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="${w}" opacity="${op}"/>` +
+      `<path d="M${x2.toFixed(1)},${y2.toFixed(1)} L${(bx + px * 3.6).toFixed(1)},${(by + py * 3.6).toFixed(1)} L${(bx - px * 3.6).toFixed(1)},${(by - py * 3.6).toFixed(1)} z" fill="${col}" opacity="${op}"/>`;
+  };
+  let g = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="#fff" stroke="#ddd"/><circle cx="${cx}" cy="${cy}" r="${(R * 0.5).toFixed(1)}" fill="none" stroke="#eee"/>`;
+  [["N", 0], ["E", 90], ["S", 180], ["W", 270]].forEach(([lbl, b]) => { const p = vec(b, R + 12); g += `<text x="${p[0].toFixed(1)}" y="${(p[1] + 4).toFixed(1)}" font-size="11" font-weight="700" fill="#888" text-anchor="middle">${lbl}</text>`; });
+  levels.forEach((L) => {
+    const near = nearestM != null && L.levelM === nearestM;
+    const len = R * 0.92 * Math.min(1, L.speedMs / vmax);
+    g += arrow(L.driftDeg, len, speedColor(L.speedMs), near ? 3.2 : 1.5, near ? 1 : 0.7);
+    const lp = vec(L.driftDeg, len + 12);
+    g += `<text x="${lp[0].toFixed(1)}" y="${(lp[1] + 3).toFixed(1)}" font-size="8.5" fill="${near ? "#000" : "#aaa"}" font-weight="${near ? 700 : 400}" text-anchor="middle">${fmtLenShort(L.levelM)}</text>`;
+  });
+  if (objSpeed != null && objSpeed > 0 && objHeading != null) {
+    const len = R * 0.92 * Math.min(1, objSpeed / vmax);
+    g += arrow(objHeading, len, "#111", 3.6, 1);
+    const lp = vec(objHeading, len * 0.55);
+    g += `<text x="${(lp[0] + 6).toFixed(1)}" y="${lp[1].toFixed(1)}" font-size="10" font-weight="700" fill="#111">object</text>`;
+  }
+  g += `<circle cx="${cx}" cy="${cy}" r="2.5" fill="#333"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="max-width:340px;width:100%;border:1px solid #ddd;border-radius:6px;background:#fafafa"><text x="10" y="18" font-size="12" font-weight="700" fill="#333">Winds aloft vs object motion</text>${g}</svg>` +
+    `<p class="cap">Each coloured arrow is the wind's drift direction at one altitude (length = speed, blue→red = slow→fast); the bold black arrow is the object's own motion. A balloon rides the wind, so its motion would line up with the layer at its height (bold label).</p>`;
+}
+
 /* Which orthographic views make a shape's size unambiguous. Each entry:
    [title, horizontalAxis, verticalAxis, hLabel, vLabel]. An orb needs one
    view; a bird/plane wants three. Axes are the object's OWN model axes
@@ -5648,6 +5687,7 @@ ${detailBlock}`;
               ? `<b>Assessment — balloon: partially consistent.</b> Some wind-like motion, but not a clean match.`
               : `<b>Assessment — balloon: ruled out.</b> The wind at the object's altitude can't produce this motion.`;
         windHtml = `<h2>Wind check (balloon test)</h2><p class="lead">${balloonAssess}</p>${verdictLine}
+${reportWindSvg(prof, haveMotion ? objSpeed : null, haveMotion ? objHeading : null, nearest.levelM)}
 <table class="tbl"><thead><tr><th>Altitude (MSL)</th><th>Wind → drift</th><th>Δhdg · speed · match</th></tr></thead><tbody>${rows}</tbody></table>
 <p class="cap">Winds aloft from ${prof.src}. A free balloon rides the wind at its altitude — matching heading (within ±25°) and speed (0.5–1.6×). Highlighted rows match the object's motion.</p>`;
       } catch (e) { /* offline or no data — say nothing rather than guess */ }
