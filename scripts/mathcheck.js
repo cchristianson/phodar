@@ -1,7 +1,7 @@
 // Exercises the REAL math core (src/math/*) — not a copy. A regression in
 // triangulation, geodesy, or angular sizing fails `npm test` here.
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
-import { intersectLines, aspectSpan } from "../src/math/triangulate.js";
+import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.js";
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
@@ -818,6 +818,16 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(relMag(0, 100, 1) == null ? 1 : 0, 1, 0, "photometry: zero flux → no magnitude");
   approx(colorDesc(255, 60, 40) === "red / orange" ? 1 : 0, 1, 0, "photometry: red colour classified");
   approx(colorDesc(240, 240, 240) === "white (saturated core)" ? 1 : 0, 1, 0, "photometry: saturated white classified");
+}
+
+// --- covariance ellipse: elongated along East → major bearing ≈ 90° ---
+{
+  const pts = [];
+  for (let i = 0; i < 40; i++) { const t = (i / 39 - 0.5); pts.push([t * 100, t * 6 + (i % 2 ? 1 : -1)]); } // long in x (E), thin in y (N)
+  const e = covEllipse(pts);
+  approx(e.major > e.minor ? 1 : 0, 1, 0, "ellipse: major axis longer");
+  approx(e.bearing, 90, 6, "ellipse: East-elongated cloud → major bears ~90°");
+  approx(covEllipse([[0, 0], [1, 1]]) == null ? 1 : 0, 1, 0, "ellipse: needs ≥3 points");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
