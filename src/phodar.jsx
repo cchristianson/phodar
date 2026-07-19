@@ -549,6 +549,11 @@ const HELP_SECTIONS = [
       { h: "Extra checks in the report", items: [
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height (matching heading and speed)." },
+        { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
+        { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
+        { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
+        { t: "Aircraft, airfields & routes", d: "ADS-B traffic ranked against the sight-lines, the best match's origin→destination, and nearby airfields whose approach corridors concentrate low, slow traffic." },
+        { t: "Uncertainty ellipse", d: "With two witnesses, the ground-position error is shown as a 1σ ellipse (weakest across the baseline), not a single ± number." },
       ]},
     ],
     tips: ["Every check outputs the same shape — a predicted direction/size/motion and how far it sits from your sight-line — so the report ranks all the mundane explanations in one table."],
