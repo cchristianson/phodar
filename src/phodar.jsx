@@ -973,12 +973,25 @@ function MediaMeasure({ src, update, wizard }) {
       }
       if (!src.mediaNorm) {
         try {
-          const MAX = 4300, sc = Math.min(1, MAX / Math.max(nw, nh)); // original res (iOS canvas ceiling) — sky warp uses its own 1280px texture
+          /* Keep the working copy as sharp as iOS Safari's canvas allows, so
+             the image holds up when the artist pinch-zooms to mark the object
+             (the sky-view warp uses its own 1280px texture). iOS caps canvas
+             AREA (~16.7 Mpx) — NOT side length — so scale by area: a 12 MP phone
+             photo passes through at full resolution; 24/48 MP shots downscale
+             only as far as the ceiling forces, keeping far more detail than the
+             old flat 4300px side cap. The area cap also protects near-square
+             images the old side cap could push over the limit. Near-lossless
+             JPEG (0.98) makes the one re-encode (needed to bake out EXIF
+             orientation) visually invisible. */
+          const AREA_MAX = 16.0e6;                       // headroom under the ~16.7 Mpx iOS ceiling
+          const SIDE_MAX = 4600;                         // GPU/side guard for extreme aspect ratios
+          let sc = Math.min(1, SIDE_MAX / Math.max(nw, nh));
+          if (nw * nh * sc * sc > AREA_MAX) sc = Math.sqrt(AREA_MAX / (nw * nh));
           const W = Math.max(1, Math.round(nw * sc)), Hh = Math.max(1, Math.round(nh * sc));
           const cv = document.createElement("canvas");
           cv.width = W; cv.height = Hh;
           cv.getContext("2d").drawImage(el, 0, 0, W, Hh); // modern browsers draw the ORIENTED image
-          const durl = cv.toDataURL("image/jpeg", 0.94);
+          const durl = cv.toDataURL("image/jpeg", 0.98);
           update({ mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
           mediaPut(src.id, { kind: "image", data: durl }); // survives reload via IndexedDB
           setLoading(false); setLoadErr("");
@@ -1900,7 +1913,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      normalized photo. Video: the marked frame (A.videoTime) baked to a
      canvas off the render path, so the warp draws a static texture — never
      a live <video> — which is what made the sky view fast and stable. */
-  const MAXT = 1280;
+  /* Warp texture resolution. 1280 was the original drag-perf/memory cap; 1600
+     noticeably sharpens the placed photo when the artist zooms into the sky
+     view to line up a ridge, at ~1.6× the texture memory (still small) and no
+     change to the 7-column mesh triangle count, so per-frame draw cost barely
+     moves. If a slower device ever stutters here, this is the dial to lower. */
+  const MAXT = 1600;
   const bakeTex = (drawable, w, h) => {
     const adj = source?.imgAdj, needAdj = !imgAdjNeutral(adj);
     let tex = drawable;
@@ -4950,7 +4968,7 @@ async function packSources(sources) {
             const dctx = dc.getContext("2d");
             if (oz > 3) dctx.imageSmoothingEnabled = false;
             dctx.drawImage(im, cx0, cy0, cw, ch, 0, 0, dc.width, dc.height);
-            r.detailJpeg = dc.toDataURL("image/jpeg", 0.85);
+            r.detailJpeg = dc.toDataURL("image/jpeg", 0.92);
             r.detailZoom = +oz.toFixed(1);
             /* crop rect in the SCALED (post-k) coord frame — matches the
                packed shapeFit / shapeProjNat, so the report can lay the shape
