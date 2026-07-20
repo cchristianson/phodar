@@ -529,7 +529,7 @@ const HELP_SECTIONS = [
         { t: "✦ Manual star align", d: "The hands-on alternative to auto: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve. It drops to the warped view so you can aim, then ✓ Done aligning returns you; ↺ reset undoes it." },
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
-        { t: "colour (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a colour that stands out against your particular sky or scene. Saved for next time." },
+        { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -2308,6 +2308,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const lookDY = (panelOpen && vp.h > 0) ? clampN((topBar.h - botBar.h) / (2 * vp.h), -0.4, 0.05) : 0;
   const cx = 0.5 + (placing ? pPan.x : 0);
   const cy = 0.5 + placeDY + lookDY + (placing ? pPan.y : 0);
+  /* vertical centre of the VISIBLE band (top HUD → bottom controls), for the
+     right-side zoom/pan buttons — so a mode's panel never covers them */
+  const ctrlBandPct = vp.h > 0 ? clampN((topBar.h + (vp.h - botBar.h)) / 2 / vp.h, 0.18, 0.82) * 100 : 50;
   const effAz = placing ? pAz : viewAz;
   const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
@@ -3815,7 +3818,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
       {pMode !== "place" && (
-        <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
+        <div style={{ position: "absolute", right: 10, top: ctrlBandPct + "%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
           <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f * 0.72).toFixed(1), 2, 90))}>+</button>
           <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f / 0.72).toFixed(1), 2, 90))}>−</button>
         </div>
@@ -3824,19 +3827,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       {/* place-mode DISPLAY zoom + pan — magnify photo+sky together to line up a
           ridge/rooftop, then ✋ pan to reach it. Does not change the calibration. */}
       {placing && (
-        <div style={{ position: "absolute", right: 10, top: "42%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 206, pointerEvents: "auto" }}>
+        <div style={{ position: "absolute", right: 10, top: ctrlBandPct + "%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 206, pointerEvents: "auto" }}>
           <button className="btn" title="Zoom in (magnify for fine alignment)" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.8)" }}
             onClick={() => setPZoom((z) => clampN(+(z * 1.5).toFixed(2), 1, 6))}>+</button>
           <button className="btn" title="Zoom out" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.8)" }}
             onClick={() => setPZoom((z) => { const nz = clampN(+(z / 1.5).toFixed(2), 1, 6); if (nz <= 1.001) { setPPan({ x: 0, y: 0 }); setPanMode(false); } return nz; })}>−</button>
-          {pZoom > 1.001 && (
-            <button className={"btn" + (panMode ? " amber" : "")} title="Pan mode: drag to move around the magnified view (instead of sliding the sky)"
-              style={{ width: 42, height: 42, padding: 0, fontSize: 17, background: panMode ? undefined : "rgba(15,23,42,.8)" }}
-              onClick={() => setPanMode((v) => !v)}>✋</button>
-          )}
-          {pZoom > 1.001 && (
-            <div style={{ textAlign: "center", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.8)" }}>{pZoom.toFixed(1)}×</div>
-          )}
+          {/* pan button + zoom readout keep their slots ALWAYS (visibility only) so
+             appearing after a zoom doesn't shift the +/− buttons up */}
+          <button className={"btn" + (panMode ? " amber" : "")} title="Pan mode: drag to move around the magnified view (instead of sliding the sky)"
+            style={{ width: 42, height: 42, padding: 0, fontSize: 17, background: panMode ? undefined : "rgba(15,23,42,.8)", visibility: pZoom > 1.001 ? "visible" : "hidden" }}
+            onClick={() => setPanMode((v) => !v)}>✋</button>
+          <div style={{ textAlign: "center", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.8)", visibility: pZoom > 1.001 ? "visible" : "hidden" }}>{pZoom.toFixed(1)}×</div>
         </div>
       )}
 
@@ -3854,10 +3855,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ))}
               </div>
             )}
-            {/* overlay colour — tints the crosshair, object outline and terrain ridges together */}
-            {!single && !calibOn && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolour the crosshair, object outline and terrain ridges so they stand out against your photo">
-                <span className="microlabel" style={{ marginBottom: 0 }}>colour</span>
+            {/* overlay color — tints the crosshair, object outline and terrain ridges
+               together. Only offered in free look (no mode active): set it, then work. */}
+            {!single && !calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolor the crosshair, object outline and terrain ridges so they stand out against your photo">
+                <span className="microlabel" style={{ marginBottom: 0 }}>color</span>
                 <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ flex: 1 }} />
                 <span style={{ width: 16, height: 16, borderRadius: 8, flex: "0 0 auto", background: accentCol, border: "1px solid rgba(255,255,255,.35)" }} />
               </div>
