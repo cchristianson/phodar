@@ -6590,7 +6590,7 @@ export default function App() {
       } else if (ui.view === "m1" && wmom) {
         page = (
           <WizStep n={2} title={`MOMENT ${momIdx + 2} · PHOTO`} help="photo"
-            onBack={() => goView("home")} onNext={() => goView("m2")}
+            onBack={() => { if (!wmom.mediaUrl) removeMoment(wsrc.id, wmom.id); goView("home"); }} onNext={() => goView("m2")}
             nextDisabled={!wmom.mediaUrl} nextLabel="Next · place it in the sky →"
             disabledLabel="Add this moment's photo to continue">
             <div style={{ fontSize: 12, color: "var(--dim)", padding: "0 2px 8px", lineHeight: 1.5 }}>
