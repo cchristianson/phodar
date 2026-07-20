@@ -334,6 +334,15 @@ const css = `
 .lmk-dot{font-size:13px;}
 .lmk-fix{color:var(--teal); font-size:17px; font-weight:800;}
 .lmk-fix span{color:var(--teal); font-weight:700;}
+.lmk-cam{color:var(--teal); font-size:15px; font-weight:800;}
+.lmk-cam span{color:var(--teal); font-weight:700; left:10px;}
+.lmk-obj{color:var(--amber); font-size:17px; font-weight:800;}
+.lmk-obj span{color:var(--amber); font-weight:700; left:11px; top:-7px;}
+.mappick-modal{position:fixed; inset:0; z-index:4000; display:flex; flex-direction:column;
+  background:var(--bg); padding-top:env(safe-area-inset-top);}
+.mappick-modal .leaflet-container{width:100%; height:100%; background:#08101F;}
+.mappick-modal .leaflet-control-attribution{background:rgba(7,11,20,.55); color:var(--dim); font-size:9px;}
+.mappick-modal .leaflet-control-attribution a{color:var(--dim);}
 .plotwrap{position:relative; isolation:isolate; z-index:0; height:300px;
   border-radius:10px; border:1px solid var(--line); overflow:hidden;
   background:#08101F;}
@@ -528,7 +537,8 @@ const HELP_SECTIONS = [
         { t: "+Δt time chips", d: "One chip per segment — tap it to set how long that leg took (presets 0.5–10 s, or ±0.1 s). Timing is what turns the path into speed and g-load." },
         { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
         { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that)." },
-        { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's." },
+        { t: "📍 Set distance on a map", d: "In the size or compare tool, opens a satellite map centred near where the photo was taken, with your camera's field-of-view wedge and the object's sight-line drawn on it. Tap (or drag the ✦) where the object was overhead; the straight-line distance from the camera — carried up the sight-line to a true line-of-sight range — sets the assumed distance. Often easier than guessing on the slider: you place it over the ridge/field/town it was above." },
+        { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's — or set that distance on the map." },
         { t: "Drawing vs moments (hybrid)", d: "If this observer has placed photo-moments, points you drop here are timed from THIS photo and interleave with the moments on one trajectory — so you can fill in where the object was between shots. With two or more placed photos and no hand-drawn points, the trajectory is built from the photos alone." },
       ]},
       { h: "Aim readout & navigation", items: [
@@ -1884,6 +1894,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
   const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
+  const [mapPick, setMapPick] = useState(null); // {mode:'size'|'compare'} → distance-on-a-map modal open
   /* two-tap star align: tap a known object, tap where it really sits in the
      photo → solve the photo's roll + FOV (center kept, so the terrain match
      is preserved) so the object lands exactly. */
@@ -2014,7 +2025,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (!open) return;
     const prevent = (e) => {
-      if (e.target && e.target.closest && e.target.closest("input[type=range], .help-scroll")) return;
+      if (e.target && e.target.closest && e.target.closest("input[type=range], .help-scroll, .mappick")) return;
       if (e.cancelable) e.preventDefault();
     };
     document.addEventListener("touchmove", prevent, { passive: false });
@@ -4060,7 +4071,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     </div>
                   );
                 })()}
-                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then slide its assumed distance</div>
+                <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 3 }}>Aim the crosshair, ⌖ drop the ghost there, then slide its assumed distance — or set it on a map:</div>
+                {hasPos && (
+                  <button className="btn sm" style={{ marginTop: 5 }} onClick={() => setMapPick({ mode: "compare" })}>📍 Set distance on a map</button>
+                )}
               </div>
             )}
             {sizeOn && (
@@ -4092,6 +4106,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         <div style={{ fontFamily: "var(--mono)", fontSize: 11, marginTop: 3, color: objD > cb.maxRange ? "var(--red)" : "var(--teal)" }}>
                           ☁ cloud base ≈ {fmtLenShort(wxSky.baseAGL)} — if it was BELOW the deck it was within <b>{fmtLenShort(cb.maxRange)}</b>{cb.maxSize != null ? <> (≤ <b>{fmtLenShort(cb.maxSize)}</b> across)</> : null}{objD > cb.maxRange ? " · slider is past that" : ""}
                         </div>
+                      )}
+                      {hasPos && (
+                        <button className="btn sm" style={{ marginTop: 6 }} onClick={() => setMapPick({ mode: "size" })}>📍 Set distance on a map</button>
                       )}
                     </>
                   );
@@ -4131,6 +4148,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
       </div>
+      {mapPick && hasPos && (() => {
+        const isSize = mapPick.mode === "size";
+        const aim = source?.mediaAim || {};
+        const azObj = isSize ? (isNum(source?.A?.az) ? +source.A.az : effAz) : (cmpPos && isNum(cmpPos.az) ? cmpPos.az : effAz);
+        const elObj = isSize ? (isNum(source?.A?.el) ? +source.A.el : effAlt) : (cmpPos && isNum(cmpPos.el) ? cmpPos.el : effAlt);
+        const azCenter = isNum(aim.az) ? +aim.az : azObj;
+        return (
+          <DistanceMapPick
+            lat={LAT} lon={LNG} azCenter={azCenter} azObj={azObj} elObj={elObj} fovH={fovM}
+            objAng={isSize ? objAngW : null} initDist={isSize ? objD : cmpD}
+            title={isSize ? "WHERE WAS THE OBJECT?" : "WHERE WAS THE REFERENCE?"}
+            onClose={() => setMapPick(null)}
+            onAccept={(d) => { if (isSize) setObjD(clampN(d, 30, 80000)); else setCmpD(clampN(d, 5, 120000)); setMapPick(null); }} />
+        );
+      })()}
     </div>
   );
 }
@@ -4292,6 +4324,105 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt }) {
         <div className="pinmap-hud">
           <div ref={distElRef} style={{ color: "var(--amber)" }} />
           <div ref={coordElRef} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   DISTANCE MAP PICKER — set the assumed distance for the size/compare tools
+   by placing where the object was on a map. Shows the camera at the photo's
+   GPS, a wedge for its field of view + the object's sight-line, and a draggable
+   "object here" pin. The straight-line ground distance (converted to a slant
+   range through the sight-line elevation, so size AND altitude stay consistent)
+   feeds the tool's distance. Lives inside the open SkyAimer, so its map box is
+   class "mappick" — whitelisted in the aimer's touchmove scroll-lock so Leaflet
+   pan/drag actually work.
+   ============================================================ */
+function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initDist, title, onAccept, onClose }) {
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const objRef = useRef(null);
+  const layersRef = useRef(null);
+  const [baseSat, setBaseSat] = useState(true);
+  const [gDist, setGDist] = useState(null);   // straight-line ground distance to the pin, m
+
+  const mPerDegN = 111320;
+  const mPerDegE = (la) => 111320 * Math.max(0.2, Math.cos((+la || 0) * D2R));
+  const destPoint = (az, d) => [lat + (d * Math.cos(az * D2R)) / mPerDegN, lon + (d * Math.sin(az * D2R)) / mPerDegE(lat)];
+  const groundDist = (la, lo) => Math.hypot((lo - lon) * mPerDegE(lat), (la - lat) * mPerDegN);
+  const el0 = clampN(isNum(elObj) ? +elObj : 0, 0, 89);
+  const cosEl = Math.max(0.05, Math.cos(el0 * D2R));
+  const slantOf = (g) => g / cosEl;                             // ground → line-of-sight range
+  const initGround = Math.max(30, (isNum(initDist) ? +initDist : 1000) * cosEl);
+
+  useEffect(() => {
+    const el = boxRef.current; if (!el || mapRef.current || typeof L === "undefined") return;
+    const start = destPoint(azObj, initGround);
+    const map = L.map(el, { center: start, zoom: 15, zoomControl: false, attributionControl: true, doubleClickZoom: false });
+    map.attributionControl.setPrefix(false);
+    const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics" });
+    const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 21, maxNativeZoom: 19, attribution: "© OpenStreetMap contributors", className: "pinmap-street-tiles" });
+    sat.addTo(map); layersRef.current = { sat, street };
+    mapRef.current = map;
+    /* the modal's flex map box can lay out a frame late — force a size recalc so
+       Leaflet doesn't paint a half-grey tile grid */
+    requestAnimationFrame(() => { try { map.invalidateSize(false); } catch (e) { } });
+
+    /* FOV sector + the object's sight-line + the camera position */
+    const wedgeR = Math.max(initGround * 3, 1500);
+    if (isNum(azCenter) && isNum(fovH)) {
+      const arc = [[lat, lon]];
+      const n = 24;
+      for (let i = 0; i <= n; i++) arc.push(destPoint(azCenter - fovH / 2 + (fovH * i) / n, wedgeR));
+      L.polygon(arc, { color: "#5fd0ff", weight: 1, opacity: 0.7, fillColor: "#5fd0ff", fillOpacity: 0.1, interactive: false }).addTo(map);
+    }
+    if (isNum(azObj)) L.polyline([[lat, lon], destPoint(azObj, wedgeR)], { color: "#F5A93F", weight: 2, dashArray: "7 5", opacity: 0.9, interactive: false }).addTo(map);
+    L.marker([lat, lon], { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-cam">◉<span>camera</span></div>` }) }).addTo(map);
+
+    const om = L.marker(start, { draggable: true, autoPan: true, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-obj">✦<span>object was over here</span></div>` }) }).addTo(map);
+    objRef.current = om;
+    const upd = (ll) => setGDist(groundDist(ll.lat, ll.lng));
+    om.on("drag", (e) => upd(e.target.getLatLng()));
+    om.on("dragend", (e) => upd(e.target.getLatLng()));
+    map.on("click", (e) => { om.setLatLng(e.latlng); upd(e.latlng); });
+    upd({ lat: start[0], lng: start[1] });
+    return () => { map.remove(); mapRef.current = null; };
+  }, []); // eslint-disable-line
+
+  useEffect(() => {
+    const map = mapRef.current, ls = layersRef.current; if (!map || !ls) return;
+    if (baseSat) { map.removeLayer(ls.street); ls.sat.addTo(map); }
+    else { map.removeLayer(ls.sat); ls.street.addTo(map); }
+  }, [baseSat]);
+
+  const slant = gDist != null ? slantOf(gDist) : null;
+  const size = slant != null && isNum(objAng) ? 2 * slant * Math.tan(objAng * D2R / 2) : null;
+  const alt = slant != null && el0 > 0 ? slant * Math.sin(el0 * D2R) : null;
+
+  return (
+    <div className="mappick-modal">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--line)" }}>
+        <div style={{ flex: 1, fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".1em", fontSize: 12 }}>{title || "WHERE WAS IT?"}</div>
+        <button className="btn sm" onClick={() => setBaseSat((s) => !s)}>{baseSat ? "🗺 street" : "🛰 sat"}</button>
+        <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomOut()}>−</button>
+        <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomIn()}>+</button>
+      </div>
+      <div ref={boxRef} className="mappick" style={{ flex: 1, minHeight: 0 }} />
+      <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--line)" }}>
+        <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
+          Tap the map (or drag the ✦) where the object was — inside the blue field-of-view wedge, along the amber sight-line. The distance from the camera sets the tool.
+        </div>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--teal)", minHeight: 18 }}>
+          {gDist != null ? (
+            <>{fmtLenShort(gDist)} away{el0 > 0.5 ? <> · <span style={{ color: "var(--amber)" }}>{fmtLenShort(slant)}</span> line-of-sight ({el0.toFixed(0)}° up)</> : null}
+              {size != null && <> → <b>{fmtLenShort(size)}</b> across</>}{alt != null && <> · {fmtLenShort(alt)} up</>}</>
+          ) : "place the object…"}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button className="btn" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+          <button className="btn amber" style={{ flex: 2 }} disabled={slant == null} onClick={() => slant != null && onAccept(Math.round(slant))}>✓ Use this distance</button>
         </div>
       </div>
     </div>
