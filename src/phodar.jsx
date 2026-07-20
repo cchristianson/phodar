@@ -516,23 +516,22 @@ const HELP_SECTIONS = [
   },
   {
     id: "sky", icon: "🔭", title: "Step 3 — The sky view",
-    intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. Two modes: Place (seat the photo) then Look (aim at the object and, optionally, trace its path).",
+    intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. A row of tool buttons — ✥ Place · ⊕ Trajectory · 📏 Size · ⚖ Compare — switches modes; only one is active at a time, and each reveals its own controls.",
     groups: [
-      { h: "The two modes", items: [
-        { t: "✥ Place", d: "The photo is pinned undistorted and fills the space. Drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome." },
-        { t: "✓ Done placing / ✓ Horizon lined up — continue", d: "Leaves Place mode and commits the placement, auto-deriving your sight-lines." },
-        { t: "Look mode", d: "The photo is warped into the sky; drag to pan, pinch or +/− to zoom, and put the crosshair where the object was." },
+      { h: "The four tools (one at a time)", items: [
+        { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
+        { t: "⊕ Trajectory", d: "Trace the object's path: the photo warps into the sky and you ⊕ drop world-anchored points where it was at each moment, with Δt timing." },
+        { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
       ]},
-      { h: "Get the pointing exact (Place mode)", items: [
-        { t: "✦ Auto star-align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
+      { h: "Get the pointing exact (Place tools)", items: [
+        { t: "✦ Auto star align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
         { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
+        { t: "✦ Manual star align", d: "The hands-on alternative to auto: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve. It drops to the warped view so you can aim, then ✓ Done aligning returns you; ↺ reset undoes it." },
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
-        { t: "↩ Undo", d: "Steps back the last placement change — a gesture or a button. An accidental nudge right before ✓ Done won't cost you the whole alignment." },
-        { t: "⟺ Level / Reset placement", d: "Level sets roll to 0; Reset restores the whole placement to how the screen opened." },
+        { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "ridge (hue slider)", d: "Recolours the terrain + ridge lines so they stand out over green hills." },
-        { t: "✦ align to star (Look mode)", d: "Manual alternative: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve." },
       ]},
-      { h: "Trace the object's path (Look mode)", items: [
+      { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
         { t: "+Δt time chips", d: "One chip per segment — tap it to set how long that leg took (presets 0.5–10 s, or ±0.1 s). Timing is what turns the path into speed and g-load." },
         { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
@@ -1894,6 +1893,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
   const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
+  const [trajOn, setTrajOn] = useState(false);  // trajectory drop-point tools — its own mode
   const [mapPick, setMapPick] = useState(null); // {mode:'size'|'compare'} → distance-on-a-map modal open
   /* two-tap star align: tap a known object, tap where it really sits in the
      photo → solve the photo's roll + FOV (center kept, so the terrain match
@@ -2300,7 +2300,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      top) by shifting the projection centre (and the crosshair) up half the
      bottom-bar-minus-top-bar height, so the crosshair never hides behind the
      panel. Look mode only — place mode has its own band-centering (placeDY). */
-  const panelOpen = !placing && (sizeOn || cmpOn);
+  const panelOpen = !placing && (sizeOn || cmpOn || trajOn);
   const lookDY = (panelOpen && vp.h > 0) ? clampN((topBar.h - botBar.h) / (2 * vp.h), -0.4, 0.05) : 0;
   const cx = 0.5 + (placing ? pPan.x : 0);
   const cy = 0.5 + placeDY + lookDY + (placing ? pPan.y : 0);
@@ -2906,6 +2906,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     resetPlaceView();
     commitPlacement();
     setPMode("look");
+  };
+  /* ——— sky-view MODES: place · trajectory · size · compare — one at a time.
+     Each mode button toggles its own tools; selecting one clears the others. */
+  const exitCalib = () => { if (calibOn) { setCalibOn(false); setCalibAnchor(null); setCalibMsg(""); } };
+  const selectMode = (m) => {
+    if (m === "place") {
+      if (pMode === "place") { donePlace(); return; }   // toggle off
+      setTrajOn(false); setSizeOn(false); setCmpOn(false); exitCalib();
+      enterPlace();
+      return;
+    }
+    if (pMode === "place") donePlace();                  // leaving place for a look-mode tool
+    exitCalib();
+    if (m === "traj") { setTrajOn((v) => !v); setSizeOn(false); setCmpOn(false); }
+    else if (m === "size") { setSizeOn((v) => !v); setTrajOn(false); setCmpOn(false); }
+    else if (m === "compare") {
+      setCmpOn((v) => { if (!v) setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); return !v; });
+      setTrajOn(false); setSizeOn(false);
+    }
+  };
+  /* manual star align lives under Place, but the aim needs the free-look
+     crosshair (in place mode the crosshair is locked to the photo centre), so
+     it commits the placement, drops to look centred on the photo, and opens the
+     tap-a-star calibration — which solves the SAME placement pose. */
+  const startManualAlign = () => {
+    if (pMode === "place") donePlace();
+    setTrajOn(false); setSizeOn(false); setCmpOn(false);
+    setCalibOn(true); setCalibAnchor(null); setCalibMsg("👆 Tap a named star or planet to align to it");
   };
 
   /* --- Look-mode marks + visibility (the image itself is drawn by our own
@@ -3811,56 +3839,63 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       {/* bottom controls */}
       <div ref={botBarRef} style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.92) 55%, rgba(7,11,20,0))", zIndex: 210 }}>
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
-        {source?.mediaUrl && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
-            {photoOn && (
-              <>
-                <button className={"btn sm" + (pMode === "place" ? " amber" : "")}
-                  onClick={() => (pMode === "place" ? donePlace() : enterPlace())}>
-                  {pMode === "place" ? "✓ Done placing" : "✥ Place"}
-                </button>
-                {pMode === "place" && (
-                  <>
-                    <button className="btn sm" disabled={!placeUndo.length} style={{ opacity: placeUndo.length ? 1 : 0.4 }} title="Undo the last placement change (a slip won't cost you the whole alignment)" onClick={undoPlace}>↩ Undo</button>
-                    <button className="btn sm amber" onClick={() => { pushUndo(snapPose()); autoAlign(); }} title="Auto star-align: detects the stars in the photo and matches their pattern to the sky to solve the exact pose (az/el/roll/FOV/lens) — no need to line it up first. Needs correct date/time & location.">✦ Auto star-align</button>
-                    {terr?.els && <button className="btn sm teal" onClick={() => { pushUndo(snapPose()); snapToRidges(); }}>⛰ Snap to ridges</button>}
-                    <button className="btn sm" onClick={() => { pushUndo(snapPose()); setPRoll(0); }}>⟺ Level</button>
-                    <button className="btn sm" onClick={() => {
-                      pushUndo(snapPose());
-                      const p0 = openPoseRef.current;
-                      if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist || 0); }
-                      else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); setPDist(0); }
-                      calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
-                    }}>Reset placement</button>
-                    {terrOn && terr?.els && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
-                        <span className="microlabel" style={{ marginBottom: 0 }}>ridge</span>
-                        <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ width: 70 }} />
-                        <span style={{ width: 13, height: 13, borderRadius: 7, flex: "0 0 auto", background: ridgeCol(0.95), border: "1px solid rgba(255,255,255,.3)" }} />
-                      </span>
-                    )}
-                  </>
+        {source?.mediaUrl && photoOn && (
+          <>
+            {/* MODE BAR — one line, one mode at a time: place · trajectory · size · compare */}
+            {!single && !calibOn && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                {[["place", "✥ Place", pMode === "place"], ["traj", "⊕ Trajectory", trajOn], ["size", "📏 Size", sizeOn], ["compare", "⚖ Compare", cmpOn]].map(([k, label, on]) => (
+                  <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 3px" }}
+                    onClick={() => selectMode(k)}>{label}</button>
+                ))}
+              </div>
+            )}
+            {single && (
+              <div style={{ marginBottom: 8 }}>
+                <button className={"btn sm" + (pMode === "place" ? " amber" : "")} onClick={() => (pMode === "place" ? donePlace() : enterPlace())}>{pMode === "place" ? "✓ Done placing" : "✥ Place photo"}</button>
+              </div>
+            )}
+            {/* manual star align is a Place sub-flow that runs in look mode (needs the free crosshair) */}
+            {calibOn && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)", flex: 1 }}>✦ Manual star align</span>
+                {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ reset</button>}
+                <button className="btn sm amber" onClick={exitCalib}>✓ Done aligning</button>
+              </div>
+            )}
+            {/* PLACE sub-tools */}
+            {pMode === "place" && !calibOn && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+                <button className="btn sm" disabled={!placeUndo.length} style={{ opacity: placeUndo.length ? 1 : 0.4 }} title="Undo the last placement change (a slip won't cost you the whole alignment)" onClick={undoPlace}>↩ Undo</button>
+                <button className="btn sm amber" onClick={() => { pushUndo(snapPose()); autoAlign(); }} title="Auto star-align: detects the stars in the photo and matches their pattern to the sky to solve the exact pose (az/el/roll/FOV/lens) — no need to line it up first. Needs correct date/time & location.">✦ Auto star align</button>
+                {terr?.els && <button className="btn sm teal" onClick={() => { pushUndo(snapPose()); snapToRidges(); }}>⛰ Snap to ridges</button>}
+                {skyRefs.length > 0 && (
+                  <button className="btn sm" onClick={startManualAlign} title="Manual star align: pick a named star or planet, aim the crosshair on it in the photo, ✓ Set — solves the lens FOV + roll. Drops to look mode so you can aim.">✦ Manual star align</button>
                 )}
-                {pMode !== "place" && skyRefs.length > 0 && (
-                  <button className={"btn sm" + (calibOn ? " amber" : "")} title="Align the sky to a known star or planet: pick the object, aim the crosshair on it in the photo, press ✓ Set. Solves the lens FOV + roll and keeps the terrain match."
-                    onClick={() => { const n = !calibOn; setCalibOn(n); setCalibAnchor(null); setCalibMsg(n ? "👆 Tap a named star or planet in the sky" : ""); }}>
-                    ✦ {calibOn ? "done aligning" : "align to star"}
-                  </button>
-                )}
-                {pMode !== "place" && calibApplied && !calibOn && (
-                  <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>
-                )}
-                {source.mediaKind === "video" && (
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (locked — set it on the measure step)</span>
-                )}
-                {pMode === "place" && (
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
-                    → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
+                <button className="btn sm" onClick={() => {
+                  pushUndo(snapPose());
+                  const p0 = openPoseRef.current;
+                  if (p0) { setPAz(p0.az); setPEl(p0.el); setPRoll(p0.roll); setFovM(p0.fov); setPDist(p0.dist || 0); }
+                  else { setFovM(isNum(source?.fovH) ? +source.fovH : 68); setPRoll(0); setPDist(0); }
+                  calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
+                }}>Reset placement</button>
+                {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
+                {terrOn && terr?.els && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
+                    <span className="microlabel" style={{ marginBottom: 0 }}>ridge</span>
+                    <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ width: 70 }} />
+                    <span style={{ width: 13, height: 13, borderRadius: 7, flex: "0 0 auto", background: ridgeCol(0.95), border: "1px solid rgba(255,255,255,.3)" }} />
                   </span>
                 )}
-              </>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
+                  → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
+                </span>
+              </div>
             )}
-          </div>
+            {source.mediaKind === "video" && (
+              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (locked — set it on the measure step)</div>
+            )}
+          </>
         )}
         {pMode !== "place" && calibOn && (
           <div style={{ marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
@@ -3893,8 +3928,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           )}
         </div>
         )}
-        {wizard && !single && pMode !== "place" && (
+        {!single && pMode !== "place" && (trajOn || sizeOn || cmpOn) && (
           <div style={{ marginBottom: 8 }}>
+            {trajOn && (<>
             {(source?.moments || []).filter((m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs)).length > 0 && (
               <div style={{ fontSize: 10, color: "var(--track)", marginBottom: 5, lineHeight: 1.35 }}>
                 ↳ This observer has placed photo-moments. Points you drop here are timed from this photo and <b>interleave with the moments</b> on one trajectory — fill in the gaps between shots.
@@ -3906,14 +3942,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               )}
               <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
               {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-              {/* size and compare are mutually exclusive — one panel at a time */}
-              <button className={"btn sm" + (sizeOn ? " teal" : "")} title="Object size vs distance" onClick={() => setSizeOn((v) => { if (!v) setCmpOn(false); return !v; })}>📏 size</button>
-              <button className={"btn sm" + (cmpOn ? " teal" : "")} title="Compare to a reference object (balloon, drone, aircraft)" onClick={() => {
-                setCmpOn((v) => {
-                  if (!v) { setSizeOn(false); setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); } // drop at the crosshair
-                  return !v;
-                });
-              }}>⚖ compare</button>
             </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
@@ -4038,6 +4066,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               );
             })()}
+            </>)}
             {cmpOn && (
               <div style={{ marginTop: 6 }}>
                 <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", fontWeight: 700, color: "var(--track)", marginBottom: 4 }}>Compare to a reference object</div>
@@ -4138,7 +4167,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             : wizard
               ? (single
                 ? "Align this moment's photo to the sky, then Continue — it becomes one direction (its time comes from the moment). Together with the other moments it builds the trajectory."
-                : "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc).")
+                : calibOn
+                  ? "Tap a named star or planet, then aim the crosshair on it in the photo and ✓ Set. One star fixes roll + FOV, a second adds lens distortion, a third is a full plate-solve."
+                  : trajOn
+                    ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
+                    : sizeOn
+                      ? "Slide an assumed distance — or 📍 set it on a map — to read the object's true size and altitude at that range."
+                      : cmpOn
+                        ? "Aim the crosshair, ⌖ drop the reference ghost there, then slide its distance — or set it on a map — to compare its apparent size to your object's."
+                        : "Drag to look around · pinch to zoom. Pick a tool below: ✥ Place to align the photo, ⊕ Trajectory to trace its path, 📏 Size or ⚖ Compare to gauge distance.")
               : motionOn
                 ? "Point the phone exactly where the object was, then capture."
                 : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}
