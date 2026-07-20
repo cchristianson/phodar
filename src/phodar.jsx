@@ -2314,7 +2314,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const effAz = placing ? pAz : viewAz;
   const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
-    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAMEz) * R2D, 12, 135)
+    /* The photo (width FRAMEz) always spans fovM, so the sky must be projected at
+       exactly this FOV to stay locked to it. A 12° floor used to clamp this once
+       the display zoom pushed the true value below 12° — which un-locked the
+       terrain/grid overlays from the pinned photo (they drifted toward centre as
+       you zoomed). Floor is now 0.3° so the projection tracks any zoom. */
+    ? clampN(2 * Math.atan(Math.tan((fovM * RAD) / 2) / FRAMEz) * R2D, 0.3, 135)
     : fov;
   const fovH = effFov;
   const tanH = Math.tan((fovH * RAD) / 2);
