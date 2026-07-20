@@ -206,9 +206,11 @@ photo was adjusted.
    detector (field report: snap failed with rms 7.57°); it now sees through
    foreground foliage that has sky beneath it. Asserted in mathcheck on
    synthetic sky/ridge/field images with and without side-column canopy
-   (both recover the horizon to ~2 px). Also: a "ridge" hue slider in place
-   mode recolors the terrain + ridge lines (persisted in localStorage;
-   default 106° ≈ the original green) so they stand out over green hills.
+   (both recover the horizon to ~2 px). Also: a "colour" hue slider under the
+   sky-view mode row recolors ALL photo overlays together — the crosshair
+   (`accentCol`), the object outline, and the terrain ridge/peak lines
+   (`ridgeCol`) — so they stand out against the artist's photo (state
+   `ridgeHue`, persisted in localStorage `phodar:uiHue`, default 40 ≈ app amber).
    Roll sign is empirical — matchSkyline returns the error IN the
    measurements; az/el add, roll subtracts. "Set every observer's
    elevation from terrain" one-tap lives in WizFinish's altitude-spread
