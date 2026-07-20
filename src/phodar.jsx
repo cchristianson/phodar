@@ -529,7 +529,7 @@ const HELP_SECTIONS = [
         { t: "✦ Manual star align", d: "The hands-on alternative to auto: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve. It drops to the warped view so you can aim, then ✓ Done aligning returns you; ↺ reset undoes it." },
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
-        { t: "ridge (hue slider)", d: "Recolours the terrain + ridge lines so they stand out over green hills." },
+        { t: "colour (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a colour that stands out against your particular sky or scene. Saved for next time." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -2135,12 +2135,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* ridge/terrain line hue — a display preference (the default green washes
      out over green hillsides for some photos); persisted across sessions.
      Default 106° ≈ the original rgba(158,224,138). */
+  /* one overlay-colour hue for everything drawn OVER the photo/sky — crosshair,
+     object outline, terrain ridges & peak labels — so the artist can pick a
+     tint that stands out against their own photo. Default ≈ the app amber. */
   const [ridgeHue, setRidgeHue] = useState(() => {
-    try { const raw = localStorage.getItem("phodar:ridgeHue"); if (raw != null && Number.isFinite(+raw)) return +raw; } catch (e) { }
-    return 106;
+    try { const raw = localStorage.getItem("phodar:uiHue"); if (raw != null && Number.isFinite(+raw)) return +raw; } catch (e) { }
+    return 40;
   });
-  useEffect(() => { try { localStorage.setItem("phodar:ridgeHue", String(ridgeHue)); } catch (e) { } }, [ridgeHue]);
-  const ridgeCol = (a) => `hsla(${ridgeHue},58%,71%,${a})`;
+  useEffect(() => { try { localStorage.setItem("phodar:uiHue", String(ridgeHue)); } catch (e) { } }, [ridgeHue]);
+  const ridgeCol = (a) => `hsla(${ridgeHue},58%,71%,${a})`;             // softer tint for ridge/terrain lines
+  const accentCol = `hsl(${ridgeHue},92%,58%)`;                        // punchy accent for crosshair + object outline
   useEffect(() => {
     if (!open || !terrOn || !hasPos) return;
     let dead = false;
@@ -3201,7 +3205,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
 
-  const aimColor = which === "B" ? "var(--teal)" : "var(--amber)";
+  const aimColor = which === "B" ? "var(--teal)" : accentCol;
   const recenter = (b) => { if (placing) { setPAz(b.az); setPEl(clampN(b.alt, -20, EL_MAX)); } else { setViewAz(b.az); setViewAlt(clampN(b.alt, -10, 80)); } };
   const fmtBody = (b) => `${Math.round(b.az)}°/${b.alt.toFixed(0)}°`;
 
@@ -3238,9 +3242,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {photoMarks.trk.map((p, i) => <circle key={"t" + i} cx={p[0]} cy={p[1]} r="0.55" fill="var(--track)" />)}
             {photoMarks.a1 && photoMarks.a2 && (
               <line x1={photoMarks.a1[0]} y1={photoMarks.a1[1]} x2={photoMarks.a2[0]} y2={photoMarks.a2[1]}
-                stroke="var(--amber)" strokeWidth="1.4" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+                stroke={accentCol} strokeWidth="1.4" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
             )}
-            {[photoMarks.a1, photoMarks.a2].map((p, i) => p && <circle key={"a" + i} cx={p[0]} cy={p[1]} r="0.8" fill="none" stroke="var(--amber)" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />)}
+            {[photoMarks.a1, photoMarks.a2].map((p, i) => p && <circle key={"a" + i} cx={p[0]} cy={p[1]} r="0.8" fill="none" stroke={accentCol} strokeWidth="1.4" vectorEffect="non-scaling-stroke" />)}
             {photoMarks.pb && <circle cx={photoMarks.pb[0]} cy={photoMarks.pb[1]} r="0.8" fill="none" stroke="var(--teal)" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />}
           </svg>
         )}
@@ -3271,19 +3275,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <>
                       {tp.length > 1 && <polyline points={tp.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--track)" strokeWidth="2" strokeDasharray="4 5" vectorEffect="non-scaling-stroke" />}
                       {tp.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={source.natW / 220} fill="var(--track)" />)}
-                      {source.A?.p1 && source.A?.p2 && <line x1={source.A.p1.x} y1={source.A.p1.y} x2={source.A.p2.x} y2={source.A.p2.y} stroke="var(--amber)" strokeWidth="2" strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />}
-                      {[source.A?.p1, source.A?.p2].map((p, i) => p && <circle key={"a" + i} cx={p.x} cy={p.y} r={source.natW / 160} fill="none" stroke="var(--amber)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
+                      {source.A?.p1 && source.A?.p2 && <line x1={source.A.p1.x} y1={source.A.p1.y} x2={source.A.p2.x} y2={source.A.p2.y} stroke={accentCol} strokeWidth="2" strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />}
+                      {[source.A?.p1, source.A?.p2].map((p, i) => p && <circle key={"a" + i} cx={p.x} cy={p.y} r={source.natW / 160} fill="none" stroke={accentCol} strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
                       {source.B?.pb && <circle cx={source.B.pb.x} cy={source.B.pb.y} r={source.natW / 160} fill="none" stroke="var(--teal)" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
                     </>
                   );
                 })()}
               </svg>
             )}
-            <div style={{ position: "absolute", inset: 0, border: "1.5px dashed var(--amber)", boxSizing: "border-box" }} />
-            <div style={{ position: "absolute", left: "50%", top: "50%", width: 14, height: 2, background: "var(--amber)", transform: "translate(-50%,-50%)" }} />
-            <div style={{ position: "absolute", left: "50%", top: "50%", width: 2, height: 14, background: "var(--amber)", transform: "translate(-50%,-50%)" }} />
+            <div style={{ position: "absolute", inset: 0, border: `1.5px dashed ${accentCol}`, boxSizing: "border-box" }} />
+            <div style={{ position: "absolute", left: "50%", top: "50%", width: 14, height: 2, background: accentCol, transform: "translate(-50%,-50%)" }} />
+            <div style={{ position: "absolute", left: "50%", top: "50%", width: 2, height: 14, background: accentCol, transform: "translate(-50%,-50%)" }} />
             {[["0%", "0%"], ["100%", "0%"], ["100%", "100%"], ["0%", "100%"]].map(([l, tp2], i) => (
-              <div key={i} style={{ position: "absolute", left: l, top: tp2, width: 10, height: 10, margin: "-5px 0 0 -5px", borderRadius: "50%", background: "var(--amber)" }} />
+              <div key={i} style={{ position: "absolute", left: l, top: tp2, width: 10, height: 10, margin: "-5px 0 0 -5px", borderRadius: "50%", background: accentCol }} />
             ))}
           </div>
         )}
@@ -3850,6 +3854,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ))}
               </div>
             )}
+            {/* overlay colour — tints the crosshair, object outline and terrain ridges together */}
+            {!single && !calibOn && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolour the crosshair, object outline and terrain ridges so they stand out against your photo">
+                <span className="microlabel" style={{ marginBottom: 0 }}>colour</span>
+                <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ flex: 1 }} />
+                <span style={{ width: 16, height: 16, borderRadius: 8, flex: "0 0 auto", background: accentCol, border: "1px solid rgba(255,255,255,.35)" }} />
+              </div>
+            )}
             {single && (
               <div style={{ marginBottom: 8 }}>
                 <button className={"btn sm" + (pMode === "place" ? " amber" : "")} onClick={() => (pMode === "place" ? donePlace() : enterPlace())}>{pMode === "place" ? "✓ Done placing" : "✥ Place photo"}</button>
@@ -3880,13 +3892,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
-                {terrOn && terr?.els && (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Recolor the terrain & ridge lines so they stand out over your photo">
-                    <span className="microlabel" style={{ marginBottom: 0 }}>ridge</span>
-                    <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ width: 70 }} />
-                    <span style={{ width: 13, height: 13, borderRadius: 7, flex: "0 0 auto", background: ridgeCol(0.95), border: "1px solid rgba(255,255,255,.3)" }} />
-                  </span>
-                )}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
                   → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
                 </span>
