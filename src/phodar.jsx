@@ -746,6 +746,14 @@ function MediaMeasure({ src, update, wizard }) {
   const scale = natW && dispW ? dispW / natW : 0;
   const dispH = natH && scale ? natH * scale : 0;
   const TT = (x, y) => [x * scale * view.z + view.ox, y * scale * view.z + view.oy];
+  /* Zoom is split so the image stays sharp: SIZE the <img> up to its native
+     resolution (elZ) so the browser samples from full-res source pixels, and
+     apply only any zoom BEYOND native (extra ≥ 1, where no real detail remains)
+     as a cheap transform:scale. natZ is the zoom at which 1 source px = 1 CSS px.
+     Composed together they equal the old scale·z, so TT() is unchanged. */
+  const natZ = natW && dispW ? natW / dispW : 1;
+  const elZ = Math.min(view.z, natZ || view.z);
+  const extraZ = elZ > 0 ? view.z / elZ : 1;
   const clampView = (v) => {
     const cw = dispW || 1, chh = dispH || 1;
     return { z: v.z, ox: clampN(v.ox, Math.min(0, cw - cw * v.z), 0), oy: clampN(v.oy, Math.min(0, chh - chh * v.z), 0) };
@@ -1405,14 +1413,23 @@ function MediaMeasure({ src, update, wizard }) {
             <div ref={wrapRef}
               style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", touchAction: "none", height: dispH || "auto" }}
               onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
-              <div style={{ transform: `translate(${view.ox}px, ${view.oy}px) scale(${view.z})`, transformOrigin: "0 0", willChange: "transform" }}>
+              {/* Zoom by SIZING the media element (width = dispW·z), not by
+                 CSS-scaling a width:100% copy. A transform:scale() magnifies the
+                 element's container-width rasterization — so a 12–48 MP photo was
+                 shown blown up from only ~container-width pixels and went to mush
+                 on zoom. Sizing the <img>/<video> itself makes the browser sample
+                 from the full-resolution source at each zoom level (like the native
+                 photo viewer). Coordinates are unchanged: width dispW·z ⇒ a natural
+                 point x lands at x·scale·z, exactly what TT() already computes, so
+                 only translate() remains on the wrapper. */}
+              <div style={{ transform: `translate(${view.ox}px, ${view.oy}px) scale(${extraZ})`, transformOrigin: "0 0", willChange: "transform" }}>
                 {media.kind === "video" ? (
                   <video ref={mediaRef} src={media.url} playsInline muted preload="auto"
                     onLoadedMetadata={onLoaded} onLoadedData={paintFirstFrame} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
-                    style={{ width: "100%", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} />
+                    style={{ width: dispW ? dispW * elZ : "100%", height: "auto", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} />
                 ) : (
                   <img ref={mediaRef} src={media.url} alt="sighting" onLoad={onLoaded} onError={onMediaError}
-                    style={{ width: "100%", display: "block", pointerEvents: "none", imageRendering: view.z > 4 ? "pixelated" : "auto", filter: imgAdjFilter(src.imgAdj) }} draggable={false} />
+                    style={{ width: dispW ? dispW * elZ : "100%", height: "auto", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} draggable={false} />
                 )}
               </div>
               {scale > 0 && Object.entries(pts()).map(([k, p]) => {
