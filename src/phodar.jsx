@@ -2016,8 +2016,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          pre-set from the photo's EXIF bearing before any placement. The
          ✥ Place button is still there to re-adjust. */
       setPMode(source?.placed || !source?.mediaUrl ? "look" : "place");
+      /* only auto-fit the FOV when we OPEN straight into Look on an already-placed
+         photo — not after a place→done (donePlace sets its own framing) */
+      didFitRef.current = !(source?.placed && source?.mediaUrl);
     }
   }, [open]); // eslint-disable-line
+  /* Opening into Look left the warped photo tiny against the wide default sky.
+     Fit the view FOV so the photo fills the frame — the same "fit to extents"
+     Place mode does — once the viewport + photo dimensions are known. */
+  const didFitRef = useRef(false);
+  useEffect(() => {
+    if (!open || didFitRef.current || pMode !== "look") return;
+    if (!(source?.natW > 0 && source?.natH > 0) || !(vp.w > 0 && vp.h > 0)) return;
+    const fovMm = isNum(source?.fovH) ? +source.fovH : 68;
+    const aspect = source.natH / source.natW;
+    const fitT = (Math.tan((fovMm * RAD) / 2) / 0.92) * Math.max(1, aspect * (vp.w / vp.h));
+    setFov(clampN(+(2 * Math.atan(fitT) * R2D).toFixed(1), 2, 90));
+    didFitRef.current = true;
+  }, [open, pMode, vp.w, vp.h, source?.natW, source?.natH]); // eslint-disable-line
 
   /* scroll lock while the aimer is open. Range inputs are whitelisted:
      this document-level preventDefault is what silently killed every
@@ -3719,14 +3735,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         </div>
         {/* sky-layer toggles — one row (terrain is always on) */}
         <div style={{ display: "flex", gap: 6, marginTop: 8, pointerEvents: "auto", flexWrap: "wrap" }}>
+          {/* celestial group first (sun · moon · stars · satellites · Starlink),
+             then air traffic, then terrain, then weather */}
           {sun.alt > -1 && <button className="btn sm" title={`Sun ${fmtBody(sun)} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(sun)}>☀</button>}
           {moon.alt > -1 && <button className="btn sm" title={`Moon ${fmtBody(moon)} · ${Math.round(moon.frac * 100)}% lit — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(moon)}>☾</button>}
-          {hasPos && (
-            <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
-              onClick={() => setAcOn((v) => !v)}>
-              ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : <Spin />) : "off"}
-            </button>
-          )}
           <button className="btn sm" title="Stars & planets: auto on at night, off by day — tap to force on/off"
             style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: starMode === "off" ? "var(--dim)" : (starMode === "on" || limMag > -4) ? "#dfe8ff" : "var(--dim)" }}
             onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
@@ -3744,6 +3756,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               style={{ background: "rgba(15,23,42,.7)", color: !starlinkOn ? "var(--dim)" : slDb?.err ? "var(--amber)" : "#c9b6ff" }}
               onClick={() => setStarlinkOn((v) => !v)}>
               ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? <Spin /> : `Starlink ${slView.length}`) : "Starlink"}
+            </button>
+          )}
+          {hasPos && (
+            <button className="btn sm" style={{ background: "rgba(15,23,42,.7)", color: !acOn ? "var(--dim)" : (acData?.ac && wantHist && !acData.hist) ? "var(--amber)" : "var(--track)" }}
+              onClick={() => setAcOn((v) => !v)}>
+              ✈ {acOn ? (acData?.ac ? `${acView.length}${acData.hist ? " @ sighting" : " live"}` : acData?.err ? "?" : <Spin />) : "off"}
             </button>
           )}
           {hasPos && (
