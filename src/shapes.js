@@ -153,7 +153,12 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
   }
   return C;
 }
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(-62), capsule: I3, tri: rotX3(-24), plane: rotX3(-55), bird: rotX3(-60), drone: rotX3(-40), jelly: rotX3(82) });
+/* Default 3/4 poses. A shape's +z is its "up" (dome / spine / lift axis /
+   bell); on screen y is DOWN, so rotX3(+θ) points +z UP (right-side-up) while
+   rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
+   right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
+   triangle also gets an in-plane 180° so its apex points up, not down. */
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
