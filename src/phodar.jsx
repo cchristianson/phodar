@@ -4360,18 +4360,35 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
   useEffect(() => {
     const el = boxRef.current; if (!el || mapRef.current || typeof L === "undefined") return;
     const start = destPoint(azObj, initGround);
-    const map = L.map(el, { center: start, zoom: 15, zoomControl: false, attributionControl: true, doubleClickZoom: false });
+    const map = L.map(el, { center: [lat, lon], zoom: 13, zoomControl: false, attributionControl: true, doubleClickZoom: false });
     map.attributionControl.setPrefix(false);
     const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics" });
+    /* transparent Esri reference overlays — roads + boundaries/place labels —
+       laid over the imagery so a satellite view still reads towns, highways and
+       ridgelines (the same layers the report basemap uses) */
+    const trans = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, opacity: 0.9 });
+    const ref = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19 });
     const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 21, maxNativeZoom: 19, attribution: "© OpenStreetMap contributors", className: "pinmap-street-tiles" });
-    sat.addTo(map); layersRef.current = { sat, street };
+    sat.addTo(map); trans.addTo(map); ref.addTo(map);
+    layersRef.current = { sat, street, trans, ref };
     mapRef.current = map;
-    /* the modal's flex map box can lay out a frame late — force a size recalc so
-       Leaflet doesn't paint a half-grey tile grid */
-    requestAnimationFrame(() => { try { map.invalidateSize(false); } catch (e) { } });
+    /* the modal's flex map box can lay out a frame late — recalc size, THEN
+       frame both the camera and the initial pin (so a 25-mile sight-line and a
+       near guess both fit) */
+    requestAnimationFrame(() => {
+      try {
+        map.invalidateSize(false);
+        /* frame the camera plus a good stretch of the sight-line (≥ ~12 km, more
+           if the current guess is already far) so a distant object is reachable
+           without hunting — not just the near default pin */
+        const frameEnd = destPoint(azObj, clampN(initGround * 1.6, 12000, 42000));
+        map.fitBounds(L.latLngBounds([[lat, lon], frameEnd]), { padding: [50, 50], maxZoom: 14 });
+      } catch (e) { }
+    });
 
-    /* FOV sector + the object's sight-line + the camera position */
-    const wedgeR = Math.max(initGround * 3, 1500);
+    /* FOV sector + the object's sight-line + the camera position. Rays run out
+       to ~25 miles so the wedge still guides you when the object was far off. */
+    const wedgeR = 40234;
     if (isNum(azCenter) && isNum(fovH)) {
       const arc = [[lat, lon]];
       const n = 24;
@@ -4393,8 +4410,8 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
 
   useEffect(() => {
     const map = mapRef.current, ls = layersRef.current; if (!map || !ls) return;
-    if (baseSat) { map.removeLayer(ls.street); ls.sat.addTo(map); }
-    else { map.removeLayer(ls.sat); ls.street.addTo(map); }
+    if (baseSat) { map.removeLayer(ls.street); ls.sat.addTo(map); ls.trans.addTo(map); ls.ref.addTo(map); }
+    else { map.removeLayer(ls.sat); map.removeLayer(ls.trans); map.removeLayer(ls.ref); ls.street.addTo(map); }
   }, [baseSat]);
 
   const slant = gDist != null ? slantOf(gDist) : null;
