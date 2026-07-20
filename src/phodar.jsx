@@ -2295,8 +2295,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      centre — magnifying photo+sky together while keeping them locked (the frame
      edges still map to ±fovM/2). Off (zoom 1, pan 0) unless placing. */
   const FRAMEz = FRAMEeff * (placing ? pZoom : 1);
+  /* When the size/compare panel opens it grows the bottom bar and covers the
+     lower sky. Re-centre the aim into the still-visible band (top HUD → panel
+     top) by shifting the projection centre (and the crosshair) up half the
+     bottom-bar-minus-top-bar height, so the crosshair never hides behind the
+     panel. Look mode only — place mode has its own band-centering (placeDY). */
+  const panelOpen = !placing && (sizeOn || cmpOn);
+  const lookDY = (panelOpen && vp.h > 0) ? clampN((topBar.h - botBar.h) / (2 * vp.h), -0.4, 0.05) : 0;
   const cx = 0.5 + (placing ? pPan.x : 0);
-  const cy = 0.5 + placeDY + (placing ? pPan.y : 0);
+  const cy = 0.5 + placeDY + lookDY + (placing ? pPan.y : 0);
   const effAz = placing ? pAz : viewAz;
   const effAlt = placing ? clampN(pEl, -20, EL_MAX) : viewAlt;
   const effFov = placing
@@ -2847,7 +2854,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const pickCalib = (obj) => { setCalibAnchor(obj); setCalibMsg(`Center the crosshair on ${obj.name} in the photo, then press ✓ Set`); };
   const alignAtCrosshair = () => {
     if (!calibAnchor || !photo) return;
-    const vC = unproject(0.5, 0.5);                        // crosshair world dir = object's apparent spot
+    const vC = unproject(cx, cy);                          // crosshair world dir = object's apparent spot
     if (vC[0] * photo.f[0] + vC[1] * photo.f[1] + vC[2] * photo.f[2] <= 0.02) { setCalibMsg("Aim the crosshair onto the object in the photo first"); return; }
     const pix = dirToPixK(vC, photo.natW, photo.natH, pAz, pEl, pRoll, fovM, pDist); // the object's fixed pixel
     if (!pix) { setCalibMsg("Couldn't read that spot — re-aim the crosshair on the object"); return; }
@@ -3605,9 +3612,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })()}
 
-        {/* aiming crosshair — fixed at screen center (hidden while placing) */}
+        {/* aiming crosshair — sits at the projection centre (cx,cy); when the
+            size/compare panel opens, cy lifts so it stays in the visible band */}
         {pMode !== "place" && (
-        <svg style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", overflow: "visible", opacity: 0.75 }} width="48" height="48" viewBox="-32 -32 64 64">
+        <svg style={{ position: "absolute", left: (cx * 100) + "%", top: (cy * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", overflow: "visible", opacity: 0.75 }} width="48" height="48" viewBox="-32 -32 64 64">
           <circle cx="0" cy="0" r="14" fill="none" stroke={aimColor} strokeWidth="1.6" />
           <line x1="0" y1="-26" x2="0" y2="-8" stroke={aimColor} strokeWidth="1.6" />
           <line x1="0" y1="8" x2="0" y2="26" stroke={aimColor} strokeWidth="1.6" />
@@ -3898,10 +3906,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               )}
               <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
               {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-              <button className={"btn sm" + (sizeOn ? " teal" : "")} title="Object size vs distance" onClick={() => setSizeOn((v) => !v)}>📏 size</button>
+              {/* size and compare are mutually exclusive — one panel at a time */}
+              <button className={"btn sm" + (sizeOn ? " teal" : "")} title="Object size vs distance" onClick={() => setSizeOn((v) => { if (!v) setCmpOn(false); return !v; })}>📏 size</button>
               <button className={"btn sm" + (cmpOn ? " teal" : "")} title="Compare to a reference object (balloon, drone, aircraft)" onClick={() => {
-                setCmpOn((v) => !v);
-                if (!cmpOn) setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); // drop at the crosshair
+                setCmpOn((v) => {
+                  if (!v) { setSizeOn(false); setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); } // drop at the crosshair
+                  return !v;
+                });
               }}>⚖ compare</button>
             </div>
             {sortedTrack.length > 0 && (
