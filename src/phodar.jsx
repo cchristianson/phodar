@@ -541,13 +541,13 @@ const HELP_SECTIONS = [
         { t: "Drawing vs moments (hybrid)", d: "If this observer has placed photo-moments, points you drop here are timed from THIS photo and interleave with the moments on one trajectory — so you can fill in where the object was between shots. With two or more placed photos and no hand-drawn points, the trajectory is built from the photos alone." },
       ]},
       { h: "Aim readout & navigation", items: [
-        { t: "Top-right readout", d: "Live azimuth + compass + up-angle, and FOV — amber while aiming Moment A, teal for B." },
+        { t: "Top-right readout", d: "Live azimuth + compass + up-angle, and FOV. Re-opening an already-placed photo auto-fits it to the frame; use +/− to re-zoom or ✥ Place to re-adjust." },
         { t: "‹ Back / Continue →", d: "Both commit the placement first, so your calibration is never lost when you leave." },
       ]},
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
-      "See the 🛰 Sky layers section for what every header toggle (aircraft, stars, satellites, peaks, buildings, wind) shows.",
+      "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, wind) shows.",
     ],
   },
   {
@@ -599,7 +599,7 @@ const HELP_SECTIONS = [
       { h: "Calibration anchors", items: [
         { t: "☀ Sun / ☾ Moon", d: "Drawn where they really were at your time and place; tap to centre on them. The strongest quick check that your bearing is right." },
         { t: "★ Stars & planets", d: "The real catalog sky — mag-scaled stars, labelled bright stars, glowing planet markers. Auto-on at night. Feeds ✦ Auto star-align." },
-        { t: "Terrain skyline (always on)", d: "The dashed green DEM horizon — mountains and hills as they truly sit. The answer for ⛰ Snap to ridges (a tree/mountain skyline is NOT a true flat horizon)." },
+        { t: "Terrain skyline (always on)", d: "The dashed DEM horizon (in your chosen overlay color) — mountains and hills as they truly sit. The answer for ⛰ Snap to ridges (a tree/mountain skyline is NOT a true flat horizon)." },
         { t: "⛰ peaks", d: "Labels named summits sitting on the terrain skyline (name + elevation) — each is also a compass landmark." },
       ]},
       { h: "Explanation candidates", items: [
