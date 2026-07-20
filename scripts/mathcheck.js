@@ -5,7 +5,7 @@ import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -368,6 +368,62 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const bH = maxBend(hard), bR = maxBend(round);
   if (bR < bH * 0.45) console.log(`  ok   arc max bend ${bR.toFixed(1)}° ≪ hard corner ${bH.toFixed(1)}°`);
   else { fails++; console.error(`  FAIL rounding didn't soften the corner bend: ${bR} vs ${bH}`); }
+}
+
+// --- multi-moment track: placed primary + moments become a time-ordered
+//     angular trajectory; a single placed shot falls back to the manual track ---
+{
+  // one observer, one manual track point drawn on a single photo: no moments →
+  // sourceTrack must return the hand-drawn track untouched.
+  const single = { whenMs: 1000, A: { az: 10, el: 20 }, moments: [],
+    track: [{ t: 0, az: 10, el: 20 }, { t: 3, az: 14, el: 22 }] };
+  const st1 = sourceTrack(single);
+  if (st1.length === 2 && st1[0].az === 10 && st1[1].t === 3) console.log("  ok   single-photo track passes through unchanged");
+  else { fails++; console.error("  FAIL single-photo passthrough:", JSON.stringify(st1)); }
+
+  // primary + two moments, placed at 0/4/10 s (out of order in the array) →
+  // three points, sorted by time, t rebased to the earliest shot.
+  const multi = {
+    whenMs: 40_000, A: { az: 50, el: 30 }, natW: 4000, natH: 3000, fovH: 65,
+    track: [{ t: 0, az: 999, el: 999 }], // must be IGNORED once ≥2 shots exist
+    moments: [
+      { whenMs: 30_000, A: { az: 40, el: 25 } },
+      { whenMs: 60_000, A: { az: 66, el: 41 } },
+    ],
+  };
+  const st = sourceTrack(multi);
+  if (st.length === 3 && st[0].t === 0 && st[1].t === 10 && st[2].t === 30
+      && st[0].az === 40 && st[2].az === 66) console.log("  ok   primary+moments → 3 time-sorted points, t rebased");
+  else { fails++; console.error("  FAIL multi-moment assembly:", JSON.stringify(st)); }
+
+  // and the assembled track drives the real direction pipeline (≥2 dirs).
+  const dirs = trackDirections(multi);
+  if (dirs && dirs.length >= 3 && Math.abs(dirs[0].az - 40) < 1e-6) console.log("  ok   moment track feeds trackDirections");
+  else { fails++; console.error("  FAIL moment trackDirections:", dirs && dirs.length); }
+
+  // hybrid: a hand-drawn point BETWEEN two placed photos interleaves in time.
+  // primary @40s (t0), one extra moment @60s (→20s); a drawn point at +8s from
+  // the primary mark must land at t=8, between the primary (0) and moment (20).
+  const hybrid = {
+    whenMs: 40_000, A: { az: 50, el: 30 }, natW: 4000, natH: 3000, fovH: 65,
+    track: [
+      { t: 0, az: 50, el: 30 },     // the primary-photo mark (Moment 1)
+      { t: 8, az: 58, el: 34 },     // a filled-in point 8 s later, no photo
+    ],
+    moments: [{ whenMs: 60_000, A: { az: 66, el: 41 } }],
+  };
+  const h = sourceTrack(hybrid);
+  if (h.length === 3 && h[0].t === 0 && h[1].t === 8 && h[2].t === 20
+      && h[2].az === 66) console.log("  ok   hybrid: drawn point interleaves between two placed photos");
+  else { fails++; console.error("  FAIL hybrid interleave:", JSON.stringify(h)); }
+
+  // hybrid must NOT trigger for a plain drawn track with no extra moments —
+  // that stays the untouched single-photo path.
+  const plain = { whenMs: 40_000, A: { az: 50, el: 30 }, moments: [],
+    track: [{ t: 0, az: 50, el: 30 }, { t: 2, az: 51, el: 31 }] };
+  const pl = sourceTrack(plain);
+  if (pl.length === 2 && pl[1].t === 2) console.log("  ok   drawn track with no moments stays unchanged");
+  else { fails++; console.error("  FAIL drawn passthrough with primary placed:", JSON.stringify(pl)); }
 }
 
 // --- skyline snap: recover a known pose offset from a synthetic ridge ---

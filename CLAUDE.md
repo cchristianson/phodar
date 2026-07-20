@@ -59,10 +59,13 @@ comments, in this order:
 ## Non-negotiable invariants (each one was a multi-hour bug hunt)
 1. **Never render user images through CSS `matrix3d`.** iOS Safari composes
    its hidden EXIF-orientation transform with author matrices unpredictably.
-   All images are **canvas-normalized once at load** (≤4300 px — iOS canvas
-   area ceiling — EXIF baked out, `mediaNorm` flag), and the sky-view photo
-   warp is a hand-rolled canvas **triangle mesh through `projectD`**. The warp
-   texture is ALWAYS a static image (≤1280 px): for video, the marked frame
+   All images are **canvas-normalized once at load** (scaled by AREA to iOS
+   Safari's ~16.7 Mpx canvas ceiling — kept at 16.0 Mpx with a 4600 px side
+   guard, so a 12 MP photo passes through untouched and 24/48 MP shots keep far
+   more detail than the old flat 4300 px cap; near-lossless JPEG 0.98; EXIF
+   baked out, `mediaNorm` flag), and the sky-view photo warp is a hand-rolled
+   canvas **triangle mesh through `projectD`**. The warp texture is ALWAYS a
+   static image (≤1600 px): for video, the marked frame
    (`A.videoTime`) is baked to a canvas off the render path — the warp never
    draws a live `<video>` (per-render video→canvas draws were slow, janky, and
    crashed iOS on memory). Single-frame analysis, so the aimer has no scrubber;
@@ -88,7 +91,7 @@ comments, in this order:
    and test on a real phone.
 6. **Loupe keeps its devicePixelRatio backing store** or it renders soft.
 7. **Drags are rAF-coalesced** (`queuePose`) — 120 Hz phones flood React
-   otherwise. Warp texture is pre-downsampled to 1280 px, mesh 7 columns,
+   otherwise. Warp texture is pre-downsampled to 1600 px, mesh 7 columns,
    warp DPR capped at 2.
 8. **`window.storage`** is the persistence API (artifact heritage);
    `src/storageShim.js` maps it to localStorage. Keep the contract.
