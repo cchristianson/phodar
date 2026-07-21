@@ -534,7 +534,7 @@ const HELP_SECTIONS = [
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (snap/star-align) so the whole path inherits an accurate anchor. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
-        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -3560,32 +3560,70 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      render is paced against the wall clock so the output duration matches the
      clip (MediaRecorder stamps wall time); effective fps = seek throughput. */
   const [exporting, setExporting] = useState(0); // 0 idle | progress fraction
+  const [exportMenu, setExportMenu] = useState(false);
   const exportAbortRef = useRef(0);
-  const exportStabilized = async () => {
+  /* mode: "view" (dome framing as shown in playback) | "full" (same framing,
+     output sized so the most-zoomed frames keep native pixel density) |
+     "crop" (camera centered on the marked object + both sight-lines, small
+     FOV, full source resolution) */
+  const exportStabilized = async (mode) => {
+    if (typeof mode !== "string") mode = "view";
     const path = source?.posePath;
     if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize first, then export"); return; }
     if (typeof MediaRecorder === "undefined") { setFlash("⬇ this browser can't record video (no MediaRecorder)"); return; }
+    if (mode === "crop" && !(source?.A?.p1 && source?.A?.p2)) { setFlash("◎ the object close-up needs the object marked on the measure step"); return; }
     if (exporting) { exportAbortRef.current++; return; }  // tap again = cancel
     const run = ++exportAbortRef.current;
-    setExporting(0.01); setFlash("⬇ rendering the world-locked clip…");
+    setExporting(0.01); setFlash(`⬇ rendering the world-locked clip${mode === "crop" ? " (object close-up)" : mode === "full" ? " (max resolution)" : ""}…`);
     const natW = source.natW, natH = source.natH;
     const v = document.createElement("video");
     v.muted = true; v.playsInline = true; v.preload = "auto";
     let cvs = null;
     try {
       await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; v.src = source.mediaUrl; try { v.load(); } catch (e) { } });
-      /* fixed virtual camera: frame the union of every pose's corners */
+      /* fixed virtual camera. view/full: frame the union of every pose's
+         corners. crop: center on the marked OBJECT (marks → world dirs
+         through the placement pose, widened to cover the second sight-line
+         when one exists) with generous margin — a small FOV, so the source's
+         zoomed detail survives at full resolution. */
       const corners = [];
       for (const p of path) for (const [px, py] of [[0, 0], [natW, 0], [natW, natH], [0, natH]])
         corners.push(pixToDirK(px, py, natW, natH, p.az, p.el, p.roll, p.fov, p.k || 0));
       let sx = 0, sy = 0, sz = 0;
       for (const d of corners) { sx += d[0]; sy += d[1]; sz += d[2]; }
-      const ce = dirToAzEl(unit([sx, sy, sz]));
+      let ce = dirToAzEl(unit([sx, sy, sz]));
+      let camFov;
+      const aspect = natH / natW;
+      const minFov = Math.min(...path.map((p) => p.fov));
+      if (mode === "crop") {
+        const g1 = pixToDirK(source.A.p1.x, source.A.p1.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
+        const g2 = pixToDirK(source.A.p2.x, source.A.p2.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
+        const objAng = Math.acos(clampN(dot(g1, g2), -1, 1)) * R2D;
+        let cd = unit([g1[0] + g2[0], g1[1] + g2[1], g1[2] + g2[2]]);
+        let sep = 0;
+        if (isNum(source?.B?.az) && isNum(source?.B?.el)) {
+          const gB = dirFromAzEl(+source.B.az, +source.B.el);
+          sep = Math.acos(clampN(dot(cd, gB), -1, 1)) * R2D;
+          cd = unit([cd[0] + gB[0], cd[1] + gB[1], cd[2] + gB[2]]);
+        }
+        ce = dirToAzEl(cd);
+        camFov = clampN(Math.max(objAng * 10, sep * 1.9, 12), 12, 70);
+      }
       const B = photoBasis(ce.az, ce.el, 0);
-      const OUT_W = Math.min(1920, natW), OUT_H = Math.round(OUT_W * natH / natW);
       let mx = 0.05, my = 0.05;
       for (const d of corners) { const z = dot(d, B.f); if (z <= 0.05) continue; mx = Math.max(mx, Math.abs(dot(d, B.r) / z)); my = Math.max(my, Math.abs(dot(d, B.u) / z)); }
-      const camFov = clampN(2 * Math.atan(Math.max(mx, my * OUT_W / OUT_H) / 0.94) * R2D, 20, 118);
+      if (mode !== "crop") camFov = clampN(2 * Math.atan(Math.max(mx, my / aspect) / 0.94) * R2D, 20, 118);
+      /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
+         most-zoomed frame's pixel density survives (tan-space ratio of the
+         camera FOV to the finest source FOV), within iOS canvas/encoder
+         limits. Upscale floor keeps a tight crop watchable. */
+      let OUT_W = Math.min(1920, natW);
+      if (mode !== "view") {
+        const ideal = natW * Math.tan((camFov * RAD) / 2) / Math.tan((minFov * RAD) / 2);
+        OUT_W = mode === "full" ? Math.min(3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
+          : Math.min(1920, Math.max(1280, Math.round(ideal / 2) * 2));
+      }
+      const OUT_H = Math.round(OUT_W * aspect / 2) * 2;
       const tH = Math.tan((camFov * RAD) / 2), tV = tH * OUT_H / OUT_W;
       const proj = (d) => { const z = dot(d, B.f); if (z <= 0.001) return null; return [(0.5 + (dot(d, B.r) / z) / (2 * tH)) * OUT_W, (0.5 - (dot(d, B.u) / z) / (2 * tV)) * OUT_H]; };
       /* output canvas (hidden in the DOM — Safari captureStream reliability) */
@@ -3594,12 +3632,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       document.body.appendChild(cvs);
       const ctx = cvs.getContext("2d");
       const tex = document.createElement("canvas");
-      const tsc = Math.min(1, 1600 / Math.max(v.videoWidth || natW, v.videoHeight || natH));
+      /* warp-texture cap: 1600 px matches live playback; the resolution modes
+         keep the full source frame (their whole point is native detail) */
+      const texCap = mode === "view" ? 1600 : 2048;
+      const tsc = Math.min(1, texCap / Math.max(v.videoWidth || natW, v.videoHeight || natH));
       tex.width = Math.max(2, Math.round((v.videoWidth || natW) * tsc)); tex.height = Math.max(2, Math.round((v.videoHeight || natH) * tsc));
       const tctx = tex.getContext("2d");
       const stream = cvs.captureStream(30);
       const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
-      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8e6 } : { videoBitsPerSecond: 8e6 });
+      const bps = clampN(Math.round(8e6 * (OUT_W * OUT_H) / (1920 * 1080)), 6e6, 25e6);
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bps } : { videoBitsPerSecond: bps });
       const chunks = [];
       rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
       const recDone = new Promise((res) => { rec.onstop = res; });
@@ -3608,24 +3650,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const drawFrame = (p) => {
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
         /* az/el grid, world-locked — THE debugging reference: if stabilization
-           holds, the scenery rides these lines while the frame moves */
+           holds, the scenery rides these lines while the frame moves. Grid
+           pitch scales with the camera FOV so a tight object crop still shows
+           usable lines. */
         const span = camFov * 0.75 + 15;
+        const G = camFov <= 24 ? 2 : camFov <= 60 ? 5 : 10;
+        const ss = Math.min(2, G / 2);
         ctx.lineWidth = Math.max(1, OUT_W / 1400); ctx.strokeStyle = "rgba(140,165,200,0.30)";
-        for (let az = Math.floor((ce.az - span) / 10) * 10; az <= ce.az + span; az += 10) {
+        for (let az = Math.floor((ce.az - span) / G) * G; az <= ce.az + span; az += G) {
           ctx.beginPath();
-          for (let el2 = -30, first = true; el2 <= 88; el2 += 2) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+          for (let el2 = Math.max(-88, ce.el - span), first = true; el2 <= Math.min(88, ce.el + span); el2 += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
           ctx.stroke();
         }
-        for (let el2 = -20; el2 <= 80; el2 += 10) {
+        for (let el2 = Math.max(-88, Math.floor((ce.el - span) / G) * G); el2 <= Math.min(88, ce.el + span); el2 += G) {
           ctx.beginPath(); ctx.strokeStyle = el2 === 0 ? "rgba(200,220,255,0.55)" : "rgba(140,165,200,0.30)";
-          for (let az = ce.az - span, first = true; az <= ce.az + span; az += 2) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+          for (let az = ce.az - span, first = true; az <= ce.az + span; az += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
           ctx.stroke();
         }
         /* the frame, mesh-warped at ITS pose */
         const fb = photoBasis(p.az, p.el, p.roll);
         const fpx = (natW / 2) / Math.tan((p.fov * RAD) / 2);
         const pixD = (px, py) => { const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx; const s2 = 1 + (p.k || 0) * (x * x + y * y); return unit([fb.f[0] + (fb.r[0] * x + fb.u[0] * y) * s2, fb.f[1] + (fb.r[1] * x + fb.u[1] * y) * s2, fb.f[2] + (fb.r[2] * x + fb.u[2] * y) * s2]); };
-        const NC = 8, NR = Math.max(4, Math.round(NC * natH / natW));
+        const NC = mode === "crop" ? 16 : 8, NR = Math.max(4, Math.round(NC * natH / natW));
         const dst = [];
         for (let r2 = 0; r2 <= NR; r2++) { const row = []; for (let c2 = 0; c2 <= NC; c2++) row.push(proj(pixD((c2 / NC) * natW, (r2 / NR) * natH))); dst.push(row); }
         const sxp = (c2) => (c2 / NC) * tex.width, syp = (r2) => (r2 / NR) * tex.height;
@@ -3650,28 +3696,46 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         for (let r2 = 0; r2 < NR; r2++) for (let c2 = 0; c2 < NC; c2++) {
           const d00 = dst[r2][c2], d10 = dst[r2][c2 + 1], d01 = dst[r2 + 1][c2], d11 = dst[r2 + 1][c2 + 1];
           if (!d00 || !d10 || !d01 || !d11) continue;
+          // cull cells fully outside the output (a tight crop sees few cells)
+          if (Math.max(d00[0], d10[0], d01[0], d11[0]) < -2 || Math.min(d00[0], d10[0], d01[0], d11[0]) > OUT_W + 2 ||
+            Math.max(d00[1], d10[1], d01[1], d11[1]) < -2 || Math.min(d00[1], d10[1], d01[1], d11[1]) > OUT_H + 2) continue;
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], d00, d10, d11);
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], [sxp(c2), syp(r2 + 1)], d00, d11, d01);
         }
         const fs = Math.max(12, Math.round(OUT_H / 42));
         ctx.font = fs + "px Menlo, monospace"; ctx.fillStyle = "rgba(235,243,255,0.92)";
-        ctx.fillText("PHODAR · world-locked", 12, fs + 8);
+        ctx.fillText(`PHODAR · world-locked${mode === "crop" ? " · object close-up" : mode === "full" ? " · max-res" : ""}`, 12, fs + 8);
         ctx.fillText(`t ${p.t.toFixed(2)}s · az ${p.az.toFixed(1)}° · el ${p.el.toFixed(1)}° · FOV ${p.fov.toFixed(1)}° · refs ${p.n == null ? "—" : p.n}`, 12, OUT_H - 12);
         void gpath; // (kept for future vector overlays)
       };
+      /* seeks are CLAMPED below the media duration (the stabilize walk always
+         did this; the export didn't, and near-end seeks stalled the decoder —
+         field-observed as an export truncated 1.1 s early with a frozen tail) */
+      const durX = v.duration || (path[path.length - 1].t + 0.1);
       const seekX = (t) => new Promise((res) => {
+        const tt = clampN(t, 0, Math.max(0, durX - 0.05));
         let f = false;
         const wd = setTimeout(() => { if (!f) { f = true; res(false); } }, 3000);
         v.onseeked = () => { if (!f) { f = true; clearTimeout(wd); res(true); } };
-        try { v.currentTime = t + (Math.abs((v.currentTime || 0) - t) < 0.001 ? 0.0001 : 0); }
+        try { v.currentTime = tt + (Math.abs((v.currentTime || 0) - tt) < 0.001 ? 0.0001 : 0); }
         catch (e) { if (!f) { f = true; clearTimeout(wd); res(false); } }
       });
       const t0 = path[0].t, t1 = path[path.length - 1].t;
       const wall0 = performance.now();
-      let mediaT = t0;
+      let pausedMs = 0, mediaT = t0;
+      const effElapsed = () => (performance.now() - wall0 - pausedMs) / 1000;
       while (mediaT < t1) {
         if (exportAbortRef.current !== run) break;
+        /* a stalled seek must not eat recorded time: pause the recorder if the
+           seek runs long, and exclude the paused span from the pacing clock —
+           otherwise one 3 s stall leapfrogs the remaining content (the
+           truncated-ending failure mode) */
+        const st = performance.now();
+        let recPaused = false;
+        const guard = setTimeout(() => { try { rec.pause(); recPaused = true; } catch (e) { } }, 300);
         const ok = await seekX(mediaT);
+        clearTimeout(guard);
+        if (recPaused) { pausedMs += performance.now() - st - 300; try { rec.resume(); } catch (e) { } }
         if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mediaT)); }
         /* wall-clock pacing BOTH ways: MediaRecorder stamps frames with wall
            time, so the render must neither lag the clock (slow seeks → skip
@@ -3679,10 +3743,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            anyway compressed an 18.6 s clip into a 14 s output that played
            ~1.3× fast, field-observed) */
         const next = (mediaT - t0) + 1 / 30;
-        const ahead = next - (performance.now() - wall0) / 1000;
+        const ahead = next - effElapsed();
         if (ahead > 0.002) await new Promise((r) => setTimeout(r, ahead * 1000));
-        const elapsed = (performance.now() - wall0) / 1000;
-        mediaT = t0 + Math.max(elapsed, next);
+        mediaT = t0 + Math.max(effElapsed(), next);
         setExporting(clampN((mediaT - t0) / (t1 - t0), 0.01, 0.99));
         await new Promise((r) => setTimeout(r, 0));
       }
@@ -3696,10 +3759,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         mediaPut(source.id + ":stab", { kind: "video", data: blob });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `phodar-stabilized.${ext}`;
+        a.download = `phodar-${mode === "crop" ? "object" : mode === "full" ? "stabilized-maxres" : "stabilized"}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
-        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} — world-locked at ${camFov.toFixed(0)}° camera FOV. It's also packed into the report bundle.`);
+        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} (${OUT_W}×${OUT_H}) — world-locked at ${camFov.toFixed(0)}° camera FOV. It's also packed into the report bundle.`);
       } else setFlash("⬇ export cancelled");
     } catch (e) { setFlash("⬇ export failed on this video"); }
     finally {
@@ -4506,10 +4569,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
                 </span>
                 {playPose && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
-                <button className="btn sm teal" onClick={exportStabilized}
+                <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
                   title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
                   {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
                 </button>
+              </div>
+            )}
+            {exportMenu && !exporting && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+              <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
+                {[
+                  ["view", "▣ World view", "the dome framing shown in playback, az/el grid burned in"],
+                  ["full", "⛶ Max resolution", "same framing, output sized so zoomed-in frames keep native detail"],
+                  ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "full-resolution crop around the marked object, with room to move"]] : []),
+                ].map(([m, t2, d2]) => (
+                  <button key={m} className="btn sm" style={{ textAlign: "left", padding: "8px 10px" }}
+                    onClick={() => { setExportMenu(false); exportStabilized(m); }}>
+                    <span style={{ color: "var(--teal)" }}>{t2}</span>
+                    <span style={{ display: "block", fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{d2}</span>
+                  </button>
+                ))}
               </div>
             )}
           </>
