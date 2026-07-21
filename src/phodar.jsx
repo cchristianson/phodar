@@ -533,7 +533,7 @@ const HELP_SECTIONS = [
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
-        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. In place mode the '🎞 align on' scrubber picks WHICH frame the alignment is done on (choose the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
@@ -1472,6 +1472,11 @@ function MediaMeasure({ src, update, wizard }) {
               🎯 <b style={{ color: "var(--track)" }}>Moving object?</b> Tap <b style={{ color: "var(--track)" }}>Track</b> (top row), then scrub the clip with the slider below and tap the object every second or so. Your taps become the trajectory the auto-tracker locks onto during Stabilize.
             </div>
           )}
+          {wizard && media.kind === "video" && src.shapeFit && !isNum(src.alignT) && (
+            <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--teal)", borderRadius: 10, background: "rgba(64,199,178,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
+              ⛰ <b style={{ color: "var(--teal)" }}>Pick an alignment frame:</b> scrub to the moment with the clearest horizon (or stars) and tap <b style={{ color: "var(--teal)" }}>⛰ Align on this frame</b> below the slider. The sky alignment is done on that frame — otherwise the object's frame is used, which may be zoomed or horizon-free.
+            </div>
+          )}
           {src.shapeFit && (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
@@ -1686,6 +1691,9 @@ function MediaMeasure({ src, update, wizard }) {
                     {isNum(src.A?.videoTime) && (
                       <span style={{ position: "absolute", left: `${clampN((+src.A.videoTime / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", color: "var(--amber)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
                     )}
+                    {isNum(src.alignT) && (
+                      <span style={{ position: "absolute", left: `${clampN((+src.alignT / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", color: "var(--teal)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
+                    )}
                   </div>
                 )}
                 <input type="range" min={0} max={vidDur || 0} step={0.033} value={vidT}
@@ -1695,9 +1703,22 @@ function MediaMeasure({ src, update, wizard }) {
                 <button className="btn sm" onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
                 <button className="btn sm" onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>{vidT.toFixed(2)} s</span>
-                <button className="btn sm amber" onClick={() => update({ A: { ...src.A, t: vidT.toFixed(2), videoTime: vidT } })}>
-                  {wizard ? "✓ Use this frame" : "Set time A"}
-                </button>
+                {wizard ? (
+                  /* the ALIGNMENT frame is chosen HERE (cheap scrubbing) — the
+                     sky view bakes it and the world alignment describes it.
+                     The OBJECT's frame is stamped automatically by the shape
+                     fit, so the two are independent: clearest horizon for
+                     alignment, clearest object for measurement. (A scrubber in
+                     the sky view was tried — every tick re-rendered the whole
+                     dome and it crawled.) */
+                  <button className="btn sm teal"
+                    title="Alignment frame: the sky view shows THIS frame and the horizon/star alignment is done on it. Scrub to the clearest-horizon (or star) moment and tap. The object stays measured on the frame where you fitted the shape."
+                    onClick={() => update({ alignT: +vidT.toFixed(3) })}>
+                    ⛰ Align on this frame{isNum(src.alignT) ? ` · ${(+src.alignT).toFixed(2)}s ✓` : ""}
+                  </button>
+                ) : (
+                  <button className="btn sm amber" onClick={() => update({ A: { ...src.A, t: vidT.toFixed(2), videoTime: vidT } })}>Set time A</button>
+                )}
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
               {(!wizard || media.kind === "video") && (active === "trk" || (src.track || []).length > 0) && (
@@ -2115,8 +2136,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      a live <video> (repeated per-render video→canvas draws were the source of
      the jank and the iOS memory crashes that kicked back to the start). */
   const [vidFrameUrl, setVidFrameUrl] = useState(null); // baked align-frame data URL for Place mode
-  const [vidDurS, setVidDurS] = useState(0);            // clip duration (for the align-frame scrubber)
-  const [alignScrub, setAlignScrub] = useState(null);   // transient align-scrubber position while dragging (committed on release)
   /* --- stabilized (world-locked) video playback state ---
      `playPose` is a DISPLAY OVERLAY pose: while set, the warp draws the current
      playback frame at ITS solved pose instead of the placement pose. It never
@@ -2177,7 +2196,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          the frame the object was marked on (A.videoTime) — the falls back
          keep them coupled until the user moves the align scrubber */
       const t = isNum(source?.alignT) ? +source.alignT : isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
-      v.onloadeddata = () => { if (!dead) { setVidDurS(v.duration || 0); try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } } };
+      v.onloadeddata = () => { if (!dead) { try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } } };
       v.onseeked = () => {
         if (dead || !v.videoWidth) return;
         try {
@@ -4983,27 +5002,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
-                {/* ALIGN-FRAME scrubber: pick which frame the world alignment
-                    is done on (clearest horizon/stars), independent of the
-                    frame the object was marked on. Commits on release — the
-                    texture re-bakes at the chosen frame; stabilize anchors
-                    here and the object still seeds on its own marked frame
-                    through the solved path. */}
-                {source.mediaKind === "video" && vidDurS > 0 && (() => {
-                  const commitAlign = () => { if (alignScrub != null) { update({ alignT: +(+alignScrub).toFixed(3) }); setAlignScrub(null); } };
-                  return (
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
-                      <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", whiteSpace: "nowrap" }}>🎞 align on</span>
-                      <input type="range" min={0} max={+vidDurS.toFixed(2)} step={0.033} value={alignScrub ?? alignT}
-                        onChange={(e) => setAlignScrub(+e.target.value)}
-                        onPointerUp={commitAlign} onTouchEnd={commitAlign} onKeyUp={commitAlign} onBlur={commitAlign}
-                        style={{ flex: 1 }} />
-                      <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: alignScrub != null ? "var(--amber)" : "var(--teal)", whiteSpace: "nowrap" }}>
-                        {(alignScrub ?? alignT).toFixed(2)}s{Math.abs(markT - (alignScrub ?? alignT)) > 0.1 ? " ≠ obj" : ""}
-                      </span>
-                    </div>
-                  );
-                })()}
+                {/* the ALIGNMENT frame is chosen on the MEASURE step (⛰ Align
+                    on this frame — cheap scrubbing there; a scrubber here
+                    re-rendered the whole dome per tick and crawled). This line
+                    just says which frame the alignment describes. */}
+                {source.mediaKind === "video" && (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", width: "100%" }}>
+                    🎞 aligning on {alignT.toFixed(2)}s{Math.abs(markT - alignT) > 0.1 ? ` · object on ${markT.toFixed(2)}s` : ""} — change it on the measure step (⛰ Align on this frame)
+                  </span>
+                )}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
                   → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
                 </span>

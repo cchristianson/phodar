@@ -583,10 +583,17 @@ terrain stay frozen and only the object moves. Build ladder:
    guided track matches ground truth). With <2 waypoints the guide is
    off and misses ride the velocity prediction. Guided misses carry
    q=0.25 (the guide dir), honest in the readout.
-   **ALIGN FRAME ≠ OBJECT FRAME (source.alignT)**: place mode has a
-   "🎞 align on" scrubber choosing WHICH frame the world alignment is
-   done on (clearest horizon/stars) — decoupled from A.videoTime (where
-   the object was fitted; defaults keep them coupled). The sky view
+   **ALIGN FRAME ≠ OBJECT FRAME (source.alignT)**: the MEASURE step's
+   "⛰ Align on this frame" button (wizard video controls, below the
+   frame slider; teal ▾ slider tick) picks WHICH frame the world
+   alignment is done on (clearest horizon/stars) — decoupled from
+   A.videoTime (where the object was fitted; defaults keep them
+   coupled). A sky-view scrubber used to do this but was REMOVED:
+   every tick re-baked the warp texture and re-rendered the whole
+   dome, making it crawl — the measure step's plain `<video>` scrub is
+   cheap, so selection lives there and the sky view just shows a
+   static "aligning on X.XXs" line. A teal callout on the measure
+   step nudges the user to pick one when unset. The sky view
    bakes alignT; stabilize anchors its walk there (refT=alignT, the
    placement pose describes that frame); the object pass then seeds on
    the MARKED frame with its pose from posePathAt. pixDirMarked and the
