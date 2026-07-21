@@ -221,62 +221,125 @@ export function stepTracker(tracker, nextData, opts = {}) {
   }
   // 2. track templates from prevData into nextData
   const tracked = trackFeatures(tracker.prevData, nextData, w, h, feats, o);
-  // 2a. FAST-ZOOM RESCUE — a quick zoom (people zoom in and back out FAST)
-  //     defeats plain NCC twice over: predictions overshoot the search window
-  //     (edge features move by (s−1)·r px) AND the features' appearance itself
-  //     is rescaled, so the templates match nowhere. When tracking collapses,
-  //     sweep candidate zoom factors — templates resampled and positions
-  //     re-predicted under each factor's FOV — and adopt the factor that makes
-  //     the background reappear, refined by the matches' pairwise distances.
+  /* shared scale machinery: probeAt scores a feature subset under one zoom
+     hypothesis (templates resampled + positions re-predicted under its FOV);
+     adoptScale re-tracks EVERYTHING under a factor and adopts the result when
+     it beats what plain tracking found. */
+  /* two probe subsets for two jobs: the per-step scale probe wants EDGE-BIASED
+     features (zoom displacement grows with radius — that's the signal); the
+     collapse rescue wants RADIUS-DIVERSITY, because under a violent zoom-in
+     only the central features remain in-frame under the candidate FOVs */
+  const byR = [...feats].sort((a, b) =>
+    Math.hypot(b.px - w / 2, b.py - h / 2) - Math.hypot(a.px - w / 2, a.py - h / 2));
+  const subEdge = byR.slice(0, 12);
+  const subMix = [];
+  for (let i = 0, j = byR.length - 1; subMix.length < Math.min(12, byR.length) && i <= j; i++, j--) {
+    subMix.push(byR[i]); if (i < j && subMix.length < 12) subMix.push(byR[j]);
+  }
+  const probeAt = (probeSub, sh, search) => {
+    const fovS = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sh) * R2D, 5, 150);
+    const f2 = [];
+    for (const ft of probeSub) {
+      const p = dirToPixK(ft.g, natW, natH, p0.az, p0.el, p0.roll, fovS, p0.k || 0);
+      if (!p) continue;
+      const bx = p.px / sc, by = p.py / sc;
+      if (bx < 0 || bx > w || by < 0 || by > h) continue;
+      f2.push({ ...ft, px: bx, py: by });
+    }
+    if (f2.length < 3) return { score: -1, okn: 0, pts: [], scatter: 1e9 };
+    const tr = trackFeatures(tracker.prevData, nextData, w, h, f2, { ...o, search, tScale: sh });
+    let score = 0, okn = 0; const pts = [];
+    for (let i = 0; i < f2.length; i++) if (tr[i].ok) { score += tr[i].ncc; okn++; pts.push([f2[i], tr[i]]); }
+    /* radial-fit COHERENCE: a true scale mismatch shows as a LINEAR radial
+       residual (slope = s_true/sh − 1, fitted out); false lookalike matches
+       land wherever the nearest neighbour sits — random scatter around any
+       line. The rms about the fit separates them where raw residual size
+       can't (rung quantization looks like noise otherwise). */
+    let scatter = 1e9;
+    if (okn >= 4) {
+      const rs = [], es = [];
+      for (const [fi, ti] of pts) {
+        const rx = fi.px - w / 2, ry = fi.py - h / 2, rr = Math.hypot(rx, ry) || 1;
+        rs.push(rr); es.push(((ti.px - fi.px) * rx + (ti.py - fi.py) * ry) / rr);
+      }
+      const n2 = rs.length;
+      let sr = 0, se = 0, srr = 0, sre = 0;
+      for (let i = 0; i < n2; i++) { sr += rs[i]; se += es[i]; srr += rs[i] * rs[i]; sre += rs[i] * es[i]; }
+      const den = n2 * srr - sr * sr;
+      const b = Math.abs(den) > 1e-6 ? (n2 * sre - sr * se) / den : 0;
+      const a = (se - b * sr) / n2;
+      let v = 0; for (let i = 0; i < n2; i++) { const d = es[i] - (a + b * rs[i]); v += d * d; }
+      scatter = Math.sqrt(v / n2);
+    }
+    return { score, okn, pts, scatter };
+  };
+  const pairRefine = (pts, sh) => {           // matched pairs' true distance ratio beats the ladder's coarse factor
+    const rat = [];
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const d0 = Math.hypot(pts[i][0].tx - pts[j][0].tx, pts[i][0].ty - pts[j][0].ty);
+      if (d0 < 20) continue;
+      rat.push(Math.hypot(pts[i][1].px - pts[j][1].px, pts[i][1].py - pts[j][1].py) / d0);
+    }
+    if (rat.length < 3) return sh;
+    rat.sort((x, y) => x - y); return rat[rat.length >> 1];
+  };
+  const adoptScale = (sR) => {
+    const fovR = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sR) * R2D, 5, 150);
+    const fAll = [], iAll = [];
+    for (let i = 0; i < feats.length; i++) {
+      const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovR, p0.k || 0);
+      if (!p) continue;
+      const bx = p.px / sc, by = p.py / sc;
+      if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
+      fAll.push({ ...feats[i], px: bx, py: by }); iAll.push(i);
+    }
+    if (fAll.length < 3) return;
+    const trAll = trackFeatures(tracker.prevData, nextData, w, h, fAll, { ...o, search: 10, tScale: sR });
+    let okn2 = 0; for (const t2 of trAll) if (t2.ok) okn2++;
+    let okNow = 0; for (const t2 of tracked) if (t2.ok) okNow++;
+    /* "not clearly fewer" — the caller already established the scale is right;
+       false in-place matches can inflate okNow, so demanding strictly more
+       would wrongly reject the truth */
+    if (okn2 + 2 >= okNow && okn2 >= 3) {
+      for (let i = 0; i < feats.length; i++) tracked[i] = { px: feats[i].px, py: feats[i].py, ncc: 0, ok: false };
+      for (let k3 = 0; k3 < iAll.length; k3++) tracked[iAll[k3]] = trAll[k3];
+    }
+  };
+  // 2a-i. SCALE PROBE (every step) — self-similar texture (foliage, clouds)
+  //     FALSELY matches "in place" during a zoom: each feature finds a
+  //     lookalike patch near its old spot, so the zoom is masked (s reads ≈1
+  //     and the pose goes self-consistently wrong at the old FOV, field-
+  //     observed). Appearance + COHERENCE decide instead: under the TRUE scale
+  //     hypothesis the matches land tightly on their predictions; false
+  //     lookalike matches land wherever the nearest neighbour sits — a large,
+  //     incoherent median residual. A hypothesis that's markedly more coherent
+  //     than s=1 is zoom evidence — refine it from the pairs and re-track all.
+  if (feats.length >= 4) {
+    const s1 = probeAt(subEdge, 1, 10);
+    /* only probe when s=1 still HAS a population (the masking scenario);
+       an outright collapse belongs to the wide-ladder rescue below */
+    if (s1.okn >= 4) {
+      let bestP = null;
+      for (const sh of [0.78, 0.86, 0.93, 1.08, 1.16, 1.26]) {
+        const rp = probeAt(subEdge, sh, 10);
+        if (rp.okn >= 4 && (!bestP || rp.scatter < bestP.scatter)) bestP = { sh, ...rp };
+      }
+      if (bestP && bestP.scatter + 1.2 < s1.scatter) adoptScale(pairRefine(bestP.pts, bestP.sh));
+    }
+  }
+  // 2a-ii. FAST-ZOOM RESCUE — when tracking has COLLAPSED outright (a violent
+  //     zoom: predictions overshoot the search AND templates rescale so NCC
+  //     finds nothing anywhere), sweep a wide factor ladder and adopt the one
+  //     that makes the background reappear.
   let okIdx0 = 0; for (const t of tracked) if (t.ok) okIdx0++;
   if (okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
     const LADDER = [0.35, 0.45, 0.55, 0.67, 0.8, 1.25, 1.5, 1.8, 2.15, 2.6];
-    const sub = feats.slice(0, 10);
     let best = null;
     for (const sh of LADDER) {
-      const fovS = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sh) * R2D, 5, 150);
-      const f2 = [];
-      for (const ft of sub) {
-        const p = dirToPixK(ft.g, natW, natH, p0.az, p0.el, p0.roll, fovS, p0.k || 0);
-        if (!p) continue;
-        const bx = p.px / sc, by = p.py / sc;
-        if (bx < 0 || bx > w || by < 0 || by > h) continue;
-        f2.push({ ...ft, px: bx, py: by });
-      }
-      if (f2.length < 3) continue;
-      const tr = trackFeatures(tracker.prevData, nextData, w, h, f2, { ...o, search: 9, tScale: sh });
-      let score = 0, okn = 0; const pts = [];
-      for (let i = 0; i < f2.length; i++) if (tr[i].ok) { score += tr[i].ncc; okn++; pts.push([f2[i], tr[i]]); }
-      if (okn >= 3 && (!best || score > best.score)) best = { sh, score, pts };
+      const rp = probeAt(subMix, sh, 9);
+      if (rp.okn >= 3 && (!best || rp.score > best.score)) best = { sh, ...rp };
     }
-    if (best) {
-      // refine the factor from the matched pairs' true distance ratio, then re-track EVERYTHING under it
-      const rat = [];
-      for (let i = 0; i < best.pts.length; i++) for (let j = i + 1; j < best.pts.length; j++) {
-        const d0 = Math.hypot(best.pts[i][0].tx - best.pts[j][0].tx, best.pts[i][0].ty - best.pts[j][0].ty);
-        if (d0 < 20) continue;
-        rat.push(Math.hypot(best.pts[i][1].px - best.pts[j][1].px, best.pts[i][1].py - best.pts[j][1].py) / d0);
-      }
-      let sR = best.sh;
-      if (rat.length >= 3) { rat.sort((x, y) => x - y); sR = rat[rat.length >> 1]; }
-      const fovR = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sR) * R2D, 5, 150);
-      const fAll = [], iAll = [];
-      for (let i = 0; i < feats.length; i++) {
-        const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovR, p0.k || 0);
-        if (!p) continue;
-        const bx = p.px / sc, by = p.py / sc;
-        if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
-        fAll.push({ ...feats[i], px: bx, py: by }); iAll.push(i);
-      }
-      if (fAll.length >= 3) {
-        const trAll = trackFeatures(tracker.prevData, nextData, w, h, fAll, { ...o, search: 10, tScale: sR });
-        let okn2 = 0; for (const t2 of trAll) if (t2.ok) okn2++;
-        if (okn2 > okIdx0) {
-          for (let i = 0; i < feats.length; i++) tracked[i] = { px: feats[i].px, py: feats[i].py, ncc: 0, ok: false };
-          for (let k3 = 0; k3 < iAll.length; k3++) tracked[iAll[k3]] = trAll[k3];
-        }
-      }
-    }
+    if (best) adoptScale(pairRefine(best.pts, best.sh));
   }
   // 2b. ZOOM detection — pairwise-distance scale between the tracked features'
   //     previous and current pixels. Rotation/pan preserve those distances;
@@ -320,11 +383,11 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    FOV seed comes from the scale estimate; with plenty of anchors the FOV is
   //    freed for the solver to polish, else it locks at the estimated value —
   //    a sparse frame is never allowed to wander FOV on its own.
-  let pose = p0, nInliers = anchors.length;
+  let pose = p0, nInliers = anchors.length, solved = false;
   if (anchors.length >= minMatch) {
     const seed2 = zoom ? { ...p0, fov: fovZ } : p0;
     const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: zoom ? anchors.length < 8 : o.lockFov !== false });
-    if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; }
+    if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; solved = true; }
   }
   // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
   //     TURNOVER: replacements get their world dir from the current pose
@@ -384,8 +447,12 @@ export function stepTracker(tracker, nextData, opts = {}) {
     const p = dirToPixK(ft.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
     if (p) { const bx = p.px / sc, by = p.py / sc; if (bx >= 0 && bx < w && by >= 0 && by < h) kept.push({ ...ft, tx: bx, ty: by, px: bx, py: by }); }
   }
-  // 6. top up when the herd thins (features left the frame during a pan)
-  if (kept.length < minMatch + 4) {
+  // 6. top up when the herd thins (features left the frame during a pan).
+  //    ONLY when this step actually SOLVED: topping up while the pose is held
+  //    bakes the held pose's error into every new feature's world dir — an
+  //    unresolved zoom then rebuilds the whole population at the wrong FOV and
+  //    the tracker goes self-consistently blind to it (field-observed).
+  if (solved && kept.length < minMatch + 4) {
     for (const f of detectBgFeatures(nextData, w, h, { ...o, maxN })) {
       if (kept.some((k) => Math.hypot(k.tx - f.x, k.ty - f.y) < sep)) continue;
       kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y });
