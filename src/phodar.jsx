@@ -533,7 +533,7 @@ const HELP_SECTIONS = [
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
-        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (place mode: snap/star-align) so the whole path inherits an accurate anchor. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. In place mode the '🎞 align on' scrubber picks WHICH frame the alignment is done on (choose the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
@@ -2086,7 +2086,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      is single-frame, so there is no scrubber here, and the warp never touches
      a live <video> (repeated per-render video→canvas draws were the source of
      the jank and the iOS memory crashes that kicked back to the start). */
-  const [vidFrameUrl, setVidFrameUrl] = useState(null); // baked marked-frame data URL for Place mode
+  const [vidFrameUrl, setVidFrameUrl] = useState(null); // baked align-frame data URL for Place mode
+  const [vidDurS, setVidDurS] = useState(0);            // clip duration (for the align-frame scrubber)
+  const [alignScrub, setAlignScrub] = useState(null);   // transient align-scrubber position while dragging (committed on release)
   /* --- stabilized (world-locked) video playback state ---
      `playPose` is a DISPLAY OVERLAY pose: while set, the warp draws the current
      playback frame at ITS solved pose instead of the placement pose. It never
@@ -2142,8 +2144,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const v = document.createElement("video");
       v.muted = true; v.playsInline = true; v.preload = "auto";
       let dead = false;
-      const t = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
-      v.onloadeddata = () => { if (!dead) { try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } } };
+      /* the ALIGNMENT frame: scrubbable in place mode (source.alignT) so the
+         world can be aligned on the clearest-horizon frame, independent of
+         the frame the object was marked on (A.videoTime) — the falls back
+         keep them coupled until the user moves the align scrubber */
+      const t = isNum(source?.alignT) ? +source.alignT : isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+      v.onloadeddata = () => { if (!dead) { setVidDurS(v.duration || 0); try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } } };
       v.onseeked = () => {
         if (dead || !v.videoWidth) return;
         try {
@@ -2160,7 +2166,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const im = new Image();
     im.onload = () => bakeTex(im, im.naturalWidth, im.naturalHeight);
     im.src = source.mediaUrl;
-  }, [source?.mediaUrl, source?.mediaKind, source?.A?.videoTime, source?.imgAdj?.bri, source?.imgAdj?.con]);
+  }, [source?.mediaUrl, source?.mediaKind, source?.A?.videoTime, source?.alignT, source?.imgAdj?.bri, source?.imgAdj?.con]);
 
   /* aim starts on the previously entered direction, if any */
   useEffect(() => {
@@ -3062,15 +3068,27 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const s = 1 + poseK * (x * x + y * y); // radial lens distortion (0 unless star-calibrated)
     return unit([f[0] + (r[0] * x + u[0] * y) * s, f[1] + (r[1] * x + u[1] * y) * s, f[2] + (r[2] * x + u[2] * y) * s]);
   };
+  /* frame bookkeeping: the ALIGNMENT frame (what the placement pose
+     describes; scrubbable in place mode) vs the MARKED frame (where the
+     object was fitted). They default to the same frame; when decoupled, the
+     marks' true pose comes from the solved camera path at their own time. */
+  const alignT = isNum(source?.alignT) ? +source.alignT : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0);
+  const markT = isNum(source?.A?.videoTime) ? +source.A.videoTime : alignT;
   /* MARKED-frame pixel → world dir. The object marks/track pixels live on the
-     MARKED frame, so their sky position is fixed by the PLACEMENT pose. During
+     MARKED frame, so their sky position is fixed by that frame's pose. During
      stabilized playback pixDir follows the playing frame's pose (playPose) —
      using it for the marks would drag the object outline along with the frame.
-     This always projects through the placement pose, pinning the outline to
-     where the object physically was at the marked moment. */
-  const pixDirMarked = (px, py) => playPose && source?.natW
-    ? pixToDirK(px, py, source.natW, source.natH, pAz, pEl, pRoll, fovM, pDist)
-    : pixDir(px, py);
+     With align/marked frames DECOUPLED and a solved path available, the marks
+     project through their own frame's solved pose; otherwise the placement
+     pose stands (coupled = identical; pre-solve = best available). */
+  const pixDirMarked = (px, py) => {
+    if (!source?.natW) return pixDir(px, py);
+    if (Array.isArray(source?.posePath) && source.posePath.length > 1 && Math.abs(markT - alignT) > 0.05) {
+      const pp = posePathAt(source.posePath, markT);
+      if (pp) return pixToDirK(px, py, source.natW, source.natH, pp.az, pp.el, pp.roll || 0, pp.fov, pp.k || 0);
+    }
+    return playPose ? pixToDirK(px, py, source.natW, source.natH, pAz, pEl, pRoll, fovM, pDist) : pixDir(px, py);
+  };
 
   /* known sky objects usable as calibration anchors (bright + labeled) */
   const skyRefs = (() => {
@@ -3294,7 +3312,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const commitPlacement = () => {
     if (!update || !photoOn) return;
-    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: { ...(calibRecRef.current || { method: "manual" }), vt: isNum(source?.A?.videoTime) ? +(+source.A.videoTime).toFixed(3) : null } };
+    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: { ...(calibRecRef.current || { method: "manual" }), vt: source?.mediaKind === "video" ? +alignT.toFixed(3) : null } };
     /* placement + marked points fully determine the sight-lines — derive
        A (object marks / shape fit) and B (motion mark) automatically, so
        the fix never dies for want of an elevation the user already gave us */
@@ -3491,7 +3509,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize needs a video with a marked frame"); return; }
     const run = ++stabAbortRef.current;
     const refPose = { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
-    const refT = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+    /* the walk anchors on the ALIGNMENT frame (what the placement pose
+       describes) — which may differ from the frame the object was marked on */
+    const refT = alignT;
     setStabBusy(1); setFlash("🎞 loading video…");
     const v = document.createElement("video");
     v.muted = true; v.playsInline = true; v.preload = "auto";
@@ -3533,20 +3553,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const cxO = cvO.getContext("2d", { willReadFrequently: true });
       const grabO = () => { cxO.drawImage(v, 0, 0, OW, OH); return cxO.getImageData(0, 0, OW, OH).data; };
       const objPxO = objMid ? Math.hypot(source.A.p1.x - source.A.p2.x, source.A.p1.y - source.A.p2.y) * osc : 0;
-      let objSeed = null, refO = null;
       await seek(refT);
       const refData = grab();
-      if (objMid) {
-        refO = grabO();
-        /* snap the tracker seed onto the OBJECT itself — a mark a few px off
-           a small object leaves a half-background template, which is lost
-           immediately (the marks themselves stay untouched) */
-        const sn = snapToObject(refO, OW, OH, objMid.x * osc, objMid.y * osc, Math.min(16, Math.max(6, objPxO * 0.35)));
-        objSeed = {
-          tx: sn.x, ty: sn.y,
-          g: pixToDirK(sn.x / osc, sn.y / osc, source.natW, source.natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
-        };
-      }
       /* physical FOV cap: no frame can be WIDER than the lens's widest —
          digital zoom only narrows. This kills the impossible 110°+ solves the
          smallest-template ladder rungs win at the zoom-out landing. With lens
@@ -3565,7 +3573,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
       let done = 0, ancCount = 0;
-      const total = (fwd.length + bwd.length) * (objSeed ? 2 : 1);
+      const total = (fwd.length + bwd.length) * (objMid ? 2 : 1);
       setStabTotal(total);
       const walk = async (list, tracker) => {
         let prevT = refT;
@@ -3657,9 +3665,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          matcher only fine-tunes around it (stepObject opts.guide). */
       const objPath = [];
       let objOk = 0, objMiss = 0, guideN = 0;
-      if (objSeed) {
+      if (objMid) {
+        /* the object seed lives on the MARKED frame (which may differ from
+           the alignment frame): its pose comes from the just-solved camera
+           path at that time, its template from that frame's buffer, and the
+           seed is SNAPPED onto the object — a mark a few px off a small
+           object leaves a half-background template, lost immediately */
+        await seek(markT);
+        const seedO = grabO();
+        const seedPose = posePathAt(path, markT);
+        const sn = snapToObject(seedO, OW, OH, objMid.x * osc, objMid.y * osc, Math.min(16, Math.max(6, objPxO * 0.35)));
+        const objSeed = {
+          tx: sn.x, ty: sn.y,
+          g: pixToDirK(sn.x / osc, sn.y / osc, source.natW, source.natH, seedPose.az, seedPose.el, seedPose.roll || 0, seedPose.fov, seedPose.k || 0),
+        };
         const ae0 = dirToAzEl(objSeed.g);
-        objPath.push({ t: +refT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 });
+        objPath.push({ t: +markT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 });
         const guides = (source.track || [])
           .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
           .map((p) => {
@@ -3677,11 +3698,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const a = guides[lo], b = guides[hi], u = hi === lo ? 0 : (tt - a.t) / Math.max(1e-9, b.t - a.t);
           return unit([a.g[0] + (b.g[0] - a.g[0]) * u, a.g[1] + (b.g[1] - a.g[1]) * u, a.g[2] + (b.g[2] - a.g[2]) * u]);
         };
-        for (const list of [fwd, bwd]) {
+        const fwdO = times.filter((t) => t > markT + 1e-6);
+        const bwdO = times.filter((t) => t < markT - 1e-6).reverse();
+        for (const list of [fwdO, bwdO]) {
           if (stabAbortRef.current !== run) break;
           if (!list.length) continue;
-          await seek(refT);
-          let prevO = refO;
+          await seek(markT);
+          let prevO = seedO;
           let st2 = { ...objSeed };
           for (const tt of list) {
             if (stabAbortRef.current !== run) break;
@@ -3704,7 +3727,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* keep the track only when the template held on for a usable fraction —
          with a manual guide the human's path stands even where pixels failed */
       objPath.sort((a, b) => a.t - b.t);
-      const objGood = objSeed && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
+      const objGood = objMid && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
       if (update) update({ posePath: path, objPath: objGood ? objPath : null });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
@@ -3714,7 +3737,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
       const guideNote = guideN >= 2 ? `, guided by your ${guideN} track points` : "";
-      const objNote = objSeed ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
+      const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
         : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
@@ -3790,7 +3813,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      texture and (placement) pose agree again, exactly as before playback */
   const exitPlayback = () => {
     playingRef.current = false; setPlaying(false);
-    const refT2 = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+    const refT2 = alignT;   // the static texture outside playback is the ALIGNMENT frame
     const path = source?.posePath || [];
     let ri = 0; for (let i = 0; i < path.length; i++) if (Math.abs(path[i].t - refT2) < Math.abs(path[ri].t - refT2)) ri = i;
     pendingIdxRef.current = ri;
@@ -3923,12 +3946,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tctx = tex.getContext("2d");
       const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
       /* the fitted 3D WIREFRAME rides the object track in every framing while
-         the 🛸 overlay is on: curve points (native px on the marked frame) →
-         dirs under the placement pose, rotated onto the tracked dir per frame */
+         the 🛸 overlay is on: curve points (native px on the MARKED frame) →
+         dirs under that frame's SOLVED pose (align frame may differ), rotated
+         onto the tracked dir per frame */
+      const mkP = posePathAt(path, markT) || { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
       const wireDirs = objOn && objAll && source?.shapeFit && source?.A?.p1 && source?.A?.p2
-        ? shapeProjNat(source.shapeFit).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, pAz, pEl, pRoll, fovM, pDist)))
+        ? shapeProjNat(source.shapeFit).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
         : null;
-      const objD0 = wireDirs ? pixToDirK((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2, natW, natH, pAz, pEl, pRoll, fovM, pDist) : null;
+      const objD0 = wireDirs ? pixToDirK((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
       const drawFrame = (p) => {
         if (camFollow && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
@@ -4930,6 +4955,27 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
+                {/* ALIGN-FRAME scrubber: pick which frame the world alignment
+                    is done on (clearest horizon/stars), independent of the
+                    frame the object was marked on. Commits on release — the
+                    texture re-bakes at the chosen frame; stabilize anchors
+                    here and the object still seeds on its own marked frame
+                    through the solved path. */}
+                {source.mediaKind === "video" && vidDurS > 0 && (() => {
+                  const commitAlign = () => { if (alignScrub != null) { update({ alignT: +(+alignScrub).toFixed(3) }); setAlignScrub(null); } };
+                  return (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", whiteSpace: "nowrap" }}>🎞 align on</span>
+                      <input type="range" min={0} max={+vidDurS.toFixed(2)} step={0.033} value={alignScrub ?? alignT}
+                        onChange={(e) => setAlignScrub(+e.target.value)}
+                        onPointerUp={commitAlign} onTouchEnd={commitAlign} onKeyUp={commitAlign} onBlur={commitAlign}
+                        style={{ flex: 1 }} />
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: alignScrub != null ? "var(--amber)" : "var(--teal)", whiteSpace: "nowrap" }}>
+                        {(alignScrub ?? alignT).toFixed(2)}s{Math.abs(markT - (alignScrub ?? alignT)) > 0.1 ? " ≠ obj" : ""}
+                      </span>
+                    </div>
+                  );
+                })()}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
                   → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
                 </span>
@@ -4965,9 +5011,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     different frame after placing, the pose no longer describes
                     the baked frame — say so instead of silently stabilizing
                     from a stale anchor */}
-                {source?.placed && isNum(source?.calib?.vt) && isNum(source?.A?.videoTime) && Math.abs(+source.calib.vt - +source.A.videoTime) > 0.1 && (
+                {source?.placed && isNum(source?.calib?.vt) && Math.abs(+source.calib.vt - alignT) > 0.1 && (
                   <div style={{ color: "var(--amber)", marginTop: 4 }}>
-                    ⚠ aligned on frame {(+source.calib.vt).toFixed(2)}s but the object is now marked on {(+source.A.videoTime).toFixed(2)}s — re-align (✥ Place) before stabilizing
+                    ⚠ aligned on frame {(+source.calib.vt).toFixed(2)}s but the align frame is now {alignT.toFixed(2)}s — re-align (✥ Place) before stabilizing
                   </div>
                 )}
               </div>
@@ -5712,7 +5758,8 @@ function PositionEditor({ src, update, others }) {
   const bearing = isNum(src.mediaAim?.az) ? +src.mediaAim.az
     : (isNum(src.meta?.azTrue) ? +src.meta.azTrue
       : (isNum(src.meta?.az) ? +src.meta.az
-        : (isNum(src.A?.az) ? +src.A.az : null)));
+        : (isNum(src.A?.az) ? +src.A.az
+          : 0)));   // no compass anywhere → still DRAW the cone (due north) so there's something to grab — it was invisible until the slider was first touched
   const setBearing = (deg) => {
     const b = ((+deg % 360) + 360) % 360;
     const old = isNum(src.mediaAim?.az) ? +src.mediaAim.az : b;

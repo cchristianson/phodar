@@ -582,10 +582,20 @@ terrain stay frozen and only the object moves. Build ladder:
    verified end-to-end through the real wizard UI: 3 px waypoint taps,
    guided track matches ground truth). With <2 waypoints the guide is
    off and misses ride the velocity prediction. Guided misses carry
-   q=0.25 (the guide dir), honest in the readout. Also: the placement
-   stamps WHICH frame it aligned (calib.vt) and the sky view warns when
-   the marks later moved to a different frame — a pose describes ONE
-   frame. Stabilize progress lives in the BUTTON ("🎞 n/total…"), not
+   q=0.25 (the guide dir), honest in the readout.
+   **ALIGN FRAME ≠ OBJECT FRAME (source.alignT)**: place mode has a
+   "🎞 align on" scrubber choosing WHICH frame the world alignment is
+   done on (clearest horizon/stars) — decoupled from A.videoTime (where
+   the object was fitted; defaults keep them coupled). The sky view
+   bakes alignT; stabilize anchors its walk there (refT=alignT, the
+   placement pose describes that frame); the object pass then seeds on
+   the MARKED frame with its pose from posePathAt. pixDirMarked and the
+   export wireframe use the marks-frame solved pose whenever the frames
+   differ and a path exists. The placement stamps calib.vt = alignT and
+   the sky view warns when the align frame later moves — a pose
+   describes ONE frame. Verified e2e coupled (defaults, byte-identical)
+   AND decoupled (align 6.0 s, object 0.5 s, track intact).
+   Stabilize progress lives in the BUTTON ("🎞 n/total…"), not
    the flash (2.2 s auto-hide made it blink on long clips). The fitted
    3D WIREFRAME rides the track: in the dome (shapeProjNat curves →
    placement-pose dirs → Rodrigues onto the tracked dir, same pipeline
