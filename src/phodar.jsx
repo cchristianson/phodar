@@ -583,7 +583,7 @@ const HELP_SECTIONS = [
       { h: "What you can export", items: [
         { t: "Report (.html)", d: "A single self-contained page: the fix, quality, photo exhibits with detail crops, top-down + trajectory charts, and the sky-object / wind / aircraft checks." },
         { t: "💾 Share file (.phodar.json)", d: "Just the data — the importable file another observer loads to add their perspective, or that you keep as a backup." },
-        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos in one download, re-importable into Phodar." },
+        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar." },
       ]},
       { h: "Extra checks in the report", items: [
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
@@ -3365,7 +3365,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const grab = () => { cx.drawImage(v, 0, 0, TW, TH); return cx.getImageData(0, 0, TW, TH).data; };
       await seek(refT);
       const refData = grab();
-      const opts = { minMatch: 6, maxN: 50, patch: 13, search: 16 };
+      /* physical FOV cap: no frame can be WIDER than the lens's widest —
+         digital zoom only narrows. This kills the impossible 110°+ solves the
+         smallest-template ladder rungs win at the zoom-out landing. With lens
+         metadata the cap is tight (6% margin so it never fights an honest
+         near-wide solve); without it the marked frame might itself be zoomed,
+         so only a generous 30% margin is safe. */
+      const lensFov = isNum(source?.meta?.fovH) ? +source.meta.fovH : null;
+      const fovMax = lensFov ? Math.max(fovM, lensFov) * 1.06
+        : Math.max(fovM, isNum(source?.fovH) ? +source.fovH : 0) * 1.3;
+      const opts = { minMatch: 6, maxN: 50, patch: 13, search: 16, fovMax };
       const mkTracker = () => initTracker(refData, TW, TH, source.natW, source.natH, refPose, opts);
       const t0 = mkTracker();
       if (t0.features.length < 8) { setStabBusy(0); setFlash(`🎞 only ${t0.features.length} background feature(s) on the marked frame — too few to track. A frame with skyline/terrain edges or stars stabilizes best.`); return; }
@@ -3428,6 +3437,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
       if (update) update({ posePath: path });
+      mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
@@ -3640,10 +3650,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (exportAbortRef.current !== run) break;
         const ok = await seekX(mediaT);
         if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mediaT)); }
-        /* wall-clock pacing: output duration tracks the clip; slow seeks drop
-           frames instead of stretching time */
+        /* wall-clock pacing BOTH ways: MediaRecorder stamps frames with wall
+           time, so the render must neither lag the clock (slow seeks → skip
+           ahead, dropping frames) nor OUTRUN it (fast seeks → WAIT — advancing
+           anyway compressed an 18.6 s clip into a 14 s output that played
+           ~1.3× fast, field-observed) */
+        const next = (mediaT - t0) + 1 / 30;
+        const ahead = next - (performance.now() - wall0) / 1000;
+        if (ahead > 0.002) await new Promise((r) => setTimeout(r, ahead * 1000));
         const elapsed = (performance.now() - wall0) / 1000;
-        mediaT = t0 + Math.max(elapsed, (mediaT - t0) + 1 / 30);
+        mediaT = t0 + Math.max(elapsed, next);
         setExporting(clampN((mediaT - t0) / (t1 - t0), 0.01, 0.99));
         await new Promise((r) => setTimeout(r, 0));
       }
@@ -3651,12 +3667,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (exportAbortRef.current === run && chunks.length) {
         const blob = new Blob(chunks, { type: mime || "video/webm" });
         const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
+        /* keep the render: the share bundle packs the before/after pair, so
+           the stabilized video must survive past this download (re-export
+           overwrites; a new stabilize run deletes it as stale) */
+        mediaPut(source.id + ":stab", { kind: "video", data: blob });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = `phodar-stabilized.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
-        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} — world-locked at ${camFov.toFixed(0)}° camera FOV`);
+        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} — world-locked at ${camFov.toFixed(0)}° camera FOV. It's also packed into the report bundle.`);
       } else setFlash("⬇ export cancelled");
     } catch (e) { setFlash("⬇ export failed on this video"); }
     finally {
@@ -7178,8 +7198,10 @@ function ReportView({ sources, est, onBack }) {
     else if (dl) setMsg(`✓ downloading ${name}`);
     else { setMsg(""); setManual({ name, text }); }
   };
-  /* the full bundle as a single .zip: the report, the importable data, and
-     the FULL-res photos — a download, importable back into Phodar */
+  /* the full bundle as a single .zip: the report, the importable data, the
+     FULL-res photos, and each observer's VIDEOS — the original clip plus the
+     world-locked stabilized render when one has been exported (the
+     before/after pair). A download, importable back into Phodar. */
   const downloadBundle = async () => {
     setMsg("packing bundle…");
     const html = await reportHtml(sources, est, { exhibits: "files" });
@@ -7189,14 +7211,27 @@ function ReportView({ sources, est, onBack }) {
       { name: strU8("report.html"), data: strU8(html) },
       { name: strU8("sighting.phodar.json"), data: strU8(json) },
     ];
-    act.forEach((s, i) => {
+    const extOf = (t) => /quicktime/.test(t) ? "mov" : /webm/.test(t) ? "webm" : "mp4";
+    let vidN = 0;
+    for (let i = 0; i < act.length; i++) {
+      const s = act[i];
       if (s.mediaUrl && s.mediaKind === "image") {
         try { files.push({ name: strU8(`photos/observer-${i + 1}.jpg`), data: dataUrlU8(s.mediaUrl) }); } catch (e) { }
       }
-    });
+      if (s.mediaKind === "video") {
+        try {
+          const rec = await mediaGet(s.id);
+          let vb = rec && rec.kind === "video" && rec.data ? rec.data : null;
+          if (!vb && s.mediaUrl) vb = await fetch(s.mediaUrl).then((r) => r.blob()).catch(() => null);
+          if (vb) { files.push({ name: strU8(`videos/observer-${i + 1}-original.${extOf(vb.type || "")}`), data: new Uint8Array(await vb.arrayBuffer()) }); vidN++; }
+          const st = await mediaGet(s.id + ":stab");
+          if (st && st.data) { files.push({ name: strU8(`videos/observer-${i + 1}-stabilized.${extOf(st.data.type || "")}`), data: new Uint8Array(await st.data.arrayBuffer()) }); vidN++; }
+        } catch (e) { }
+      }
+    }
     const blob = makeZip(files);
     if (download("phodar-sighting.zip", blob, "application/zip"))
-      setMsg(`✓ downloading bundle — ${(blob.size / 1048576).toFixed(1)} MB · report + full-res photos + data`);
+      setMsg(`✓ downloading bundle — ${(blob.size / 1048576).toFixed(1)} MB · report + data + full-res photos${vidN ? ` + ${vidN} video${vidN > 1 ? "s" : ""}` : ""}`);
     else setMsg("Bundle download needs the deployed app — this preview can't save binaries.");
   };
   /* share the viewable report page itself via the OS share sheet (text,
@@ -7236,7 +7271,7 @@ function ReportView({ sources, est, onBack }) {
         )}
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
           <button className="btn amber" style={{ padding: 14, fontSize: 15 }} onClick={openReport}>👁 View report</button>
-          <button className="btn" style={{ padding: 12 }} onClick={downloadBundle}>⬇ Download bundle (.zip — report + full-res photos + data)</button>
+          <button className="btn" style={{ padding: 12 }} onClick={downloadBundle}>⬇ Download bundle (.zip — report + photos + videos + data)</button>
         </div>
         {msg && <div style={{ fontSize: 12, color: "var(--teal)", marginTop: 8 }}>{msg}</div>}
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8 }}>
@@ -7363,7 +7398,7 @@ export default function App() {
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const removeSource = (id) => {
     const s = sources.find((x) => x.id === id);
-    mediaDel(id);
+    mediaDel(id); mediaDel(id + ":stab");
     (s?.moments || []).forEach((m) => mediaDel(m.id));
     setSources((ss) => ss.filter((s) => s.id !== id));
   };

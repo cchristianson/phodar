@@ -249,6 +249,14 @@ export function registerToRef(tracker, curG, opts = {}) {
   const { natW, natH } = tracker;
   const rp = tracker.ref.pose;
   const minScore = opts.minScore == null ? 0.5 : opts.minScore;
+  /* physical FOV cap: the camera can never see WIDER than the lens's widest
+     (digital zoom only narrows). Without it the s<1 rungs — whose templates
+     are the SMALLEST and therefore decorrelate least under handheld
+     roll/parallax mismatch — win at the zoom-out landing and report an
+     impossible 110–127° FOV (field-observed: the s=0.7 rung beating truth
+     s≈1 exactly when the clip returns to full wide). */
+  const fovCap = opts.fovMax || (tracker.opts && tracker.opts.fovMax) || 150;
+  const sMin = Math.tan((rp.fov * D2R) / 2) / Math.tan((Math.min(150, fovCap) * D2R) / 2);
   /* the template is a CENTRAL CROP (80%) of the moving frame, so every rung —
      including s≈1 — has translation freedom. Without the crop, the s=1
      template is the whole frame (zero slide room) and a handheld PAN makes a
@@ -278,7 +286,8 @@ export function registerToRef(tracker, curG, opts = {}) {
   if (areaFrac(refG) < 0.12 || areaFrac(curG) < 0.12) return null;
   const curC = crop(curG, 0.8), refC = crop(refG, 0.8);
   const rungs = [];
-  for (let s = 0.7; s <= 5.05; s *= 1.115) rungs.push(+s.toFixed(4));
+  for (let s = 0.7; s <= 5.05; s *= 1.115) if (s >= sMin - 1e-9) rungs.push(+s.toFixed(4));
+  if (!rungs.length) return null;
   const tryS = (s) => {
     if (s >= 1) {              // zoomed IN vs ref: cur = magnified sub-region of ref
       const tp = shrinkGray(curC, s);
@@ -314,7 +323,7 @@ export function registerToRef(tracker, curG, opts = {}) {
   const px = (best.cx / refG.w) * natW, py = (best.cy / refG.h) * natH;
   const gDir = pixToDirK(px, py, natW, natH, rp.az, rp.el, rp.roll, rp.fov, rp.k || 0);
   const ae = dirToAzEl(gDir);
-  const fov = clampN(2 * Math.atan(Math.tan((rp.fov * D2R) / 2) / sFine) * R2D, 5, 150);
+  const fov = clampN(2 * Math.atan(Math.tan((rp.fov * D2R) / 2) / sFine) * R2D, 5, fovCap);
   return { s: sFine, fov, az: ae.az, el: ae.el, score: best.ncc };
 }
 
@@ -351,6 +360,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   const { w, h, natW, natH, sc } = tracker;
   const o = { ...tracker.opts, ...opts }, p0 = tracker.lastPose;
   const minMatch = o.minMatch || 6, maxN = o.maxN || 60, sep = o.minSep || 8;
+  const fovCap = o.fovMax || 150;   // physical lens-widest cap (see registerToRef)
   // 0. GLOBAL registration against the reference — the zoom-proof, drift-proof
   //    coarse pose. When it locks, it seeds the predictions (so the sparse
   //    layer starts at the right scale and place); when the frame has panned
@@ -363,11 +373,14 @@ export function stepTracker(tracker, nextData, opts = {}) {
        samples (≤¼ s). A global fix far from the chain is a wrong-placement
        match — at deep zoom the template is tiny and self-similar content
        offers lookalike placements (field-observed: a 30° az excursion held
-       for 1.5 s mid-zoom). Reject it; the chain carries the frame and later
-       good fixes/anchors absorb any small drift. */
+       for 1.5 s mid-zoom, and an 11° one at a zoom-out landing). Reject it;
+       the chain carries the frame and later good fixes/anchors absorb any
+       small drift. The costs are asymmetric — a rejected TRUE fix only
+       delays re-anchoring, an accepted FALSE one poisons samples — so the
+       gate is tight. */
     if (glob) {
       const dAzG = Math.abs(((glob.az - p0.az + 540) % 360) - 180);
-      if (dAzG > 12 || Math.abs(glob.el - p0.el) > 10) glob = null;
+      if (dAzG > 8 || Math.abs(glob.el - p0.el) > 10) glob = null;
     }
     if (glob) glob.pose = { az: glob.az, el: glob.el, roll: p0.roll, fov: glob.fov, k: p0.k || 0 };
   }
@@ -400,7 +413,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
     subMix.push(byR[i]); if (i < j && subMix.length < 12) subMix.push(byR[j]);
   }
   const probeAt = (probeSub, sh, search) => {
-    const fovS = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sh) * R2D, 5, 150);
+    const fovS = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sh) * R2D, 5, fovCap);
     const f2 = [];
     for (const ft of probeSub) {
       const p = dirToPixK(ft.g, natW, natH, p0.az, p0.el, p0.roll, fovS, p0.k || 0);
@@ -447,7 +460,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
     rat.sort((x, y) => x - y); return rat[rat.length >> 1];
   };
   const adoptScale = (sR) => {
-    const fovR = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sR) * R2D, 5, 150);
+    const fovR = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sR) * R2D, 5, fovCap);
     const fAll = [], iAll = [];
     for (let i = 0; i < feats.length; i++) {
       const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovR, p0.k || 0);
@@ -524,7 +537,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
     if (rat.length >= 3) { rat.sort((x, y) => x - y); s = rat[rat.length >> 1]; }
   }
   const zoom = Math.abs(s - 1) > 0.015;
-  const fovZ = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / s) * R2D, 5, 150); // spread apart (s>1) = zoomed in = narrower FOV
+  const fovZ = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / s) * R2D, 5, fovCap); // spread apart (s>1) = zoomed in = narrower FOV
   if (zoom) {
     const missI = [], missF = [];
     for (let i = 0; i < feats.length; i++) if (!tracked[i].ok) {
@@ -562,7 +575,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
        roll on thin evidence is a garbage solve from a blurred frame — reject
        it (field-observed as a single frame snapping 25° off mid-zoom-out). */
     if (sol && !(Math.abs(sol.roll - basePose.roll) > 10 && sol.n < 12)) {
-      pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; solved = true;
+      pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: Math.min(sol.fov, fovCap), k: sol.k }; nInliers = sol.n; solved = true;
     }
   }
   // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
@@ -610,7 +623,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
                keep the chain rather than snapping to a wrong absolute */
             if (Math.abs(dA) <= 3 && Math.abs(dE) <= 3 && Math.abs(dR) <= 4 && Math.abs(dF) <= Math.max(2.5, pose.fov * 0.1)) {
               drift = { dAz: dA, dEl: dE, dRoll: dR, dFov: dF };
-              pose = { az: solR.az, el: solR.el, roll: solR.roll, fov: solR.fov, k: solR.k };
+              pose = { az: solR.az, el: solR.el, roll: solR.roll, fov: Math.min(solR.fov, fovCap), k: solR.k };
               nInliers = solR.n; anchored = true;
             }
           }
