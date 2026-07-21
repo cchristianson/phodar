@@ -2840,32 +2840,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      horizon, cirrus high; count + opacity scale with each layer's cover %.
      Deterministic (golden-angle) so it doesn't flicker on re-render. */
   const cloudField = (cloudOn && wxSky && !wxSky.err && !cameraOn && vp.w > 0) ? (() => {
+    /* Clouds of any layer fill the sky IN YOUR VIEWING DIRECTION (a high deck is
+       overhead AND recedes to the horizon far away), so distribute puffs around
+       the current view centre in BOTH az and el — density from TOTAL cover — so
+       whichever way you look shows the right amount. Banding by type (high only
+       near zenith) wrongly drew nothing when looking near the horizon. */
+    const total = isNum(wxSky.cloud) ? +wxSky.cloud
+      : Math.max(isNum(wxSky.low) ? wxSky.low : 0, isNum(wxSky.mid) ? wxSky.mid : 0, isNum(wxSky.high) ? wxSky.high : 0);
+    if (!(total >= 1)) return [];
+    const azC = effAz, azSpan = clampN(fovH * 0.95, 16, 130);
+    const elC = effAlt, elSpan = clampN(fovV * 0.95, 12, 70);
+    const n = Math.round(clampN((total / 100) * 26, 3, 26));   // a few % → a wisp or two; overcast → filled
+    const op0 = clampN(total / 100 + 0.5, 0.5, 1) * 0.42;
     const puffs = [];
-    /* distribute AROUND the current view so the visible sky shows the right
-       density (spread over all 360° would put almost none in a narrow FOV) */
-    const azC = effAz, azSpan = clampN(fovH * 1.25, 22, 170);
-    const layers = [
-      { cov: wxSky.low, elLo: 3, elHi: 42, rBase: 0.11, op: 0.55 },
-      { cov: wxSky.mid, elLo: 30, elHi: 66, rBase: 0.09, op: 0.44 },
-      { cov: wxSky.high, elLo: 54, elHi: 87, rBase: 0.072, op: 0.30 },
-    ];
-    let idx = 3;
-    for (const Ly of layers) {
-      const cov = isNum(Ly.cov) ? +Ly.cov : 0;
-      if (cov < 5) continue;
-      const n = Math.round(clampN((cov / 100) * 22, 2, 22));
-      for (let i = 0; i < n; i++) {
-        idx++;
-        /* R2 plastic-constant low-discrepancy pair → even 2D scatter (two
-           correlated golden sequences streak diagonally) */
-        const af = (0.5 + idx * 0.7548776662) % 1, ef = (0.5 + idx * 0.5698402910) % 1;
-        const az = azC + (af - 0.5) * 2 * azSpan;
-        const el = Ly.elLo + ef * (Ly.elHi - Ly.elLo);
-        const p = project(az, el);
-        if (!p.inFront || p.x < -0.15 || p.x > 1.15 || p.y < -0.15 || p.y > 1.15) continue;
-        const wob = 0.65 + ((idx * 2.399963) % 1) * 0.85;
-        puffs.push({ x: p.x, y: p.y, r: Ly.rBase * wob, op: Ly.op * clampN(cov / 100 + 0.3, 0.35, 1) });
-      }
+    for (let i = 0; i < n; i++) {
+      const idx = i + 4;
+      const af = (0.5 + idx * 0.7548776662) % 1, ef = (0.5 + idx * 0.5698402910) % 1; // R2 low-discrepancy
+      const az = azC + (af - 0.5) * 2 * azSpan;
+      const el = clampN(elC + (ef - 0.5) * 2 * elSpan, 1, 88);
+      const p = project(az, el);
+      if (!p.inFront || p.x < -0.15 || p.x > 1.15 || p.y < -0.15 || p.y > 1.15) continue;
+      const wob = 0.6 + ((idx * 2.399963) % 1) * 0.95;
+      puffs.push({ x: p.x, y: p.y, r: 0.095 * wob, op: op0 });
     }
     return puffs;
   })() : [];
