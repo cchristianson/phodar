@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker, smearDrift, despikePath, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -3455,6 +3455,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          brief "jump out of lock" in playback — despike against neighbours
          (real motion is a ramp across samples and is preserved) */
       const deglitched = despikePath(path);
+      /* then damp sub-degree solve noise (background jitter in the render):
+         evidence-weighted pull toward the neighbours — strong solves barely
+         move, weak ones lean on the interpolation. Real motion is a ramp
+         across samples and passes through. */
+      smoothPath(path);
       /* honesty: frames with too few background references held the previous
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
@@ -3607,7 +3612,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           cd = unit([cd[0] + gB[0], cd[1] + gB[1], cd[2] + gB[2]]);
         }
         ce = dirToAzEl(cd);
-        camFov = clampN(Math.max(objAng * 10, sep * 1.9, 12), 12, 70);
+        /* zoom PROPORTIONAL to the object: the crop FOV scales with the
+           object's angular size (object ≈ 1/12 of the frame width), widened
+           only as needed to keep both sight-lines in frame — a far/small
+           object gets a much tighter crop than a near/big one. */
+        camFov = clampN(Math.max(objAng * 12, sep * 1.9), 1.6, 70);
       }
       const B = photoBasis(ce.az, ce.el, 0);
       let mx = 0.05, my = 0.05;
@@ -3615,12 +3624,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (mode !== "crop") camFov = clampN(2 * Math.atan(Math.max(mx, my / aspect) / 0.94) * R2D, 20, 118);
       /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
          most-zoomed frame's pixel density survives (tan-space ratio of the
-         camera FOV to the finest source FOV), within iOS canvas/encoder
-         limits. Upscale floor keeps a tight crop watchable. */
+         camera FOV to the finest source FOV), within canvas/encoder limits.
+         iOS caps lower — a 3840-wide canvas + 4K MediaRecorder encode crashed
+         Safari outright on an iPhone 14 (page reset). Upscale floor keeps a
+         tight crop watchable. */
+      const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
       let OUT_W = Math.min(1920, natW);
       if (mode !== "view") {
         const ideal = natW * Math.tan((camFov * RAD) / 2) / Math.tan((minFov * RAD) / 2);
-        OUT_W = mode === "full" ? Math.min(3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
+        OUT_W = mode === "full" ? Math.min(isIOS ? 2560 : 3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
           : Math.min(1920, Math.max(1280, Math.round(ideal / 2) * 2));
       }
       const OUT_H = Math.round(OUT_W * aspect / 2) * 2;
@@ -3640,7 +3652,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tctx = tex.getContext("2d");
       const stream = cvs.captureStream(30);
       const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
-      const bps = clampN(Math.round(8e6 * (OUT_W * OUT_H) / (1920 * 1080)), 6e6, 25e6);
+      const bps = clampN(Math.round(8e6 * (OUT_W * OUT_H) / (1920 * 1080)), 6e6, isIOS ? 16e6 : 25e6);
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bps } : { videoBitsPerSecond: bps });
       const chunks = [];
       rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
@@ -3653,8 +3665,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            holds, the scenery rides these lines while the frame moves. Grid
            pitch scales with the camera FOV so a tight object crop still shows
            usable lines. */
-        const span = camFov * 0.75 + 15;
-        const G = camFov <= 24 ? 2 : camFov <= 60 ? 5 : 10;
+        const span = camFov <= 24 ? camFov : camFov * 0.75 + 15;
+        const G = camFov <= 3 ? 0.5 : camFov <= 8 ? 1 : camFov <= 24 ? 2 : camFov <= 60 ? 5 : 10;
         const ss = Math.min(2, G / 2);
         ctx.lineWidth = Math.max(1, OUT_W / 1400); ctx.strokeStyle = "rgba(140,165,200,0.30)";
         for (let az = Math.floor((ce.az - span) / G) * G; az <= ce.az + span; az += G) {

@@ -751,6 +751,34 @@ export function despikePath(path, opts = {}) {
   return fixed;
 }
 
+/* SMOOTH a solved pose path: sub-degree solve noise between samples reads as
+   background jitter in the world-locked render (the render is only as steady
+   as the pose). A light time-aware 3-tap pull toward the neighbours'
+   interpolation damps it — EVIDENCE-WEIGHTED, so a strong solve (many
+   anchors) barely moves while a weak one leans on its neighbours. Real
+   motion is low-frequency across samples and passes through; two passes ≈ a
+   binomial kernel. Mutates path in place. */
+export function smoothPath(path, opts = {}) {
+  const passes = opts.passes == null ? 2 : opts.passes;
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  for (let pass = 0; pass < passes; pass++) {
+    const src = path.map((p) => ({ t: p.t, az: p.az, el: p.el, roll: p.roll || 0, fov: p.fov }));
+    for (let i = 1; i < path.length - 1; i++) {
+      const a = src[i - 1], b = src[i], c = src[i + 1];
+      const span = c.t - a.t; if (!(span > 1e-6)) continue;
+      const n = path[i].n == null ? 12 : path[i].n;
+      const al = n >= 18 ? 0.18 : n >= 10 ? 0.32 : 0.5;
+      const u = (b.t - a.t) / span;
+      const mAz = a.az + angD(c.az, a.az) * u;
+      path[i].az = +(((b.az + al * angD(mAz, b.az)) % 360 + 360) % 360).toFixed(3);
+      path[i].el = +(b.el + al * (a.el + (c.el - a.el) * u - b.el)).toFixed(3);
+      path[i].roll = +(b.roll + al * (a.roll + (c.roll - a.roll) * u - b.roll)).toFixed(3);
+      path[i].fov = +(b.fov + al * (a.fov + (c.fov - a.fov) * u - b.fov)).toFixed(2);
+    }
+  }
+  return path;
+}
+
 /* Distribute a re-anchor's drift correction back across the un-anchored span
    ("meet in the middle"): entries between the last anchor (at time ancT) and
    the anchored entry at kIdx get the correction scaled by their time fraction,
