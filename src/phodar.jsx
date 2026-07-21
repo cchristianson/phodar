@@ -507,7 +507,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Time & aim", items: [
         { t: "Sighting date & time", d: "When it happened — anchors the Sun, Moon, stars, satellites and archived aircraft to the real sky." },
-        { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout), drawn on the map as a teal ray. This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
+        { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout), drawn on the map as the teal aim line down the middle of the field-of-view cone. This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
         { t: "Field of view", d: "How wide the shot was, drawn as a cone that reaches ~25 miles out over the map (roads, towns and landmarks show under it — zoom out to see where you were looking). It foreshortens as you raise the up-angle: the far end pulls in and rounds into an ellipse, becoming a full circle around you when you look straight up. Comes from the lens metadata when the photo carries it (locked, ✓); otherwise a slider you set to match the shot — the same FOV the measurement uses. Tap ✥ Move to reposition the pin; leave it off to pan/zoom around freely without moving your spot." },
         { t: "How high you looked", d: "Your up-angle (−20° to straight-up 90°). A side-view diagram pops up as you slide. Metadata has no up/down angle — set it roughly, fine-tune in the sky view." },
         { t: "Camera height off the ground", d: "How high the camera was above ground. Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony; leave at ground for a normal shot." },
