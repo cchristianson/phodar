@@ -524,14 +524,30 @@ terrain stay frozen and only the object moves. Build ladder:
    the fallback a seek running >300 ms PAUSES the recorder with the span
    excluded from the pacing clock; the WebCodecs path just re-encodes
    the previous texture at the correct timestamp (brief freeze, exact
-   duration).
+   duration). A WebCodecs RUNTIME failure steps down the size ladder
+   (3840→2560→1920) before falling back to MediaRecorder —
+   isConfigSupported can accept a size the hardware then refuses
+   (field-observed) — and export errors surface the actual message,
+   not a generic "failed".
    The render is persisted to IndexedDB (`mediaStore`, key
    `sourceId + ":stab"`; re-stabilizing deletes it as stale, source
    removal cleans it) and the report .zip bundle packs each observer's
    original clip AND the stabilized render (before/after pair) beside
    the photos.
 4. Auto object tracking (template correlation seeded by first tap) → dense
-   trajectories → real g-load curves.
+   trajectories → real g-load curves. **v1 DONE (stepObject in postrack)**:
+   rides the stabilize walk — the object's next pixel is PREDICTED by
+   re-projecting its previous world dir under the new frame's solved pose
+   (camera motion compensated), then template-matched NEAR-FIRST (tight
+   ring, widen on miss — a wide window can contain a lookalike background
+   star/leaf that ties the true match; asserted in mathcheck: mover
+   recovered to <0.25° through a pan). Misses hold the world-stationary
+   prediction and count honestly; the track is kept only if ≥30% of
+   frames matched (else "object lost" and the outline stays put).
+   `source.objPath = [{t,az,el,q}]` persists; playback rotates the object
+   marks onto the tracked dir (Rodrigues d0→dT; B sight-line and track
+   points stay pinned — their own observations), and the crop export's
+   camera FOLLOWS the track. Manual per-frame correction: not yet.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
