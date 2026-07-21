@@ -784,6 +784,26 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(r.nInliers >= 8 ? 1 : 0, 1, 0, "stepTracker: fast zoom re-locked enough references");
   }
 
+  // 4e. FULL ZOOM CYCLE with re-anchoring live (the field regression: anchors
+  // must fix drift WITHOUT flattening the tracked zoom — FOV is only freed for
+  // an anchor solve when the matches have real radial leverage)
+  {
+    const cf = [60, 56, 52, 48, 45, 42, 42, 45, 48, 52, 56, 60];
+    const cposes = cf.map((f, i) => ({ az: 250 + i * 0.15, el: 12 + i * 0.05, roll: 0, fov: f, k: 0 }));
+    const cframes = cposes.map((p) => renderFrame(p));
+    const tk = initTracker(cframes[0], TW, TH, natW, natH, P0, { mode: "night", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+    let maxFovErr = 0, maxAzErr = 0, ancs = 0;
+    for (let i = 1; i < cframes.length; i++) {
+      const r = stepTracker(tk, cframes[i]);
+      maxFovErr = Math.max(maxFovErr, Math.abs(r.pose.fov - cposes[i].fov));
+      maxAzErr = Math.max(maxAzErr, Math.abs(r.pose.az - cposes[i].az));
+      if (r.anchored) ancs++;
+    }
+    approx(maxFovErr < 0.8 ? 1 : 0, 1, 0, "zoom cycle + anchors: FOV tracks the whole 60→42→60 sweep");
+    approx(maxAzErr < 0.3 ? 1 : 0, 1, 0, "zoom cycle + anchors: az stays locked throughout");
+    approx(ancs >= 4 ? 1 : 0, 1, 0, "zoom cycle + anchors: re-anchoring stayed active");
+  }
+
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
   // a +0.4° az error into every g and the pose) — the incremental solve alone
   // would confirm the drift, but matching the pristine REFERENCE features must
