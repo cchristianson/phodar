@@ -13,6 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, dirToPixK, solvePoseAnchors } from "./math/projection.js";
+import { initTracker, stepTracker } from "./video/postrack.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -531,6 +532,8 @@ const HELP_SECTIONS = [
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (snap/star-align) so the whole path inherits an accurate anchor. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -1942,6 +1945,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      a live <video> (repeated per-render video→canvas draws were the source of
      the jank and the iOS memory crashes that kicked back to the start). */
   const [vidFrameUrl, setVidFrameUrl] = useState(null); // baked marked-frame data URL for Place mode
+  /* --- stabilized (world-locked) video playback state ---
+     `playPose` is a DISPLAY OVERLAY pose: while set, the warp draws the current
+     playback frame at ITS solved pose instead of the placement pose. It never
+     touches pAz/pEl/..., so commitPlacement can't accidentally write a mid-video
+     pose into mediaAim. Cleared when playback exits (after the marked frame is
+     re-baked, so texture and pose always agree). */
+  const [playPose, setPlayPose] = useState(null);   // {az,el,roll,fov,k} | null
+  const [playIdx, setPlayIdx] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const playingRef = useRef(false);
+  const playVidRef = useRef(null);   // offscreen <video> for playback seeks (never in the render path)
+  const seekBusyRef = useRef(false); // single-in-flight seek guard (iOS: concurrent seeks jank/crash)
+  const pendingIdxRef = useRef(null);
+  const [stabBusy, setStabBusy] = useState(0);      // 0 idle | frames-done counter while solving
+  const stabAbortRef = useRef(0);
   const placeRef = useRef(null);
   const twistRef = useRef(null);
   const warpRef = useRef(null);   // canvas that draws the Look-mode warp ourselves
@@ -2881,8 +2899,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     : sun.alt < -1
       ? "linear-gradient(180deg,#0a1226 0%,#16224a 55%,#4a3a55 100%)" // twilight
       : "linear-gradient(180deg,#1f64b8 0%,#4f93d6 55%,#bfe2ff 100%)";
-  /* --- the pose IS the state; place-mode gestures mutate it directly --- */
-  const poseNow = { az: pAz, el: pEl, roll: pRoll, fov: fovM };
+  /* --- the pose IS the state; place-mode gestures mutate it directly.
+     During stabilized playback, `playPose` (the current frame's solved pose)
+     overrides for DISPLAY only — placement state stays untouched. --- */
+  const poseNow = playPose || { az: pAz, el: pEl, roll: pRoll, fov: fovM };
+  const poseK = playPose ? (playPose.k || 0) : pDist;
 
   const photo = (photoOn && source?.mediaUrl && source?.natW) ? (() => {
     const natW = source.natW, natH = source.natH;
@@ -2895,7 +2916,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const { natW, natH, f, r, u, tHm } = photo;
     const fpx = (natW / 2) / tHm;
     const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx;
-    const s = 1 + pDist * (x * x + y * y); // radial lens distortion (0 unless star-calibrated)
+    const s = 1 + poseK * (x * x + y * y); // radial lens distortion (0 unless star-calibrated)
     return unit([f[0] + (r[0] * x + u[0] * y) * s, f[1] + (r[1] * x + u[1] * y) * s, f[2] + (r[2] * x + u[2] * y) * s]);
   };
 
@@ -3259,6 +3280,157 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         : `✦ auto-aligned · ${sol.n} stars · fit ±${sol.rms.toFixed(2)}° · FOV ${sol.fov.toFixed(0)}° — toggle ★ stars to verify`);
     } catch (e) { setFlash("✦ auto-align failed on this image"); }
   };
+
+  /* 🎞 STABILIZE — reference-locked video (video roadmap phase 2, rung B).
+     The aligned marked frame's pose turns every background pixel into a FIXED
+     world direction, so every other frame is the star-align problem: track the
+     background features frame-to-adjacent-frame (src/video/postrack.js), solve
+     each frame's pose with the moving object trimmed as an outlier, and store
+     the pose path on the source. Walks OUTWARD from the marked frame (forward
+     then backward) so every step is between adjacent frames. All seeks happen
+     on an offscreen <video>, off the render path. */
+  const stabilize = async () => {
+    if (source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize needs a video with a marked frame"); return; }
+    const run = ++stabAbortRef.current;
+    const refPose = { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
+    const refT = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+    setStabBusy(1); setFlash("🎞 loading video…");
+    const v = document.createElement("video");
+    v.muted = true; v.playsInline = true; v.preload = "auto";
+    try {
+      await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; v.src = source.mediaUrl; });
+      const dur = v.duration || 0;
+      const seek = (t) => new Promise((res) => { v.onseeked = () => res(); v.currentTime = clampN(t, 0, Math.max(0, dur - 0.01)); });
+      /* sample cadence: every 0.25 s, capped ~140 samples on long clips — small
+         inter-frame rotation keeps the NCC search tight, and pose is angular so
+         the path interpolates cleanly between samples */
+      const dt = Math.max(0.25, dur / 140);
+      const times = []; for (let t = 0; t <= dur - 0.005; t += dt) times.push(+t.toFixed(3));
+      /* track at ≤768 px — pose is resolution-independent (FOV normalizes it),
+         so the low-res path applies verbatim to the 1600 px playback texture */
+      const TW = Math.min(768, source.natW), sc = TW / source.natW, TH = Math.max(40, Math.round(source.natH * sc));
+      const cv = document.createElement("canvas"); cv.width = TW; cv.height = TH;
+      const cx = cv.getContext("2d", { willReadFrequently: true });
+      const grab = () => { cx.drawImage(v, 0, 0, TW, TH); return cx.getImageData(0, 0, TW, TH).data; };
+      await seek(refT);
+      const refData = grab();
+      const opts = { minMatch: 6, maxN: 50, patch: 13, search: 16 };
+      const mkTracker = () => initTracker(refData, TW, TH, source.natW, source.natH, refPose, opts);
+      const t0 = mkTracker();
+      if (t0.features.length < 8) { setStabBusy(0); setFlash(`🎞 only ${t0.features.length} background feature(s) on the marked frame — too few to track. A frame with skyline/terrain edges or stars stabilizes best.`); return; }
+      const fwd = times.filter((t) => t > refT + 1e-6);
+      const bwd = times.filter((t) => t < refT - 1e-6).reverse();
+      const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
+      let done = 0; const total = fwd.length + bwd.length;
+      const walk = async (list, tracker) => {
+        for (const t of list) {
+          if (stabAbortRef.current !== run) return false;
+          await seek(t);
+          const r = stepTracker(tracker, grab());
+          path.push({ t, az: +r.pose.az.toFixed(3), el: +r.pose.el.toFixed(3), roll: +r.pose.roll.toFixed(3), fov: +r.pose.fov.toFixed(2), k: +(r.pose.k || 0).toFixed(5), n: r.nInliers });
+          done++;
+          if (done % 5 === 0) { setStabBusy(done); setFlash(`🎞 solving camera path… ${done}/${total} frames`); await new Promise((r2) => setTimeout(r2, 0)); } // yield so the flash paints (and iOS stays happy)
+        }
+        return true;
+      };
+      const okF = await walk(fwd, t0);
+      let okB = true;
+      if (okF && bwd.length) { await seek(refT); okB = await walk(bwd, mkTracker()); }
+      if (!okF || !okB || stabAbortRef.current !== run) { setStabBusy(0); setFlash("🎞 stabilization cancelled"); return; }
+      path.sort((a, b) => a.t - b.t);
+      /* honesty: frames with too few background references held the previous
+         pose instead of fabricating a lock — say so when it's a lot of them */
+      const weak = path.filter((p) => p.n < 6).length;
+      if (update) update({ posePath: path });
+      setStabBusy(0);
+      setFlash(weak > path.length * 0.25
+        ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+    } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
+    finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
+  };
+
+  /* world-locked playback: a single-in-flight SEEK loop (never a live <video>
+     in the warp — invariant #1). Each step: seek the offscreen video → bake
+     that frame to the warp texture → set playPose to the frame's solved pose.
+     The mesh warp redraws it; the dome layers project through the untouched
+     view pose, so the sky/terrain stay frozen while the frame moves. */
+  const ensurePlayVid = () => {
+    if (playVidRef.current) return Promise.resolve(playVidRef.current);
+    return new Promise((res, rej) => {
+      const v = document.createElement("video");
+      v.muted = true; v.playsInline = true; v.preload = "auto";
+      v.onloadeddata = () => res(v); v.onerror = rej;
+      v.src = source.mediaUrl;
+      playVidRef.current = v;
+    });
+  };
+  const showFrame = (i) => {
+    const path = source?.posePath; if (!path || !path.length) return;
+    pendingIdxRef.current = clampN(Math.round(i), 0, path.length - 1);
+    if (seekBusyRef.current) return;              // one seek in flight; the latest request wins
+    seekBusyRef.current = true;
+    ensurePlayVid().then((v) => {
+      const step = () => {
+        const j = pendingIdxRef.current, p = path[j];
+        v.onseeked = () => {
+          if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
+          setPlayPose({ az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 });
+          setPlayIdx(j);
+          if (pendingIdxRef.current !== j) { step(); return; }   // scrub moved on — chase it
+          seekBusyRef.current = false;
+          if (playingRef.current) {
+            if (j + 1 < path.length) {
+              const dtMs = clampN((path[j + 1].t - p.t) * 1000, 60, 1500);
+              setTimeout(() => { if (playingRef.current) showFrameRef.current(j + 1); }, dtMs);
+            } else { playingRef.current = false; setPlaying(false); }
+          }
+        };
+        try { v.currentTime = p.t + (Math.abs((v.currentTime || 0) - p.t) < 0.001 ? 0.0001 : 0); } // nudge — same-time seeks may not fire seeked
+        catch (e) { seekBusyRef.current = false; }
+      };
+      step();
+    }).catch(() => { seekBusyRef.current = false; });
+  };
+  const showFrameRef = useRef(showFrame); showFrameRef.current = showFrame;
+  const togglePlay = () => {
+    if (playingRef.current) { playingRef.current = false; setPlaying(false); return; }
+    playingRef.current = true; setPlaying(true);
+    const path = source?.posePath || [];
+    showFrame(playIdx >= path.length - 1 ? 0 : playIdx + (playPose ? 1 : 0));
+  };
+  /* exit playback: re-bake the MARKED frame, then drop the pose override —
+     texture and (placement) pose agree again, exactly as before playback */
+  const exitPlayback = () => {
+    playingRef.current = false; setPlaying(false);
+    const refT2 = isNum(source?.A?.videoTime) ? +source.A.videoTime : 0;
+    const path = source?.posePath || [];
+    let ri = 0; for (let i = 0; i < path.length; i++) if (Math.abs(path[i].t - refT2) < Math.abs(path[ri].t - refT2)) ri = i;
+    pendingIdxRef.current = ri;
+    const v = playVidRef.current;
+    if (!v) { setPlayPose(null); setPlayIdx(ri); return; }
+    seekBusyRef.current = true;
+    v.onseeked = () => { if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } } setPlayPose(null); setPlayIdx(ri); seekBusyRef.current = false; };
+    try { v.currentTime = refT2; } catch (e) { setPlayPose(null); seekBusyRef.current = false; }
+  };
+  /* entering place mode (or any tool mode) must never inherit the playback
+     override — place gestures edit the REAL placement pose */
+  useEffect(() => {
+    if ((pMode === "place" || trajOn || sizeOn || cmpOn) && (playPose || playingRef.current)) exitPlayback();
+  }, [pMode, trajOn, sizeOn, cmpOn]); // eslint-disable-line
+  /* teardown: cancel any running solve and release the playback video */
+  useEffect(() => () => {
+    stabAbortRef.current++;
+    playingRef.current = false;
+    const v = playVidRef.current;
+    if (v) { v.removeAttribute("src"); try { v.load(); } catch (e) { } playVidRef.current = null; }
+  }, []);
+  /* new media (or a new marked frame) invalidates the playback element/pose */
+  useEffect(() => {
+    playingRef.current = false; setPlaying(false); setPlayPose(null); setPlayIdx(0);
+    const v = playVidRef.current;
+    if (v) { v.removeAttribute("src"); try { v.load(); } catch (e) { } playVidRef.current = null; }
+  }, [source?.mediaUrl]);
 
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
 
@@ -4010,13 +4182,35 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
+                {source.mediaKind === "video" && (
+                  <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1 }}
+                    title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play in look mode — the sky stays locked to the dome and only the object moves. Align this frame first (snap/star-align) for an accurate result."
+                    onClick={stabilize}>{stabBusy ? "🎞 solving…" : "🎞 Stabilize video"}</button>
+                )}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
                   → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
                 </span>
               </div>
             )}
             {source.mediaKind === "video" && (
-              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (locked — set it on the measure step)</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>
+                🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
+                {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+              </div>
+            )}
+            {/* world-locked playback — each frame drawn at ITS solved pose; the
+                sky/terrain/stars stay frozen, the frame rectangle moves */}
+            {!calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}
+                title="World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves.">
+                <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
+                <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
+                  onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ flex: 1 }} />
+                <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap" }}>
+                  {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
+                </span>
+                {playPose && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+              </div>
             )}
           </>
         )}
