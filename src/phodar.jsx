@@ -533,7 +533,7 @@ const HELP_SECTIONS = [
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
-        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (place mode: snap/star-align) so the whole path inherits an accurate anchor. The button lives OUTSIDE place mode so a running solve can't be nudged. It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (place mode: snap/star-align) so the whole path inherits an accurate anchor. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
@@ -1381,7 +1381,7 @@ function MediaMeasure({ src, update, wizard }) {
         </label>
         {media && (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {(wizard ? [] : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
+            {(wizard ? (media.kind === "video" ? ["trk"] : []) : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
               <button key={k} className="btn sm" onClick={() => setActive(k)}
                 style={active === k ? { borderColor: markStyle[k].borderColor, color: markStyle[k].color } : {}}>
                 {k === "p1" ? "Edge 1" : k === "p2" ? "Edge 2" : k === "pb" ? "Pos @ B" : "Track"}
@@ -1628,7 +1628,7 @@ function MediaMeasure({ src, update, wizard }) {
                 </button>
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
-              {!wizard && (active === "trk" || (src.track || []).length > 0) && (
+              {(!wizard || media.kind === "video") && (active === "trk" || (src.track || []).length > 0) && (
                 <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)" }}>
                   <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--track)", fontWeight: 700 }}>
@@ -1645,6 +1645,11 @@ function MediaMeasure({ src, update, wizard }) {
                       onClick={() => update({ track: [] })}>Clear</button>
                   </div>
                   {(() => {
+                    if (wizard) return (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
+                        Rough trajectory for the auto-tracker: scrub through the clip and tap the object every second or so ({(src.track || []).length >= 2 ? "✓ these points will GUIDE the tracker — it fine-tunes each frame around your path" : "2+ points activate the guided track"}). Big steps are fine — precision comes from the pixel matcher.
+                      </div>
+                    );
                     if ((src.track || []).length < 3) return (
                       <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
                         Scrub to the frame Moment A's bearing was taken, tap the object for point 1 (it anchors the absolute direction), then keep tapping as the video steps forward.
@@ -2015,6 +2020,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const seekBusyRef = useRef(false); // single-in-flight seek guard (iOS: concurrent seeks jank/crash)
   const pendingIdxRef = useRef(null);
   const [stabBusy, setStabBusy] = useState(0);      // 0 idle | frames-done counter while solving
+  const [stabTotal, setStabTotal] = useState(0);    // total steps of the current solve (camera + object pass) — progress lives in the button, not the auto-hiding flash
   const stabAbortRef = useRef(0);
   const placeRef = useRef(null);
   const twistRef = useRef(null);
@@ -3194,7 +3200,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   const commitPlacement = () => {
     if (!update || !photoOn) return;
-    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: calibRecRef.current || { method: "manual" } };
+    const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: { ...(calibRecRef.current || { method: "manual" }), vt: isNum(source?.A?.videoTime) ? +(+source.A.videoTime).toFixed(3) : null } };
     /* placement + marked points fully determine the sight-lines — derive
        A (object marks / shape fit) and B (motion mark) automatically, so
        the fix never dies for want of an elevation the user already gave us */
@@ -3464,15 +3470,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
-      const objPath = [];
-      if (objSeed) { const ae0 = dirToAzEl(objSeed.g); objPath.push({ t: +refT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 }); }
-      const objRef = { st: null };
-      let objOk = 0, objMiss = 0;
-      let done = 0, ancCount = 0; const total = fwd.length + bwd.length;
+      let done = 0, ancCount = 0;
+      const total = (fwd.length + bwd.length) * (objSeed ? 2 : 1);
+      setStabTotal(total);
       const walk = async (list, tracker) => {
         let prevT = refT;
-        objRef.st = objSeed ? { ...objSeed } : null;   // each pass restarts from the marked frame
-        let prevO = objRef.st ? refO : null;           // native-res object buffer of the marked frame (the video sits at refT at walk start)
         /* "meet in the middle": when a step RE-ANCHORS absolutely against the
            reference frame, distribute its drift correction back across this
            pass's entries since the last anchor, so the incremental chain bends
@@ -3485,28 +3487,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
              rescue; halving the gap halves the per-step change exactly where
              the motion is fastest. Two levels → down to ~0.06 s. */
           const snap = () => ({ prevData: tracker.prevData, lastPose: tracker.lastPose, features: tracker.features, nextId: tracker.nextId });
-          const stepAt = async (tt) => {
-            await seek(tt);
-            const buf = grab();
-            const r2 = stepTracker(tracker, buf);
-            if (objRef.st) {
-              const bufO = grabO();
-              const o = stepObject(prevO, bufO, OW, OH, objRef.st, r2.pose, { natW: source.natW, natH: source.natH, objPx: objPxO });
-              prevO = bufO;
-              objRef.st = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
-              const ae = dirToAzEl(o.g);
-              objPath.push({ t: tt, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3), q: o.ok ? +Math.max(0, o.ncc).toFixed(2) : 0 });
-              if (o.ok) objOk++; else objMiss++;
-            }
-            return r2;
-          };
+          const stepAt = async (tt) => { await seek(tt); return stepTracker(tracker, grab()); };
           const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
             const s0 = snap();
-            const so0 = { st: objRef.st, len: objPath.length, prevO };
             let r = await stepAt(tTo);
             if (r.nInliers < 6 && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
               Object.assign(tracker, s0);               // rewind — take it in two halves
-              objRef.st = so0.st; objPath.length = so0.len; prevO = so0.prevO;
               const tm = +((tFrom + tTo) / 2).toFixed(3);
               const rm = await tryStep(tFrom, tm, depth - 1);
               path.push(entry(tm, rm));
@@ -3524,14 +3510,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           }
           prevT = t;
           done++;
-          if (done % 5 === 0) { setStabBusy(done); setFlash(`🎞 solving camera path… ${done}/${total} frames`); await new Promise((r2) => setTimeout(r2, 0)); } // yield so the flash paints (and iOS stays happy)
+          if (done % 3 === 0) { setStabBusy(done); await new Promise((r2) => setTimeout(r2, 0)); } // progress lives in the button (the flash auto-hides and would blink); yield so it paints
         }
         return true;
       };
       const okF = await walk(fwd, t0);
       let okB = true;
       if (okF && bwd.length) { await seek(refT); okB = await walk(bwd, mkTracker()); }
-      if (!okF || !okB || stabAbortRef.current !== run) { setStabBusy(0); setFlash("🎞 stabilization cancelled"); return; }
+      if (!okF || !okB || stabAbortRef.current !== run) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization cancelled"); return; }
       path.sort((a, b) => a.t - b.t);
       /* BRIDGE short held runs: a frame that neither solved nor globally
          locked carries the PREVIOUS frame's pose, frozen — a repeat, so
@@ -3567,24 +3553,78 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* honesty: frames with too few background references held the previous
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
-      /* object path: sort (fwd+bwd interleave), keep only when the template
-         actually held on for a usable fraction — a lost object (clouds, tiny
-         and faint, left the frame) should not fabricate a track */
+      /* ---- OBJECT PASS (second pass, after the camera path is final) ----
+         The camera poses are now despiked+smoothed, so every conversion uses
+         the best estimates — and every measure-step TRACK point ({t,x,y}:
+         the object tapped on ITS OWN frame) converts through its own frame's
+         solved pose, so waypoints marked on different frames stay mutually
+         consistent. When ≥2 timed waypoints exist they become the HYBRID
+         GUIDE: the human's trajectory owns the prediction and the pixel
+         matcher only fine-tunes around it (stepObject opts.guide). */
+      const objPath = [];
+      let objOk = 0, objMiss = 0, guideN = 0;
+      if (objSeed) {
+        const ae0 = dirToAzEl(objSeed.g);
+        objPath.push({ t: +refT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 });
+        const guides = (source.track || [])
+          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
+          .map((p) => {
+            const ps = posePathAt(path, +p.t);
+            return { t: +p.t, g: pixToDirK(+p.x, +p.y, source.natW, source.natH, ps.az, ps.el, ps.roll || 0, ps.fov, ps.k || 0) };
+          })
+          .sort((a, b) => a.t - b.t);
+        guideN = guides.length;
+        const guideAt = (tt) => {
+          if (guides.length < 2) return null;
+          if (tt <= guides[0].t - 1 || tt >= guides[guides.length - 1].t + 1) return null; // beyond the drawn path (+1 s grace) the matcher is on its own
+          let lo = 0, hi = guides.length - 1;
+          if (tt <= guides[0].t) hi = 0; else if (tt >= guides[guides.length - 1].t) lo = guides.length - 1;
+          else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (guides[m].t <= tt) lo = m; else hi = m; }
+          const a = guides[lo], b = guides[hi], u = hi === lo ? 0 : (tt - a.t) / Math.max(1e-9, b.t - a.t);
+          return unit([a.g[0] + (b.g[0] - a.g[0]) * u, a.g[1] + (b.g[1] - a.g[1]) * u, a.g[2] + (b.g[2] - a.g[2]) * u]);
+        };
+        for (const list of [fwd, bwd]) {
+          if (stabAbortRef.current !== run) break;
+          if (!list.length) continue;
+          await seek(refT);
+          let prevO = refO;
+          let st2 = { ...objSeed };
+          for (const tt of list) {
+            if (stabAbortRef.current !== run) break;
+            await seek(tt);
+            const bufO = grabO();
+            const ps = posePathAt(path, tt);
+            const gd = guideAt(tt);
+            const o = stepObject(prevO, bufO, OW, OH, st2, ps, { natW: source.natW, natH: source.natH, objPx: objPxO, guide: gd });
+            prevO = bufO;
+            st2 = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
+            const ae = dirToAzEl(o.g);
+            objPath.push({ t: tt, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3), q: o.ok ? +Math.max(0.01, o.ncc).toFixed(2) : (gd ? 0.25 : 0) });
+            if (o.ok) objOk++; else objMiss++;
+            done++;
+            if (done % 3 === 0) { setStabBusy(done); await new Promise((r2) => setTimeout(r2, 0)); }
+          }
+        }
+        if (stabAbortRef.current !== run) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization cancelled"); return; }
+      }
+      /* keep the track only when the template held on for a usable fraction —
+         with a manual guide the human's path stands even where pixels failed */
       objPath.sort((a, b) => a.t - b.t);
-      const objGood = objSeed && objOk >= Math.max(4, (objOk + objMiss) * 0.3);
+      const objGood = objSeed && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
       if (update) update({ posePath: path, objPath: objGood ? objPath : null });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
-      setStabBusy(0);
+      setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
-      const objNote = objSeed ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames)` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot)`) : "";
+      const guideNote = guideN >= 2 ? `, guided by your ${guideN} track points` : "";
+      const objNote = objSeed ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
         : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
-    } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
+    } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
 
@@ -4765,12 +4805,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
                   {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
                 </span>
+                {/* the alignment belongs to ONE frame: if the marks moved to a
+                    different frame after placing, the pose no longer describes
+                    the baked frame — say so instead of silently stabilizing
+                    from a stale anchor */}
+                {source?.placed && isNum(source?.calib?.vt) && isNum(source?.A?.videoTime) && Math.abs(+source.calib.vt - +source.A.videoTime) > 0.1 && (
+                  <span style={{ color: "var(--amber)", width: "100%" }}>
+                    ⚠ aligned on frame {(+source.calib.vt).toFixed(2)}s but the object is now marked on {(+source.A.videoTime).toFixed(2)}s — re-align (✥ Place) before stabilizing
+                  </span>
+                )}
                 {/* stabilize LIVES IN LOOK MODE — running it from place mode made
                     it too easy to nudge the placement mid-solve (field report) */}
                 {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
                   <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1 }}
                     title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
-                    onClick={stabilize}>{stabBusy ? "🎞 solving…" : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                    onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
                 )}
               </div>
             )}

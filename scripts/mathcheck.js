@@ -794,6 +794,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(fErr < 0.3 ? 1 : 0, 1, 0, "stepObject: fast mover recovered (<0.3°)");
     }
 
+    // HYBRID GUIDE: with a manual trajectory dir supplied, the prediction is
+    // the guide, and a confident lookalike match far off the guide is
+    // REJECTED — the human's path outranks the pixels; the hold rides the
+    // guide (q reflects it in the app layer).
+    {
+      const gPoses = [P0, { az: 250.4, el: 12.1, roll: 0.2, fov: 60, k: 0 }];
+      const gObj0 = { az: 248.5, el: 15.6 }, gObjT = { az: 250.6, el: 16.4 };
+      // frame 1 contains ONLY a decoy blob 3° from where the guide says the object is
+      const mkG = (pose, o, decoy) => {
+        const d = new Uint8ClampedArray(TW * TH * 4);
+        for (let i = 0; i < TW * TH; i++) d[i * 4 + 3] = 255;
+        for (const gg of [o, decoy].filter(Boolean)) {
+          const p = dirToPixK(dirFromAzEl(gg.az, gg.el), natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+          if (p) drawBlob(d, p.px / sc, p.py / sc, 235);
+        }
+        return d;
+      };
+      const fr0 = mkG(gPoses[0], gObj0, null);
+      const fr1 = mkG(gPoses[1], { az: gObjT.az + 3, el: gObjT.el }, null);   // only the decoy exists
+      const gp0 = dirToPixK(dirFromAzEl(gObj0.az, gObj0.el), natW, natH, P0.az, P0.el, P0.roll, P0.fov, P0.k);
+      const gSt = { tx: gp0.px / sc, ty: gp0.py / sc, g: dirFromAzEl(gObj0.az, gObj0.el) };
+      const og = stepObject(fr0, fr1, TW, TH, gSt, gPoses[1], { natW, natH, patch: 11, search: 26, guide: dirFromAzEl(gObjT.az, gObjT.el) });
+      approx(og.ok ? 0 : 1, 1, 0, "guide: a lookalike 3° off the manual path is rejected");
+      const aeG = dirToAzEl(og.g);
+      approx(aeG.az, gObjT.az, 0.05, "guide: the hold rides the manual trajectory");
+    }
+
     // snapToObject: an off-centre seed (thumb precision / generous shape)
     // must snap onto the object — a template cut a few px off a small object
     // is half background and gets lost immediately (e2e ground truth).

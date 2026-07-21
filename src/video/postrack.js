@@ -759,7 +759,12 @@ export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
      ground-truth run: perfect tracking for 4 s, then frozen). Extrapolating
      the object's own angular velocity keeps the TRUE object nearest the
      prediction, so locality helps instead of hurting. */
-  const gp = st.gPrev ? unit([2 * st.g[0] - st.gPrev[0], 2 * st.g[1] - st.gPrev[1], 2 * st.g[2] - st.gPrev[2]]) : st.g;
+  /* HYBRID GUIDE (opts.guide, a world dir): when the witness has laid down a
+     manual trajectory, it OWNS the prediction — the matcher only refines
+     around it, and a match far off the guide (opts.guideGate°, default 2) is
+     rejected as a lookalike rather than trusted over the human. */
+  const gp = opts.guide ? opts.guide
+    : st.gPrev ? unit([2 * st.g[0] - st.gPrev[0], 2 * st.g[1] - st.gPrev[1], 2 * st.g[2] - st.gPrev[2]]) : st.g;
   const p = dirToPixK(gp, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   if (!p) return { ...st, gPrev: st.g, ok: false, ncc: -1 };
   const bx = p.px / sc, by = p.py / sc;
@@ -795,9 +800,13 @@ export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
     const sameSpot = Math.hypot(near.px - wide.px, near.py - wide.py) < 2;
     best = (!sameSpot && wide.ncc > near.ncc + 0.12) ? wide : near;
   } else best = near && near.ok ? near : wide && wide.ok ? wide : (wide || near);
-  if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: best ? best.ncc : -1 }; // hold rides the velocity, not the stale spot
+  if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: best ? best.ncc : -1 }; // hold rides the velocity (or the guide), not the stale spot
   const tr = [best];
   const g2 = pixToDirK(tr[0].px * sc, tr[0].py * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+  if (opts.guide) {
+    const dev = Math.acos(clampN(dot(g2, opts.guide), -1, 1)) * R2D;
+    if (dev > (opts.guideGate || 2)) return { tx: bx, ty: by, g: opts.guide, gPrev: st.g, ok: false, ncc: tr[0].ncc }; // the human's path outranks a far lookalike
+  }
   return { tx: tr[0].px, ty: tr[0].py, g: g2, gPrev: st.g, ok: true, ncc: tr[0].ncc };
 }
 
