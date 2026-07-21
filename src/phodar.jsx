@@ -1029,8 +1029,20 @@ function MediaMeasure({ src, update, wizard }) {
     const el = mediaRef.current;
     if (!el) return;
     setView({ z: 1, ox: 0, oy: 0 });
+    /* PORTRAIT media with NO lens metadata: the generic 68° default is a
+       LONG-side (landscape) FOV — held sideways, the horizontal FOV is much
+       narrower (tan-scaled by the aspect: 9:16 ≈ 41.5°). Convert once at
+       load, only while fovH is still the untouched default, so a user-set
+       value is never clobbered; EXIF (which handles orientation itself)
+       overrides later anyway. */
+    const autoPortraitFov = (nw2, nh2) => {
+      if (!(nw2 > 0 && nh2 > nw2)) return;
+      if (isNum(src.meta?.fovH) || +src.fovH !== 68) return;
+      return +(2 * Math.atan(Math.tan(34 * D2R) * (nw2 / nh2)) * R2D).toFixed(1);
+    };
     if (media.kind === "video") {
-      update({ natW: el.videoWidth, natH: el.videoHeight });
+      const pf = autoPortraitFov(el.videoWidth, el.videoHeight);
+      update(pf ? { natW: el.videoWidth, natH: el.videoHeight, fovH: pf } : { natW: el.videoWidth, natH: el.videoHeight });
       setVidDur(el.duration || 0);
       paintFirstFrame(); // iOS Safari leaves a <video> blank until it decodes a frame
       /* the decoder kick MUST hang off loadedMETADATA: iOS Safari doesn't
@@ -1071,14 +1083,18 @@ function MediaMeasure({ src, update, wizard }) {
           cv.width = W; cv.height = Hh;
           cv.getContext("2d").drawImage(el, 0, 0, W, Hh); // modern browsers draw the ORIENTED image
           const durl = cv.toDataURL("image/jpeg", 0.98);
-          update({ mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
+          const pf = autoPortraitFov(W, Hh);
+          update(pf ? { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh, fovH: pf } : { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
           mediaPut(src.id, { kind: "image", data: durl }); // survives reload via IndexedDB
           setLoading(false); setLoadErr("");
           measureWrap();
           return;
         } catch (err) { /* canvas blocked — fall through with guarded naturals */ }
       }
-      update({ natW: nw, natH: nh, mediaNorm: true });
+      {
+        const pf = autoPortraitFov(nw, nh);
+        update(pf ? { natW: nw, natH: nh, mediaNorm: true, fovH: pf } : { natW: nw, natH: nh, mediaNorm: true });
+      }
     }
     setLoading(false); setLoadErr("");
     measureWrap();
@@ -1770,11 +1786,23 @@ function MediaMeasure({ src, update, wizard }) {
       <div className="grid2" style={{ marginTop: 10 }}>
         <div>
           <ML>Camera field of view</ML>
-          <select value={FOV_PRESETS.some(p => p.v === +src.fovH) ? src.fovH : "custom"}
-            onChange={(e) => e.target.value !== "custom" && update({ fovH: +e.target.value })}>
-            {FOV_PRESETS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
-            <option value="custom">Custom…</option>
-          </select>
+          {(() => {
+            /* PORTRAIT media: preset labels are long-side (landscape) lens
+               FOVs — selecting one stores the tan-converted sideways
+               (horizontal) FOV, which is what every measurement uses */
+            const isPort = natW > 0 && natH > natW;
+            const cvtFov = (v) => isPort ? +(2 * Math.atan(Math.tan((v / 2) * D2R) * (natW / natH)) * R2D).toFixed(1) : v;
+            return (
+              <>
+                <select value={(FOV_PRESETS.find((p) => Math.abs(cvtFov(p.v) - +src.fovH) < 0.06) || {}).v ?? "custom"}
+                  onChange={(e) => e.target.value !== "custom" && update({ fovH: cvtFov(+e.target.value) })}>
+                  {FOV_PRESETS.map((p) => <option key={p.v} value={p.v}>{p.label}</option>)}
+                  <option value="custom">Custom…</option>
+                </select>
+                {isPort && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>portrait — presets auto-convert to the sideways (horizontal) FOV</div>}
+              </>
+            );
+          })()}
         </div>
         <Num label="FOV horizontal" unit="°" value={src.fovH} onChange={(v) => update({ fovH: v })} />
       </div>
