@@ -401,7 +401,19 @@ terrain stay frozen and only the object moves. Build ladder:
    everything under it (asserted: 60→40° in ONE step recovers to <1.5°).
    On top, the stabilize walk BISECTS in time on a failed step (tracker
    snapshot → rewind → midpoint frame, 2 levels → ~0.06 s), halving the
-   per-step change exactly where the motion is fastest. `detectBgFeatures` 'auto' mode COMBINES
+   per-step change exactly where the motion is fastest. **Drift &
+   re-anchoring**: incremental drift comes from feature TURNOVER
+   (replacements inherit the current pose estimate's error into their
+   world dir — a zoom episode churns many). Fix: the tracker keeps the
+   reference frame forever; whenever the zoom is within ~2/3–3/2 of the
+   reference scale, the PRISTINE reference features are matched directly
+   into the frame and the pose re-solved absolutely (stepTracker 4b,
+   `anchored`/`drift` in the result; non-prime features' g refreshed
+   under the fix). The stabilize walk then `smearDrift`s each anchor's
+   correction back across the un-anchored span, linear in time — the
+   incremental chain and the absolute fix MEET IN THE MIDDLE instead of
+   snapping (asserted: a tracker contaminated with 0.4° turnover drift
+   recovers truth to 0.1° and reports the removed drift). `detectBgFeatures` 'auto' mode COMBINES
    star blobs + gradient corners (a dusk clip uses stars AND the tree
    line; either alone was wasteful). Asserted in mathcheck (60→46° zoom
    sweep recovered to ~1°, az locked; tree + stars both contribute).

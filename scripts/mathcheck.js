@@ -13,13 +13,13 @@ import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
-import { unit, dot } from "../src/math/geodesy.js";
+import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -782,6 +782,39 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(Math.abs(r.pose.fov - Pz.fov) < 1.5 ? 1 : 0, 1, 0, "stepTracker: FAST zoom rescued (fov 60→40 in one step)");
     approx(Math.abs(r.pose.az - Pz.az) < 0.4 ? 1 : 0, 1, 0, "stepTracker: az recovered through the fast zoom");
     approx(r.nInliers >= 8 ? 1 : 0, 1, 0, "stepTracker: fast zoom re-locked enough references");
+  }
+
+  // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
+  // a +0.4° az error into every g and the pose) — the incremental solve alone
+  // would confirm the drift, but matching the pristine REFERENCE features must
+  // recover the truth and report the correction.
+  {
+    const Pt = { az: 250.5, el: 12.2, roll: 0.3, fov: 60, k: 0 }; // truth at the next frame
+    const f0 = renderFrame(P0), f1 = renderFrame(Pt);
+    const tk = initTracker(f0, TW, TH, natW, natH, P0, { mode: "night", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+    // contaminate: shift every WORKING feature's g and the pose by +0.4° az (turnover drift)
+    tk.features = tk.features.map((f) => { const ae = dirToAzEl(f.g); return { ...f, prime: false, g: dirFromAzEl(ae.az + 0.4, ae.el) }; });
+    tk.lastPose = { ...P0, az: P0.az + 0.4 };
+    const r = stepTracker(tk, f1);
+    approx(r.anchored ? 1 : 0, 1, 0, "re-anchor: locked directly to the reference frame");
+    approx(r.pose.az, Pt.az, 0.1, "re-anchor: drift zeroed (az back on truth)");
+    approx(r.drift ? Math.abs(r.drift.dAz + 0.4) < 0.15 ? 1 : 0 : 0, 1, 0, "re-anchor: measured the ~0.4° drift it removed");
+  }
+
+  // 4d. smearDrift: the correction distributes linearly in time across the span
+  {
+    const pth = [
+      { t: 0, az: 100, el: 10, roll: 0, fov: 60 },   // last anchor
+      { t: 1, az: 100, el: 10, roll: 0, fov: 60 },
+      { t: 2, az: 100, el: 10, roll: 0, fov: 60 },
+      { t: 3, az: 100, el: 10, roll: 0, fov: 60 },
+      { t: 4, az: 101, el: 10.8, roll: 0, fov: 60 }, // anchored entry (already absolute)
+    ];
+    smearDrift(pth, 1, 4, 0, { dAz: 1, dEl: 0.8, dRoll: 0, dFov: 0 });
+    approx(pth[2].az, 100.5, 0.01, "smearDrift: midpoint gets half the correction");
+    approx(pth[3].el, 10.6, 0.01, "smearDrift: 3/4 point gets 3/4");
+    approx(pth[0].az, 100, 0, "smearDrift: the anchor itself is untouched");
+    approx(pth[4].az, 101, 0, "smearDrift: the anchored entry is untouched");
   }
 
   // 5. combined day+night references: star blobs AND a textured foreground
