@@ -3332,14 +3332,35 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (t0.features.length < 8) { setStabBusy(0); setFlash(`🎞 only ${t0.features.length} background feature(s) on the marked frame — too few to track. A frame with skyline/terrain edges or stars stabilizes best.`); return; }
       const fwd = times.filter((t) => t > refT + 1e-6);
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
+      const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
       let done = 0; const total = fwd.length + bwd.length;
       const walk = async (list, tracker) => {
+        let prevT = refT;
         for (const t of list) {
           if (stabAbortRef.current !== run) return false;
           await seek(t);
-          const r = stepTracker(tracker, grab());
-          path.push({ t, az: +r.pose.az.toFixed(3), el: +r.pose.el.toFixed(3), roll: +r.pose.roll.toFixed(3), fov: +r.pose.fov.toFixed(2), k: +(r.pose.k || 0).toFixed(5), n: r.nInliers });
+          /* snapshot so a failed step can rewind and BISECT in time — a fast
+             zoom/whip-pan at the 0.25 s cadence can outrun even the zoom
+             rescue; halving the gap halves the per-step change exactly where
+             the motion is fastest. Two levels → down to ~0.06 s. */
+          const snap = () => ({ prevData: tracker.prevData, lastPose: tracker.lastPose, features: tracker.features, nextId: tracker.nextId });
+          const stepAt = async (tt) => { await seek(tt); return stepTracker(tracker, grab()); };
+          const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
+            const s0 = snap();
+            let r = await stepAt(tTo);
+            if (r.nInliers < 6 && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
+              Object.assign(tracker, s0);               // rewind — take it in two halves
+              const tm = +((tFrom + tTo) / 2).toFixed(3);
+              const rm = await tryStep(tFrom, tm, depth - 1);
+              path.push(entry(tm, rm));
+              r = await tryStep(tm, tTo, depth - 1);
+            }
+            return r;
+          };
+          const r = await tryStep(prevT, t, 2);
+          path.push(entry(t, r));
+          prevT = t;
           done++;
           if (done % 5 === 0) { setStabBusy(done); setFlash(`🎞 solving camera path… ${done}/${total} frames`); await new Promise((r2) => setTimeout(r2, 0)); } // yield so the flash paints (and iOS stays happy)
         }

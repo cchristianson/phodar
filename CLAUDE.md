@@ -391,7 +391,17 @@ terrain stay frozen and only the object moves. Build ladder:
    with that FOV — freed for polish at ≥8 anchors, else locked at the
    estimate (a sparse frame never wanders FOV on its own; lockFov stays on
    when s≈1, so fixed-lens clips stay drift-free). Playback applies the
-   per-frame FOV automatically. `detectBgFeatures` 'auto' mode COMBINES
+   per-frame FOV automatically. **FAST zoom** (real witnesses zoom hard):
+   when a step's tracking COLLAPSES (predictions overshoot the search AND
+   the features' appearance rescales, so NCC finds nothing), stepTracker
+   sweeps candidate zoom factors 0.35–2.6× — `trackFeatures(opts.tScale)`
+   bilinear-resamples the templates to each candidate's scale and positions
+   re-predict under its FOV — adopts the factor that makes the background
+   reappear, refines it from the matches' pairwise distances, and re-tracks
+   everything under it (asserted: 60→40° in ONE step recovers to <1.5°).
+   On top, the stabilize walk BISECTS in time on a failed step (tracker
+   snapshot → rewind → midpoint frame, 2 levels → ~0.06 s), halving the
+   per-step change exactly where the motion is fastest. `detectBgFeatures` 'auto' mode COMBINES
    star blobs + gradient corners (a dusk clip uses stars AND the tree
    line; either alone was wasteful). Asserted in mathcheck (60→46° zoom
    sweep recovered to ~1°, az locked; tree + stars both contribute).
