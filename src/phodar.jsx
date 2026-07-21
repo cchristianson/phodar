@@ -1420,6 +1420,15 @@ function MediaMeasure({ src, update, wizard }) {
               </div>
             </div>
           )}
+          {/* the guided-track on-ramp: this step is the ONLY place the
+              trajectory can be laid down frame-accurately (the frame slider
+              below scrubs the clip BEFORE any stabilization; sky-view taps
+              can't — pre-solve, only the marked frame's pose is known) */}
+          {wizard && media.kind === "video" && src.shapeFit && (src.track || []).length < 2 && active !== "trk" && (
+            <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
+              🎯 <b style={{ color: "var(--track)" }}>Moving object?</b> Tap <b style={{ color: "var(--track)" }}>Track</b> (top row), then scrub the clip with the slider below and tap the object every second or so. Your taps become the trajectory the auto-tracker locks onto during Stabilize.
+            </div>
+          )}
           {src.shapeFit && (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
@@ -4805,6 +4814,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
                   {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
                 </span>
+                {/* the trajectory guide can only be laid down on the MEASURE
+                    step (frame-accurate scrubbing exists there before any
+                    stabilization) — point back when it's missing */}
+                {pMode !== "place" && !calibOn && source?.A?.p1 && (source.track || []).filter((p) => isNum(p.t) && isNum(p.x)).length < 2 && (
+                  <span style={{ width: "100%" }}>
+                    tip: object moves? ‹ Back to the measure step → <b style={{ color: "var(--track)" }}>Track</b>: scrub the clip and tap the object at a few moments — those taps guide the tracker here
+                  </span>
+                )}
                 {/* the alignment belongs to ONE frame: if the marks moved to a
                     different frame after placing, the pose no longer describes
                     the baked frame — say so instead of silently stabilizing
