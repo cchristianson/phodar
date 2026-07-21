@@ -985,11 +985,18 @@ function MediaMeasure({ src, update, wizard }) {
     const el = mediaRef.current;
     if (!el || media?.kind !== "video" || kickedUrlRef.current === media.url) return;
     kickedUrlRef.current = media.url;
-    try {
-      const p = el.play();
-      if (p && p.then) p.then(() => { el.pause(); paintFirstFrame(); }).catch(() => { /* autoplay refused — the seek nudge already ran */ });
-      else { el.pause(); paintFirstFrame(); }
-    } catch (e) { /* the seek nudge already ran */ }
+    const kick = () => {
+      const v = mediaRef.current; if (!v) return;
+      try {
+        const p = v.play();
+        if (p && p.then) p.then(() => { v.pause(); paintFirstFrame(); }).catch(() => { /* refused (e.g. Low Power Mode) — the retry below and the seek nudge remain */ });
+        else { v.pause(); paintFirstFrame(); }
+      } catch (e) { /* the seek nudge already ran */ }
+    };
+    kick();
+    /* Low Power Mode (and first-load races) can refuse the first play() —
+       one delayed retry when no frame data has arrived yet */
+    setTimeout(() => { const v = mediaRef.current; if (v && v.readyState < 2) kick(); }, 700);
   };
   const onLoaded = () => {
     const el = mediaRef.current;
@@ -999,6 +1006,11 @@ function MediaMeasure({ src, update, wizard }) {
       update({ natW: el.videoWidth, natH: el.videoHeight });
       setVidDur(el.duration || 0);
       paintFirstFrame(); // iOS Safari leaves a <video> blank until it decodes a frame
+      /* the decoder kick MUST hang off loadedMETADATA: iOS Safari doesn't
+         fetch media data for a fresh video until playback is initiated, so
+         loadeddata (where the kick first lived) can simply never fire —
+         which was exactly the "blank until you leave and come back" bug */
+      kickVideoPaint();
     } else {
       /* IMAGE: Safari can report UNROTATED naturals for EXIF-oriented photos
          while displaying them rotated — and it composes its hidden orientation
