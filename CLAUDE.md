@@ -463,7 +463,13 @@ terrain stay frozen and only the object moves. Build ladder:
    drops interior held runs spanning ≤0.55 s so posePathAt interpolates
    across them ("N weak frames bridged"); LONGER runs stay frozen —
    interpolating a 1 s+ gap fabricates motion (on the real clip it would
-   ramp a zoom in 0.75 s early, up to 26° of invented FOV). **Drift &
+   ramp a zoom in 0.75 s early, up to 26° of invented FOV). After despike
+   the walk runs `smoothPath`: an evidence-weighted 3-tap pull toward the
+   neighbours' time-interpolation (strong solves barely move, weak ones
+   lean harder; az wrap-aware; 2 passes) — sub-degree solve noise reads
+   as background jitter in the world-locked render, while real motion is
+   a ramp across samples and passes through (a perfect linear pan is
+   untouched, asserted in mathcheck). **Drift &
    re-anchoring**: incremental drift comes from feature TURNOVER
    (replacements inherit the current pose estimate's error into their
    world dir — a zoom episode churns many). Fix: the tracker keeps the
@@ -491,10 +497,13 @@ terrain stay frozen and only the object moves. Build ladder:
    one renderer: "view" (fixed virtual camera fit from the union of all
    frames' corners, ≤1920 px), "full" (same framing, output sized by the
    tan-space ratio camFov/minPathFov so the most-zoomed frames keep native
-   pixel density, ≤3840), and "crop" (camera centered on the marked
-   object's world dir + the B sight-line, FOV = max(10× object size,
-   1.9× A–B separation, 12°), finer 16-col mesh with off-canvas cell
-   culling, grid pitch scales with FOV). Mesh warp + burned az/el grid +
+   pixel density — ≤3840, but ≤2560 on iOS: a 3840 canvas + 4K
+   MediaRecorder encode crashed Safari on an iPhone 14), and "crop"
+   (camera centered on the marked object's world dir + the B sight-line,
+   FOV = max(12× object size, 1.9× A–B separation) with a 1.6° floor —
+   PROPORTIONAL zoom, so a far/small object crops much tighter than a
+   near/big one; finer 16-col mesh with off-canvas cell culling, grid
+   pitch scales with FOV down to 0.5°). Mesh warp + burned az/el grid +
    readout per frame, canvas.captureStream(30) + MediaRecorder (mp4 →
    webm fallback). Pacing is wall-clock BOTH WAYS: MediaRecorder stamps
    wall time, so the loop skips ahead when seeks lag AND WAITS when it

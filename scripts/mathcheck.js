@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -952,6 +952,21 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(pth[6].az, 285.0, 0.01, "despike: a real fast pan is untouched");
     approx(pth[4].fov, 30, 0.01, "despike: the real zoom ramp is untouched");
     approx(pth[0].az, 280, 0, "despike: endpoints untouched");
+  }
+
+  // 4h-b. smoothPath: sub-degree solve noise (alternating wiggle) is damped —
+  // hard on weak frames, gently on strong ones — while a real linear pan
+  // (each sample ON its neighbours' interpolation) passes through unchanged.
+  {
+    const mk = (t, az, n) => ({ t, az, el: 10, roll: 0, fov: 60, n });
+    const wig = (n) => Array.from({ length: 9 }, (_, i) => mk(i * 0.25, 250 + (i % 2 ? 0.4 : -0.4), n));
+    const strong = wig(20); smoothPath(strong);
+    const weak = wig(8); smoothPath(weak);
+    const maxDev = (p) => Math.max(...p.slice(1, -1).map((q) => Math.abs(q.az - 250)));
+    approx(maxDev(strong) < 0.25 ? 1 : 0, 1, 0, "smooth: strong-frame wiggle damped (0.4° → <0.25°)");
+    approx(maxDev(weak) < 0.1 ? 1 : 0, 1, 0, "smooth: weak-frame wiggle nearly killed (<0.1°)");
+    const ramp = Array.from({ length: 9 }, (_, i) => mk(i * 0.25, 250 + i * 0.5, 20)); smoothPath(ramp);
+    approx(Math.max(...ramp.map((q, i) => Math.abs(q.az - (250 + i * 0.5)))) < 1e-6 ? 1 : 0, 1, 0, "smooth: a real linear pan is untouched");
   }
 
   // 4i. posePathAt: wrap-aware pose interpolation between path samples
