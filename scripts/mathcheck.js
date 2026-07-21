@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -898,6 +898,30 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(r.anchored ? 1 : 0, 1, 0, "re-anchor: locked directly to the reference frame");
     approx(r.pose.az, Pt.az, 0.1, "re-anchor: drift zeroed (az back on truth)");
     approx(r.drift ? Math.abs(r.drift.dAz + 0.4) < 0.15 ? 1 : 0 : 0, 1, 0, "re-anchor: measured the ~0.4° drift it removed");
+  }
+
+  // 4h. despikePath: a garbage single-frame solve (blurred frame mid-zoom)
+  // must be pulled back to its neighbours' interpolation, while a REAL zoom
+  // ramp and a real fast pan are left untouched
+  {
+    const mk = (t, az, el, roll, fov, n) => ({ t, az, el, roll, fov, n });
+    const pth = [
+      mk(0.00, 280, 13, 0, 90, 20),
+      mk(0.25, 280.2, 13, 0, 88, 20),
+      mk(0.50, 280.4, 13, -25, 60, 0),   // SPIKE: wild roll+fov on an n=0 frame
+      mk(0.75, 280.6, 13, 0, 40, 18),    // real zoom ramp continues
+      mk(1.00, 280.8, 13, 0, 30, 18),
+      mk(1.25, 281.0, 13, 0, 24, 16),
+      mk(1.50, 285.0, 13, 0, 24, 16),    // real fast pan (4° step, neighbours disagree)
+      mk(1.75, 289.0, 13, 0, 24, 16),
+    ];
+    const fixedN = despikePath(pth);
+    approx(fixedN >= 1 ? 1 : 0, 1, 0, "despike: the garbage frame was caught");
+    approx(pth[2].roll, 0, 0.5, "despike: wild roll pulled to neighbours");
+    approx(Math.abs(pth[2].fov - 64) < 8 ? 1 : 0, 1, 0, "despike: fov spike pulled onto the zoom ramp");
+    approx(pth[6].az, 285.0, 0.01, "despike: a real fast pan is untouched");
+    approx(pth[4].fov, 30, 0.01, "despike: the real zoom ramp is untouched");
+    approx(pth[0].az, 280, 0, "despike: endpoints untouched");
   }
 
   // 4d. smearDrift: the correction distributes linearly in time across the span

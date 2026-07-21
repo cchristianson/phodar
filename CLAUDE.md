@@ -425,7 +425,19 @@ terrain stay frozen and only the object moves. Build ladder:
    (re-seeding on a held pose bakes its error into new features' world
    dirs — the old poisoning). Asserted: foliage-like self-similar field
    AND sparse-blob field through full 60→41→60 zoom cycles track FOV
-   to <1° with az locked. **Drift &
+   to <1° with az locked. Field-clip hardening (validated offline against
+   the real 5× zoom clip): scale ladder reaches ~5×; the registration
+   template is a CENTRAL 80% CROP so s≈1 keeps translation freedom (a
+   full-frame template made handheld pan bias the scale ~5%); point-
+   content (starfields) gates global OFF (area NCC aliases dots-on-dots
+   — the differential chain owns those); a CONTINUITY GATE rejects
+   global fixes >12° az / >10° el from the chain (deep-zoom templates
+   are tiny and self-similar content offers wrong placements — one held
+   a 30° az excursion for 1.5 s); a wild single-step roll (>10° on <12
+   anchors) is rejected as a blurred-frame garbage solve; and the walk
+   runs `despikePath` (neighbour-interpolation despike, ramps preserved,
+   weak frames yield sooner) before saving, reported as "N glitches
+   smoothed". **Drift &
    re-anchoring**: incremental drift comes from feature TURNOVER
    (replacements inherit the current pose estimate's error into their
    world dir — a zoom episode churns many). Fix: the tracker keeps the
