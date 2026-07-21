@@ -2845,7 +2845,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     ? (isNum(wxSky.cloud) ? +wxSky.cloud
       : Math.max(isNum(wxSky.low) ? wxSky.low : 0, isNum(wxSky.mid) ? wxSky.mid : 0, isNum(wxSky.high) ? wxSky.high : 0))
     : 0;
-  const cloudShade = cloudCover >= 1 ? clampN((cloudCover / 100) * 0.68, 0.04, 0.68) : 0;  // peak grey opacity aloft
+  // Opacity via a gamma curve (pow<1), not linear: over a saturated blue dome a
+  // linear wash reads as faint haze until near-overcast. This lifts mid-cover so
+  // 40-60 % already looks meaningfully grey, up to a near-solid overcast at 100 %.
+  const cloudShade = cloudCover >= 1 ? clampN(Math.pow(cloudCover / 100, 0.62) * 0.92, 0.06, 0.92) : 0;  // peak grey opacity aloft
   const cloudSkyBot = clampN(horizonY, 0, 1);                 // sky occupies y ∈ [0, horizon]
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
@@ -3268,7 +3271,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{
             position: "absolute", left: 0, right: 0, top: 0, height: (cloudSkyBot * 100) + "%",
             pointerEvents: "none",
-            background: `linear-gradient(180deg, rgba(186,193,203,${cloudShade.toFixed(3)}) 0%, rgba(190,197,207,${(cloudShade * 0.85).toFixed(3)}) 58%, rgba(206,213,221,${(cloudShade * 0.45).toFixed(3)}) 100%)`,
+            background: `linear-gradient(180deg, rgba(198,202,208,${cloudShade.toFixed(3)}) 0%, rgba(202,206,212,${(cloudShade * 0.88).toFixed(3)}) 58%, rgba(214,218,223,${(cloudShade * 0.5).toFixed(3)}) 100%)`,
           }} />
         )}
 
