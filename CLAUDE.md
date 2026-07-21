@@ -586,8 +586,16 @@ terrain stay frozen and only the object moves. Build ladder:
    stamps WHICH frame it aligned (calib.vt) and the sky view warns when
    the marks later moved to a different frame — a pose describes ONE
    frame. Stabilize progress lives in the BUTTON ("🎞 n/total…"), not
-   the flash (2.2 s auto-hide made it blink on long clips). Manual
-   per-frame correction of a solved track: not yet.
+   the flash (2.2 s auto-hide made it blink on long clips). The fitted
+   3D WIREFRAME rides the track: in the dome (shapeProjNat curves →
+   placement-pose dirs → Rodrigues onto the tracked dir, same pipeline
+   as the marks) and burned into ALL export framings — gated by the 🛸
+   header toggle (objOn), which controls the dome overlay AND the
+   export burn-in. Measure-step track markers fade away from their own
+   frame (full ≤0.3 s, gone by 1.1 s, 0.15 floor while the Track tool
+   is active; the route polyline stays faint). Verified visually: the
+   wireframe sits on the ground-truth dot across an in-app world-view
+   export. Manual per-frame correction of a solved track: not yet.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
