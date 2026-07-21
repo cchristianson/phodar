@@ -284,6 +284,36 @@ export function registerToRef(tracker, curG, opts = {}) {
     return act / im.g.length;
   };
   if (areaFrac(refG) < 0.12 || areaFrac(curG) < 0.12) return null;
+  /* ROLL COMPENSATION: the sweep assumes the frame sits at the reference's
+     roll — a handheld tilt of ~5°+ decorrelates the whole-frame NCC (field-
+     observed: the clip's rolled tail lost every global lock, or worse, a
+     tilted frame's best correlation was a FALSE deep-zoom match). When the
+     chain's roll estimate differs from the reference, also try the frame
+     de-rotated by that hint and keep whichever scores better. The matched
+     CENTER is rotation-invariant (de-rotation is about the center), so the
+     az/el/fov mapping below is unchanged; roll itself stays owned by the
+     sparse solve. */
+  const rollHint = opts.rollHint || 0;
+  const rotG = (im, deg) => {
+    const c = Math.cos(deg * D2R), s = Math.sin(deg * D2R);
+    const cx = (im.w - 1) / 2, cy = (im.h - 1) / 2;
+    const g = new Float32Array(im.w * im.h);
+    for (let y = 0; y < im.h; y++) for (let x = 0; x < im.w; x++) {
+      const dx = x - cx, dy = y - cy;
+      const sx = clampN(cx + dx * c - dy * s, 0, im.w - 1.001), sy = clampN(cy + dx * s + dy * c, 0, im.h - 1.001);
+      const x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0, i = y0 * im.w + x0;
+      g[y * im.w + x] = im.g[i] * (1 - fx) * (1 - fy) + im.g[i + 1] * fx * (1 - fy) + im.g[i + im.w] * (1 - fx) * fy + im.g[i + im.w + 1] * fx * fy;
+    }
+    return { g, w: im.w, h: im.h };
+  };
+  const curGs = Math.abs(rollHint) > 1.5 ? [curG, rotG(curG, rollHint)] : [curG];
+  let out = null;
+  for (const curGi of curGs) {
+    const r = sweepLadder(curGi);
+    if (r && (!out || r.score > out.score)) out = r;
+  }
+  return out;
+  function sweepLadder(curG) {
   const curC = crop(curG, 0.8), refC = crop(refG, 0.8);
   const rungs = [];
   for (let s = 0.7; s <= 5.05; s *= 1.115) if (s >= sMin - 1e-9) rungs.push(+s.toFixed(4));
@@ -325,6 +355,7 @@ export function registerToRef(tracker, curG, opts = {}) {
   const ae = dirToAzEl(gDir);
   const fov = clampN(2 * Math.atan(Math.tan((rp.fov * D2R) / 2) / sFine) * R2D, 5, fovCap);
   return { s: sFine, fov, az: ae.az, el: ae.el, score: best.ncc };
+  }
 }
 
 /* ---------- orchestration: seed on the reference frame, step per frame ---------- */
@@ -368,7 +399,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    below carries the step alone.
   let glob = null;
   if (tracker.refG && o.global !== false) {
-    glob = registerToRef(tracker, grayDown(nextData, w, h, 96));
+    glob = registerToRef(tracker, grayDown(nextData, w, h, 96), { rollHint: (p0.roll || 0) - (tracker.ref.pose.roll || 0) });
     /* CONTINUITY GATE: a handheld camera can't teleport between adjacent
        samples (≤¼ s). A global fix far from the chain is a wrong-placement
        match — at deep zoom the template is tiny and self-similar content
@@ -656,7 +687,10 @@ export function stepTracker(tracker, nextData, opts = {}) {
   // under the corrected pose
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
-  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null };
+  /* held = neither the sparse solve nor the global register placed this frame
+     — the pose is the PREVIOUS frame's, frozen. Known-wrong whenever the
+     camera kept moving; callers can bridge such frames by interpolation. */
+  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, held: !solved && !glob };
 }
 
 /* Interpolate a pose path at any time t — az wrap-aware, everything else

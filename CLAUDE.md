@@ -448,7 +448,22 @@ terrain stay frozen and only the object moves. Build ladder:
    garbage solve; and the walk
    runs `despikePath` (neighbour-interpolation despike, ramps preserved,
    weak frames yield sooner) before saving, reported as "N glitches
-   smoothed". **Drift &
+   smoothed". **Roll-hinted registration**: the whole-frame NCC assumes
+   the frame sits at the reference's roll — a handheld tilt of ~5°+
+   decorrelates it (field-observed: the clip's rolled tail, horizon
+   tilted ~12°, lost every global lock and froze the pose while the
+   camera kept moving). `registerToRef` also tries the coarse frame
+   DE-ROTATED by the chain's roll estimate (`opts.rollHint`, threaded by
+   stepTracker) and keeps the better score; the matched center is
+   rotation-invariant so the az/el/fov mapping is unchanged, and roll
+   itself stays owned by the sparse solve. **Held-frame bridging**: a
+   frame that neither solved nor globally locked repeats the previous
+   pose (stepTracker returns `held`), which despike can never repair (a
+   repeat always deviates less than the neighbours disagree). The walk
+   drops interior held runs spanning ≤0.55 s so posePathAt interpolates
+   across them ("N weak frames bridged"); LONGER runs stay frozen —
+   interpolating a 1 s+ gap fabricates motion (on the real clip it would
+   ramp a zoom in 0.75 s early, up to 26° of invented FOV). **Drift &
    re-anchoring**: incremental drift comes from feature TURNOVER
    (replacements inherit the current pose estimate's error into their
    world dir — a zoom episode churns many). Fix: the tracker keeps the

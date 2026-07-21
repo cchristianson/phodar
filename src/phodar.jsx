@@ -3380,7 +3380,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (t0.features.length < 8) { setStabBusy(0); setFlash(`🎞 only ${t0.features.length} background feature(s) on the marked frame — too few to track. A frame with skyline/terrain edges or stars stabilizes best.`); return; }
       const fwd = times.filter((t) => t > refT + 1e-6);
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
-      const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers });
+      const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
       let done = 0, ancCount = 0; const total = fwd.length + bwd.length;
       const walk = async (list, tracker) => {
@@ -3429,6 +3429,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (okF && bwd.length) { await seek(refT); okB = await walk(bwd, mkTracker()); }
       if (!okF || !okB || stabAbortRef.current !== run) { setStabBusy(0); setFlash("🎞 stabilization cancelled"); return; }
       path.sort((a, b) => a.t - b.t);
+      /* BRIDGE short held runs: a frame that neither solved nor globally
+         locked carries the PREVIOUS frame's pose, frozen — a repeat, so
+         despike can never repair it (its deviation from interpolation is
+         always smaller than the neighbours' own disagreement). Across a
+         SHORT gap (≤0.55 s: one held sample, or bisected fragments) the
+         time-interpolated pose beats the freeze+snap, so drop those and let
+         posePathAt bridge. LONG held runs stay frozen: interpolating a
+         1 s+ gap fabricates motion (verified on the real clip — it would
+         ramp a zoom in 0.75 s early, up to 26° of invented FOV), and runs
+         touching either end of the path have nothing to bridge to. This is
+         also the honest answer to "run it again": a blind re-run is
+         deterministic and returns the identical path. */
+      const drop = new Set();
+      for (let i2 = 1; i2 < path.length - 1; i2++) {
+        if (!path[i2].h) continue;
+        let j2 = i2; while (j2 < path.length && path[j2].h) j2++;
+        if (j2 < path.length && (path[j2].t - path[i2 - 1].t) <= 0.55) for (let k2 = i2; k2 < j2; k2++) drop.add(k2);
+        i2 = j2 - 1;
+      }
+      const bridged = drop.size;
+      if (bridged) { const kept2 = path.filter((_, i2) => !drop.has(i2)); path.length = 0; path.push(...kept2); }
+      path.forEach((p) => delete p.h);
       /* single blurred frames can solve a hair (or wildly) off and read as a
          brief "jump out of lock" in playback — despike against neighbours
          (real motion is a ramp across samples and is preserved) */
@@ -3443,9 +3465,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
+      const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };

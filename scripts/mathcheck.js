@@ -897,6 +897,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       const r2 = stepTracker(tk2, wide, { fovMax: 63 });
       approx(r2.pose.fov <= 63.01 ? 1 : 0, 1, 0, "fov cap: stepTracker pose respects the cap");
     }
+
+    // ROLL-HINTED registration (field bug: a clip's rolled tail — horizon
+    // tilted ~12° — decorrelated the whole-frame NCC, so every global lock
+    // failed and the pose froze while the camera kept moving). De-rotating
+    // the frame by the chain's roll estimate must restore a strong lock.
+    {
+      const rolled = renderTex({ az: 250.3, el: 12.1, roll: 9, fov: 60, k: 0 });
+      const tk3 = initTracker(tframes[0], TW, TH, natW, natH, P0, { mode: "day", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+      const gRaw = registerToRef(tk3, grayDown(rolled, TW, TH, 96));
+      const gHint = registerToRef(tk3, grayDown(rolled, TW, TH, 96), { rollHint: 9 });
+      approx(gHint ? 1 : 0, 1, 0, "roll hint: rolled frame still locks globally");
+      approx(gHint && (!gRaw || gHint.score >= gRaw.score) ? 1 : 0, 1, 0, "roll hint: de-rotated match scores at least the raw one");
+      approx(gHint && Math.abs(gHint.az - 250.3) < 1.2 ? 1 : 0, 1, 0, "roll hint: center az recovered through the roll");
+    }
   }
 
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
