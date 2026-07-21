@@ -1981,6 +1981,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* photo-in-sky placement */
   const [photoOn, setPhotoOn] = useState(false);
   const [objOn, setObjOn] = useState(true);   // 🛸 object overlay (wireframe + marks) in the dome AND burned into exports
+  const [hueOpen, setHueOpen] = useState(false); // the overlay-color slider, folded behind its swatch
   const [pMode, setPMode] = useState("look"); // 'look' | 'place'
   const [pAz, setPAz] = useState(180);
   const [pEl, setPEl] = useState(30);
@@ -4877,22 +4878,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
         {source?.mediaUrl && photoOn && (
           <>
-            {/* MODE BAR — one line, one mode at a time: place · trajectory · size · compare */}
+            {/* MODE BAR — one line, one mode at a time: place · trajectory · size · compare.
+               The overlay-color SLIDER hides behind the swatch at the end of
+               the row (shows the current color) — a full-time slider row was
+               pure vertical cost. */}
             {!single && !calibOn && (
-              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
                 {[["place", "✥ Place", pMode === "place"], ["traj", "⊕ Trajectory", trajOn], ["size", "📏 Size", sizeOn], ["compare", "⚖ Compare", cmpOn]].map(([k, label, on]) => (
                   <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 3px" }}
                     onClick={() => selectMode(k)}>{label}</button>
                 ))}
+                <button title="Overlay color — recolors the crosshair, object outline and terrain ridges so they stand out against your photo. Tap to open the hue slider."
+                  onClick={() => setHueOpen((v) => !v)}
+                  style={{ width: 22, height: 22, borderRadius: 11, flex: "0 0 auto", padding: 0, background: accentCol, border: hueOpen ? "2px solid #fff" : "1px solid rgba(255,255,255,.35)" }} />
               </div>
             )}
-            {/* overlay color — tints the crosshair, object outline and terrain ridges
-               together. Only offered in free look (no mode active): set it, then work. */}
-            {!single && !calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && (
+            {!single && !calibOn && hueOpen && (
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolor the crosshair, object outline and terrain ridges so they stand out against your photo">
                 <span className="microlabel" style={{ marginBottom: 0 }}>color</span>
                 <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ flex: 1 }} />
-                <span style={{ width: 16, height: 16, borderRadius: 8, flex: "0 0 auto", background: accentCol, border: "1px solid rgba(255,255,255,.35)" }} />
+                <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => setHueOpen(false)}>✓</button>
               </div>
             )}
             {single && (
@@ -4931,34 +4936,39 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               </div>
             )}
             {source.mediaKind === "video" && (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>
-                <span>
-                  🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
-                  {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
-                </span>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>
+                {/* one row: the stabilize button with its frame/status info
+                    tucked to the RIGHT at button height — the full-width text
+                    block above the button cost two lines of vertical space */}
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {/* stabilize LIVES IN LOOK MODE — running it from place mode made
+                      it too easy to nudge the placement mid-solve (field report) */}
+                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
+                    <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1, flex: "0 0 auto" }}
+                      title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
+                      onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                  )}
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
+                    🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
+                    {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+                  </span>
+                </div>
                 {/* the trajectory guide can only be laid down on the MEASURE
                     step (frame-accurate scrubbing exists there before any
                     stabilization) — point back when it's missing */}
                 {pMode !== "place" && !calibOn && source?.A?.p1 && (source.track || []).filter((p) => isNum(p.t) && isNum(p.x)).length < 2 && (
-                  <span style={{ width: "100%" }}>
+                  <div style={{ marginTop: 4 }}>
                     tip: object moves? ‹ Back to the measure step → <b style={{ color: "var(--track)" }}>Track</b>: scrub the clip and tap the object at a few moments — those taps guide the tracker here
-                  </span>
+                  </div>
                 )}
                 {/* the alignment belongs to ONE frame: if the marks moved to a
                     different frame after placing, the pose no longer describes
                     the baked frame — say so instead of silently stabilizing
                     from a stale anchor */}
                 {source?.placed && isNum(source?.calib?.vt) && isNum(source?.A?.videoTime) && Math.abs(+source.calib.vt - +source.A.videoTime) > 0.1 && (
-                  <span style={{ color: "var(--amber)", width: "100%" }}>
+                  <div style={{ color: "var(--amber)", marginTop: 4 }}>
                     ⚠ aligned on frame {(+source.calib.vt).toFixed(2)}s but the object is now marked on {(+source.A.videoTime).toFixed(2)}s — re-align (✥ Place) before stabilizing
-                  </span>
-                )}
-                {/* stabilize LIVES IN LOOK MODE — running it from place mode made
-                    it too easy to nudge the placement mid-solve (field report) */}
-                {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
-                  <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1 }}
-                    title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
-                    onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                  </div>
                 )}
               </div>
             )}
