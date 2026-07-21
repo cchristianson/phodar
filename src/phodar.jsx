@@ -463,7 +463,7 @@ const HELP_SECTIONS = [
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
-        { t: "Shape buttons", d: "● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ✈ Plane · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object. Not sure? Use ● Orb — it assumes no form and still measures size." },
+        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ✈ Plane · 🚁 Helicopter · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
@@ -790,8 +790,9 @@ function MediaMeasure({ src, update, wizard }) {
     setActive("shape");
     syncShape(base);
   };
-  const clearShape = () => { update({ shapeFit: null }); setActive("shape"); };
+  const clearShape = () => { update({ shapeFit: null }); setActive("shape"); setShapePicker(false); };
   const [shapeMag, setShapeMag] = useState(false);
+  const [shapePicker, setShapePicker] = useState(false);   // the collapsed "＋ Add object" shape menu
   const magTimer = useRef(null);
   const shapeLoupeFor = (sf) => {
     if (!sf || !wrapRef.current) return;
@@ -1339,17 +1340,25 @@ function MediaMeasure({ src, update, wizard }) {
       )}
       {media && !loadErr && (
         <>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
-            <span className="microlabel" style={{ marginRight: 2, marginBottom: 0 }}>Fit a 3D shape:</span>
-            {SHAPES.map((sh) => (
-              <button key={sh.k} className={"btn sm" + (src.shapeFit?.kind === sh.k ? " amber" : "")}
-                onClick={() => startShape(sh.k)}>{sh.label}</button>
-            ))}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+            <button className={"btn sm" + (src.shapeFit ? " amber" : "")} onClick={() => setShapePicker((v) => !v)}
+              title="Pick a 3D shape to fit to the object">
+              {src.shapeFit ? `${(SHAPES.find((s) => s.k === src.shapeFit.kind) || {}).label || "Object"} ▾` : "＋ Add object"}
+            </button>
             {src.shapeFit && <button className="btn sm" onClick={clearShape} title="remove shape">✕</button>}
+            {!src.shapeFit && <span style={{ fontSize: 11.5, color: "var(--dim)", fontStyle: "italic" }}>use ● Orb if unsure</span>}
           </div>
-          {!src.shapeFit && (
-            <div style={{ marginTop: 5, fontSize: 11.5, color: "var(--dim)", fontStyle: "italic", lineHeight: 1.4 }}>
-              Not sure of the shape? Choose ● Orb — it assumes no particular form and still measures the object's size.
+          {shapePicker && (
+            <div style={{ marginTop: 6, padding: 8, border: "1px solid var(--line)", borderRadius: 10, background: "rgba(255,255,255,.02)" }}>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {SHAPES.map((sh) => (
+                  <button key={sh.k} className={"btn sm" + (src.shapeFit?.kind === sh.k ? " amber" : "")}
+                    onClick={() => { startShape(sh.k); setShapePicker(false); }}>{sh.label}</button>
+                ))}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--dim)", fontStyle: "italic", lineHeight: 1.4 }}>
+                Not sure of the shape? Choose ● Orb — it assumes no particular form and still measures the object's size.
+              </div>
             </div>
           )}
           {src.shapeFit && (
