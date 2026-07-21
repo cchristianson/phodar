@@ -463,7 +463,7 @@ const HELP_SECTIONS = [
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
-        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ✈ Plane · 🚁 Helicopter · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
+        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
@@ -1388,7 +1388,7 @@ function MediaMeasure({ src, update, wizard }) {
                     onChange={(e) => { const nsf = { ...src.shapeFit, aspect: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
               )}
-              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
+              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "prop" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                   <span className="microlabel" style={{ marginBottom: 0 }}>spin</span>
                   <input type="range" min={-180} max={180} step={1} value={src.shapeFit.roll || 0}
@@ -5622,6 +5622,7 @@ const SHAPE_VIEWS = {
   capsule: [["Side", "x", "z", "length", "diameter"], ["End", "y", "z", "diameter", "diameter"]],
   tri: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "thickness"]],
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  prop: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   heli: [["Top", "x", "y", "length", "rotor span"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "rotor span", "height"]],
   bird: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   drone: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "height"], ["Front", "y", "z", "depth", "height"]],
