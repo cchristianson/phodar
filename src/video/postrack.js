@@ -16,7 +16,7 @@
    scripts/mathcheck.js against synthesized rotating frames.
    ============================================================ */
 
-import { R2D, dot, clampN } from "../math/geodesy.js";
+import { D2R, R2D, dot, clampN } from "../math/geodesy.js";
 import { pixToDirK, dirToPixK, solvePoseAnchors } from "../math/projection.js";
 import { detectStars } from "../checks/platesolve.js";
 
@@ -60,17 +60,25 @@ function dayCorners(data, w, h, o) {
 
 /* Pick trackable static background features from a frame buffer (RGBA).
    'night' → bright star blobs (detectStars); 'day' → gradient corners;
-   'auto' → stars if enough are found, else corners. `excludeRect`
+   'auto' → BOTH combined (stars first, corners fill the remaining slots) — a
+   dusk clip with a few stars still gets its tree line / ridge / rooftops as
+   references, and a day clip with specular blobs loses nothing. `excludeRect`
    {x0,y0,x1,y1} (buffer px) drops features inside the object ROI. */
 export function detectBgFeatures(data, w, h, opts = {}) {
   const mode = opts.mode || "auto", maxN = opts.maxN || 60, excl = opts.excludeRect;
   const inExcl = excl ? (x, y) => x >= excl.x0 && x <= excl.x1 && y >= excl.y0 && y <= excl.y1 : null;
-  if (mode !== "day") {
-    const stars = detectStars(data, w, h, { maxN: maxN * 2 });
-    const kept = stars.filter((s) => !(inExcl && inExcl(s.x, s.y))).slice(0, maxN).map((s) => ({ x: s.x, y: s.y, score: s.bright }));
-    if (mode === "night" || kept.length >= (opts.minStars || 8)) return kept;
+  const stars = mode !== "day"
+    ? detectStars(data, w, h, { maxN: maxN * 2 }).filter((s) => !(inExcl && inExcl(s.x, s.y))).slice(0, maxN).map((s) => ({ x: s.x, y: s.y, score: s.bright }))
+    : [];
+  if (mode === "night") return stars;
+  const out = mode === "auto" ? [...stars] : [];
+  const sep = opts.minSep || 8;
+  for (const c of dayCorners(data, w, h, { ...opts, maxN, inExcl })) {
+    if (out.length >= maxN) break;
+    if (out.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < sep)) continue;
+    out.push(c);
   }
-  return dayCorners(data, w, h, { ...opts, maxN, inExcl });
+  return out;
 }
 
 /* ---------- template tracking (normalized cross-correlation) ---------- */
@@ -197,13 +205,52 @@ export function stepTracker(tracker, nextData, opts = {}) {
   }
   // 2. track templates from prevData into nextData
   const tracked = trackFeatures(tracker.prevData, nextData, w, h, feats, o);
+  // 2b. ZOOM detection — pairwise-distance scale between the tracked features'
+  //     previous and current pixels. Rotation/pan preserve those distances;
+  //     zoom SCALES them, so a median ratio s≠1 means the lens zoomed. The
+  //     predictions above used the old FOV, so during a zoom the edge features
+  //     overshoot the NCC search window and fail — re-predict the failures
+  //     under the scale-corrected FOV and give them a second try.
+  const okIdx = [];
+  for (let i = 0; i < feats.length; i++) if (tracked[i].ok) okIdx.push(i);
+  let s = 1;
+  if (okIdx.length >= 3) {
+    const rat = [], n = Math.min(okIdx.length, 16);
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      const a = feats[okIdx[i]], b = feats[okIdx[j]];
+      const d0 = Math.hypot(a.tx - b.tx, a.ty - b.ty);
+      if (d0 < 20) continue; // tiny baselines amplify pixel noise
+      rat.push(Math.hypot(tracked[okIdx[i]].px - tracked[okIdx[j]].px, tracked[okIdx[i]].py - tracked[okIdx[j]].py) / d0);
+    }
+    if (rat.length >= 3) { rat.sort((x, y) => x - y); s = rat[rat.length >> 1]; }
+  }
+  const zoom = Math.abs(s - 1) > 0.015;
+  const fovZ = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / s) * R2D, 5, 150); // spread apart (s>1) = zoomed in = narrower FOV
+  if (zoom) {
+    const missI = [], missF = [];
+    for (let i = 0; i < feats.length; i++) if (!tracked[i].ok) {
+      const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovZ, p0.k || 0);
+      if (!p) continue;
+      const bx = p.px / sc, by = p.py / sc;
+      if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
+      missI.push(i); missF.push({ ...feats[i], px: bx, py: by });
+    }
+    if (missF.length) {
+      const tr2 = trackFeatures(tracker.prevData, nextData, w, h, missF, o);
+      for (let k2 = 0; k2 < missI.length; k2++) if (tr2[k2].ok) tracked[missI[k2]] = tr2[k2];
+    }
+  }
   // 3. inlier correspondences → native px anchors (g fixed)
   const anchors = [];
   for (let i = 0; i < feats.length; i++) if (tracked[i].ok) anchors.push({ px: tracked[i].px * sc, py: tracked[i].py * sc, g: feats[i].g });
-  // 4. solve (keep the previous pose if we can't lock)
+  // 4. solve (keep the previous pose if we can't lock). Under zoom evidence the
+  //    FOV seed comes from the scale estimate; with plenty of anchors the FOV is
+  //    freed for the solver to polish, else it locks at the estimated value —
+  //    a sparse frame is never allowed to wander FOV on its own.
   let pose = p0, nInliers = anchors.length;
   if (anchors.length >= minMatch) {
-    const sol = poseFromTracks(anchors, natW, natH, p0, o);
+    const seed2 = zoom ? { ...p0, fov: fovZ } : p0;
+    const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: zoom ? anchors.length < 8 : o.lockFov !== false });
     if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; }
   }
   // 5. update templates (successful → new pixel), re-acquire the rest under the new pose
@@ -223,5 +270,5 @@ export function stepTracker(tracker, nextData, opts = {}) {
     }
   }
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
-  return { pose, nInliers, features: kept };
+  return { pose, nInliers, features: kept, scale: s };
 }

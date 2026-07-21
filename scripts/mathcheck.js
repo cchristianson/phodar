@@ -749,6 +749,40 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxRollErr < 0.5 ? 1 : 0, 1, 0, "stepTracker: roll path recovered (<0.5°)");
     approx(minInliers >= 12 ? 1 : 0, 1, 0, "stepTracker: held enough inliers each frame");
   }
+
+  // 4. ZOOM: the FOV narrows 60→46° while panning — the pairwise-distance scale
+  // estimate must catch it (predictions re-tried under the corrected FOV) and
+  // the solve must track both the zoom and the rotation
+  {
+    const zposes = [P0,
+      { az: 250.3, el: 12.1, roll: 0.2, fov: 56, k: 0 },
+      { az: 250.6, el: 12.2, roll: 0.4, fov: 52.5, k: 0 },
+      { az: 250.9, el: 12.3, roll: 0.5, fov: 49, k: 0 },
+      { az: 251.1, el: 12.4, roll: 0.6, fov: 46, k: 0 }];
+    const zframes = zposes.map((p) => renderFrame(p));
+    const tk = initTracker(zframes[0], TW, TH, natW, natH, P0, { mode: "night", minMatch: 6, maxN: 40, patch: 11, search: 16 });
+    let maxFovErr = 0, maxAzErr = 0;
+    for (let i = 1; i < zframes.length; i++) {
+      const r = stepTracker(tk, zframes[i]);
+      maxFovErr = Math.max(maxFovErr, Math.abs(r.pose.fov - zposes[i].fov));
+      maxAzErr = Math.max(maxAzErr, Math.abs(r.pose.az - zposes[i].az));
+    }
+    approx(maxFovErr < 1.2 ? 1 : 0, 1, 0, "stepTracker: ZOOM tracked (fov within 1.2°)");
+    approx(maxAzErr < 0.4 ? 1 : 0, 1, 0, "stepTracker: az stays locked through the zoom");
+  }
+
+  // 5. combined day+night references: star blobs AND a textured foreground
+  // (tree) both contribute in auto mode — neither excludes the other
+  {
+    const data = new Uint8ClampedArray(TW * TH * 4);
+    for (let i = 0; i < TW * TH; i++) data[i * 4 + 3] = 255;
+    for (let i = 0; i < 12; i++) drawBlob(data, 30 + (i % 4) * 90 + (i * 7) % 23, 30 + Math.floor(i / 4) * 60, 235); // "stars" in the upper sky
+    for (let y = 210; y < 280; y++) for (let x = 40; x < 110; x++) { const v = ((x * 31 + y * 17) % 7) * 30; const p = (y * TW + x) * 4; data[p] = v; data[p + 1] = v; data[p + 2] = v; } // "tree": textured block, strong gradients
+    const fs = detectBgFeatures(data, TW, TH, { maxN: 60 });
+    const nearTree = fs.filter((f) => f.x >= 35 && f.x <= 115 && f.y >= 205 && f.y <= 285).length;
+    approx(fs.length >= 12 ? 1 : 0, 1, 0, "detectBgFeatures: stars + structure both found");
+    approx(nearTree >= 1 ? 1 : 0, 1, 0, "detectBgFeatures: textured foreground (tree) contributes references");
+  }
 }
 
 // --- aspectSpan: two-view mirror ambiguity (same-span mirror must be reported) ---
