@@ -3312,7 +3312,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     try {
       await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; v.src = source.mediaUrl; });
       const dur = v.duration || 0;
-      const seek = (t) => new Promise((res) => { v.onseeked = () => res(); v.currentTime = clampN(t, 0, Math.max(0, dur - 0.01)); });
+      /* watchdogged seek: Safari can skip `seeked` for a same-time seek (hence
+         the nudge) and a stalled decoder must never hang the whole solve */
+      const seek = (t) => new Promise((res) => {
+        const tt = clampN(t, 0, Math.max(0, dur - 0.01));
+        let fired = false;
+        const wd = setTimeout(() => { if (!fired) { fired = true; res(); } }, 4000);
+        v.onseeked = () => { if (!fired) { fired = true; clearTimeout(wd); res(); } };
+        try { v.currentTime = tt + (Math.abs((v.currentTime || 0) - tt) < 0.001 ? 0.0001 : 0); }
+        catch (e) { if (!fired) { fired = true; clearTimeout(wd); res(); } }
+      });
       /* sample cadence: every 0.25 s, capped ~140 samples on long clips — small
          inter-frame rotation keeps the NCC search tight, and pose is angular so
          the path interpolates cleanly between samples */
@@ -3339,7 +3348,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         let prevT = refT;
         for (const t of list) {
           if (stabAbortRef.current !== run) return false;
-          await seek(t);
           /* snapshot so a failed step can rewind and BISECT in time — a fast
              zoom/whip-pan at the 0.25 s cadence can outrun even the zoom
              rescue; halving the gap halves the per-step change exactly where
@@ -3390,14 +3398,30 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      that frame to the warp texture → set playPose to the frame's solved pose.
      The mesh warp redraws it; the dome layers project through the untouched
      view pose, so the sky/terrain stay frozen while the frame moves. */
+  /* watchdogged seek shared by playback paths: same-time nudge (Safari may
+     never fire `seeked` when seeking to the current time) + a timeout so a
+     stalled decoder can NEVER leave the busy-lock stuck and kill the controls */
+  const seekSafe = (v, t, onDone, ms) => {
+    let fired = false;
+    const wd = setTimeout(() => { if (!fired) { fired = true; v.onseeked = null; onDone(false); } }, ms || 2500);
+    v.onseeked = () => { if (fired) return; fired = true; clearTimeout(wd); v.onseeked = null; onDone(true); };
+    try { v.currentTime = t + (Math.abs((v.currentTime || 0) - t) < 0.001 ? 0.0001 : 0); }
+    catch (e) { if (!fired) { fired = true; clearTimeout(wd); v.onseeked = null; onDone(false); } }
+  };
   const ensurePlayVid = () => {
-    if (playVidRef.current) return Promise.resolve(playVidRef.current);
+    const cur = playVidRef.current;
+    if (cur && cur.readyState >= 2 && !cur.error) return Promise.resolve(cur);
+    /* a broken/half-dead element must not be reused forever — drop and rebuild */
+    if (cur) { try { cur.removeAttribute("src"); cur.load(); } catch (e) { } playVidRef.current = null; }
     return new Promise((res, rej) => {
       const v = document.createElement("video");
       v.muted = true; v.playsInline = true; v.preload = "auto";
-      v.onloadeddata = () => res(v); v.onerror = rej;
+      let settled = false;
+      const wd = setTimeout(() => { if (!settled) { settled = true; rej(new Error("video load timeout")); } }, 6000);
+      v.onloadeddata = () => { if (!settled) { settled = true; clearTimeout(wd); playVidRef.current = v; res(v); } }; // ref only once actually loaded
+      v.onerror = () => { if (!settled) { settled = true; clearTimeout(wd); rej(new Error("video error")); } };
       v.src = source.mediaUrl;
-      playVidRef.current = v;
+      try { v.load(); } catch (e) { }
     });
   };
   const showFrame = (i) => {
@@ -3408,7 +3432,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     ensurePlayVid().then((v) => {
       const step = () => {
         const j = pendingIdxRef.current, p = path[j];
-        v.onseeked = () => {
+        seekSafe(v, p.t, (okSeek) => {
+          if (!okSeek) { seekBusyRef.current = false; playingRef.current = false; setPlaying(false); setFlash("🎞 playback seek stalled — tap ▶ to retry"); return; }
           if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
           setPlayPose({ az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 });
           setPlayIdx(j);
@@ -3420,12 +3445,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               setTimeout(() => { if (playingRef.current) showFrameRef.current(j + 1); }, dtMs);
             } else { playingRef.current = false; setPlaying(false); }
           }
-        };
-        try { v.currentTime = p.t + (Math.abs((v.currentTime || 0) - p.t) < 0.001 ? 0.0001 : 0); } // nudge — same-time seeks may not fire seeked
-        catch (e) { seekBusyRef.current = false; }
+        });
       };
       step();
-    }).catch(() => { seekBusyRef.current = false; });
+    }).catch(() => { seekBusyRef.current = false; playingRef.current = false; setPlaying(false); setFlash("🎞 couldn't open the video for playback — tap ▶ to retry"); });
   };
   const showFrameRef = useRef(showFrame); showFrameRef.current = showFrame;
   const togglePlay = () => {
@@ -3445,8 +3468,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const v = playVidRef.current;
     if (!v) { setPlayPose(null); setPlayIdx(ri); return; }
     seekBusyRef.current = true;
-    v.onseeked = () => { if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } } setPlayPose(null); setPlayIdx(ri); seekBusyRef.current = false; };
-    try { v.currentTime = refT2; } catch (e) { setPlayPose(null); seekBusyRef.current = false; }
+    seekSafe(v, refT2, (okSeek) => {
+      if (okSeek && v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
+      setPlayPose(null); setPlayIdx(ri); seekBusyRef.current = false; // drop the override regardless — never leave the lock stuck
+    });
   };
   /* entering place mode (or any tool mode) must never inherit the playback
      override — place gestures edit the REAL placement pose */
