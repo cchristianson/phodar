@@ -507,7 +507,8 @@ const HELP_SECTIONS = [
       ]},
       { h: "Time & aim", items: [
         { t: "Sighting date & time", d: "When it happened — anchors the Sun, Moon, stars, satellites and archived aircraft to the real sky." },
-        { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout). This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
+        { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout), drawn on the map as a teal ray. This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
+        { t: "Field of view", d: "How wide the shot was, drawn as a cone around the aim so you can see how much sky the photo spans. Comes from the lens metadata when the photo carries it (locked, ✓); otherwise a slider you set to match the shot — the same FOV the measurement uses." },
         { t: "How high you looked", d: "Your up-angle (−20° to straight-up 90°). A side-view diagram pops up as you slide. Metadata has no up/down angle — set it roughly, fine-tune in the sky view." },
         { t: "Camera height off the ground", d: "How high the camera was above ground. Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony; leave at ground for a normal shot." },
       ]},
@@ -4335,7 +4336,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
    Imagery by default (a rooftop is a better anchor than a street
    name), OSM street as the toggle.
    ============================================================ */
-function PinMap({ lat, lon, origin, others, onChange, bearing, tilt }) {
+function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef(null);     // {sat, street}
@@ -4462,9 +4463,23 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt }) {
           const upF = Math.max(0, Math.sin(t * D2R));        // 0 at/below horizon → 1 straight up
           const grF = Math.max(0.14, Math.cos(t * D2R));     // ground foreshortening (keep a stub)
           const len = 78 * grF;
+          /* field-of-view wedge — a cone spanning ±fov/2 about the aim, the same
+             representation the size/compare distance picker draws. Only when we
+             have an FOV (from lens metadata, or a user estimate); otherwise just
+             the plain arrow. Foreshortens with tilt exactly like the ray. */
+          const wedge = isNum(fov) ? (() => {
+            const h = (clampN(+fov, 1, 170) / 2) * D2R;
+            const wr = len * 1.06, N = 16, pts = ["0,0"];
+            for (let i = 0; i <= N; i++) { const a = -h + (2 * h) * i / N; pts.push(`${(wr * Math.sin(a)).toFixed(1)},${(-wr * Math.cos(a)).toFixed(1)}`); }
+            const ex = (wr * Math.sin(h)).toFixed(1), ey = (-wr * Math.cos(h)).toFixed(1);
+            return { poly: pts.join(" "), ex, ey };
+          })() : null;
           return (
             <>
               <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)`, opacity: 0.55 + 0.45 * grF }}>
+                {wedge && <polygon points={wedge.poly} fill="#5FD3BC" fillOpacity="0.13" stroke="none" />}
+                {wedge && <line x1="0" y1="0" x2={wedge.ex} y2={wedge.ey} stroke="#5FD3BC" strokeWidth="1.2" opacity="0.55" />}
+                {wedge && <line x1="0" y1="0" x2={-wedge.ex} y2={wedge.ey} stroke="#5FD3BC" strokeWidth="1.2" opacity="0.55" />}
                 <line x1="0" y1="0" x2="0" y2={-len} stroke="#5FD3BC" strokeWidth="2.5" />
                 <polygon points={`0,${-(len + 12)} -6,${-len} 6,${-len}`} fill="#5FD3BC" />
               </svg>
@@ -4659,6 +4674,13 @@ function PositionEditor({ src, update, others }) {
     const el = clampN(+deg, -20, 89.5); // cap just below the zenith — the sky view's gimbal limit
     update({ mediaAim: { az: isNum(src.mediaAim?.az) ? +src.mediaAim.az : (isNum(bearing) ? bearing : 0), el: +el.toFixed(1), roll: src.mediaAim?.roll ?? 0 } });
   };
+  /* horizontal field of view — draws the aim as a CONE on the map (not just an
+     arrow). When the lens metadata gives it (`meta.fovH`) it's locked/authoritative;
+     otherwise it's a user estimate set with the slider here (same `fovH` field the
+     measure step uses, so the two mirror). */
+  const hasFovMeta = isNum(src.meta?.fovH);
+  const fovH = isNum(src.fovH) ? +src.fovH : (hasFovMeta ? +src.meta.fovH : 68);
+  const setFovH = (v) => update({ fovH: +clampN(+v, 8, 160).toFixed(1) });
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -4775,7 +4797,7 @@ function PositionEditor({ src, update, others }) {
               <div style={{ marginTop: 8 }}>
                 <PinMap lat={+src.lat} lon={+src.lon}
                   origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
-                  others={others} bearing={bearing} tilt={tilt}
+                  others={others} bearing={bearing} tilt={tilt} fov={fovH}
                   onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
                 {/* aim sliders live UNDER the map so you set the ray you can see */}
                 <div style={{ marginTop: 6 }}>
@@ -4784,6 +4806,20 @@ function PositionEditor({ src, update, others }) {
                     <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{isNum(bearing) ? `${Math.round(bearing)}° ${compass8(bearing)}` : "drag to set"}</span>
                   </div>
                   <input type="range" min={0} max={359} step={1} value={isNum(bearing) ? bearing : 0} onChange={(e) => setBearing(+e.target.value)} />
+                </div>
+                {/* field of view — a cone on the map. From the lens when the photo
+                    carries it; otherwise a slider so you can widen/narrow the wedge
+                    to match the shot. */}
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <ML style={{ marginBottom: 1 }}>Field of view</ML>
+                    <span style={{ color: hasFovMeta ? "var(--teal)" : "var(--amber)", fontFamily: "var(--mono)", fontSize: 11 }}>
+                      {`${Math.round(fovH)}°`}{hasFovMeta ? " · from lens ✓" : " · estimate"}
+                    </span>
+                  </div>
+                  {hasFovMeta
+                    ? <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>The lens metadata sets the cone width — the wedge shows how much sky the photo spans.</div>
+                    : <input type="range" min={12} max={130} step={1} value={fovH} onChange={(e) => setFovH(+e.target.value)} />}
                 </div>
                 <div style={{ marginTop: 2, position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
