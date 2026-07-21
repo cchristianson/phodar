@@ -87,10 +87,13 @@ export function dirToPixK(g, natW, natH, az, el, roll, fov, k) {
                                         pointing too, matching the whole sky)
    (az,el) seed is the incoming center; it's only moved with ≥3 anchors, and
    bounded to ±8° of the seed so a mis-aim can't fling the pose. Returns
-   {az,el,roll,fov,k,rms}. */
+   {az,el,roll,fov,k,rms}.
+   `seed.lockFov`/`seed.lockK` pin FOV/distortion to the seed instead of fitting
+   them — used by per-frame video tracking, where the lens doesn't change between
+   frames so a sparse frame shouldn't be free to drift its FOV. */
 export function solvePoseAnchors(anchors, natW, natH, az0, el0, seed) {
   const n = anchors.length;
-  const fitCenter = n >= 3, fitK = n >= 2;
+  const fitCenter = n >= 3, fitK = n >= 2 && !seed.lockK;
   const P = { az: az0, el: el0, roll: seed.roll, fov: seed.fov, k: seed.k || 0 };
   const lim = { az: [az0 - 8, az0 + 8], el: [el0 - 8, el0 + 8], roll: [-90, 90], fov: [8, 150], k: [-0.6, 0.6] };
   const sse = (q) => {
@@ -98,7 +101,7 @@ export function solvePoseAnchors(anchors, natW, natH, az0, el0, seed) {
     for (const a of anchors) { const c = Math.min(1, Math.max(-1, dot(pixToDirK(a.px, a.py, natW, natH, q.az, q.el, q.roll, q.fov, q.k), a.g))); s += Math.acos(c) ** 2; }
     return s;
   };
-  const params = [...(fitCenter ? ["az", "el"] : []), "roll", "fov", ...(fitK ? ["k"] : [])];
+  const params = [...(fitCenter ? ["az", "el"] : []), "roll", ...(seed.lockFov ? [] : ["fov"]), ...(fitK ? ["k"] : [])];
   const step = { az: 1.0, el: 1.0, roll: 1.0, fov: 2.0, k: 0.02 };
   const cl = (pn, v) => Math.min(lim[pn][1], Math.max(lim[pn][0], v));
   for (let iter = 0; iter < 400; iter++) {

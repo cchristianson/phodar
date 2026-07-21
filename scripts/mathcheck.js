@@ -19,6 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -677,6 +678,77 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(sol3.fov, T.fov, 1.0, "3-anchor plate solve: recovered FOV");
   approx(sol3.k, T.k, 0.03, "3-anchor plate solve: recovered k");
   approx(sol3.rms, 0, 0.1, "3-anchor plate solve: all stars land (rms→0°)");
+}
+
+// --- video pose tracking (src/video/postrack.js) ---
+// Per-frame camera pose from tracked background features. Synthesize frames of a
+// bright-blob "sky" rotating by a known per-frame pose, plus a moving object, and
+// assert the tracker recovers the rotation and rejects the object.
+{
+  const natW = 4032, natH = 3024, TW = 400, TH = 300, sc = natW / TW;
+  const P0 = { az: 250, el: 12, roll: 0, fov: 60, k: 0 };
+  const bg = []; // 35 background dirs spread across the frame under P0
+  for (let u = -3; u <= 3; u++) for (let v = -2; v <= 2; v++) bg.push(dirFromAzEl(P0.az + u * 7, P0.el + v * 7));
+  const drawBlob = (data, bx, by, val) => {
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+      const x = Math.round(bx) + dx, y = Math.round(by) + dy;
+      if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+      const g = val * Math.exp(-(dx * dx + dy * dy) / 4), i = (y * TW + x) * 4;
+      data[i] = Math.min(255, data[i] + g); data[i + 1] = Math.min(255, data[i + 1] + g); data[i + 2] = Math.min(255, data[i + 2] + g);
+    }
+  };
+  const renderFrame = (pose, objDir, objPose) => {
+    const data = new Uint8ClampedArray(TW * TH * 4);
+    for (let i = 0; i < TW * TH; i++) data[i * 4 + 3] = 255;
+    for (const g of bg) { const p = dirToPixK(g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k); if (p) drawBlob(data, p.px / sc, p.py / sc, 235); }
+    if (objDir) { const p = dirToPixK(objDir, natW, natH, objPose.az, objPose.el, objPose.roll, objPose.fov, objPose.k); if (p) drawBlob(data, p.px / sc, p.py / sc, 235); }
+    return data;
+  };
+
+  // 1. poseFromTracks recovers a known rotation and trims a moving-object outlier
+  for (const Pn of [{ az: 251, el: 12, roll: 0 }, { az: 253, el: 13, roll: 1.5 }, { az: 248, el: 11.4, roll: -1 }]) {
+    const anchors = bg.map((g) => { const p = dirToPixK(g, natW, natH, Pn.az, Pn.el, Pn.roll, P0.fov, P0.k); return p ? { px: p.px, py: p.py, g } : null; }).filter(Boolean);
+    anchors.push({ px: natW * 0.5, py: natH * 0.5, g: dirFromAzEl(P0.az + 3, P0.el + 25) }); // object: pixel↔g mismatch
+    const sol = poseFromTracks(anchors, natW, natH, P0, { lockFov: true, lockK: true });
+    approx(sol.az, Pn.az, 0.15, "postrack: recovered az");
+    approx(sol.el, Pn.el, 0.15, "postrack: recovered el");
+    approx(sol.roll, Pn.roll, 0.25, "postrack: recovered roll");
+    approx(sol.n, bg.length, 0, "postrack: object outlier trimmed");
+    approx(sol.rms, 0, 0.03, "postrack: bg features land (rms→0°)");
+  }
+
+  // 2. trackFeatures matches the projected prediction; a flat patch is rejected
+  {
+    const P1 = { az: 251, el: 12.4, roll: 0.6, fov: 60, k: 0 };
+    const f0 = renderFrame(P0), f1 = renderFrame(P1);
+    const feats = bg.slice(0, 10).map((g) => { const p = dirToPixK(g, natW, natH, P0.az, P0.el, P0.roll, P0.fov, P0.k); return { g, tx: p.px / sc, ty: p.py / sc, px: p.px / sc, py: p.py / sc }; });
+    const tr = trackFeatures(f0, f1, TW, TH, feats, { patch: 11, search: 14 });
+    let okCount = 0, maxErr = 0;
+    for (let i = 0; i < feats.length; i++) { const q = dirToPixK(feats[i].g, natW, natH, P1.az, P1.el, P1.roll, P1.fov, P1.k); if (tr[i].ok) { okCount++; maxErr = Math.max(maxErr, Math.hypot(tr[i].px - q.px / sc, tr[i].py - q.py / sc)); } }
+    approx(okCount >= 8 ? 1 : 0, 1, 0, "trackFeatures: most features tracked");
+    approx(maxErr < 1.2 ? 1 : 0, 1, 0, "trackFeatures: within ~1px of prediction");
+    const flatBuf = new Uint8ClampedArray(TW * TH * 4); for (let i = 0; i < TW * TH; i++) flatBuf[i * 4 + 3] = 255;
+    const flat = trackFeatures(flatBuf, flatBuf, TW, TH, [{ tx: 100, ty: 100, px: 100, py: 100 }], {})[0];
+    approx(flat.ok ? 0 : 1, 1, 0, "trackFeatures: flat/low-texture patch rejected");
+  }
+
+  // 3. end-to-end initTracker/stepTracker recovers a 4-frame rotation path
+  {
+    const poses = [P0, { az: 250.8, el: 12.3, roll: 0.5, fov: 60, k: 0 }, { az: 251.7, el: 12.7, roll: 1.1, fov: 60, k: 0 }, { az: 252.4, el: 13.2, roll: 1.6, fov: 60, k: 0 }];
+    const frames = poses.map((p) => renderFrame(p));
+    const tracker = initTracker(frames[0], TW, TH, natW, natH, P0, { mode: "night", minMatch: 8, maxN: 40, patch: 11, search: 14 });
+    approx(tracker.features.length >= 20 ? 1 : 0, 1, 0, "initTracker: seeded background features");
+    let maxAzErr = 0, maxRollErr = 0, minInliers = 999;
+    for (let i = 1; i < frames.length; i++) {
+      const r = stepTracker(tracker, frames[i]);
+      maxAzErr = Math.max(maxAzErr, Math.abs(r.pose.az - poses[i].az));
+      maxRollErr = Math.max(maxRollErr, Math.abs(r.pose.roll - poses[i].roll));
+      minInliers = Math.min(minInliers, r.nInliers);
+    }
+    approx(maxAzErr < 0.4 ? 1 : 0, 1, 0, "stepTracker: az path recovered (<0.4°)");
+    approx(maxRollErr < 0.5 ? 1 : 0, 1, 0, "stepTracker: roll path recovered (<0.5°)");
+    approx(minInliers >= 12 ? 1 : 0, 1, 0, "stepTracker: held enough inliers each frame");
+  }
 }
 
 // --- aspectSpan: two-view mirror ambiguity (same-span mirror must be reported) ---
