@@ -383,7 +383,18 @@ terrain stay frozen and only the object moves. Build ladder:
    pose is resolution-independent) and writes `source.posePath =
    [{t,az,el,roll,fov,k,n}]` (persists through autosave/pack; only media
    handles are stripped). Frames with <6 background refs HOLD the previous
-   pose and are counted honestly.
+   pose and are counted honestly. **Zoom is tracked** (UFO clips almost
+   always zoom): rotation preserves pairwise pixel distances between the
+   tracked features, zoom scales them — stepTracker's median distance-ratio
+   `s` detects it, re-tries failed edge features under the scale-corrected
+   FOV (they overshoot the NCC search during a zoom), and seeds the solve
+   with that FOV — freed for polish at ≥8 anchors, else locked at the
+   estimate (a sparse frame never wanders FOV on its own; lockFov stays on
+   when s≈1, so fixed-lens clips stay drift-free). Playback applies the
+   per-frame FOV automatically. `detectBgFeatures` 'auto' mode COMBINES
+   star blobs + gradient corners (a dusk clip uses stars AND the tree
+   line; either alone was wasteful). Asserted in mathcheck (60→46° zoom
+   sweep recovered to ~1°, az locked; tree + stars both contribute).
 2. Track points convert through their own frame's pose (removes the current
    "camera never moved" assumption — the biggest hidden video error today).
 3. World-stabilized playback/exhibit render = existing mesh warp, per frame.

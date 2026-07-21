@@ -3343,9 +3343,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const weak = path.filter((p) => p.n < 6).length;
       if (update) update({ posePath: path });
       setStabBusy(0);
+      const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
+      const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
