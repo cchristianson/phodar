@@ -804,6 +804,48 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(ancs >= 4 ? 1 : 0, 1, 0, "zoom cycle + anchors: re-anchoring stayed active");
   }
 
+  // 4f. SELF-SIMILAR scene (foliage): the field regression. A jittered field of
+  // similar-but-distinct blobs offers a lookalike near every prediction, so a
+  // zoom can be MASKED by false in-place matches (s reads ≈1, pose goes
+  // self-consistently wrong at the old FOV). The per-step scale probe's
+  // radial-fit coherence must see through it across a full zoom cycle.
+  {
+    const bg2 = [];
+    let q = 0;
+    for (let u = -9; u <= 9; u++) for (let v = -6; v <= 6; v++) {
+      q++;
+      const ju = (((q * 37) % 13) / 13 - 0.5) * 1.4, jv = (((q * 53) % 11) / 11 - 0.5) * 1.4;
+      bg2.push({ g: dirFromAzEl(P0.az + u * 2.2 + ju, P0.el + v * 2.2 + jv), sig: 1.4 + ((q * 7) % 5) * 0.55, amp: 150 + ((q * 13) % 7) * 14 });
+    }
+    const drawSoft = (data, bx, by, sig, amp) => {
+      const R = Math.ceil(sig * 2.6);
+      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+        const x = Math.round(bx) + dx, y = Math.round(by) + dy;
+        if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+        const g = amp * Math.exp(-(dx * dx + dy * dy) / (2 * sig * sig)), i = (y * TW + x) * 4;
+        data[i] = Math.min(255, data[i] + g); data[i + 1] = Math.min(255, data[i + 1] + g); data[i + 2] = Math.min(255, data[i + 2] + g);
+      }
+    };
+    const renderFoliage = (pose) => {
+      const data = new Uint8ClampedArray(TW * TH * 4);
+      for (let i = 0; i < TW * TH; i++) data[i * 4 + 3] = 255;
+      for (const b of bg2) { const p = dirToPixK(b.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k); if (p && p.px / sc > -6 && p.px / sc < TW + 6 && p.py / sc > -6 && p.py / sc < TH + 6) drawSoft(data, p.px / sc, p.py / sc, b.sig, b.amp); }
+      return data;
+    };
+    const ff = [60, 55, 50, 45, 41, 41, 45, 50, 55, 60];
+    const fposes = ff.map((f, i) => ({ az: 250 + i * 0.1, el: 12 + i * 0.04, roll: 0, fov: f, k: 0 }));
+    const fframes = fposes.map(renderFoliage);
+    const tk = initTracker(fframes[0], TW, TH, natW, natH, P0, { mode: "auto", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+    let maxFovErr = 0, maxAzErr = 0;
+    for (let i = 1; i < fframes.length; i++) {
+      const r = stepTracker(tk, fframes[i]);
+      maxFovErr = Math.max(maxFovErr, Math.abs(r.pose.fov - fposes[i].fov));
+      maxAzErr = Math.max(maxAzErr, Math.abs(r.pose.az - fposes[i].az));
+    }
+    approx(maxFovErr < 1.0 ? 1 : 0, 1, 0, "foliage zoom cycle: masked-zoom seen through (fov tracks <1°)");
+    approx(maxAzErr < 0.3 ? 1 : 0, 1, 0, "foliage zoom cycle: az stays locked");
+  }
+
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
   // a +0.4° az error into every g and the pose) — the incremental solve alone
   // would confirm the drift, but matching the pristine REFERENCE features must

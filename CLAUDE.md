@@ -401,7 +401,21 @@ terrain stay frozen and only the object moves. Build ladder:
    everything under it (asserted: 60→40° in ONE step recovers to <1.5°).
    On top, the stabilize walk BISECTS in time on a failed step (tracker
    snapshot → rewind → midpoint frame, 2 levels → ~0.06 s), halving the
-   per-step change exactly where the motion is fastest. **Drift &
+   per-step change exactly where the motion is fastest. **Masked zoom
+   (self-similar scenes)**: foliage/clouds offer a lookalike patch near
+   every prediction, so a zoom can be FALSELY tracked "in place" (s reads
+   ≈1, all features "ok", pose self-consistently wrong at the old FOV —
+   field-observed with 36 refs mid-zoom). Defense: a per-step SCALE PROBE
+   on the 12 outermost features (edge = max zoom signal) scores a rung
+   ladder of factors by RADIAL-FIT COHERENCE — a true scale mismatch is a
+   LINEAR radial residual (slope fitted out), false lookalike matches
+   scatter — and a clearly-more-coherent rung wins a full re-track. The
+   collapse rescue uses a radius-DIVERSE subset instead (under violent
+   zoom-in only central features stay in-frame). Also: top-up only runs
+   on SOLVED steps — re-seeding while the pose is held bakes the held
+   error into every new feature's world dir (the poisoning that made the
+   tracker go blind to zoom). Asserted: a jittered self-similar field
+   through a 60→41→60 cycle tracks FOV to <1° with az locked. **Drift &
    re-anchoring**: incremental drift comes from feature TURNOVER
    (replacements inherit the current pose estimate's error into their
    world dir — a zoom episode churns many). Fix: the tracker keeps the
