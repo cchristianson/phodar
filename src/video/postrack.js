@@ -693,6 +693,35 @@ export function stepTracker(tracker, nextData, opts = {}) {
   return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, held: !solved && !glob };
 }
 
+/* ---------- OBJECT tracking (the thing that moves) ----------
+   The camera's own motion is already solved (the pose path), so the object's
+   sky motion is the residual. Step the object's template into the next frame:
+   predict its pixel by re-projecting its PREVIOUS world direction under the
+   NEW frame's pose — a world-stationary object lands exactly there, a moving
+   one lands nearby — then NCC-search around the prediction and convert the
+   match back to a world direction through that frame's pose. On a miss the
+   prediction is held (world-stationary hypothesis) and reported ok:false so
+   callers can mark the sample as low-confidence.
+   st: { tx, ty, g } — template center in tracking-buffer px + world dir. */
+export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
+  const natW = opts.natW, natH = opts.natH, sc = natW / w;
+  const p = dirToPixK(st.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+  if (!p) return { ...st, ok: false, ncc: -1 };
+  const bx = p.px / sc, by = p.py / sc;
+  if (bx < -4 || bx > w + 4 || by < -4 || by > h + 4) return { tx: bx, ty: by, g: st.g, ok: false, ncc: -1 };
+  /* NEAR-FIRST search: over one step the object can only be a small angle
+     from its prediction, but a wide window can contain a LOOKALIKE background
+     feature (a star, a bright leaf) that ties or beats the true match — so
+     search a tight ring first and widen only on a miss. */
+  const f0 = { tx: st.tx, ty: st.ty, px: bx, py: by };
+  const minNcc = opts.minNcc == null ? 0.45 : opts.minNcc;
+  let tr = trackFeatures(prevData, nextData, w, h, [f0], { patch: opts.patch || 17, search: 8, minNcc });
+  if (!tr[0] || !tr[0].ok) tr = trackFeatures(prevData, nextData, w, h, [f0], { patch: opts.patch || 17, search: opts.search || 22, minNcc });
+  if (!tr[0] || !tr[0].ok) return { tx: bx, ty: by, g: st.g, ok: false, ncc: tr[0] ? tr[0].ncc : -1 };
+  const g2 = pixToDirK(tr[0].px * sc, tr[0].py * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+  return { tx: tr[0].px, ty: tr[0].py, g: g2, ok: true, ncc: tr[0].ncc };
+}
+
 /* Interpolate a pose path at any time t — az wrap-aware, everything else
    linear. Clamps to the ends. Used by stabilized playback/export to give
    every video frame a pose even between solved samples. */

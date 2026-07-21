@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -731,6 +731,31 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const flatBuf = new Uint8ClampedArray(TW * TH * 4); for (let i = 0; i < TW * TH; i++) flatBuf[i * 4 + 3] = 255;
     const flat = trackFeatures(flatBuf, flatBuf, TW, TH, [{ tx: 100, ty: 100, px: 100, py: 100 }], {})[0];
     approx(flat.ok ? 0 : 1, 1, 0, "trackFeatures: flat/low-texture patch rejected");
+  }
+
+  // 2b. stepObject: the OBJECT tracker follows a mover through camera motion —
+  // the camera pans while the object flies its own path; the recovered angular
+  // track must match the OBJECT's truth, not freeze at the marked spot.
+  {
+    const poses = [P0,
+      { az: 250.6, el: 12.2, roll: 0.3, fov: 60, k: 0 },
+      { az: 251.2, el: 12.4, roll: 0.5, fov: 60, k: 0 },
+      { az: 251.8, el: 12.5, roll: 0.4, fov: 60, k: 0 }];
+    const objAzEl = (i) => ({ az: 249 + i * 0.9, el: 15.5 + i * 0.35 });
+    const frames = poses.map((p, i) => { const o = objAzEl(i); return renderFrame(p, dirFromAzEl(o.az, o.el), p); });
+    const o0 = objAzEl(0);
+    const p0px = dirToPixK(dirFromAzEl(o0.az, o0.el), natW, natH, P0.az, P0.el, P0.roll, P0.fov, P0.k);
+    let st = { tx: p0px.px / sc, ty: p0px.py / sc, g: dirFromAzEl(o0.az, o0.el) };
+    let maxErr = 0, okAll = 1;
+    for (let i = 1; i < poses.length; i++) {
+      const o = stepObject(frames[i - 1], frames[i], TW, TH, st, poses[i], { natW, natH, patch: 11, search: 18 });
+      if (!o.ok) okAll = 0;
+      st = { tx: o.tx, ty: o.ty, g: o.g };
+      const ae = dirToAzEl(o.g), tru = objAzEl(i);
+      maxErr = Math.max(maxErr, Math.abs(ae.az - tru.az), Math.abs(ae.el - tru.el));
+    }
+    approx(okAll, 1, 0, "stepObject: the mover is matched on every frame");
+    approx(maxErr < 0.25 ? 1 : 0, 1, 0, "stepObject: recovered angular path ≈ truth (<0.25°)");
   }
 
   // 3. end-to-end initTracker/stepTracker recovers a 4-frame rotation path

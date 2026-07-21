@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -533,7 +533,7 @@ const HELP_SECTIONS = [
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
-        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (snap/star-align) so the whole path inherits an accurate anchor. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (place mode: snap/star-align) so the whole path inherits an accurate anchor. The button lives OUTSIDE place mode so a running solve can't be nudged. It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
@@ -965,16 +965,31 @@ function MediaMeasure({ src, update, wizard }) {
      bug where the clip appeared only after leaving the step and coming back
      (a remount over a now-buffered file). A hair of seek triggers the paint.
      Guarded to fire once, near t=0, so it never fights the scrubber. */
+  const restoreRunRef = useRef(0);
   const paintFirstFrame = () => {
     const el = mediaRef.current;
     if (!el || media?.kind !== "video") return;
     /* restore the frame the object was marked on when revisiting this step —
        otherwise it reloads at the start and loses the mark. Falls back to a
        hair past 0 so iOS still decodes a frame instead of showing blank.
-       Only fires on (re)load events, so it never fights the scrubber. */
+       iOS Safari CLAMPS currentTime while the seekable range is still empty
+       (and never fires loadeddata for a fresh video), so a single seek can
+       silently land back at 0 — field-observed as "the frame I chose resets
+       after a refresh". Verify the seek actually LANDED and retry on a short
+       timer until it does; any user scrub (seek()) cancels the retries. */
     const marked = isNum(src?.A?.videoTime) ? +src.A.videoTime : 0;
     const target = marked > 0.01 ? marked : Math.min(0.04, (el.duration || 1) / 4);
-    try { if (Math.abs(el.currentTime - target) > 0.02) { el.currentTime = target; setVidT(target); } } catch (e) { /* seek not ready yet — onLoadedData retries */ }
+    const run = ++restoreRunRef.current;
+    const tryTo = (n) => {
+      const v2 = mediaRef.current;
+      if (!v2 || restoreRunRef.current !== run) return;
+      try { if (Math.abs(v2.currentTime - target) > 0.02) { v2.currentTime = target; setVidT(target); } } catch (e) { /* not seekable yet — the timer below retries */ }
+      if (n < 12) setTimeout(() => {
+        const v3 = mediaRef.current;
+        if (v3 && restoreRunRef.current === run && Math.abs(v3.currentTime - target) > 0.05) tryTo(n + 1);
+      }, 250);
+    };
+    tryTo(0);
   };
   /* The seek nudge alone isn't always enough on the FIRST load of a fresh
      file: iOS Safari can leave a brand-new blob-URL <video> blank until the
@@ -1330,6 +1345,7 @@ function MediaMeasure({ src, update, wizard }) {
 
   const seek = (t) => {
     const el = mediaRef.current;
+    restoreRunRef.current++;   // a user scrub owns the frame — cancel any marked-frame restore retries
     if (el && media?.kind === "video") { el.currentTime = t; setVidT(t); }
   };
 
@@ -3068,11 +3084,41 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
        visible even when the playing frame has wandered off-view — don't gate
        them on the frame's center then (P() drops behind-camera points itself) */
     if (centerOK || playPose) {
+      /* during stabilized playback, the object marks RIDE THE OBJECT TRACK:
+         rotate their directions by the rotation carrying the marked object
+         direction onto the tracked direction at the playing time, so the
+         outline stays on the real (moving) object instead of freezing at
+         the marked spot. Sight-line B and track points stay pinned — they
+         are their own observations. */
+      const objFollow = (() => {
+        if (!playPose || !isNum(playPose.t)) return null;
+        const op = source?.objPath;
+        if (!Array.isArray(op) || op.length < 2 || !source?.A?.p1 || !source?.A?.p2) return null;
+        const t = +playPose.t;
+        let lo = 0, hi = op.length - 1;
+        if (t <= op[0].t) hi = 0; else if (t >= op[op.length - 1].t) lo = op.length - 1;
+        else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (op[m].t <= t) lo = m; else hi = m; }
+        const a = op[lo], b = op[hi], u = hi === lo ? 0 : (t - a.t) / Math.max(1e-9, b.t - a.t);
+        const dAzT = ((b.az - a.az + 540) % 360) - 180;
+        const dT = dirFromAzEl(a.az + dAzT * u, a.el + (b.el - a.el) * u);
+        const mid = { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 };
+        const d0 = pixDirMarked(mid.x, mid.y);
+        const ax = [d0[1] * dT[2] - d0[2] * dT[1], d0[2] * dT[0] - d0[0] * dT[2], d0[0] * dT[1] - d0[1] * dT[0]];
+        const s = Math.hypot(ax[0], ax[1], ax[2]), c = clampN(dot(d0, dT), -1, 1);
+        if (s < 1e-9) return null;
+        const k = [ax[0] / s, ax[1] / s, ax[2] / s];
+        return (v2) => {                                   // Rodrigues rotation d0 → dT
+          const kv = [k[1] * v2[2] - k[2] * v2[1], k[2] * v2[0] - k[0] * v2[2], k[0] * v2[1] - k[1] * v2[0]];
+          const kd = dot(k, v2);
+          return [v2[0] * c + kv[0] * s + k[0] * kd * (1 - c), v2[1] * c + kv[1] * s + k[1] * kd * (1 - c), v2[2] * c + kv[2] * s + k[2] * kd * (1 - c)];
+        };
+      })();
       const P = (pt) => { const pr = projectD(pixDirMarked(pt.x, pt.y)); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
+      const PF = (pt) => { const d = pixDirMarked(pt.x, pt.y); const pr = projectD(objFollow ? objFollow(d) : d); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
       const tr = (source.track || []).filter((p) => p.x != null).sort((a, b) => a.t - b.t).map(P).filter(Boolean);
       photoMarks = {
-        a1: source.A?.p1 ? P(source.A.p1) : null,
-        a2: source.A?.p2 ? P(source.A.p2) : null,
+        a1: source.A?.p1 ? PF(source.A.p1) : null,
+        a2: source.A?.p2 ? PF(source.A.p2) : null,
         pb: source.B?.pb ? P(source.B.pb) : null,
         trk: tr,
       };
@@ -3383,9 +3429,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
+      /* OBJECT track rides the same walk: the camera poses being solved
+         anyway turn the marked object's template match into a true angular
+         path (see stepObject). Seeded from the measure-step marks' midpoint
+         on this reference frame. */
+      const objMid = source?.A?.p1 && source?.A?.p2
+        ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null;
+      const objSeed = objMid ? {
+        tx: objMid.x * sc, ty: objMid.y * sc,
+        g: pixToDirK(objMid.x, objMid.y, source.natW, source.natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
+      } : null;
+      const objPath = [];
+      if (objSeed) { const ae0 = dirToAzEl(objSeed.g); objPath.push({ t: +refT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 }); }
+      const objRef = { st: null };
+      let objOk = 0, objMiss = 0;
       let done = 0, ancCount = 0; const total = fwd.length + bwd.length;
       const walk = async (list, tracker) => {
         let prevT = refT;
+        objRef.st = objSeed ? { ...objSeed } : null;   // each pass restarts from the marked frame
         /* "meet in the middle": when a step RE-ANCHORS absolutely against the
            reference frame, distribute its drift correction back across this
            pass's entries since the last anchor, so the incremental chain bends
@@ -3398,12 +3459,27 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
              rescue; halving the gap halves the per-step change exactly where
              the motion is fastest. Two levels → down to ~0.06 s. */
           const snap = () => ({ prevData: tracker.prevData, lastPose: tracker.lastPose, features: tracker.features, nextId: tracker.nextId });
-          const stepAt = async (tt) => { await seek(tt); return stepTracker(tracker, grab()); };
+          const stepAt = async (tt) => {
+            await seek(tt);
+            const buf = grab();
+            const prevBuf = tracker.prevData;          // before stepTracker replaces it
+            const r2 = stepTracker(tracker, buf);
+            if (objRef.st) {
+              const o = stepObject(prevBuf, buf, TW, TH, objRef.st, r2.pose, { natW: source.natW, natH: source.natH });
+              objRef.st = { tx: o.tx, ty: o.ty, g: o.g };
+              const ae = dirToAzEl(o.g);
+              objPath.push({ t: tt, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3), q: o.ok ? +Math.max(0, o.ncc).toFixed(2) : 0 });
+              if (o.ok) objOk++; else objMiss++;
+            }
+            return r2;
+          };
           const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
             const s0 = snap();
+            const so0 = { st: objRef.st, len: objPath.length };
             let r = await stepAt(tTo);
             if (r.nInliers < 6 && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
               Object.assign(tracker, s0);               // rewind — take it in two halves
+              objRef.st = so0.st; objPath.length = so0.len;
               const tm = +((tFrom + tTo) / 2).toFixed(3);
               const rm = await tryStep(tFrom, tm, depth - 1);
               path.push(entry(tm, rm));
@@ -3464,7 +3540,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* honesty: frames with too few background references held the previous
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
-      if (update) update({ posePath: path });
+      /* object path: sort (fwd+bwd interleave), keep only when the template
+         actually held on for a usable fraction — a lost object (clouds, tiny
+         and faint, left the frame) should not fabricate a track */
+      objPath.sort((a, b) => a.t - b.t);
+      const objGood = objSeed && objOk >= Math.max(4, (objOk + objMiss) * 0.3);
+      if (update) update({ posePath: path, objPath: objGood ? objPath : null });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -3472,9 +3553,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
+      const objNote = objSeed ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames)` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
@@ -3619,10 +3701,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            object gets a much tighter crop than a near/big one. */
         camFov = clampN(Math.max(objAng * 12, sep * 1.9), 1.6, 70);
       }
-      const B = photoBasis(ce.az, ce.el, 0);
+      let B = photoBasis(ce.az, ce.el, 0);
       let mx = 0.05, my = 0.05;
       for (const d of corners) { const z = dot(d, B.f); if (z <= 0.05) continue; mx = Math.max(mx, Math.abs(dot(d, B.r) / z)); my = Math.max(my, Math.abs(dot(d, B.u) / z)); }
       if (mode !== "crop") camFov = clampN(2 * Math.atan(Math.max(mx, my / aspect) / 0.94) * R2D, 20, 118);
+      /* close-up FOLLOWS the object when a track exists: the virtual camera
+         re-centers on the tracked direction each frame, so the object stays
+         in the middle of the crop even as it crosses the sky */
+      const objTrk = mode === "crop" && Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : null;
+      const objAt = (t) => {
+        const op = objTrk;
+        let lo = 0, hi = op.length - 1;
+        if (t <= op[0].t) hi = 0; else if (t >= op[op.length - 1].t) lo = op.length - 1;
+        else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (op[m].t <= t) lo = m; else hi = m; }
+        const a = op[lo], b = op[hi], u = hi === lo ? 0 : (t - a.t) / Math.max(1e-9, b.t - a.t);
+        const dAzT = ((b.az - a.az + 540) % 360) - 180;
+        return { az: (((a.az + dAzT * u) % 360) + 360) % 360, el: a.el + (b.el - a.el) * u };
+      };
       /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
          most-zoomed frame's pixel density survives (tan-space ratio of the
          camera FOV to the finest source FOV). PREFERRED ENCODER: WebCodecs
@@ -3641,26 +3736,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           : Math.min(1920, Math.max(1280, Math.round(ideal / 2) * 2));
       }
       const bpsFor = (w2, h2) => clampN(Math.round(8e6 * (w2 * h2) / (1920 * 1080)), 6e6, isIOS ? 16e6 : 25e6);
-      let wcCfg = null;
-      if (typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined") {
-        const widths = [...new Set([OUT_W, Math.min(OUT_W, 2560), Math.min(OUT_W, 1920)])];
-        probe: for (const w2 of widths) {
-          const h2 = Math.round(w2 * aspect / 2) * 2;
-          for (const codec of ["avc1.640033", "avc1.640032", "avc1.64002a", "avc1.4d0028", "avc1.42e01f"]) {
-            const cfg = { codec, width: w2, height: h2, bitrate: bpsFor(w2, h2), framerate: 30, latencyMode: "realtime", avc: { format: "avc" } };
-            try { const s2 = await VideoEncoder.isConfigSupported(cfg); if (s2 && s2.supported) { wcCfg = cfg; OUT_W = w2; break probe; } } catch (e) { }
-          }
-        }
-      }
-      if (!wcCfg && mode === "full") OUT_W = Math.min(OUT_W, isIOS ? 2560 : 3840); // realtime-encoder fallback: keep the safer cap
-      const OUT_H = Math.round(OUT_W * aspect / 2) * 2;
-      const tH = Math.tan((camFov * RAD) / 2), tV = tH * OUT_H / OUT_W;
+      const desiredW = OUT_W;
+      /* mutable render geometry: the encode ladder below can retry at a
+         smaller size after a RUNTIME encoder failure (isConfigSupported can
+         say yes and the hardware still refuse — field-observed), rebuilding
+         the hidden canvas in place */
+      let OUT_H = 0, tH = 0, tV = 0, ctx = null;
+      const setSize = (w2) => {
+        OUT_W = w2; OUT_H = Math.round(w2 * aspect / 2) * 2;
+        tH = Math.tan((camFov * RAD) / 2); tV = tH * OUT_H / OUT_W;
+        if (cvs && cvs.parentNode) cvs.parentNode.removeChild(cvs);
+        cvs = document.createElement("canvas"); cvs.width = OUT_W; cvs.height = OUT_H;
+        cvs.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
+        document.body.appendChild(cvs);
+        ctx = cvs.getContext("2d");
+      };
       const proj = (d) => { const z = dot(d, B.f); if (z <= 0.001) return null; return [(0.5 + (dot(d, B.r) / z) / (2 * tH)) * OUT_W, (0.5 - (dot(d, B.u) / z) / (2 * tV)) * OUT_H]; };
-      /* output canvas (hidden in the DOM — Safari captureStream reliability) */
-      cvs = document.createElement("canvas"); cvs.width = OUT_W; cvs.height = OUT_H;
-      cvs.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
-      document.body.appendChild(cvs);
-      const ctx = cvs.getContext("2d");
       const tex = document.createElement("canvas");
       /* warp-texture cap: 1600 px matches live playback; the resolution modes
          keep the full source frame (their whole point is native detail) */
@@ -3670,6 +3761,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tctx = tex.getContext("2d");
       const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
       const drawFrame = (p) => {
+        if (objTrk && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
         /* az/el grid, world-locked — THE debugging reference: if stabilization
            holds, the scenery rides these lines while the frame moves. Grid
@@ -3743,13 +3835,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         catch (e) { if (!f) { f = true; clearTimeout(wd); res(false); } }
       });
       const t0 = path[0].t, t1 = path[path.length - 1].t;
-      let blob = null, ext = "mp4";
-      if (wcCfg) {
-        /* ---- OFFLINE encode (WebCodecs): each frame gets an explicit
-           timestamp, so duration is exact by construction; the encoder is
-           throttled by its own queue, never by the wall clock. A failed seek
-           re-encodes the previous texture at the right timestamp (a brief
-           freeze, never lost time). ---- */
+      let blob = null, ext = "mp4", lastErr = null;
+      const probeWC = async (w2) => {
+        const h2 = Math.round(w2 * aspect / 2) * 2;
+        for (const codec of ["avc1.640033", "avc1.640032", "avc1.64002a", "avc1.4d0028", "avc1.42e01f"]) {
+          const cfg = { codec, width: w2, height: h2, bitrate: bpsFor(w2, h2), framerate: 30, latencyMode: "realtime", avc: { format: "avc" } };
+          try { const s2 = await VideoEncoder.isConfigSupported(cfg); if (s2 && s2.supported) return cfg; } catch (e) { }
+        }
+        return null;
+      };
+      /* ---- OFFLINE encode (WebCodecs): each frame gets an explicit
+         timestamp, so duration is exact by construction; the encoder is
+         throttled by its own queue, never by the wall clock. A failed seek
+         re-encodes the previous texture at the right timestamp (a brief
+         freeze, never lost time). ---- */
+      const wcAttempt = async (cfg) => {
+        setSize(cfg.width);
         const samples = []; let avcC = null, encErr = null;
         const enc = new VideoEncoder({
           output: (c, m) => {
@@ -3760,7 +3861,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           },
           error: (e) => { encErr = e; },
         });
-        enc.configure(wcCfg);
+        enc.configure(cfg);
         const total = Math.max(2, Math.round((t1 - t0) * 30));
         for (let fi = 0; fi < total; fi++) {
           if (exportAbortRef.current !== run || encErr) break;
@@ -3770,21 +3871,35 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const vf = new VideoFrame(cvs, { timestamp: Math.round(fi * 1e6 / 30), duration: Math.round(1e6 / 30) });
           enc.encode(vf, { keyFrame: fi % 60 === 0 });
           vf.close();
-          while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5));
+          while (enc.encodeQueueSize > 4 && !encErr) await new Promise((r) => setTimeout(r, 5));
           setExporting(clampN(fi / total, 0.01, 0.99));
           if ((fi & 7) === 0) await new Promise((r) => setTimeout(r, 0));
         }
         if (!encErr && exportAbortRef.current === run) await enc.flush();
         try { enc.close(); } catch (e) { }
         if (encErr) throw encErr;
-        if (exportAbortRef.current === run && avcC && samples.length)
-          blob = new Blob([muxMp4({ width: OUT_W, height: OUT_H, fps: 30, avcC, samples })], { type: "video/mp4" });
-      } else {
-        /* ---- REALTIME fallback (MediaRecorder) for browsers without
-           WebCodecs. Wall-clock paced both ways: neither lag the clock (slow
-           seeks → skip ahead) nor outrun it (fast seeks → wait); a stalled
-           seek pauses the recorder with the span excluded from the pacing
-           clock, so a stall can neither eat recorded time nor skip content. ---- */
+        if (exportAbortRef.current !== run || !avcC || !samples.length) return null;
+        return new Blob([muxMp4({ width: OUT_W, height: OUT_H, fps: 30, avcC, samples })], { type: "video/mp4" });
+      };
+      if (typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined") {
+        /* runtime step-down ladder: isConfigSupported can accept a size the
+           hardware then refuses at encode time — try smaller before giving
+           up on the offline path entirely */
+        for (const w2 of [...new Set([desiredW, Math.min(desiredW, 2560), Math.min(desiredW, 1920)])]) {
+          if (exportAbortRef.current !== run) break;
+          const cfg = await probeWC(w2);
+          if (!cfg) continue;
+          try { blob = await wcAttempt(cfg); } catch (e) { lastErr = e; blob = null; }
+          if (blob || exportAbortRef.current !== run) break;
+        }
+      }
+      if (!blob && exportAbortRef.current === run) {
+        /* ---- REALTIME fallback (MediaRecorder) — no WebCodecs, or every
+           offline attempt failed. Wall-clock paced both ways: neither lag the
+           clock (slow seeks → skip ahead) nor outrun it (fast seeks → wait);
+           a stalled seek pauses the recorder with the span excluded from the
+           pacing clock. Conservative iOS size cap (realtime 4K crashes). ---- */
+        setSize(mode === "full" && isIOS ? Math.min(desiredW, 2560) : desiredW);
         const stream = cvs.captureStream(30);
         const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
         const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bpsFor(OUT_W, OUT_H) } : { videoBitsPerSecond: bpsFor(OUT_W, OUT_H) });
@@ -3817,6 +3932,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           ext = (mime || "").includes("mp4") ? "mp4" : "webm";
         }
       }
+      if (!blob && exportAbortRef.current === run && lastErr) throw lastErr;
       if (blob) {
         /* keep the render: the share bundle packs the before/after pair, so
            the stabilized video must survive past this download (re-export
@@ -3829,7 +3945,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
         setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} (${OUT_W}×${OUT_H}) — world-locked at ${camFov.toFixed(0)}° camera FOV. It's also packed into the report bundle.`);
       } else setFlash("⬇ export cancelled");
-    } catch (e) { setFlash("⬇ export failed on this video"); }
+    } catch (e) {
+      /* say WHAT failed — "failed on this video" alone made field reports
+         undiagnosable */
+      const msg = e && (e.message || e.name) ? `${e.name || "error"}: ${e.message || ""}`.slice(0, 90) : "the browser refused the render";
+      setFlash(`⬇ export failed — ${msg}`);
+    }
     finally {
       setExporting(0);
       if (cvs && cvs.parentNode) cvs.parentNode.removeChild(cvs);
@@ -4606,20 +4727,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
-                {source.mediaKind === "video" && (
-                  <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1 }}
-                    title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play in look mode — the sky stays locked to the dome and only the object moves. Align this frame first (snap/star-align) for an accurate result."
-                    onClick={stabilize}>{stabBusy ? "🎞 solving…" : "🎞 Stabilize video"}</button>
-                )}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
                   → {pAz.toFixed(1)}° az · {pEl.toFixed(1)}° up · FOV {fovM.toFixed(1)}° · roll {pRoll.toFixed(1)}°
                 </span>
               </div>
             )}
             {source.mediaKind === "video" && (
-              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>
-                🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
-                {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 8 }}>
+                <span>
+                  🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set it on the measure step)
+                  {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+                </span>
+                {/* stabilize LIVES IN LOOK MODE — running it from place mode made
+                    it too easy to nudge the placement mid-solve (field report) */}
+                {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
+                  <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1 }}
+                    title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
+                    onClick={stabilize}>{stabBusy ? "🎞 solving…" : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                )}
               </div>
             )}
             {/* world-locked playback — each frame drawn at ITS solved pose; the
