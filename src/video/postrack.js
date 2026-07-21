@@ -16,7 +16,7 @@
    scripts/mathcheck.js against synthesized rotating frames.
    ============================================================ */
 
-import { D2R, R2D, dot, clampN } from "../math/geodesy.js";
+import { D2R, R2D, dot, clampN, dirToAzEl } from "../math/geodesy.js";
 import { pixToDirK, dirToPixK, solvePoseAnchors } from "../math/projection.js";
 import { detectStars } from "../checks/platesolve.js";
 
@@ -179,6 +179,117 @@ export function poseFromTracks(anchors, natW, natH, seedPose, opts = {}) {
   return { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k, rms, n: keep.length };
 }
 
+/* ---------- global registration against the reference frame ----------
+   Differential tracking cannot survive self-similar scenes under zoom: every
+   feature finds a lookalike patch near its prediction, the scale change is
+   masked, and the pose goes self-consistently wrong (field-observed
+   repeatedly). The robust PRIMARY is global: match the whole downsampled
+   frame against the reference across an explicit scale ladder — whole-frame
+   structure cannot alias the way local patches do, and the answer is
+   ABSOLUTE (reference-anchored), so drift is impossible by construction. */
+
+export function grayDown(data, w, h, W2) {  // RGBA → box-downsampled gray W2×H2
+  const H2 = Math.max(8, Math.round(h * W2 / w));
+  const g = new Float32Array(W2 * H2);
+  for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+    const x0 = Math.floor(x * w / W2), x1 = Math.max(x0 + 1, Math.floor((x + 1) * w / W2));
+    const y0 = Math.floor(y * h / H2), y1 = Math.max(y0 + 1, Math.floor((y + 1) * h / H2));
+    let s = 0, n = 0;
+    for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { const i = (yy * w + xx) * 4; s += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; n++; }
+    g[x + y * W2] = s / n;
+  }
+  return { g, w: W2, h: H2 };
+}
+
+/* zero-mean NCC of a small template swept over an image; returns best {x,y,ncc} */
+function nccSweep(im, tp) {
+  const { g, w, h } = im, { g: t, w: tw, h: th } = tp;
+  const n = tw * th;
+  let tMean = 0; for (let i = 0; i < n; i++) tMean += t[i];
+  tMean /= n;
+  let tVar = 0; for (let i = 0; i < n; i++) { const d = t[i] - tMean; tVar += d * d; }
+  if (tVar < 1e-3) return { x: 0, y: 0, ncc: -1 };
+  const tInv = 1 / Math.sqrt(tVar);
+  let best = -2, bx = 0, by = 0;
+  for (let oy = 0; oy <= h - th; oy++) for (let ox = 0; ox <= w - tw; ox++) {
+    let cMean = 0;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) cMean += g[(oy + y) * w + (ox + x)];
+    cMean /= n;
+    let num = 0, cVar = 0;
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      const c = g[(oy + y) * w + (ox + x)] - cMean, d = t[y * tw + x] - tMean;
+      num += d * c; cVar += c * c;
+    }
+    const v = cVar > 1e-3 ? num * tInv / Math.sqrt(cVar) : 0;
+    if (v > best) { best = v; bx = ox; by = oy; }
+  }
+  return { x: bx, y: by, ncc: best };
+}
+
+/* bilinear shrink of a gray image by factor k (k>1 ⇒ output is k× smaller) */
+function shrinkGray(im, k) {
+  const tw = Math.max(6, Math.round(im.w / k)), th = Math.max(6, Math.round(im.h / k));
+  const g = new Float32Array(tw * th);
+  for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+    const sx = clampN((x + 0.5) * k - 0.5, 0, im.w - 1.001), sy = clampN((y + 0.5) * k - 0.5, 0, im.h - 1.001);
+    const x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0, i = y0 * im.w + x0;
+    g[y * tw + x] = im.g[i] * (1 - fx) * (1 - fy) + im.g[i + 1] * fx * (1 - fy) + im.g[i + im.w] * (1 - fx) * fy + im.g[i + im.w + 1] * fx * fy;
+  }
+  return { g, w: tw, h: th };
+}
+
+/* Register a frame against the reference across a scale ladder. `tracker`
+   carries refG (coarse gray of the reference) + ref.pose. `curData` is the
+   frame at tracking resolution. Returns {s, fov, az, el, score} — the frame's
+   ABSOLUTE center pose and zoom (roll assumed ≈ reference; the sparse refine
+   recovers it) — or null when the frame no longer overlaps the reference well
+   enough (pan-away → caller falls back to the differential chain). */
+export function registerToRef(tracker, curG, opts = {}) {
+  const refG = tracker.refG; if (!refG) return null;
+  const { natW, natH } = tracker;
+  const rp = tracker.ref.pose;
+  const minScore = opts.minScore == null ? 0.5 : opts.minScore;
+  const rungs = [];
+  for (let s = 0.72; s <= 3.65; s *= 1.115) rungs.push(+s.toFixed(4));
+  const tryS = (s) => {
+    if (s >= 1) {              // zoomed IN vs ref: cur = magnified sub-region of ref
+      const tp = shrinkGray(curG, s);
+      if (tp.w >= refG.w || tp.h >= refG.h) return null;
+      const m = nccSweep(refG, tp);
+      if (m.ncc <= -1) return null;
+      return { s, ncc: m.ncc, cx: m.x + tp.w / 2, cy: m.y + tp.h / 2 };
+    }
+    // zoomed OUT vs ref: ref content is a sub-region of cur
+    const tp = shrinkGray(refG, 1 / s);
+    if (tp.w >= curG.w || tp.h >= curG.h) return null;
+    const m = nccSweep(curG, tp);
+    if (m.ncc <= -1) return null;
+    // cur center mapped into ref coords
+    return { s, ncc: m.ncc, cx: (curG.w / 2 - m.x) / s, cy: (curG.h / 2 - m.y) / s };
+  };
+  const res = rungs.map(tryS);
+  let bi = -1;
+  for (let i = 0; i < res.length; i++) if (res[i] && (bi < 0 || res[i].ncc > res[bi].ncc)) bi = i;
+  if (bi < 0 || res[bi].ncc < minScore) return null;
+  let best = res[bi];
+  /* sub-rung scale: parabolic fit over log-s using the neighbouring rungs */
+  const lo = res[bi - 1], hi = res[bi + 1];
+  let sFine = best.s;
+  if (lo && hi) {
+    const d = lo.ncc - 2 * best.ncc + hi.ncc;
+    if (Math.abs(d) > 1e-9) {
+      const off = clampN(0.5 * (lo.ncc - hi.ncc) / d, -1, 1);
+      sFine = best.s * Math.pow(1.115, off);
+    }
+  }
+  /* matched center (refG coords) → native ref pixel → absolute world dir */
+  const px = (best.cx / refG.w) * natW, py = (best.cy / refG.h) * natH;
+  const gDir = pixToDirK(px, py, natW, natH, rp.az, rp.el, rp.roll, rp.fov, rp.k || 0);
+  const ae = dirToAzEl(gDir);
+  const fov = clampN(2 * Math.atan(Math.tan((rp.fov * D2R) / 2) / sFine) * R2D, 5, 150);
+  return { s: sFine, fov, az: ae.az, el: ae.el, score: best.ncc };
+}
+
 /* ---------- orchestration: seed on the reference frame, step per frame ---------- */
 
 /* Seed the tracker from the aligned reference frame. `refData` is the frame
@@ -195,9 +306,11 @@ export function initTracker(refData, w, h, natW, natH, refPose, opts = {}) {
   }));
   return {
     w, h, natW, natH, sc, prevData: refData, lastPose: { ...refPose }, features, nextId: features.length, opts,
-    /* the reference frame is kept forever: whenever the zoom returns near its
-       scale, frames re-anchor DIRECTLY against it (see stepTracker 4b) */
+    /* the reference frame is kept forever: every frame globally registers
+       against it (zoom + drift proof), and near its scale frames re-anchor
+       feature-precisely against it too (see stepTracker) */
     ref: { data: refData, pose: { ...refPose }, feats: features.map((f) => ({ g: f.g, tx: f.tx, ty: f.ty })) },
+    refG: grayDown(refData, w, h, 96),
   };
 }
 
@@ -210,17 +323,29 @@ export function stepTracker(tracker, nextData, opts = {}) {
   const { w, h, natW, natH, sc } = tracker;
   const o = { ...tracker.opts, ...opts }, p0 = tracker.lastPose;
   const minMatch = o.minMatch || 6, maxN = o.maxN || 60, sep = o.minSep || 8;
-  // 1. predict search centers from the previous pose (drop features now off-frame)
+  // 0. GLOBAL registration against the reference — the zoom-proof, drift-proof
+  //    coarse pose. When it locks, it seeds the predictions (so the sparse
+  //    layer starts at the right scale and place); when the frame has panned
+  //    off the reference coverage it returns null and the differential chain
+  //    below carries the step alone.
+  let glob = null;
+  if (tracker.refG && o.global !== false) {
+    glob = registerToRef(tracker, grayDown(nextData, w, h, 96));
+    if (glob) glob.pose = { az: glob.az, el: glob.el, roll: p0.roll, fov: glob.fov, k: p0.k || 0 };
+  }
+  const basePose = glob ? glob.pose : p0;
+  const tScale0 = glob ? clampN(Math.tan((p0.fov * D2R) / 2) / Math.tan((glob.fov * D2R) / 2), 0.25, 4) : 1; // appearance scale prev→next per the global fix
+  // 1. predict search centers from the base pose (drop features now off-frame)
   const feats = [];
   for (const ft of tracker.features) {
-    const p = dirToPixK(ft.g, natW, natH, p0.az, p0.el, p0.roll, p0.fov, p0.k || 0);
+    const p = dirToPixK(ft.g, natW, natH, basePose.az, basePose.el, basePose.roll, basePose.fov, basePose.k || 0);
     if (!p) continue;
     const bx = p.px / sc, by = p.py / sc;
     if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
     feats.push({ ...ft, px: bx, py: by });
   }
-  // 2. track templates from prevData into nextData
-  const tracked = trackFeatures(tracker.prevData, nextData, w, h, feats, o);
+  // 2. track templates from prevData into nextData (scale-matched when zoomed)
+  const tracked = trackFeatures(tracker.prevData, nextData, w, h, feats, { ...o, tScale: tScale0 });
   /* shared scale machinery: probeAt scores a feature subset under one zoom
      hypothesis (templates resampled + positions re-predicted under its FOV);
      adoptScale re-tracks EVERYTHING under a factor and adopts the result when
@@ -314,7 +439,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //     lookalike matches land wherever the nearest neighbour sits — a large,
   //     incoherent median residual. A hypothesis that's markedly more coherent
   //     than s=1 is zoom evidence — refine it from the pairs and re-track all.
-  if (feats.length >= 4) {
+  if (!glob && feats.length >= 4) {   // differential fallback only — the global fix already owns scale
     const s1 = probeAt(subEdge, 1, 10);
     /* only probe when s=1 still HAS a population (the masking scenario);
        an outright collapse belongs to the wide-ladder rescue below */
@@ -332,7 +457,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //     finds nothing anywhere), sweep a wide factor ladder and adopt the one
   //     that makes the background reappear.
   let okIdx0 = 0; for (const t of tracked) if (t.ok) okIdx0++;
-  if (okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
+  if (!glob && okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
     const LADDER = [0.35, 0.45, 0.55, 0.67, 0.8, 1.25, 1.5, 1.8, 2.15, 2.6];
     let best = null;
     for (const sh of LADDER) {
@@ -365,7 +490,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   if (zoom) {
     const missI = [], missF = [];
     for (let i = 0; i < feats.length; i++) if (!tracked[i].ok) {
-      const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovZ, p0.k || 0);
+      const p = dirToPixK(feats[i].g, natW, natH, basePose.az, basePose.el, basePose.roll, fovZ, basePose.k || 0);
       if (!p) continue;
       const bx = p.px / sc, by = p.py / sc;
       if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
@@ -383,10 +508,18 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    FOV seed comes from the scale estimate; with plenty of anchors the FOV is
   //    freed for the solver to polish, else it locks at the estimated value —
   //    a sparse frame is never allowed to wander FOV on its own.
-  let pose = p0, nInliers = anchors.length, solved = false;
+  let pose = basePose, nInliers = anchors.length, solved = false;
   if (anchors.length >= minMatch) {
-    const seed2 = zoom ? { ...p0, fov: fovZ } : p0;
-    const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: zoom ? anchors.length < 8 : o.lockFov !== false });
+    const seed2 = zoom ? { ...basePose, fov: fovZ } : basePose;
+    /* FOV is freed for the polish whenever the anchors give it real leverage
+       (plentiful + radially spread) — the global fix and re-anchoring guard
+       against drift, and the coarse global scale is rung-quantized, so the
+       sparse solve is what restores sub-degree FOV. A sparse or centre-only
+       frame still keeps FOV locked to the seed. */
+    let rMaxA = 0;
+    for (const a of anchors) rMaxA = Math.max(rMaxA, Math.hypot(a.px - natW / 2, a.py - natH / 2));
+    const fovFree = (anchors.length >= 10 && rMaxA > 0.35 * Math.min(natW, natH)) || (zoom && anchors.length >= 8);
+    const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: !fovFree });
     if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; solved = true; }
   }
   // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
@@ -398,7 +531,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //     the accumulated drift instead of carrying it forward.
   let anchored = false, drift = null;
   const ref = tracker.ref;
-  if (ref && anchors.length >= minMatch && o.reanchor !== false) {
+  if (ref && (anchors.length >= minMatch || glob) && o.reanchor !== false) {
     const tS = Math.tan((ref.pose.fov * D2R) / 2) / Math.tan((pose.fov * D2R) / 2); // scene scale: current vs reference
     if (tS > 0.65 && tS < 1.55) {
       const fR = [];
@@ -422,7 +555,10 @@ export function stepTracker(tracker, nextData, opts = {}) {
              incremental estimate — the scale detector owns the zoom. */
           let rMax = 0;
           for (const a of ancR) rMax = Math.max(rMax, Math.hypot(a.px / sc - w / 2, a.py / sc - h / 2));
-          const fovFree = rMax > 0.35 * Math.min(w, h) && ancR.length >= 12;
+          /* FOV from the anchor only near native template scale — heavy
+             resampling (deep zoom) biases the matches by ~a degree, worse
+             than the sparse polish it would override */
+          const fovFree = rMax > 0.35 * Math.min(w, h) && ancR.length >= 12 && tS > 0.77 && tS < 1.3;
           const solR = poseFromTracks(ancR, natW, natH, pose, { ...o, lockFov: !fovFree, maxRms: 0.5 });
           if (solR) {
             const dA = ((solR.az - pose.az + 540) % 360) - 180, dE = solR.el - pose.el, dR = solR.roll - pose.roll, dF = solR.fov - pose.fov;
@@ -452,7 +588,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    bakes the held pose's error into every new feature's world dir — an
   //    unresolved zoom then rebuilds the whole population at the wrong FOV and
   //    the tracker goes self-consistently blind to it (field-observed).
-  if (solved && kept.length < minMatch + 4) {
+  if ((solved || glob) && kept.length < minMatch + 4) {
     for (const f of detectBgFeatures(nextData, w, h, { ...o, maxN })) {
       if (kept.some((k) => Math.hypot(k.tx - f.x, k.ty - f.y) < sep)) continue;
       kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y });
@@ -464,7 +600,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   // under the corrected pose
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
-  return { pose, nInliers, features: kept, scale: s, anchored, drift };
+  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null };
 }
 
 /* Distribute a re-anchor's drift correction back across the un-anchored span
