@@ -1541,15 +1541,32 @@ function MediaMeasure({ src, update, wizard }) {
                 );
               })()}
               {scale > 0 && (src.track || []).length > 0 && (() => {
-                const tp = [...src.track].filter((p) => p.x != null).sort((a, b) => a.t - b.t).map((p) => TT(p.x, p.y));
+                const pts2 = [...src.track].filter((p) => p.x != null).sort((a, b) => a.t - b.t);
+                const tp = pts2.map((p) => TT(p.x, p.y));
+                /* video: a tap belongs to ITS frame — fade markers out as the
+                   scrubber moves away from their time (full ≤0.3 s, gone by
+                   1.1 s; a faint floor while the Track tool is active so Undo
+                   targets stay findable). The connecting route stays as thin
+                   context. Photos keep everything (no time axis). */
+                const isVid = media.kind === "video";
+                const fadeT = (p) => {
+                  if (!isVid || !isNum(p.t)) return 1;
+                  const d = Math.abs(p.t - vidT);
+                  const f = d <= 0.3 ? 1 : d >= 1.1 ? 0 : 1 - (d - 0.3) / 0.8;
+                  return active === "trk" ? Math.max(0.15, f) : f;
+                };
                 return (
                   <svg style={{ position: "absolute", inset: 0, pointerEvents: "none" }} width="100%" height="100%">
                     <polyline points={tp.map((q) => q.join(",")).join(" ")}
-                      fill="none" stroke="var(--track)" strokeWidth="1.5" strokeDasharray="2 3" />
-                    {tp.map((q, i) => (
-                      <circle key={i} cx={q[0]} cy={q[1]} r={i === tp.length - 1 ? 4 : 2.5}
-                        fill={i === tp.length - 1 ? "var(--track)" : "rgba(143,180,255,.75)"} />
-                    ))}
+                      fill="none" stroke="var(--track)" strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
+                    {tp.map((q, i) => {
+                      const op = fadeT(pts2[i]);
+                      if (op <= 0.01) return null;
+                      return (
+                        <circle key={i} cx={q[0]} cy={q[1]} r={i === tp.length - 1 ? 4 : 2.5}
+                          fill={i === tp.length - 1 ? "var(--track)" : "rgba(143,180,255,.75)"} opacity={op} />
+                      );
+                    })}
                   </svg>
                 );
               })()}
@@ -1910,6 +1927,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
 
   /* photo-in-sky placement */
   const [photoOn, setPhotoOn] = useState(false);
+  const [objOn, setObjOn] = useState(true);   // 🛸 object overlay (wireframe + marks) in the dome AND burned into exports
   const [pMode, setPMode] = useState("look"); // 'look' | 'place'
   const [pAz, setPAz] = useState(180);
   const [pEl, setPEl] = useState(30);
@@ -3140,11 +3158,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const P = (pt) => { const pr = projectD(pixDirMarked(pt.x, pt.y)); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
       const PF = (pt) => { const d = pixDirMarked(pt.x, pt.y); const pr = projectD(objFollow ? objFollow(d) : d); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
       const tr = (source.track || []).filter((p) => p.x != null).sort((a, b) => a.t - b.t).map(P).filter(Boolean);
+      /* the fitted 3D WIREFRAME rides the same pipeline as the marks: each
+         curve point (native px on the marked frame) → world dir under the
+         placement pose → rotated onto the tracked dir during playback */
+      let wire = null;
+      if (objOn && source.shapeFit) {
+        wire = shapeProjNat(source.shapeFit).curves.map((c) => {
+          const segs = []; let cur = [];
+          for (const pt of c) { const q = PF(pt); if (q) cur.push(q); else if (cur.length > 1) { segs.push(cur); cur = []; } else cur = []; }
+          if (cur.length > 1) segs.push(cur);
+          return segs;
+        }).flat();
+      }
       photoMarks = {
-        a1: source.A?.p1 ? PF(source.A.p1) : null,
-        a2: source.A?.p2 ? PF(source.A.p2) : null,
+        a1: objOn && source.A?.p1 ? PF(source.A.p1) : null,
+        a2: objOn && source.A?.p2 ? PF(source.A.p2) : null,
         pb: source.B?.pb ? P(source.B.pb) : null,
         trk: tr,
+        wire,
       };
     }
   }
@@ -3784,9 +3815,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* close-up FOLLOWS the object when a track exists: the virtual camera
          re-centers on the tracked direction each frame, so the object stays
          in the middle of the crop even as it crosses the sky */
-      const objTrk = mode === "crop" && Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : null;
+      const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : null;
+      const camFollow = mode === "crop" && objAll;
       const objAt = (t) => {
-        const op = objTrk;
+        const op = objAll;
         let lo = 0, hi = op.length - 1;
         if (t <= op[0].t) hi = 0; else if (t >= op[op.length - 1].t) lo = op.length - 1;
         else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (op[m].t <= t) lo = m; else hi = m; }
@@ -3836,8 +3868,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       tex.width = Math.max(2, Math.round((v.videoWidth || natW) * tsc)); tex.height = Math.max(2, Math.round((v.videoHeight || natH) * tsc));
       const tctx = tex.getContext("2d");
       const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
+      /* the fitted 3D WIREFRAME rides the object track in every framing while
+         the 🛸 overlay is on: curve points (native px on the marked frame) →
+         dirs under the placement pose, rotated onto the tracked dir per frame */
+      const wireDirs = objOn && objAll && source?.shapeFit && source?.A?.p1 && source?.A?.p2
+        ? shapeProjNat(source.shapeFit).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, pAz, pEl, pRoll, fovM, pDist)))
+        : null;
+      const objD0 = wireDirs ? pixToDirK((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2, natW, natH, pAz, pEl, pRoll, fovM, pDist) : null;
       const drawFrame = (p) => {
-        if (objTrk && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
+        if (camFollow && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
         /* az/el grid, world-locked — THE debugging reference: if stabilization
            holds, the scenery rides these lines while the frame moves. Grid
@@ -3891,6 +3930,27 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             Math.max(d00[1], d10[1], d01[1], d11[1]) < -2 || Math.min(d00[1], d10[1], d01[1], d11[1]) > OUT_H + 2) continue;
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], d00, d10, d11);
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], [sxp(c2), syp(r2 + 1)], d00, d11, d01);
+        }
+        if (wireDirs && isNum(p.t)) {
+          const oT = objAt(p.t);
+          const dT = dirFromAzEl(oT.az, oT.el);
+          const ax = [objD0[1] * dT[2] - objD0[2] * dT[1], objD0[2] * dT[0] - objD0[0] * dT[2], objD0[0] * dT[1] - objD0[1] * dT[0]];
+          const s3 = Math.hypot(ax[0], ax[1], ax[2]), c3 = clampN(dot(objD0, dT), -1, 1);
+          const k3 = s3 > 1e-9 ? [ax[0] / s3, ax[1] / s3, ax[2] / s3] : null;
+          const rotW = (v2) => {                        // Rodrigues: marked dir → tracked dir
+            if (!k3) return v2;
+            const kv = [k3[1] * v2[2] - k3[2] * v2[1], k3[2] * v2[0] - k3[0] * v2[2], k3[0] * v2[1] - k3[1] * v2[0]];
+            const kd = dot(k3, v2);
+            return [v2[0] * c3 + kv[0] * s3 + k3[0] * kd * (1 - c3), v2[1] * c3 + kv[1] * s3 + k3[1] * kd * (1 - c3), v2[2] * c3 + kv[2] * s3 + k3[2] * kd * (1 - c3)];
+          };
+          ctx.strokeStyle = accentCol; ctx.lineWidth = Math.max(1, OUT_W / 1600); ctx.globalAlpha = 0.85;
+          for (const c2 of wireDirs) {
+            ctx.beginPath();
+            let first = true;
+            for (const d2 of c2) { const q = proj(rotW(d2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
         }
         const fs = Math.max(12, Math.round(OUT_H / 42));
         ctx.font = fs + "px Menlo, monospace"; ctx.fillStyle = "rgba(235,243,255,0.92)";
@@ -4101,7 +4161,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 stroke="var(--track)" strokeWidth="1.4" strokeDasharray="1.5 2" vectorEffect="non-scaling-stroke" />
             )}
             {photoMarks.trk.map((p, i) => <circle key={"t" + i} cx={p[0]} cy={p[1]} r="0.55" fill="var(--track)" />)}
-            {photoMarks.a1 && photoMarks.a2 && (
+            {photoMarks.wire && photoMarks.wire.map((seg, i) => (
+              <polyline key={"w" + i} points={seg.map((p) => p.join(",")).join(" ")} fill="none"
+                stroke={accentCol} strokeWidth="1" opacity="0.85" vectorEffect="non-scaling-stroke" />
+            ))}
+            {photoMarks.a1 && photoMarks.a2 && !photoMarks.wire && (
               <line x1={photoMarks.a1[0]} y1={photoMarks.a1[1]} x2={photoMarks.a2[0]} y2={photoMarks.a2[1]}
                 stroke={accentCol} strokeWidth="1.4" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
             )}
@@ -4616,6 +4680,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             onClick={() => setStarMode((m) => (m === "auto" ? "on" : m === "on" ? "off" : "auto"))}>
             ★
           </button>
+          {source?.A?.p1 && source?.A?.p2 && (
+            <button className="btn sm" title="Object overlay: the fitted 3D wireframe + marks over the photo — rides the tracked path during stabilized playback, and is burned into exports only while ON"
+              style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: objOn ? accentCol : "var(--dim)" }}
+              onClick={() => setObjOn((v) => !v)}>🛸</button>
+          )}
           {hasPos && (
             <button className="btn sm" title="Satellites (CelesTrak visual group, SGP4 at the sighting time): auto shows when dark; on forces"
               style={{ background: "rgba(15,23,42,.7)", color: satMode === "off" ? "var(--dim)" : satView.length ? "#9fdcff" : "var(--dim)" }}
