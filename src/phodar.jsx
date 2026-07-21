@@ -974,6 +974,23 @@ function MediaMeasure({ src, update, wizard }) {
     const target = marked > 0.01 ? marked : Math.min(0.04, (el.duration || 1) / 4);
     try { if (Math.abs(el.currentTime - target) > 0.02) { el.currentTime = target; setVidT(target); } } catch (e) { /* seek not ready yet — onLoadedData retries */ }
   };
+  /* The seek nudge alone isn't always enough on the FIRST load of a fresh
+     file: iOS Safari can leave a brand-new blob-URL <video> blank until the
+     decoder actually runs (field bug: the clip only appeared after leaving the
+     step and coming back — a remount over a now-buffered file). A muted
+     play()→pause() forces a frame out of the decoder; runs once per file and
+     re-lands on the marked/first frame afterwards. */
+  const kickedUrlRef = useRef(null);
+  const kickVideoPaint = () => {
+    const el = mediaRef.current;
+    if (!el || media?.kind !== "video" || kickedUrlRef.current === media.url) return;
+    kickedUrlRef.current = media.url;
+    try {
+      const p = el.play();
+      if (p && p.then) p.then(() => { el.pause(); paintFirstFrame(); }).catch(() => { /* autoplay refused — the seek nudge already ran */ });
+      else { el.pause(); paintFirstFrame(); }
+    } catch (e) { /* the seek nudge already ran */ }
+  };
   const onLoaded = () => {
     const el = mediaRef.current;
     if (!el) return;
@@ -1448,7 +1465,7 @@ function MediaMeasure({ src, update, wizard }) {
               <div style={{ transform: `translate(${view.ox}px, ${view.oy}px) scale(${extraZ})`, transformOrigin: "0 0", willChange: "transform" }}>
                 {media.kind === "video" ? (
                   <video ref={mediaRef} src={media.url} playsInline muted preload="auto"
-                    onLoadedMetadata={onLoaded} onLoadedData={paintFirstFrame} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
+                    onLoadedMetadata={onLoaded} onLoadedData={() => { paintFirstFrame(); kickVideoPaint(); }} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
                     style={{ width: dispW ? dispW * elZ : "100%", height: "auto", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} />
                 ) : (
                   <img ref={mediaRef} src={media.url} alt="sighting" onLoad={onLoaded} onError={onMediaError}
