@@ -12,7 +12,7 @@ const windColor = (ms) => ms < 2.5 ? "#5FD3BC" : ms < 7 ? "#8FB4FF" : ms < 13 ? 
 const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} ft`;
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
-import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, dirToPixK, solvePoseAnchors } from "./math/projection.js";
+import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker } from "./video/postrack.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -533,7 +533,7 @@ const HELP_SECTIONS = [
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (snap/star-align) so the whole path inherits an accurate anchor. Frames with too few background references hold the previous pose and are reported honestly." },
-        { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
+        { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -2919,6 +2919,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const s = 1 + poseK * (x * x + y * y); // radial lens distortion (0 unless star-calibrated)
     return unit([f[0] + (r[0] * x + u[0] * y) * s, f[1] + (r[1] * x + u[1] * y) * s, f[2] + (r[2] * x + u[2] * y) * s]);
   };
+  /* MARKED-frame pixel → world dir. The object marks/track pixels live on the
+     MARKED frame, so their sky position is fixed by the PLACEMENT pose. During
+     stabilized playback pixDir follows the playing frame's pose (playPose) —
+     using it for the marks would drag the object outline along with the frame.
+     This always projects through the placement pose, pinning the outline to
+     where the object physically was at the marked moment. */
+  const pixDirMarked = (px, py) => playPose && source?.natW
+    ? pixToDirK(px, py, source.natW, source.natH, pAz, pEl, pRoll, fovM, pDist)
+    : pixDir(px, py);
 
   /* known sky objects usable as calibration anchors (bright + labeled) */
   const skyRefs = (() => {
@@ -3024,8 +3033,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   if (photo && vp.w > 0) {
     const centerOK = projectD(photo.f).inFront;
     photoHidden = !placing && !centerOK;
-    if (centerOK) {
-      const P = (pt) => { const pr = projectD(pixDir(pt.x, pt.y)); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
+    /* during playback the marks are pinned to the MARKED spot, which can be
+       visible even when the playing frame has wandered off-view — don't gate
+       them on the frame's center then (P() drops behind-camera points itself) */
+    if (centerOK || playPose) {
+      const P = (pt) => { const pr = projectD(pixDirMarked(pt.x, pt.y)); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
       const tr = (source.track || []).filter((p) => p.x != null).sort((a, b) => a.t - b.t).map(P).filter(Boolean);
       photoMarks = {
         a1: source.A?.p1 ? P(source.A.p1) : null,
@@ -3472,7 +3484,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {photoHidden && (
           <div style={{ position: "absolute", left: "50%", top: "calc(56px + env(safe-area-inset-top))", transform: "translateX(-50%)", background: "rgba(15,23,42,.75)", border: "1px solid var(--line)", borderRadius: 999, padding: "4px 12px", fontSize: 11, fontFamily: "var(--mono)", color: "var(--dim)", pointerEvents: "none" }}>
-            🖼 photo is off-view — pan toward {Math.round(pAz)}° / {Math.round(pEl)}°
+            🖼 photo is off-view — pan toward {Math.round(poseNow.az)}° / {Math.round(poseNow.el)}°
           </div>
         )}
         {!placing && photoMarks && (
