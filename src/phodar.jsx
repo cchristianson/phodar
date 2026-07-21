@@ -604,7 +604,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Explanation candidates", items: [
         { t: "✈ aircraft (ADS-B)", d: "Live or archived-at-the-sighting-time air traffic as heading-rotated ✈ glyphs at true az/el, with range, altitude and faint track trails. Tap one for its identity/route." },
-        { t: "🛰 satellites / ✦ Starlink", d: "CelesTrak orbital elements propagated to your time — passing satellites and (opt-in) sunlit Starlink trains, a common “string of lights” report." },
+        { t: "🛰 satellites / ✦ Starlink", d: "CelesTrak orbital elements propagated to your time — passing satellites and (opt-in) sunlit Starlink trains, a common “string of lights” report. Both draw their ±4-min pass trajectory as a dotted trail (Starlink trails show for trains near your view)." },
         { t: "☁ cloud", d: "Shades the sky region of the dome grey in proportion to the % cloud cover at the sighting time (Open-Meteo, low/mid/high) — a light haze for scattered cloud through to solid grey for overcast — plus the estimated cloud base. It represents how overcast it was (not individual clouds). A low deck also caps a below-cloud object's range & size (see the size tool)." },
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
@@ -2235,7 +2235,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* Starlink layer — opt-in (the full ~7k constellation). One SGP4 per sat at
      the sighting instant (memoised on T/pos, not on pan/zoom), then keep only
      the sunlit ones above the horizon and cap the count so the dome stays
-     legible. Markers only (no per-sat trails — too many). */
+     legible. Per-sat pass trails: a full 60× would be a lot of SGP4, but a
+     Starlink train shares essentially one path, so we compute trails for a
+     capped subset (highest-elevation first) — enough to draw the train's arc —
+     and only DRAW the ones near the view/sight-line (see render). */
   const [starlinkOn, setStarlinkOn] = useState(false);
   const [slDb, setSlDb] = useState(null); // {sats} | {err}
   useEffect(() => {
@@ -2247,7 +2250,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, [open, starlinkOn, slDb]);
   const slView = useMemo(() => {
     if (!starlinkOn || !slDb?.sats || !hasPos) return [];
-    return satsAt(slDb.sats, T, LAT, LNG, 0).filter((s) => s.lit).slice(0, 60);
+    const lit = satsAt(slDb.sats, T, LAT, LNG, 0).filter((s) => s.lit).slice(0, 60);
+    return lit.map((s, i) => (i < 28 ? { ...s, trail: satTrail(s.rec, T, LAT, LNG) } : s));
   }, [starlinkOn, slDb, T, LAT, LNG, hasPos]);
 
   /* named peaks (OSM Overpass) — placed on the terrain skyline by bearing +
@@ -3477,6 +3481,41 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })}
 
+        {/* Starlink pass trails — violet dotted paths (±4 min), drawn only for
+            the train members near what you're looking at OR near the sight-line
+            (a full 60× would clutter the dome), so the "string of lights" shows
+            its trajectory across the sky. Same shape as the satellite/aircraft
+            trails, in the Starlink violet. */}
+        {slView.some((s) => s.trail) && (() => {
+          const sight = isNum(source?.A?.az) && isNum(source?.A?.el) ? dirFromAzEl(+source.A.az, +source.A.el) : null;
+          const look = dirFromAzEl(effAz, effAlt);
+          const near = (r, d) => r && Math.acos(clampN(dot(r, d), -1, 1)) * R2D <= 30;
+          const lines = [];
+          for (const s of slView) {
+            if (!s.trail) continue;
+            const d = dirFromAzEl(s.az, s.el);
+            if (!near(look, d) && !near(sight, d)) continue;
+            const segs = []; let seg = [];
+            for (const q of s.trail) {
+              const pr = projectD(dirFromAzEl(q.az, q.el));
+              if (pr.inFront && q.el > -1 && pr.x > -0.2 && pr.x < 1.2 && pr.y > -0.2 && pr.y < 1.2) seg.push(`${(pr.x * (vp.w || 1)).toFixed(1)},${(pr.y * (vp.h || 1)).toFixed(1)}`);
+              else { if (seg.length > 1) segs.push(seg); seg = []; }
+            }
+            if (seg.length > 1) segs.push(seg);
+            segs.forEach((sg, k) => lines.push({ pts: sg.join(" "), key: s.name + k }));
+            if (lines.length > 14) break;
+          }
+          if (!lines.length) return null;
+          return (
+            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+              {lines.map((l) => (
+                <polyline key={l.key} points={l.pts} fill="none" stroke="#c9b6ff"
+                  strokeWidth="1.2" strokeLinecap="round" strokeDasharray="0.1 7" opacity="0.4" />
+              ))}
+            </svg>
+          );
+        })()}
+
         {/* Starlink — small unlabeled dots (up to 60 sunlit); a fresh batch
             reads as a tight arc/train. Distinct violet so they don't read as
             the brighter visual-group satellites above. */}
@@ -3782,7 +3821,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </button>
           )}
           {hasPos && (
-            <button className="btn sm" title="Starlink — the full constellation (opt-in). Sunlit Starlinks above the horizon at the sighting time; a fresh batch appears as a tight train."
+            <button className="btn sm" title="Starlink — the full constellation (opt-in). Sunlit Starlinks above the horizon at the sighting time; a fresh batch appears as a tight train. Trains near your view show their ±4-min pass trajectory."
               style={{ background: "rgba(15,23,42,.7)", color: !starlinkOn ? "var(--dim)" : slDb?.err ? "var(--amber)" : "#c9b6ff" }}
               onClick={() => setStarlinkOn((v) => !v)}>
               ✦ {starlinkOn ? (slDb?.err ? "?" : !slDb ? <Spin /> : `Starlink ${slView.length}`) : "Starlink"}
