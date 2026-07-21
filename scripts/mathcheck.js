@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, posePathAt } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -922,6 +922,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(pth[6].az, 285.0, 0.01, "despike: a real fast pan is untouched");
     approx(pth[4].fov, 30, 0.01, "despike: the real zoom ramp is untouched");
     approx(pth[0].az, 280, 0, "despike: endpoints untouched");
+  }
+
+  // 4i. posePathAt: wrap-aware pose interpolation between path samples
+  {
+    const pp = [
+      { t: 0, az: 358, el: 10, roll: 0, fov: 60, k: 0, n: 20 },
+      { t: 1, az: 2, el: 12, roll: 1, fov: 50, k: 0, n: 10 },
+    ];
+    const mid = posePathAt(pp, 0.5);
+    approx(mid.az, 0, 0.01, "posePathAt: az wraps through north (358→2 mid = 0)");
+    approx(mid.el, 11, 0.01, "posePathAt: el lerps");
+    approx(mid.fov, 55, 0.01, "posePathAt: fov lerps");
+    approx(posePathAt(pp, -5).az, 358, 0.01, "posePathAt: clamps before the start");
+    approx(posePathAt(pp, 9).fov, 50, 0.01, "posePathAt: clamps past the end");
   }
 
   // 4d. smearDrift: the correction distributes linearly in time across the span

@@ -646,6 +646,29 @@ export function stepTracker(tracker, nextData, opts = {}) {
   return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null };
 }
 
+/* Interpolate a pose path at any time t — az wrap-aware, everything else
+   linear. Clamps to the ends. Used by stabilized playback/export to give
+   every video frame a pose even between solved samples. */
+export function posePathAt(path, t) {
+  if (!path || !path.length) return null;
+  if (t <= path[0].t) return { ...path[0], t };
+  const last = path[path.length - 1];
+  if (t >= last.t) return { ...last, t };
+  let lo = 0, hi = path.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (path[m].t <= t) lo = m; else hi = m; }
+  const a = path[lo], b = path[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+  const dAz = ((b.az - a.az + 540) % 360) - 180;
+  return {
+    t,
+    az: (((a.az + dAz * u) % 360) + 360) % 360,
+    el: a.el + (b.el - a.el) * u,
+    roll: (a.roll || 0) + ((b.roll || 0) - (a.roll || 0)) * u,
+    fov: a.fov + (b.fov - a.fov) * u,
+    k: (a.k || 0) + ((b.k || 0) - (a.k || 0)) * u,
+    n: Math.min(a.n == null ? 99 : a.n, b.n == null ? 99 : b.n),
+  };
+}
+
 /* DESPIKE a solved pose path: a sample that deviates sharply from its
    neighbours' time-interpolation — while the neighbours agree with each
    other, or far beyond their own gap — is a garbage solve from one blurred

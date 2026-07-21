@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker, smearDrift, despikePath } from "./video/postrack.js";
+import { initTracker, stepTracker, smearDrift, despikePath, posePathAt } from "./video/postrack.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -534,6 +534,7 @@ const HELP_SECTIONS = [
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align the marked frame first (snap/star-align) so the whole path inherits an accurate anchor. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -3519,6 +3520,152 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setPlayPose(null); setPlayIdx(ri); seekBusyRef.current = false; // drop the override regardless — never leave the lock stuck
     });
   };
+  /* ⬇ EXPORT the stabilized clip — every video frame rendered through the
+     mesh warp at its own (interpolated) pose from a FIXED virtual camera that
+     frames the whole path, with a burned-in az/el grid + pose readout, and
+     captured via canvas.captureStream + MediaRecorder into a real file. The
+     render is paced against the wall clock so the output duration matches the
+     clip (MediaRecorder stamps wall time); effective fps = seek throughput. */
+  const [exporting, setExporting] = useState(0); // 0 idle | progress fraction
+  const exportAbortRef = useRef(0);
+  const exportStabilized = async () => {
+    const path = source?.posePath;
+    if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize first, then export"); return; }
+    if (typeof MediaRecorder === "undefined") { setFlash("⬇ this browser can't record video (no MediaRecorder)"); return; }
+    if (exporting) { exportAbortRef.current++; return; }  // tap again = cancel
+    const run = ++exportAbortRef.current;
+    setExporting(0.01); setFlash("⬇ rendering the world-locked clip…");
+    const natW = source.natW, natH = source.natH;
+    const v = document.createElement("video");
+    v.muted = true; v.playsInline = true; v.preload = "auto";
+    let cvs = null;
+    try {
+      await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; v.src = source.mediaUrl; try { v.load(); } catch (e) { } });
+      /* fixed virtual camera: frame the union of every pose's corners */
+      const corners = [];
+      for (const p of path) for (const [px, py] of [[0, 0], [natW, 0], [natW, natH], [0, natH]])
+        corners.push(pixToDirK(px, py, natW, natH, p.az, p.el, p.roll, p.fov, p.k || 0));
+      let sx = 0, sy = 0, sz = 0;
+      for (const d of corners) { sx += d[0]; sy += d[1]; sz += d[2]; }
+      const ce = dirToAzEl(unit([sx, sy, sz]));
+      const B = photoBasis(ce.az, ce.el, 0);
+      const OUT_W = Math.min(1920, natW), OUT_H = Math.round(OUT_W * natH / natW);
+      let mx = 0.05, my = 0.05;
+      for (const d of corners) { const z = dot(d, B.f); if (z <= 0.05) continue; mx = Math.max(mx, Math.abs(dot(d, B.r) / z)); my = Math.max(my, Math.abs(dot(d, B.u) / z)); }
+      const camFov = clampN(2 * Math.atan(Math.max(mx, my * OUT_W / OUT_H) / 0.94) * R2D, 20, 118);
+      const tH = Math.tan((camFov * RAD) / 2), tV = tH * OUT_H / OUT_W;
+      const proj = (d) => { const z = dot(d, B.f); if (z <= 0.001) return null; return [(0.5 + (dot(d, B.r) / z) / (2 * tH)) * OUT_W, (0.5 - (dot(d, B.u) / z) / (2 * tV)) * OUT_H]; };
+      /* output canvas (hidden in the DOM — Safari captureStream reliability) */
+      cvs = document.createElement("canvas"); cvs.width = OUT_W; cvs.height = OUT_H;
+      cvs.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1";
+      document.body.appendChild(cvs);
+      const ctx = cvs.getContext("2d");
+      const tex = document.createElement("canvas");
+      const tsc = Math.min(1, 1600 / Math.max(v.videoWidth || natW, v.videoHeight || natH));
+      tex.width = Math.max(2, Math.round((v.videoWidth || natW) * tsc)); tex.height = Math.max(2, Math.round((v.videoHeight || natH) * tsc));
+      const tctx = tex.getContext("2d");
+      const stream = cvs.captureStream(30);
+      const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8e6 } : { videoBitsPerSecond: 8e6 });
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const recDone = new Promise((res) => { rec.onstop = res; });
+      rec.start(1000);
+      const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
+      const drawFrame = (p) => {
+        ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
+        /* az/el grid, world-locked — THE debugging reference: if stabilization
+           holds, the scenery rides these lines while the frame moves */
+        const span = camFov * 0.75 + 15;
+        ctx.lineWidth = Math.max(1, OUT_W / 1400); ctx.strokeStyle = "rgba(140,165,200,0.30)";
+        for (let az = Math.floor((ce.az - span) / 10) * 10; az <= ce.az + span; az += 10) {
+          ctx.beginPath();
+          for (let el2 = -30, first = true; el2 <= 88; el2 += 2) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+          ctx.stroke();
+        }
+        for (let el2 = -20; el2 <= 80; el2 += 10) {
+          ctx.beginPath(); ctx.strokeStyle = el2 === 0 ? "rgba(200,220,255,0.55)" : "rgba(140,165,200,0.30)";
+          for (let az = ce.az - span, first = true; az <= ce.az + span; az += 2) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+          ctx.stroke();
+        }
+        /* the frame, mesh-warped at ITS pose */
+        const fb = photoBasis(p.az, p.el, p.roll);
+        const fpx = (natW / 2) / Math.tan((p.fov * RAD) / 2);
+        const pixD = (px, py) => { const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx; const s2 = 1 + (p.k || 0) * (x * x + y * y); return unit([fb.f[0] + (fb.r[0] * x + fb.u[0] * y) * s2, fb.f[1] + (fb.r[1] * x + fb.u[1] * y) * s2, fb.f[2] + (fb.r[2] * x + fb.u[2] * y) * s2]); };
+        const NC = 8, NR = Math.max(4, Math.round(NC * natH / natW));
+        const dst = [];
+        for (let r2 = 0; r2 <= NR; r2++) { const row = []; for (let c2 = 0; c2 <= NC; c2++) row.push(proj(pixD((c2 / NC) * natW, (r2 / NR) * natH))); dst.push(row); }
+        const sxp = (c2) => (c2 / NC) * tex.width, syp = (r2) => (r2 / NR) * tex.height;
+        const tri = (s0, s1, s2, d0, d1, d2) => {
+          const cx2 = (d0[0] + d1[0] + d2[0]) / 3, cy2 = (d0[1] + d1[1] + d2[1]) / 3;
+          const ex = (q) => { const dx = q[0] - cx2, dy = q[1] - cy2, L = Math.hypot(dx, dy) || 1; return [q[0] + (dx / L) * 0.6, q[1] + (dy / L) * 0.6]; };
+          const e0 = ex(d0), e1 = ex(d1), e2 = ex(d2);
+          ctx.save();
+          ctx.beginPath(); ctx.moveTo(e0[0], e0[1]); ctx.lineTo(e1[0], e1[1]); ctx.lineTo(e2[0], e2[1]); ctx.closePath(); ctx.clip();
+          const [x0, y0] = s0, [x1, y1] = s1, [x2, y2] = s2;
+          const den = x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1);
+          if (den) {
+            const aM = (d0[0] * (y1 - y2) + d1[0] * (y2 - y0) + d2[0] * (y0 - y1)) / den;
+            const bM = (d0[1] * (y1 - y2) + d1[1] * (y2 - y0) + d2[1] * (y0 - y1)) / den;
+            const cM = (d0[0] * (x2 - x1) + d1[0] * (x0 - x2) + d2[0] * (x1 - x0)) / den;
+            const dM = (d0[1] * (x2 - x1) + d1[1] * (x0 - x2) + d2[1] * (x1 - x0)) / den;
+            ctx.transform(aM, bM, cM, dM, d0[0] - aM * x0 - cM * y0, d0[1] - bM * x0 - dM * y0);
+            ctx.drawImage(tex, 0, 0);
+          }
+          ctx.restore();
+        };
+        for (let r2 = 0; r2 < NR; r2++) for (let c2 = 0; c2 < NC; c2++) {
+          const d00 = dst[r2][c2], d10 = dst[r2][c2 + 1], d01 = dst[r2 + 1][c2], d11 = dst[r2 + 1][c2 + 1];
+          if (!d00 || !d10 || !d01 || !d11) continue;
+          tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], d00, d10, d11);
+          tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], [sxp(c2), syp(r2 + 1)], d00, d11, d01);
+        }
+        const fs = Math.max(12, Math.round(OUT_H / 42));
+        ctx.font = fs + "px Menlo, monospace"; ctx.fillStyle = "rgba(235,243,255,0.92)";
+        ctx.fillText("PHODAR · world-locked", 12, fs + 8);
+        ctx.fillText(`t ${p.t.toFixed(2)}s · az ${p.az.toFixed(1)}° · el ${p.el.toFixed(1)}° · FOV ${p.fov.toFixed(1)}° · refs ${p.n == null ? "—" : p.n}`, 12, OUT_H - 12);
+        void gpath; // (kept for future vector overlays)
+      };
+      const seekX = (t) => new Promise((res) => {
+        let f = false;
+        const wd = setTimeout(() => { if (!f) { f = true; res(false); } }, 3000);
+        v.onseeked = () => { if (!f) { f = true; clearTimeout(wd); res(true); } };
+        try { v.currentTime = t + (Math.abs((v.currentTime || 0) - t) < 0.001 ? 0.0001 : 0); }
+        catch (e) { if (!f) { f = true; clearTimeout(wd); res(false); } }
+      });
+      const t0 = path[0].t, t1 = path[path.length - 1].t;
+      const wall0 = performance.now();
+      let mediaT = t0;
+      while (mediaT < t1) {
+        if (exportAbortRef.current !== run) break;
+        const ok = await seekX(mediaT);
+        if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mediaT)); }
+        /* wall-clock pacing: output duration tracks the clip; slow seeks drop
+           frames instead of stretching time */
+        const elapsed = (performance.now() - wall0) / 1000;
+        mediaT = t0 + Math.max(elapsed, (mediaT - t0) + 1 / 30);
+        setExporting(clampN((mediaT - t0) / (t1 - t0), 0.01, 0.99));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      rec.stop(); await recDone;
+      if (exportAbortRef.current === run && chunks.length) {
+        const blob = new Blob(chunks, { type: mime || "video/webm" });
+        const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `phodar-stabilized.${ext}`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
+        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} — world-locked at ${camFov.toFixed(0)}° camera FOV`);
+      } else setFlash("⬇ export cancelled");
+    } catch (e) { setFlash("⬇ export failed on this video"); }
+    finally {
+      setExporting(0);
+      if (cvs && cvs.parentNode) cvs.parentNode.removeChild(cvs);
+      v.removeAttribute("src"); try { v.load(); } catch (e) { }
+    }
+  };
+
   /* entering place mode (or any tool mode) must never inherit the playback
      override — place gestures edit the REAL placement pose */
   useEffect(() => {
@@ -4316,6 +4463,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
                 </span>
                 {playPose && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                <button className="btn sm teal" onClick={exportStabilized}
+                  title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
+                  {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
+                </button>
               </div>
             )}
           </>
