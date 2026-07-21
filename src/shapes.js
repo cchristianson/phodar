@@ -17,7 +17,8 @@ export const SHAPES = [
   { k: "saucer", label: "🛸 Saucer" },
   { k: "capsule", label: "💊 Tic-tac" },
   { k: "tri", label: "▲ Triangle" },
-  { k: "plane", label: "✈ Plane" },
+  { k: "plane", label: "✈ Jet" },
+  { k: "prop", label: "🛩 Small plane" },
   { k: "heli", label: "🚁 Helicopter" },
   { k: "bird", label: "🕊 Bird" },
   { k: "drone", label: "❖ Drone" },
@@ -74,6 +75,25 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       C.push([[-0.40, s * 0.03, 0], [-0.47, s * 0.19, 0], [-0.51, s * 0.19, 0], [-0.485, s * 0.03, 0], [-0.40, s * 0.03, 0]]);     // h-stab
     }
     C.push([[-0.37, 0, 0], [-0.47, 0, 0.17], [-0.52, 0, 0.17], [-0.50, 0, 0], [-0.37, 0, 0]]);                                     // vertical fin (points up, +z = spine)
+  } else if (kind === "prop") {
+    // light propeller plane — STRAIGHT wings (vs the jet's swept ones), a nose
+    // propeller and a taller tail. wingspan = 1, fuselage along +X.
+    const w = 0.03, h = 0.04;
+    C.push([[0.42, 0], [0.36, w], [-0.34, w], [-0.42, w * 0.4], [-0.42, -w * 0.4], [-0.34, -w], [0.36, -w], [0.42, 0]]
+      .map(([x, y]) => [x, y, 0]));                                     // fuselage planform
+    C.push([[0.42, 0], [0.4, h * 0.6], [0.2, h], [0.0, h * 1.35], [-0.34, h * 0.55], [-0.42, h * 0.7], [-0.42, -h * 0.4], [-0.2, -h * 0.7], [0.2, -h * 0.6], [0.42, 0]]
+      .map(([x, z]) => [x, 0, z]));                                     // fuselage side profile (cabin hump)
+    for (const s of [1, -1]) {
+      // straight (unswept) wing, high on the fuselage, rounded tip
+      C.push([[0.16, s * 0.03, h * 0.7], [0.15, s * 0.5, h * 0.7], [0.05, s * 0.5, h * 0.7], [0.03, s * 0.03, h * 0.7], [0.16, s * 0.03, h * 0.7]]);
+      C.push([[0.09, s * 0.05, h * 0.7], [0.11, s * 0.05, 0]]);         // wing strut down to the belly
+      C.push([[-0.34, s * 0.03, 0], [-0.4, s * 0.2, 0], [-0.44, s * 0.2, 0], [-0.42, s * 0.03, 0], [-0.34, s * 0.03, 0]]); // h-stab
+    }
+    C.push([[-0.3, 0, 0.02], [-0.42, 0, 0.24], [-0.48, 0, 0.24], [-0.44, 0, 0], [-0.3, 0, 0.02]]); // tall vertical fin
+    // propeller disc at the nose (spins about +X) + two blades + spinner
+    const pr = 0.14, px = 0.44;
+    C.push(Array.from({ length: 25 }, (_, i) => { const a = (i / 24) * Math.PI * 2; return [px, Math.cos(a) * pr, Math.sin(a) * pr]; }));
+    C.push([[px, -pr, 0], [px, pr, 0]], [[px, 0, -pr], [px, 0, pr]]);
   } else if (kind === "heli") {
     // helicopter — nose +X, tail −X; main rotor disc horizontal about +Z (the
     // lift/up axis), tail rotor vertical at the boom tip. Main-rotor diameter = 1.
@@ -187,7 +207,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
