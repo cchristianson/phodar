@@ -487,13 +487,24 @@ terrain stay frozen and only the object moves. Build ladder:
    override; `poseNow = playPose || placement`, so commitPlacement never
    absorbs a mid-video pose). Entering place/any tool mode exits playback;
    exit re-bakes the marked frame before dropping the override so texture
-   and pose always agree. **⬇ video EXPORT: DONE** — fixed virtual camera
-   fit from the union of all frames' corners, mesh warp + burned az/el grid
-   + readout per frame, canvas.captureStream(30) + MediaRecorder (mp4 →
+   and pose always agree. **⬇ video EXPORT: DONE** — three framings from
+   one renderer: "view" (fixed virtual camera fit from the union of all
+   frames' corners, ≤1920 px), "full" (same framing, output sized by the
+   tan-space ratio camFov/minPathFov so the most-zoomed frames keep native
+   pixel density, ≤3840), and "crop" (camera centered on the marked
+   object's world dir + the B sight-line, FOV = max(10× object size,
+   1.9× A–B separation, 12°), finer 16-col mesh with off-canvas cell
+   culling, grid pitch scales with FOV). Mesh warp + burned az/el grid +
+   readout per frame, canvas.captureStream(30) + MediaRecorder (mp4 →
    webm fallback). Pacing is wall-clock BOTH WAYS: MediaRecorder stamps
    wall time, so the loop skips ahead when seeks lag AND WAITS when it
    runs ahead — advancing a fixed 1/30 min regardless compressed an
    18.6 s clip to a 14 s output playing 1.3× fast (field-observed).
+   Seeks are clamped below the media duration (near-end seeks stall the
+   decoder — field-observed as an export truncated 1.1 s early), and a
+   seek running >300 ms PAUSES the recorder with the paused span excluded
+   from the pacing clock, so a stall can neither eat recorded time nor
+   leapfrog the remaining content.
    The render is persisted to IndexedDB (`mediaStore`, key
    `sourceId + ":stab"`; re-stabilizing deletes it as stale, source
    removal cleans it) and the report .zip bundle packs each observer's
