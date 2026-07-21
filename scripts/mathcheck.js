@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -750,12 +750,59 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     for (let i = 1; i < poses.length; i++) {
       const o = stepObject(frames[i - 1], frames[i], TW, TH, st, poses[i], { natW, natH, patch: 11, search: 18 });
       if (!o.ok) okAll = 0;
-      st = { tx: o.tx, ty: o.ty, g: o.g };
+      st = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
       const ae = dirToAzEl(o.g), tru = objAzEl(i);
       maxErr = Math.max(maxErr, Math.abs(ae.az - tru.az), Math.abs(ae.el - tru.el));
     }
     approx(okAll, 1, 0, "stepObject: the mover is matched on every frame");
     approx(maxErr < 0.25 ? 1 : 0, 1, 0, "stepObject: recovered angular path ≈ truth (<0.25°)");
+
+    // FAST mover: its per-frame displacement escapes the near search ring
+    // entirely (ground-truth failure on the real-texture synthetic: the near
+    // ring latched onto leftover background and the template poisoned) — the
+    // wide search must still catch it. Sparse field: the identical-twin
+    // ambiguity of the dense star grid is untestable for ANY appearance
+    // tracker, so the twins stay out of the search window here; the
+    // real-texture regression lives in the offline clip harness.
+    {
+      const fPoses = [P0, { az: 250.4, el: 12.1, roll: 0.2, fov: 60, k: 0 }, { az: 250.8, el: 12.2, roll: 0.3, fov: 60, k: 0 }];
+      const fObj = (i) => ({ az: 248.5 + i * 2.1, el: 15.6 + i * 0.8 });
+      const mkSparse = (pose, o) => {
+        const d = new Uint8ClampedArray(TW * TH * 4);
+        for (let i = 0; i < TW * TH; i++) d[i * 4 + 3] = 255;
+        for (const g of [dirFromAzEl(238, 4), dirFromAzEl(262, 4), dirFromAzEl(238, 24)]) {  // far stars only
+          const p = dirToPixK(g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+          if (p) drawBlob(d, p.px / sc, p.py / sc, 235);
+        }
+        const p = dirToPixK(dirFromAzEl(o.az, o.el), natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+        if (p) drawBlob(d, p.px / sc, p.py / sc, 235);
+        return d;
+      };
+      const fFrames = fPoses.map((p, i) => mkSparse(p, fObj(i)));
+      const fo0 = fObj(0);
+      const fp = dirToPixK(dirFromAzEl(fo0.az, fo0.el), natW, natH, P0.az, P0.el, P0.roll, P0.fov, P0.k);
+      let fst = { tx: fp.px / sc, ty: fp.py / sc, g: dirFromAzEl(fo0.az, fo0.el) };
+      let fErr = 0, fOk = 1;
+      for (let i = 1; i < fPoses.length; i++) {
+        const o = stepObject(fFrames[i - 1], fFrames[i], TW, TH, fst, fPoses[i], { natW, natH, patch: 11, search: 26 });
+        if (!o.ok) fOk = 0;
+        fst = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
+        const ae = dirToAzEl(o.g), tru = fObj(i);
+        fErr = Math.max(fErr, Math.abs(ae.az - tru.az), Math.abs(ae.el - tru.el));
+      }
+      approx(fOk, 1, 0, "stepObject: a FAST mover (outside the near ring) is still caught");
+      approx(fErr < 0.3 ? 1 : 0, 1, 0, "stepObject: fast mover recovered (<0.3°)");
+    }
+
+    // snapToObject: an off-centre seed (thumb precision / generous shape)
+    // must snap onto the object — a template cut a few px off a small object
+    // is half background and gets lost immediately (e2e ground truth).
+    {
+      const fr = renderFrame(P0, dirFromAzEl(P0.az + 2, P0.el + 4), P0);
+      const tp = dirToPixK(dirFromAzEl(P0.az + 2, P0.el + 4), natW, natH, P0.az, P0.el, P0.roll, P0.fov, P0.k);
+      const sn = snapToObject(fr, TW, TH, tp.px / sc + 5, tp.py / sc - 4, 10);
+      approx(Math.hypot(sn.x - tp.px / sc, sn.y - tp.py / sc) < 2 ? 1 : 0, 1, 0, "snapToObject: off-centre seed lands on the blob (<2px)");
+    }
   }
 
   // 3. end-to-end initTracker/stepTracker recovers a 4-frame rotation path

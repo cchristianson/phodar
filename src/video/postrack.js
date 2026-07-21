@@ -16,7 +16,7 @@
    scripts/mathcheck.js against synthesized rotating frames.
    ============================================================ */
 
-import { D2R, R2D, dot, clampN, dirToAzEl } from "../math/geodesy.js";
+import { D2R, R2D, dot, unit, clampN, dirToAzEl } from "../math/geodesy.js";
 import { pixToDirK, dirToPixK, solvePoseAnchors } from "../math/projection.js";
 import { detectStars } from "../checks/platesolve.js";
 
@@ -104,6 +104,19 @@ export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
   const tScale = opts.tScale || 1;
   const hp = P >> 1, n = (2 * hp + 1) * (2 * hp + 1);
   const gt = gray(prevData, w, h), gc = gray(nextData, w, h);
+  /* opts.centerW: Gaussian center weighting (σ = patch/3.4) — for OBJECT
+     templates, where a small target sits amid unrelated background: unweighted
+     NCC lets the majority-background correlate the window onto "the same
+     grass" instead of the moved object (field-observed latch). Weighted, the
+     center pixels dominate the score whatever the patch size. Background
+     features keep the unweighted path — their whole patch IS signal. */
+  let W = null, wSum = n;
+  if (opts.centerW) {
+    W = new Float32Array(n); wSum = 0;
+    const sg = P / 3.4;
+    let k3 = 0;
+    for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) { const v = Math.exp(-(dx * dx + dy * dy) / (2 * sg * sg)); W[k3++] = v; wSum += v; }
+  }
   const out = [];
   for (const f of feats) {
     const cx = Math.round(f.px), cy = Math.round(f.py);
@@ -113,24 +126,26 @@ export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
     outer: for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) {
       const v = bilin(gt, w, h, f.tx + dx / tScale, f.ty + dy / tScale);
       if (v == null) { ok = false; break outer; }
-      T[k2++] = v; tMean += v;
+      T[k2++] = v; tMean += W ? v * W[k2 - 1] : v;
     }
     let tInv = 0;
     if (ok) {
-      tMean /= n;
-      let tVar = 0; for (let i = 0; i < n; i++) { const d = T[i] - tMean; tVar += d * d; }
-      if (tVar < (opts.minVar || 25)) ok = false; else tInv = 1 / Math.sqrt(tVar);
+      tMean /= wSum;
+      let tVar = 0;
+      for (let i = 0; i < n; i++) { const d = T[i] - tMean; tVar += (W ? W[i] : 1) * d * d; }
+      if (tVar < (opts.minVar || 25) * (wSum / n)) ok = false; else tInv = 1 / Math.sqrt(tVar);
     }
     if (!ok) { out.push({ px: f.px, py: f.py, ncc: 0, ok: false }); continue; }
-    const nccC = (px0, py0) => { // zero-mean NCC of T vs the next-frame patch centred at an integer pixel
+    const nccC = (px0, py0) => { // zero-mean NCC of T vs the next-frame patch centred at an integer pixel (weighted when W)
       if (px0 - hp < 0 || py0 - hp < 0 || px0 + hp >= w || py0 + hp >= h) return -2;
-      let cMean = 0;
-      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) cMean += gc[(py0 + dy) * w + (px0 + dx)];
-      cMean /= n;
+      let cMean = 0, ti0 = 0;
+      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) { const c = gc[(py0 + dy) * w + (px0 + dx)]; cMean += W ? c * W[ti0++] : c; }
+      cMean /= wSum;
       let num = 0, cVar = 0, ti = 0;
       for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) {
+        const wgt = W ? W[ti] : 1;
         const c = gc[(py0 + dy) * w + (px0 + dx)] - cMean, t = T[ti++] - tMean;
-        num += t * c; cVar += c * c;
+        num += wgt * t * c; cVar += wgt * c * c;
       }
       return cVar > 1e-6 ? num * tInv / Math.sqrt(cVar) : 0;
     };
@@ -693,6 +708,36 @@ export function stepTracker(tracker, nextData, opts = {}) {
   return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, held: !solved && !glob };
 }
 
+/* Snap an object seed onto the object itself. Marks are rarely centred to
+   the pixel (a thumb on a phone, a generously-sized shape) — and a template
+   cut a few px off a SMALL object is half background, which is enough to
+   lose it immediately. Score = center-surround contrast (|inner-disc mean −
+   annulus mean|, multi-scale) — a compact object bright OR dark against its
+   surround peaks at its centre. Searches ±rad around (x0,y0); returns the
+   snapped {x,y}. */
+export function snapToObject(data, w, h, x0, y0, rad) {
+  const g = gray(data, w, h);
+  const R = Math.max(4, Math.min(16, Math.round(rad || 10)));
+  let best = -1, bx = x0, by = y0;
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    const cx = Math.round(x0 + dx), cy = Math.round(y0 + dy);
+    if (cx < 12 || cy < 12 || cx >= w - 12 || cy >= h - 12) continue;
+    let scBest = 0;
+    for (const r1 of [2, 4, 6]) {
+      let si = 0, ni = 0, so = 0, no = 0;
+      const r2a = r1 * 2, r2b = r1 * 3;
+      for (let yy = -r2b; yy <= r2b; yy++) for (let xx = -r2b; xx <= r2b; xx++) {
+        const rr = Math.hypot(xx, yy);
+        if (rr <= r1) { si += g[(cy + yy) * w + (cx + xx)]; ni++; }
+        else if (rr >= r2a && rr <= r2b) { so += g[(cy + yy) * w + (cx + xx)]; no++; }
+      }
+      if (ni && no) scBest = Math.max(scBest, Math.abs(si / ni - so / no));
+    }
+    if (scBest > best) { best = scBest; bx = cx; by = cy; }
+  }
+  return { x: bx, y: by, score: best };
+}
+
 /* ---------- OBJECT tracking (the thing that moves) ----------
    The camera's own motion is already solved (the pose path), so the object's
    sky motion is the residual. Step the object's template into the next frame:
@@ -702,24 +747,58 @@ export function stepTracker(tracker, nextData, opts = {}) {
    match back to a world direction through that frame's pose. On a miss the
    prediction is held (world-stationary hypothesis) and reported ok:false so
    callers can mark the sample as low-confidence.
-   st: { tx, ty, g } — template center in tracking-buffer px + world dir. */
+   st: { tx, ty, g, gPrev? } — template center in tracking-buffer px + world
+   dir (+ previous world dir). Returns the complete next state — adopt it
+   whole (the gPrev chain is what powers the velocity prediction below). */
 export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
   const natW = opts.natW, natH = opts.natH, sc = natW / w;
-  const p = dirToPixK(st.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
-  if (!p) return { ...st, ok: false, ncc: -1 };
+  /* CONSTANT-VELOCITY prediction: a world-stationary prediction falls
+     behind a real mover, and once a static lookalike (a white speck, a
+     bright leaf) sits nearer the stale prediction than the object does, the
+     near-preference latches onto it forever (field-observed via the e2e
+     ground-truth run: perfect tracking for 4 s, then frozen). Extrapolating
+     the object's own angular velocity keeps the TRUE object nearest the
+     prediction, so locality helps instead of hurting. */
+  const gp = st.gPrev ? unit([2 * st.g[0] - st.gPrev[0], 2 * st.g[1] - st.gPrev[1], 2 * st.g[2] - st.gPrev[2]]) : st.g;
+  const p = dirToPixK(gp, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+  if (!p) return { ...st, gPrev: st.g, ok: false, ncc: -1 };
   const bx = p.px / sc, by = p.py / sc;
-  if (bx < -4 || bx > w + 4 || by < -4 || by > h + 4) return { tx: bx, ty: by, g: st.g, ok: false, ncc: -1 };
-  /* NEAR-FIRST search: over one step the object can only be a small angle
-     from its prediction, but a wide window can contain a LOOKALIKE background
-     feature (a star, a bright leaf) that ties or beats the true match — so
-     search a tight ring first and widen only on a miss. */
-  const f0 = { tx: st.tx, ty: st.ty, px: bx, py: by };
+  if (bx < -4 || bx > w + 4 || by < -4 || by > h + 4) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: -1 };
+  /* The template must be SMALL — a background-heavy template correlates
+     ≥0.9 with the background left behind after the object moves away, so the
+     tracker latches onto the empty spot and reports a confident stationary
+     "track" forever (caught by the ground-truth synthetic: 26° of missed
+     motion at ncc 0.95+). Sized from the marks (opts.objPx) but HARD-CAPPED
+     at 13: marks are often generous around a small object (an end-to-end run
+     with a default-size orb reproduced the latch through the cap-25 version),
+     and for genuinely big objects a small patch just tracks interior texture,
+     bounded by the object's own extent.
+     RING search: expand the search radius in stages, accepting a near match
+     only when it's genuinely STRONG — locality preference (a wide window can
+     contain a lookalike star/leaf) without the background-latch failure. */
+  const patch = opts.patch || (opts.objPx ? Math.max(9, Math.min(13, Math.round(opts.objPx * 1.5) | 1)) : 13);
   const minNcc = opts.minNcc == null ? 0.45 : opts.minNcc;
-  let tr = trackFeatures(prevData, nextData, w, h, [f0], { patch: opts.patch || 17, search: 8, minNcc });
-  if (!tr[0] || !tr[0].ok) tr = trackFeatures(prevData, nextData, w, h, [f0], { patch: opts.patch || 17, search: opts.search || 22, minNcc });
-  if (!tr[0] || !tr[0].ok) return { tx: bx, ty: by, g: st.g, ok: false, ncc: tr[0] ? tr[0].ncc : -1 };
+  const f0 = { tx: st.tx, ty: st.ty, px: bx, py: by };
+  /* NEAR vs WIDE arbitration. A fast mover's true position sits far from the
+     prediction (its own motion PLUS the camera swinging the other way — 17 px
+     in the ground-truth synthetic), while the abandoned background near the
+     prediction can still correlate ~0.65 with a small-object template. An
+     early-exit "strong enough" near ring latched onto that grass once and
+     then tracked background forever at ncc 0.98 (template poisoned). So:
+     search near AND wide, and take the far match only when it's CLEARLY
+     stronger — lookalike ties stay near (a wide window can contain a twin
+     star), background latches lose to the real object. */
+  const runS = (s) => trackFeatures(prevData, nextData, w, h, [f0], { patch, search: s, minNcc, centerW: true })[0];
+  const near = runS(8), wide = runS(Math.max(26, opts.search || 0));
+  let best;
+  if (near && near.ok && wide && wide.ok) {
+    const sameSpot = Math.hypot(near.px - wide.px, near.py - wide.py) < 2;
+    best = (!sameSpot && wide.ncc > near.ncc + 0.12) ? wide : near;
+  } else best = near && near.ok ? near : wide && wide.ok ? wide : (wide || near);
+  if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: best ? best.ncc : -1 }; // hold rides the velocity, not the stale spot
+  const tr = [best];
   const g2 = pixToDirK(tr[0].px * sc, tr[0].py * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
-  return { tx: tr[0].px, ty: tr[0].py, g: g2, ok: true, ncc: tr[0].ncc };
+  return { tx: tr[0].px, ty: tr[0].py, g: g2, gPrev: st.g, ok: true, ncc: tr[0].ncc };
 }
 
 /* Interpolate a pose path at any time t — az wrap-aware, everything else

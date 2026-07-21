@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker, stepObject, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -778,7 +778,16 @@ function MediaMeasure({ src, update, wizard }) {
   /* --- 3D shape fit: projected silhouette writes A.p1/p2; pose is stored --- */
   const syncShape = (sf) => {
     const pr = shapeProjNat(sf);
-    update({ shapeFit: sf, A: { ...src.A, p1: pr.p1, p2: pr.p2 } });
+    const A2 = { ...src.A, p1: pr.p1, p2: pr.p2 };
+    /* video: the marks belong to the frame they were DRAWN on — stamp it here.
+       Relying on the "✓ Use this frame" button alone let marks and videoTime
+       disagree (fit on frame X while videoTime said Y or nothing): the sky
+       view then baked the wrong frame and the object tracker seeded its
+       template where the object wasn't — track lost immediately
+       (field-observed). Scrubbing alone never re-stamps; only touching the
+       shape on a new frame moves the mark time with it. */
+    if (media?.kind === "video" && isNum(vidT)) { A2.videoTime = vidT; A2.t = vidT.toFixed(2); }
+    update({ shapeFit: sf, A: A2 });
   };
   const updShape = (patch) => { if (src.shapeFit) syncShape({ ...src.shapeFit, ...patch }); };
   const startShape = (kind) => {
@@ -3410,8 +3419,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const cv = document.createElement("canvas"); cv.width = TW; cv.height = TH;
       const cx = cv.getContext("2d", { willReadFrequently: true });
       const grab = () => { cx.drawImage(v, 0, 0, TW, TH); return cx.getImageData(0, 0, TW, TH).data; };
+      /* OBJECT track rides the same walk: the camera poses being solved
+         anyway turn the marked object's template match into a true angular
+         path (see stepObject). The object gets its OWN buffers at native
+         resolution (≤1600, the playback-texture cap): at the camera solve's
+         768 px + video compression, a small object can wash out to a few
+         grey levels of contrast and the matcher has nothing to hold
+         (ground-truth e2e: a 12 px dot read 192 against 184 grass). */
+      const objMid = source?.A?.p1 && source?.A?.p2
+        ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null;
+      const OW = Math.min(1600, source.natW), osc = OW / source.natW, OH = Math.max(40, Math.round(source.natH * osc));
+      const cvO = document.createElement("canvas"); cvO.width = OW; cvO.height = OH;
+      const cxO = cvO.getContext("2d", { willReadFrequently: true });
+      const grabO = () => { cxO.drawImage(v, 0, 0, OW, OH); return cxO.getImageData(0, 0, OW, OH).data; };
+      const objPxO = objMid ? Math.hypot(source.A.p1.x - source.A.p2.x, source.A.p1.y - source.A.p2.y) * osc : 0;
+      let objSeed = null, refO = null;
       await seek(refT);
       const refData = grab();
+      if (objMid) {
+        refO = grabO();
+        /* snap the tracker seed onto the OBJECT itself — a mark a few px off
+           a small object leaves a half-background template, which is lost
+           immediately (the marks themselves stay untouched) */
+        const sn = snapToObject(refO, OW, OH, objMid.x * osc, objMid.y * osc, Math.min(16, Math.max(6, objPxO * 0.35)));
+        objSeed = {
+          tx: sn.x, ty: sn.y,
+          g: pixToDirK(sn.x / osc, sn.y / osc, source.natW, source.natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
+        };
+      }
       /* physical FOV cap: no frame can be WIDER than the lens's widest —
          digital zoom only narrows. This kills the impossible 110°+ solves the
          smallest-template ladder rungs win at the zoom-out landing. With lens
@@ -3429,16 +3464,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
-      /* OBJECT track rides the same walk: the camera poses being solved
-         anyway turn the marked object's template match into a true angular
-         path (see stepObject). Seeded from the measure-step marks' midpoint
-         on this reference frame. */
-      const objMid = source?.A?.p1 && source?.A?.p2
-        ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null;
-      const objSeed = objMid ? {
-        tx: objMid.x * sc, ty: objMid.y * sc,
-        g: pixToDirK(objMid.x, objMid.y, source.natW, source.natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
-      } : null;
       const objPath = [];
       if (objSeed) { const ae0 = dirToAzEl(objSeed.g); objPath.push({ t: +refT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 }); }
       const objRef = { st: null };
@@ -3447,6 +3472,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const walk = async (list, tracker) => {
         let prevT = refT;
         objRef.st = objSeed ? { ...objSeed } : null;   // each pass restarts from the marked frame
+        let prevO = objRef.st ? refO : null;           // native-res object buffer of the marked frame (the video sits at refT at walk start)
         /* "meet in the middle": when a step RE-ANCHORS absolutely against the
            reference frame, distribute its drift correction back across this
            pass's entries since the last anchor, so the incremental chain bends
@@ -3462,11 +3488,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const stepAt = async (tt) => {
             await seek(tt);
             const buf = grab();
-            const prevBuf = tracker.prevData;          // before stepTracker replaces it
             const r2 = stepTracker(tracker, buf);
             if (objRef.st) {
-              const o = stepObject(prevBuf, buf, TW, TH, objRef.st, r2.pose, { natW: source.natW, natH: source.natH });
-              objRef.st = { tx: o.tx, ty: o.ty, g: o.g };
+              const bufO = grabO();
+              const o = stepObject(prevO, bufO, OW, OH, objRef.st, r2.pose, { natW: source.natW, natH: source.natH, objPx: objPxO });
+              prevO = bufO;
+              objRef.st = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
               const ae = dirToAzEl(o.g);
               objPath.push({ t: tt, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3), q: o.ok ? +Math.max(0, o.ncc).toFixed(2) : 0 });
               if (o.ok) objOk++; else objMiss++;
@@ -3475,11 +3502,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           };
           const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
             const s0 = snap();
-            const so0 = { st: objRef.st, len: objPath.length };
+            const so0 = { st: objRef.st, len: objPath.length, prevO };
             let r = await stepAt(tTo);
             if (r.nInliers < 6 && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
               Object.assign(tracker, s0);               // rewind — take it in two halves
-              objRef.st = so0.st; objPath.length = so0.len;
+              objRef.st = so0.st; objPath.length = so0.len; prevO = so0.prevO;
               const tm = +((tFrom + tTo) / 2).toFixed(3);
               const rm = await tryStep(tFrom, tm, depth - 1);
               path.push(entry(tm, rm));

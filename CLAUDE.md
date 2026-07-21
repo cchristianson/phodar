@@ -535,15 +535,36 @@ terrain stay frozen and only the object moves. Build ladder:
    original clip AND the stabilized render (before/after pair) beside
    the photos.
 4. Auto object tracking (template correlation seeded by first tap) → dense
-   trajectories → real g-load curves. **v1 DONE (stepObject in postrack)**:
-   rides the stabilize walk — the object's next pixel is PREDICTED by
-   re-projecting its previous world dir under the new frame's solved pose
-   (camera motion compensated), then template-matched NEAR-FIRST (tight
-   ring, widen on miss — a wide window can contain a lookalike background
-   star/leaf that ties the true match; asserted in mathcheck: mover
-   recovered to <0.25° through a pan). Misses hold the world-stationary
-   prediction and count honestly; the track is kept only if ≥30% of
-   frames matched (else "object lost" and the outline stays put).
+   trajectories → real g-load curves. **v2 DONE (stepObject/snapToObject in
+   postrack)** — validated END-TO-END: a synthetic clip built from a real
+   field frame (moving crop = camera shake, compositing a 12 px dot flying
+   a known path) is driven through the REAL app UI by Playwright (upload →
+   fit shape → wizard → place → stabilize) and the saved objPath matches
+   ground truth; the offline module harness tracks the same clip to 0.34°
+   mean. Every mechanism below exists because the naive version failed on
+   that ground truth:
+   - Rides the stabilize walk with its OWN native-res buffers (≤1600):
+     at the camera solve's 768 px + video compression, a small object
+     washes out to a few grey levels and NO matcher can hold it.
+   - Seed SNAPPED onto the object (snapToObject: multi-scale
+     center-surround contrast peak) — marks are never pixel-centred, and
+     a template cut half-off a small object is lost immediately.
+   - CONSTANT-VELOCITY prediction (gPrev chain): a world-stationary
+     prediction falls behind a real mover and a static lookalike near the
+     stale prediction latches forever. Prediction rides the object's own
+     angular velocity, so locality preference helps instead of hurting.
+   - NEAR vs WIDE search arbitration: take the far match only when
+     clearly stronger (Δncc>0.12) — twin-star ties stay near, background
+     latches lose to the real object.
+   - CENTER-WEIGHTED NCC (trackFeatures opts.centerW, σ=patch/3.4) +
+     patch hard-capped at 13: an unweighted background-majority template
+     correlates ~0.9+ with "the same grass" after the object leaves.
+   - The MARKS stamp their own frame: syncShape writes A.videoTime at fit
+     time (video), so marks and marked-frame can never disagree (the old
+     "✓ Use this frame"-only flow let the object template seed off the
+     wrong frame entirely).
+   Misses hold the velocity prediction and count honestly; the track is
+   kept only if ≥30% matched (else "object lost", outline stays put).
    `source.objPath = [{t,az,el,q}]` persists; playback rotates the object
    marks onto the tracked dir (Rodrigues d0→dT; B sight-line and track
    points stay pinned — their own observations), and the crop export's
