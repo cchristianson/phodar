@@ -757,6 +757,7 @@ function MediaMeasure({ src, update, wizard }) {
   const holdRef = useRef(null);
   const [touching, setTouching] = useState(false); // any finger down on the canvas
   const wrapRef = useRef(null), mediaRef = useRef(null), loupeRef = useRef(null);
+  const trkDragRef = useRef(null);   // live position of a loupe-assisted Track drag (committed on lift)
 
   const natW = src.natW, natH = src.natH;
   const scale = natW && dispW ? dispW / natW : 0;
@@ -1241,13 +1242,30 @@ function MediaMeasure({ src, update, wizard }) {
     const pd = pendingRef.current;
     if (pd && pd.id === e.pointerId) {
       if (Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) > 7) {
-        if (pd.mode === "trk") { killPending(); return; } // swipe in track mode places nothing
+        if (pd.mode === "trk") {
+          /* Track DRAG = loupe-assisted placement (the object is almost
+             always small): magnifier follows the finger, the point commits
+             where you LIFT. A clean tap still places instantly. */
+          killPending();
+          trkDragRef.current = toNat(e.clientX, e.clientY);
+          setDrag(true);
+          setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+          requestAnimationFrame(() => requestAnimationFrame(() => { if (trkDragRef.current) drawLoupe(trkDragRef.current); }));
+          return;
+        }
         commitPending(true, toNat(e.clientX, e.clientY), { x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
       }
       return;
     }
     if (!drag) return;
     const p = toNat(e.clientX, e.clientY);
+    if (active === "trk") {
+      if (!trkDragRef.current) return;
+      trkDragRef.current = p;
+      setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+      drawLoupe(p);
+      return;
+    }
     if (active === "shape") {
       if (hDragRef.current && src.shapeFit) {
         const nsf = { ...src.shapeFit, cx: p.x, cy: p.y };
@@ -1292,6 +1310,15 @@ function MediaMeasure({ src, update, wizard }) {
       hDragRef.current = null;
       if (drag) {
         setDrag(false);
+        if (active === "trk" && trkDragRef.current && e.type !== "pointercancel") {
+          /* commit the loupe-assisted Track drag where the finger lifted */
+          const p2 = trkDragRef.current;
+          const el2 = mediaRef.current;
+          const tv = el2 && media?.kind === "video" ? el2.currentTime : vidT;
+          update({ track: [...(src.track || []), { t: +tv.toFixed(3), x: p2.x, y: p2.y }] });
+          if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
+        }
+        trkDragRef.current = null;
         if (active === "p1" && !src.A.p2) setActive("p2");
       }
     }
@@ -1300,7 +1327,7 @@ function MediaMeasure({ src, update, wizard }) {
   /* safety valve: app-switch or system gesture mid-touch must release the lock */
   useEffect(() => {
     const hardReset = () => {
-      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null;
+      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null;
       killPending(); setTouching(false); setDrag(false); setFinger(null);
     };
     window.addEventListener("blur", hardReset);
@@ -1572,6 +1599,17 @@ function MediaMeasure({ src, update, wizard }) {
               })()}
               {scale > 0 && src.shapeFit && (() => {
                 const sf = src.shapeFit;
+                /* video: the shape belongs to the frame it was FIT on
+                   (A.videoTime) — fade it out as the scrubber leaves that
+                   frame, with a floor while the shape tool is active so it
+                   stays adjustable (touching it re-stamps to this frame) */
+                let frameOp = 1;
+                if (media.kind === "video" && isNum(src.A?.videoTime)) {
+                  const dT2 = Math.abs(vidT - +src.A.videoTime);
+                  const f2 = dT2 <= 0.3 ? 1 : dT2 >= 1.1 ? 0 : 1 - (dT2 - 0.3) / 0.8;
+                  frameOp = active === "shape" || shapeMag ? Math.max(0.25, f2) : f2;
+                }
+                if (frameOp <= 0.01) return null;
                 const pr = shapeProjNat(sf);
                 const segs = [];
                 for (const c of pr.curves) for (let i = 0; i < c.length - 1; i++) {
@@ -1582,7 +1620,7 @@ function MediaMeasure({ src, update, wizard }) {
                 const op = 0.8;
                 const col = `hsl(${sf.hue ?? 36},88%,60%)`;
                 return (
-                  <svg style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width="100%" height="100%">
+                  <svg style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible", opacity: frameOp }} width="100%" height="100%">
                     {segs.map((s2, i) => (
                       <line key={i} x1={s2.a[0]} y1={s2.a[1]} x2={s2.b[0]} y2={s2.b[1]}
                         stroke={col} strokeWidth={s2.z > 0 ? 1.6 : 0.9}
@@ -1613,38 +1651,30 @@ function MediaMeasure({ src, update, wizard }) {
               const dprL = Math.min(window.devicePixelRatio || 1, 3);
               return (
                 <canvas ref={loupeRef} width={S * dprL} height={S * dprL}
-                  style={{ position: "fixed", left, top, width: S, height: S, borderRadius: 14, zIndex: 60, pointerEvents: "none", background: "#000", border: `2px solid ${active === "pb" ? "var(--teal)" : "var(--amber)"}`, boxShadow: "0 4px 14px rgba(0,0,0,.55)" }} />
+                  style={{ position: "fixed", left, top, width: S, height: S, borderRadius: 14, zIndex: 60, pointerEvents: "none", background: "#000", border: `2px solid ${active === "pb" ? "var(--teal)" : active === "trk" ? "var(--track)" : "var(--amber)"}`, boxShadow: "0 4px 14px rgba(0,0,0,.55)" }} />
               );
             })()}
           </div>
 
-          {media && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <ML style={{ marginBottom: 1 }}>Brightness / contrast</ML>
-                <span style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                  <span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--mono)" }}>display only · original kept</span>
-                  {!imgAdjNeutral(src.imgAdj) && <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => update({ imgAdj: { bri: 100, con: 100 } })}>↺ reset</button>}
-                </span>
-              </div>
-              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
-                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Brightness">☀</span>
-                <input type="range" min={20} max={400} step={2} value={src.imgAdj?.bri ?? 100}
-                  onChange={(e) => update({ imgAdj: { bri: +e.target.value, con: src.imgAdj?.con ?? 100 } })} style={{ flex: 1 }} />
-              </div>
-              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
-                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Contrast">◐</span>
-                <input type="range" min={50} max={300} step={2} value={src.imgAdj?.con ?? 100}
-                  onChange={(e) => update({ imgAdj: { bri: src.imgAdj?.bri ?? 100, con: +e.target.value } })} style={{ flex: 1 }} />
-              </div>
-              <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Lifts a dark night shot so you can see stars &amp; the object — carries into the sky view and report; measurements still use the original.</div>
-            </div>
-          )}
-
           {media.kind === "video" && (
             <div style={{ marginTop: 8 }}>
-              <input type="range" min={0} max={vidDur || 0} step={0.033} value={vidT}
-                onChange={(e) => seek(+e.target.value)} />
+              {/* frame slider with placement TICKS: amber ▾ = the frame the
+                  shape/marks live on, blue dots = trajectory taps — so you can
+                  find your way back to where things were placed */}
+              <div style={{ position: "relative" }}>
+                {vidDur > 0 && (
+                  <div style={{ position: "absolute", left: 8, right: 8, top: -5, height: 6, pointerEvents: "none" }}>
+                    {(src.track || []).filter((p) => isNum(p.t)).map((p, i) => (
+                      <span key={"tk" + i} style={{ position: "absolute", left: `${clampN((p.t / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", width: 5, height: 5, borderRadius: 3, background: "var(--track)", display: "block" }} />
+                    ))}
+                    {isNum(src.A?.videoTime) && (
+                      <span style={{ position: "absolute", left: `${clampN((+src.A.videoTime / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", color: "var(--amber)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
+                    )}
+                  </div>
+                )}
+                <input type="range" min={0} max={vidDur || 0} step={0.033} value={vidT}
+                  onChange={(e) => seek(+e.target.value)} />
+              </div>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <button className="btn sm" onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
                 <button className="btn sm" onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
@@ -1696,6 +1726,29 @@ function MediaMeasure({ src, update, wizard }) {
                   })()}
                 </div>
               )}
+            </div>
+          )}
+
+          {media && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <ML style={{ marginBottom: 1 }}>Brightness / contrast</ML>
+                <span style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ fontSize: 10, color: "var(--dim)", fontFamily: "var(--mono)" }}>display only · original kept</span>
+                  {!imgAdjNeutral(src.imgAdj) && <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => update({ imgAdj: { bri: 100, con: 100 } })}>↺ reset</button>}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Brightness">☀</span>
+                <input type="range" min={20} max={400} step={2} value={src.imgAdj?.bri ?? 100}
+                  onChange={(e) => update({ imgAdj: { bri: +e.target.value, con: src.imgAdj?.con ?? 100 } })} style={{ flex: 1 }} />
+              </div>
+              <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+                <span style={{ fontSize: 14, width: 16, textAlign: "center" }} title="Contrast">◐</span>
+                <input type="range" min={50} max={300} step={2} value={src.imgAdj?.con ?? 100}
+                  onChange={(e) => update({ imgAdj: { bri: src.imgAdj?.bri ?? 100, con: +e.target.value } })} style={{ flex: 1 }} />
+              </div>
+              <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Lifts a dark night shot so you can see stars &amp; the object — carries into the sky view and report; measurements still use the original.</div>
             </div>
           )}
 
