@@ -18,6 +18,7 @@ export const SHAPES = [
   { k: "capsule", label: "💊 Tic-tac" },
   { k: "tri", label: "▲ Triangle" },
   { k: "plane", label: "✈ Plane" },
+  { k: "heli", label: "🚁 Helicopter" },
   { k: "bird", label: "🕊 Bird" },
   { k: "drone", label: "❖ Drone" },
   { k: "jelly", label: "🪼 Jellyfish" },
@@ -73,6 +74,34 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       C.push([[-0.40, s * 0.03, 0], [-0.47, s * 0.19, 0], [-0.51, s * 0.19, 0], [-0.485, s * 0.03, 0], [-0.40, s * 0.03, 0]]);     // h-stab
     }
     C.push([[-0.37, 0, 0], [-0.47, 0, 0.17], [-0.52, 0, 0.17], [-0.50, 0, 0], [-0.37, 0, 0]]);                                     // vertical fin (points up, +z = spine)
+  } else if (kind === "heli") {
+    // helicopter — nose +X, tail −X; main rotor disc horizontal about +Z (the
+    // lift/up axis), tail rotor vertical at the boom tip. Main-rotor diameter = 1.
+    const R = 0.5, mz = 0.2;                                     // rotor radius, plane height
+    C.push(circ(R, "z", mz));                                    // main rotor disc
+    C.push([[0, 0, 0.05], [0, 0, mz]]);                          // rotor mast
+    C.push([[-R, 0, mz], [R, 0, mz]], [[0, -R, mz], [0, R, mz]]); // two blades
+    // fuselage — planform (top, XY) + side profile (XZ): cockpit at the nose,
+    // tapering to a slim tail boom
+    C.push([[0.34, 0], [0.27, 0.085], [0.06, 0.1], [-0.16, 0.06], [-0.44, 0.026], [-0.58, 0.018], [-0.58, -0.018], [-0.44, -0.026], [-0.16, -0.06], [0.06, -0.1], [0.27, -0.085], [0.34, 0]]
+      .map(([x, y]) => [x, y, 0]));
+    C.push([[0.34, 0.01], [0.31, 0.09], [0.12, 0.13], [-0.08, 0.11], [-0.42, 0.055], [-0.58, 0.06], [-0.58, 0.0], [-0.34, -0.06], [-0.06, -0.1], [0.2, -0.075], [0.34, 0.01]]
+      .map(([x, z]) => [x, 0, z]));
+    // a couple of cabin cross-section rings for volume
+    for (const xo of [0.12, -0.06]) C.push(Array.from({ length: 25 }, (_, i) => { const a = (i / 24) * Math.PI * 2; return [xo, Math.cos(a) * 0.092, 0.015 + Math.sin(a) * 0.1]; }));
+    // tail rotor — vertical disc (about the Y axis) + two blades, at the boom tip
+    const tr = 0.12, tx = -0.58, tz = 0.07;
+    C.push(Array.from({ length: 25 }, (_, i) => { const a = (i / 24) * Math.PI * 2; return [tx + Math.cos(a) * tr, 0.03, tz + Math.sin(a) * tr]; }));
+    C.push([[tx - tr, 0.03, tz], [tx + tr, 0.03, tz]], [[tx, 0.03, tz - tr], [tx, 0.03, tz + tr]]);
+    // vertical tail fin + horizontal stabilizer
+    C.push([[-0.44, 0, 0.04], [-0.58, 0, 0.2], [-0.64, 0, 0.12], [-0.56, 0, 0.0], [-0.44, 0, 0.04]]);
+    for (const s of [1, -1]) C.push([[-0.46, s * 0.02, 0.03], [-0.55, s * 0.12, 0.04], [-0.6, s * 0.11, 0.04], [-0.52, s * 0.02, 0.03]]);
+    // landing skids — two tubes below, on struts
+    for (const s of [1, -1]) {
+      C.push([[0.24, s * 0.12, -0.16], [0.18, s * 0.12, -0.19], [-0.2, s * 0.12, -0.19], [-0.26, s * 0.12, -0.16]]); // skid tube (turned up fore/aft)
+      C.push([[0.12, s * 0.05, -0.03], [0.08, s * 0.12, -0.185]]);   // front strut
+      C.push([[-0.1, s * 0.05, -0.03], [-0.14, s * 0.12, -0.185]]);  // rear strut
+    }
   } else if (kind === "bird") {
     // gliding bird — head along +X, slight dihedral. wingF scales the
     // lateral span (wingtip reach); wingX sweeps the wing root fore/aft.
@@ -158,7 +187,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);

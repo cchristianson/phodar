@@ -5613,6 +5613,7 @@ const SHAPE_VIEWS = {
   capsule: [["Side", "x", "z", "length", "diameter"], ["End", "y", "z", "diameter", "diameter"]],
   tri: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "thickness"]],
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  heli: [["Top", "x", "y", "length", "rotor span"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "rotor span", "height"]],
   bird: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   drone: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "height"], ["Front", "y", "z", "depth", "height"]],
   jelly: [["Side", "x", "z", "bell width", "height"], ["Top", "x", "y", "diameter", "diameter"]],
