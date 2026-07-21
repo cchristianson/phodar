@@ -2235,10 +2235,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* Starlink layer — opt-in (the full ~7k constellation). One SGP4 per sat at
      the sighting instant (memoised on T/pos, not on pan/zoom), then keep only
      the sunlit ones above the horizon and cap the count so the dome stays
-     legible. Per-sat pass trails: a full 60× would be a lot of SGP4, but a
-     Starlink train shares essentially one path, so we compute trails for a
-     capped subset (highest-elevation first) — enough to draw the train's arc —
-     and only DRAW the ones near the view/sight-line (see render). */
+     legible. Per-sat pass trails are computed for every sunlit member (SGP4 is
+     memoised on time/position, off the pan/zoom path) so whichever ones sit
+     near the photo/sight-line — even low on the horizon — always have a path;
+     the render then only DRAWS the ones near the view/sight-line. */
   const [starlinkOn, setStarlinkOn] = useState(false);
   const [slDb, setSlDb] = useState(null); // {sats} | {err}
   useEffect(() => {
@@ -2251,7 +2251,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const slView = useMemo(() => {
     if (!starlinkOn || !slDb?.sats || !hasPos) return [];
     const lit = satsAt(slDb.sats, T, LAT, LNG, 0).filter((s) => s.lit).slice(0, 60);
-    return lit.map((s, i) => (i < 28 ? { ...s, trail: satTrail(s.rec, T, LAT, LNG) } : s));
+    return lit.map((s) => ({ ...s, trail: satTrail(s.rec, T, LAT, LNG) }));
   }, [starlinkOn, slDb, T, LAT, LNG, hasPos]);
 
   /* named peaks (OSM Overpass) — placed on the terrain skyline by bearing +
@@ -3510,7 +3510,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
               {lines.map((l) => (
                 <polyline key={l.key} points={l.pts} fill="none" stroke="#c9b6ff"
-                  strokeWidth="1.2" strokeLinecap="round" strokeDasharray="0.1 7" opacity="0.4" />
+                  strokeWidth="1.6" strokeLinecap="round" strokeDasharray="0.1 5" opacity="0.72" />
               ))}
             </svg>
           );
