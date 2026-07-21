@@ -547,7 +547,7 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
-      "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, wind) shows.",
+      "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
     ],
   },
   {
@@ -605,6 +605,7 @@ const HELP_SECTIONS = [
       { h: "Explanation candidates", items: [
         { t: "✈ aircraft (ADS-B)", d: "Live or archived-at-the-sighting-time air traffic as heading-rotated ✈ glyphs at true az/el, with range, altitude and faint track trails. Tap one for its identity/route." },
         { t: "🛰 satellites / ✦ Starlink", d: "CelesTrak orbital elements propagated to your time — passing satellites and (opt-in) sunlit Starlink trains, a common “string of lights” report." },
+        { t: "☁ cloud", d: "The sky's % cloud cover at the sighting time (Open-Meteo, low/mid/high) as a soft representative wash on the dome — plus the estimated cloud base. It's a representation of how cloudy it was, not exact cloud positions. A low deck also caps a below-cloud object's range & size (see the size tool)." },
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
       ]},
@@ -2188,6 +2189,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      which way, and how fast, the wind pushes at each altitude AT THE SIGHTING
      TIME. If an object drifted with one of these, it's likely a balloon. */
   const [windOn, setWindOn] = useState(false);
+  const [cloudOn, setCloudOn] = useState(false); // ☁ cloud layer on the dome
   const [windProf, setWindProf] = useState(null); // {levels, src} | {err} | null
   useEffect(() => {
     if (!open || !windOn || !hasPos) { setWindProf(null); return; }
@@ -2198,15 +2200,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       .catch((e) => { if (!dead) setWindProf({ err: String(e?.message || e) }); });
     return () => { dead = true; };
   }, [open, windOn, hasPos, LAT, LNG, T]);
-  /* weather for the size tool's cloud-base cap — fetched only when the tool is
-     open (one call; the report fetches its own). null on any failure. */
+  /* weather for the size tool's cloud-base cap AND the ☁ cloud dome layer —
+     fetched only when one of those is open (one call; the report fetches its
+     own). `err` on failure so the cloud chip can say so instead of vanishing. */
   const [wxSky, setWxSky] = useState(null);
+  const wxWanted = sizeOn || cloudOn;
   useEffect(() => {
-    if (!open || !sizeOn || !hasPos) { setWxSky(null); return; }
+    if (!open || !wxWanted || !hasPos) { setWxSky(null); return; }
     let dead = false;
-    fetchWeatherAt(LAT, LNG, T).then((w) => { if (!dead) setWxSky(w); }).catch(() => { if (!dead) setWxSky(null); });
+    fetchWeatherAt(LAT, LNG, T).then((w) => { if (!dead) setWxSky(w); }).catch(() => { if (!dead) setWxSky({ err: true }); });
     return () => { dead = true; };
-  }, [open, sizeOn, hasPos, LAT, LNG, T]);
+  }, [open, wxWanted, hasPos, LAT, LNG, T]);
 
   /* --- satellites (the night ADS-B): CelesTrak visual group via SGP4,
      at the SIGHTING time. auto = shown when the sky is dark enough;
@@ -2831,6 +2835,44 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     });
     return out;
   })() : [];
+  /* ☁ cloud layer — a REPRESENTATIVE scatter (Open-Meteo % cover, not actual
+     cloud positions): soft blobs spread across the dome, low clouds toward the
+     horizon, cirrus high; count + opacity scale with each layer's cover %.
+     Deterministic (golden-angle) so it doesn't flicker on re-render. */
+  const cloudField = (cloudOn && wxSky && !wxSky.err && !cameraOn && vp.w > 0) ? (() => {
+    const puffs = [];
+    /* distribute AROUND the current view so the visible sky shows the right
+       density (spread over all 360° would put almost none in a narrow FOV) */
+    const azC = effAz, azSpan = clampN(fovH * 1.25, 22, 170);
+    const layers = [
+      { cov: wxSky.low, elLo: 3, elHi: 42, rBase: 0.11, op: 0.55 },
+      { cov: wxSky.mid, elLo: 30, elHi: 66, rBase: 0.09, op: 0.44 },
+      { cov: wxSky.high, elLo: 54, elHi: 87, rBase: 0.072, op: 0.30 },
+    ];
+    let idx = 3;
+    for (const Ly of layers) {
+      const cov = isNum(Ly.cov) ? +Ly.cov : 0;
+      if (cov < 5) continue;
+      const n = Math.round(clampN((cov / 100) * 22, 2, 22));
+      for (let i = 0; i < n; i++) {
+        idx++;
+        /* R2 plastic-constant low-discrepancy pair → even 2D scatter (two
+           correlated golden sequences streak diagonally) */
+        const af = (0.5 + idx * 0.7548776662) % 1, ef = (0.5 + idx * 0.5698402910) % 1;
+        const az = azC + (af - 0.5) * 2 * azSpan;
+        const el = Ly.elLo + ef * (Ly.elHi - Ly.elLo);
+        const p = project(az, el);
+        if (!p.inFront || p.x < -0.15 || p.x > 1.15 || p.y < -0.15 || p.y > 1.15) continue;
+        const wob = 0.65 + ((idx * 2.399963) % 1) * 0.85;
+        puffs.push({ x: p.x, y: p.y, r: Ly.rBase * wob, op: Ly.op * clampN(cov / 100 + 0.3, 0.35, 1) });
+      }
+    }
+    return puffs;
+  })() : [];
+  /* milky veil for heavy cover — puffs alone can't read as "overcast"; a soft
+     top-down wash (opacity ∝ total cover above ~45%) sells it, puffs add texture */
+  const cloudVeil = (cloudOn && wxSky && !wxSky.err && isNum(wxSky.cloud) && wxSky.cloud > 45)
+    ? clampN(((wxSky.cloud - 45) / 55) * 0.3, 0, 0.3) : 0;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
   /* while aligning, label EVERY named star in view (you're picking anchors);
@@ -3244,6 +3286,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {!cameraOn && horizonY < 1.05 && (
           <div style={{ position: "absolute", left: 0, right: 0, top: (clampN(horizonY, 0, 1) * 100) + "%", bottom: 0, background: isNight ? "#0b0f18" : "#2c3729", pointerEvents: "none" }} />
         )}
+
+        {/* ☁ cloud layer — soft blobs BEHIND the photo (it occludes them), a
+            representative wash of the real % cover at the sighting time */}
+        {cloudVeil > 0 && (
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: `linear-gradient(180deg, rgba(232,239,248,${cloudVeil.toFixed(3)}) 0%, rgba(232,239,248,${(cloudVeil * 0.55).toFixed(3)}) 62%, rgba(232,239,248,0) 100%)` }} />
+        )}
+        {cloudField.map((c, i) => (
+          <div key={"cl" + i} style={{
+            position: "absolute", left: (c.x * 100) + "%", top: (c.y * 100) + "%",
+            width: (c.r * 2.2 * vp.w) + "px", height: (c.r * 1.4 * vp.w) + "px",
+            transform: "translate(-50%,-50%)", borderRadius: "50%", pointerEvents: "none",
+            background: `radial-gradient(ellipse at center, rgba(245,248,252,${c.op}) 0%, rgba(238,243,250,${(c.op * 0.5).toFixed(3)}) 46%, rgba(238,243,250,0) 72%)`,
+            filter: "blur(7px)",
+          }} />
+        ))}
 
         {/* stars & planets are drawn AFTER the photo (below) so they overlay it
             like the Sun/Moon anchors — see the sky-object layer past the grid */}
@@ -3779,6 +3836,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </button>
           )}
           {hasPos && (
+            <button className="btn sm" title="Cloud cover at the sighting time (Open-Meteo) — a representative wash of the % low/mid/high cover on the dome, plus the estimated cloud base. A low deck caps a below-cloud object's range & size."
+              style={{ background: "rgba(15,23,42,.7)", color: !cloudOn ? "var(--dim)" : wxSky?.err ? "var(--amber)" : "#cfe0ee" }}
+              onClick={() => setCloudOn((v) => !v)}>
+              ☁ {cloudOn ? (wxSky?.err ? "?" : !wxSky ? <Spin /> : (isNum(wxSky.cloud) ? `${Math.round(wxSky.cloud)}%` : "on")) : "cloud"}
+            </button>
+          )}
+          {hasPos && (
             <button className="btn sm" title="Winds aloft at the sighting time — a vertical profile of which way and how fast the wind pushes at each altitude. A balloon drifts WITH the wind at its altitude, so compare the object's motion to these."
               style={{ background: "rgba(15,23,42,.7)", color: !windOn ? "var(--dim)" : windProf?.err ? "var(--amber)" : "#9fdcff" }}
               onClick={() => setWindOn((v) => !v)}>
@@ -3789,6 +3853,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {satView.length > 0 && satStaleDays > 5 && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             🛰 TLE epoch ≈ {satStaleDays} d from the sighting — satellite positions degrade; treat as approximate
+          </div>
+        )}
+        {cloudOn && (
+          <div style={{ fontSize: 10, color: wxSky?.err ? "var(--amber)" : "#cfe0ee", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {wxSky?.err ? "☁ cloud data unavailable for this time/place — toggle off/on to retry"
+              : !wxSky ? "☁ fetching cloud cover…"
+                : `☁ ${isNum(wxSky.cloud) ? Math.round(wxSky.cloud) + "% cover" : "cover"}${[isNum(wxSky.low) ? "low " + Math.round(wxSky.low) + "%" : "", isNum(wxSky.mid) ? "mid " + Math.round(wxSky.mid) + "%" : "", isNum(wxSky.high) ? "high " + Math.round(wxSky.high) + "%" : ""].filter(Boolean).length ? " (" + [isNum(wxSky.low) ? "low " + Math.round(wxSky.low) + "%" : "", isNum(wxSky.mid) ? "mid " + Math.round(wxSky.mid) + "%" : "", isNum(wxSky.high) ? "high " + Math.round(wxSky.high) + "%" : ""].filter(Boolean).join(" · ") + ")" : ""}${isNum(wxSky.baseAGL) && ((isNum(wxSky.low) ? wxSky.low : wxSky.cloud) || 0) >= 40 ? " · base ≈ " + fmtLenShort(wxSky.baseAGL) + " AGL" : ""} — representative, not actual positions`}
           </div>
         )}
         {peaksOn && peaks?.err && (
@@ -5979,7 +6050,7 @@ ${momStrip}`;
           (wxDeck ? row("Cloud base (est.)", `${fmtLenShort(wx.baseAGL)} above ground <span class="cap">— from temp/dew-point (Espy); an object below the deck was closer than base ÷ sin(elevation)</span>`) : "") +
           (wx.visM != null ? row("Visibility", wx.visM >= 20000 ? "≥ 20 km (clear)" : fmtLenShort(wx.visM)) : "") +
           (wx.tempC != null ? row("Air", `${Math.round(wx.tempC)}°C${wx.dewC != null ? ` · dew point ${Math.round(wx.dewC)}°C` : ""}${wx.rh != null ? ` · ${Math.round(wx.rh)}% RH` : ""}`) : "");
-      })() : "";
+      })() : row("Cloud / weather", `<span class="cap">unavailable — Open-Meteo returned no data for this time &amp; place (the cloud-base range cap is skipped)</span>`);
       const condAssess = wxDeck
         ? `<b>Assessment — conditions:</b> a low cloud deck (base ≈ ${fmtLenShort(wx.baseAGL)} AGL) was present — it caps a below-cloud object's range and size (see the size chart), and can itself catch and scatter ground light.`
         : (wx && wx.cloud != null && wx.cloud < 25)
