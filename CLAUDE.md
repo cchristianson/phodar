@@ -568,7 +568,26 @@ terrain stay frozen and only the object moves. Build ladder:
    `source.objPath = [{t,az,el,q}]` persists; playback rotates the object
    marks onto the tracked dir (Rodrigues d0→dT; B sight-line and track
    points stay pinned — their own observations), and the crop export's
-   camera FOLLOWS the track. Manual per-frame correction: not yet.
+   camera FOLLOWS the track.
+   **HYBRID GUIDED TRACKING + SECOND PASS**: the object pass now runs
+   AFTER the camera walk completes, against the despiked+smoothed path —
+   so every conversion uses the final poses, and measure-step TRACK
+   points ({t,x,y}: the object tapped on its own frame, tool now enabled
+   in the wizard for videos) convert through their own frame's solved
+   pose, staying mutually consistent whatever frames they were marked
+   on. With ≥2 timed waypoints they become the GUIDE: stepObject
+   opts.guide owns the prediction and a match >2° (guideGate) off the
+   human's path is REJECTED as a lookalike — the manual trajectory
+   outranks pixels, the matcher only fine-tunes (asserted in mathcheck;
+   verified end-to-end through the real wizard UI: 3 px waypoint taps,
+   guided track matches ground truth). With <2 waypoints the guide is
+   off and misses ride the velocity prediction. Guided misses carry
+   q=0.25 (the guide dir), honest in the readout. Also: the placement
+   stamps WHICH frame it aligned (calib.vt) and the sky view warns when
+   the marks later moved to a different frame — a pose describes ONE
+   frame. Stabilize progress lives in the BUTTON ("🎞 n/total…"), not
+   the flash (2.2 s auto-hide made it blink on long clips). Manual
+   per-frame correction of a solved track: not yet.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
