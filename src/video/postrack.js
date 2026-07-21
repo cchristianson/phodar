@@ -359,6 +359,16 @@ export function stepTracker(tracker, nextData, opts = {}) {
   let glob = null;
   if (tracker.refG && o.global !== false) {
     glob = registerToRef(tracker, grayDown(nextData, w, h, 96));
+    /* CONTINUITY GATE: a handheld camera can't teleport between adjacent
+       samples (≤¼ s). A global fix far from the chain is a wrong-placement
+       match — at deep zoom the template is tiny and self-similar content
+       offers lookalike placements (field-observed: a 30° az excursion held
+       for 1.5 s mid-zoom). Reject it; the chain carries the frame and later
+       good fixes/anchors absorb any small drift. */
+    if (glob) {
+      const dAzG = Math.abs(((glob.az - p0.az + 540) % 360) - 180);
+      if (dAzG > 12 || Math.abs(glob.el - p0.el) > 10) glob = null;
+    }
     if (glob) glob.pose = { az: glob.az, el: glob.el, roll: p0.roll, fov: glob.fov, k: p0.k || 0 };
   }
   const basePose = glob ? glob.pose : p0;
@@ -548,7 +558,12 @@ export function stepTracker(tracker, nextData, opts = {}) {
     for (const a of anchors) rMaxA = Math.max(rMaxA, Math.hypot(a.px - natW / 2, a.py - natH / 2));
     const fovFree = (anchors.length >= 10 && rMaxA > 0.35 * Math.min(natW, natH)) || (zoom && anchors.length >= 8);
     const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: !fovFree });
-    if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; solved = true; }
+    /* physical sanity: no handheld step (≤¼ s) rolls the camera ~10°+. A wild
+       roll on thin evidence is a garbage solve from a blurred frame — reject
+       it (field-observed as a single frame snapping 25° off mid-zoom-out). */
+    if (sol && !(Math.abs(sol.roll - basePose.roll) > 10 && sol.n < 12)) {
+      pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; solved = true;
+    }
   }
   // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
   //     TURNOVER: replacements get their world dir from the current pose
@@ -629,6 +644,41 @@ export function stepTracker(tracker, nextData, opts = {}) {
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
   return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null };
+}
+
+/* DESPIKE a solved pose path: a sample that deviates sharply from its
+   neighbours' time-interpolation — while the neighbours agree with each
+   other, or far beyond their own gap — is a garbage solve from one blurred
+   frame, not camera motion (a real whip/zoom is a RAMP across samples, which
+   this preserves: ramp neighbours disagree, so the gates stay closed).
+   Low-evidence entries (n < 6) are despiked at half the threshold. Mutates
+   path in place; returns the number of corrected samples. */
+export function despikePath(path, opts = {}) {
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  let fixed = 0;
+  for (let pass = 0; pass < (opts.passes || 2); pass++) {
+    for (let i = 1; i < path.length - 1; i++) {
+      const a = path[i - 1], b = path[i], c = path[i + 1];
+      const span = c.t - a.t; if (!(span > 1e-6)) continue;
+      const u = (b.t - a.t) / span;
+      const iAz = a.az + angD(c.az, a.az) * u;
+      const iEl = a.el + (c.el - a.el) * u;
+      const iRoll = a.roll + (c.roll - a.roll) * u;
+      const iFov = a.fov + (c.fov - a.fov) * u;
+      const nAz = Math.abs(angD(c.az, a.az)), nEl = Math.abs(c.el - a.el), nRoll = Math.abs(c.roll - a.roll);
+      const nFovR = Math.abs(c.fov - a.fov) / Math.max(c.fov, a.fov);
+      const k = (b.n || 0) < 6 ? 0.5 : 1;               // weak frames yield sooner
+      const devAz = Math.abs(angD(b.az, iAz)), devEl = Math.abs(b.el - iEl), devRoll = Math.abs(b.roll - iRoll);
+      const devFovR = Math.abs(b.fov - iFov) / Math.max(b.fov, iFov);
+      let did = false;
+      if (devAz > Math.max(1.2 * k, 1.6 * nAz)) { b.az = +(((iAz % 360) + 360) % 360).toFixed(3); did = true; }
+      if (devEl > Math.max(1.0 * k, 1.6 * nEl)) { b.el = +iEl.toFixed(3); did = true; }
+      if (devRoll > Math.max(1.5 * k, 1.6 * nRoll)) { b.roll = +iRoll.toFixed(3); did = true; }
+      if (devFovR > Math.max(0.06 * k, 1.6 * nFovR)) { b.fov = +iFov.toFixed(2); did = true; }
+      if (did) fixed++;
+    }
+  }
+  return fixed;
 }
 
 /* Distribute a re-anchor's drift correction back across the un-anchored span
