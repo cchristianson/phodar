@@ -2848,10 +2848,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const total = isNum(wxSky.cloud) ? +wxSky.cloud
       : Math.max(isNum(wxSky.low) ? wxSky.low : 0, isNum(wxSky.mid) ? wxSky.mid : 0, isNum(wxSky.high) ? wxSky.high : 0);
     if (!(total >= 1)) return [];
-    const azC = effAz, azSpan = clampN(fovH * 0.95, 16, 130);
-    const elC = effAlt, elSpan = clampN(fovV * 0.95, 12, 70);
-    const n = Math.round(clampN((total / 100) * 26, 3, 26));   // a few % → a wisp or two; overcast → filled
-    const op0 = clampN(total / 100 + 0.5, 0.5, 1) * 0.42;
+    /* spread across the whole visible sky (a touch above the aim, since the sky
+       opens upward), bold enough to read where it's not hidden behind the photo */
+    const azC = effAz, azSpan = clampN(fovH * 1.15, 18, 150);
+    const elC = effAlt + fovV * 0.12, elSpan = clampN(fovV * 1.0, 16, 74);
+    const n = Math.round(clampN((total / 100) * 42, 6, 48));   // a few % → a few wisps; overcast → filled
+    const op0 = clampN(total / 100 * 0.5 + 0.58, 0.58, 1) * 0.85;
     const puffs = [];
     for (let i = 0; i < n; i++) {
       const idx = i + 4;
@@ -2859,16 +2861,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const az = azC + (af - 0.5) * 2 * azSpan;
       const el = clampN(elC + (ef - 0.5) * 2 * elSpan, 1, 88);
       const p = project(az, el);
-      if (!p.inFront || p.x < -0.15 || p.x > 1.15 || p.y < -0.15 || p.y > 1.15) continue;
-      const wob = 0.6 + ((idx * 2.399963) % 1) * 0.95;
-      puffs.push({ x: p.x, y: p.y, r: 0.095 * wob, op: op0 });
+      if (!p.inFront || p.x < -0.18 || p.x > 1.18 || p.y < -0.18 || p.y > 1.18) continue;
+      const wob = 0.62 + ((idx * 2.399963) % 1) * 0.95;
+      puffs.push({ x: p.x, y: p.y, r: 0.125 * wob, op: op0 });
     }
     return puffs;
   })() : [];
   /* milky veil for heavy cover — puffs alone can't read as "overcast"; a soft
      top-down wash (opacity ∝ total cover above ~45%) sells it, puffs add texture */
-  const cloudVeil = (cloudOn && wxSky && !wxSky.err && isNum(wxSky.cloud) && wxSky.cloud > 45)
-    ? clampN(((wxSky.cloud - 45) / 55) * 0.3, 0, 0.3) : 0;
+  const cloudVeil = (cloudOn && wxSky && !wxSky.err && isNum(wxSky.cloud) && wxSky.cloud > 40)
+    ? clampN(((wxSky.cloud - 40) / 60) * 0.4, 0, 0.4) : 0;
   const cardinals = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]].map(([az, lbl]) => ({ ...project(az, 1.8), lbl })).filter((c) => c.inFront && c.x > 0.02 && c.x < 0.98 && c.y > -0.05 && c.y < 1.05);
   const starDots = !cameraOn ? stars.map((s) => ({ ...project(s.az, s.alt), r: s.r, o: s.o, name: s.name, mag: s.mag, az: s.az, el: s.alt })).filter((p) => p.inFront && p.x > -0.05 && p.x < 1.05 && p.y > -0.05 && p.y < 1.05) : [];
   /* while aligning, label EVERY named star in view (you're picking anchors);
