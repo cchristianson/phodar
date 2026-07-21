@@ -431,10 +431,21 @@ terrain stay frozen and only the object moves. Build ladder:
    full-frame template made handheld pan bias the scale ~5%); point-
    content (starfields) gates global OFF (area NCC aliases dots-on-dots
    — the differential chain owns those); a CONTINUITY GATE rejects
-   global fixes >12° az / >10° el from the chain (deep-zoom templates
+   global fixes >8° az / >10° el from the chain (deep-zoom templates
    are tiny and self-similar content offers wrong placements — one held
-   a 30° az excursion for 1.5 s); a wild single-step roll (>10° on <12
-   anchors) is rejected as a blurred-frame garbage solve; and the walk
+   a 30° az excursion for 1.5 s mid-zoom and an 11° one at a zoom-out
+   landing; costs are asymmetric — a rejected true fix only delays
+   re-anchoring, an accepted false one poisons samples — so the az gate
+   is tight, while el stays 10° because coarse vertical placement is
+   noisier); a PHYSICAL FOV CAP (`opts.fovMax`, threaded from stabilize:
+   lens EXIF ×1.06, or placement ×1.3 without metadata) bars every
+   estimator — ladder rungs, probes, rescue, solves — from reporting a
+   frame WIDER than the lens's widest, because the s<1 rungs have the
+   SMALLEST templates, which decorrelate least under handheld mismatch
+   and would otherwise win impossible 110–127° FOVs exactly at the
+   zoom-out landing (field-observed on the second real clip); a wild
+   single-step roll (>10° on <12 anchors) is rejected as a blurred-frame
+   garbage solve; and the walk
    runs `despikePath` (neighbour-interpolation despike, ramps preserved,
    weak frames yield sooner) before saving, reported as "N glitches
    smoothed". **Drift &
@@ -461,7 +472,18 @@ terrain stay frozen and only the object moves. Build ladder:
    override; `poseNow = playPose || placement`, so commitPlacement never
    absorbs a mid-video pose). Entering place/any tool mode exits playback;
    exit re-bakes the marked frame before dropping the override so texture
-   and pose always agree.
+   and pose always agree. **⬇ video EXPORT: DONE** — fixed virtual camera
+   fit from the union of all frames' corners, mesh warp + burned az/el grid
+   + readout per frame, canvas.captureStream(30) + MediaRecorder (mp4 →
+   webm fallback). Pacing is wall-clock BOTH WAYS: MediaRecorder stamps
+   wall time, so the loop skips ahead when seeks lag AND WAITS when it
+   runs ahead — advancing a fixed 1/30 min regardless compressed an
+   18.6 s clip to a 14 s output playing 1.3× fast (field-observed).
+   The render is persisted to IndexedDB (`mediaStore`, key
+   `sourceId + ":stab"`; re-stabilizing deletes it as stale, source
+   removal cleans it) and the report .zip bundle packs each observer's
+   original clip AND the stabilized render (before/after pair) beside
+   the photos.
 4. Auto object tracking (template correlation seeded by first tap) → dense
    trajectories → real g-load curves.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term

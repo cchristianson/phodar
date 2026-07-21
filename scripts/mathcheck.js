@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, posePathAt } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -881,6 +881,22 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxF < 1.5 ? 1 : 0, 1, 0, "textured world: 2x zoom cycle tracked via global registration (<1.5°)");
     approx(maxA < 0.3 ? 1 : 0, 1, 0, "textured world: az locked through the zoom");
     approx(globN >= 7 ? 1 : 0, 1, 0, "textured world: global registration engaged");
+
+    // PHYSICAL FOV CAP (field bug: at a zoom-out landing the smallest-template
+    // ladder rungs — which decorrelate least under handheld mismatch — won with
+    // an impossible 110–127° FOV). With fovMax set, no path may ever report a
+    // frame WIDER than the lens's widest; without it, a genuinely wider frame
+    // is still found honestly.
+    {
+      const wide = renderTex({ az: 250, el: 12, roll: 0, fov: 70, k: 0 });
+      const tk2 = initTracker(tframes[0], TW, TH, natW, natH, P0, { mode: "day", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+      const gFree = registerToRef(tk2, grayDown(wide, TW, TH, 96));
+      approx(gFree && Math.abs(gFree.fov - 70) < 4 ? 1 : 0, 1, 0, "fov cap: uncapped register finds the wider frame (~70°)");
+      const gCap = registerToRef(tk2, grayDown(wide, TW, TH, 96), { fovMax: 63 });
+      approx(gCap == null || gCap.fov <= 63.01 ? 1 : 0, 1, 0, "fov cap: capped register never exceeds the lens's widest");
+      const r2 = stepTracker(tk2, wide, { fovMax: 63 });
+      approx(r2.pose.fov <= 63.01 ? 1 : 0, 1, 0, "fov cap: stepTracker pose respects the cap");
+    }
   }
 
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
