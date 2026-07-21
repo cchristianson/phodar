@@ -771,6 +771,19 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxAzErr < 0.4 ? 1 : 0, 1, 0, "stepTracker: az stays locked through the zoom");
   }
 
+  // 4b. FAST zoom: a single step jumps 60→40° (scale ≈1.6× — predictions
+  // overshoot the search window AND templates rescale). The multi-scale rescue
+  // sweep must recover it in one step.
+  {
+    const Pz = { az: 250.4, el: 12.2, roll: 0.3, fov: 40, k: 0 };
+    const f0 = renderFrame(P0), f1 = renderFrame(Pz);
+    const tk = initTracker(f0, TW, TH, natW, natH, P0, { mode: "night", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+    const r = stepTracker(tk, f1);
+    approx(Math.abs(r.pose.fov - Pz.fov) < 1.5 ? 1 : 0, 1, 0, "stepTracker: FAST zoom rescued (fov 60→40 in one step)");
+    approx(Math.abs(r.pose.az - Pz.az) < 0.4 ? 1 : 0, 1, 0, "stepTracker: az recovered through the fast zoom");
+    approx(r.nInliers >= 8 ? 1 : 0, 1, 0, "stepTracker: fast zoom re-locked enough references");
+  }
+
   // 5. combined day+night references: star blobs AND a textured foreground
   // (tree) both contribute in auto mode — neither excludes the other
   {

@@ -85,52 +85,63 @@ export function detectBgFeatures(data, w, h, opts = {}) {
 
 /* zero-mean NCC of a (2hp+1)² patch: template centered at (tx,ty) in `gt`
    vs a candidate patch centered at (cx,cy) in `gc`. Returns -2 out of bounds. */
-function nccAt(gt, gc, w, h, tx, ty, cx, cy, hp, tMean, tInv) {
-  if (tx - hp < 0 || ty - hp < 0 || tx + hp >= w || ty + hp >= h) return -2;
-  if (cx - hp < 0 || cy - hp < 0 || cx + hp >= w || cy + hp >= h) return -2;
-  let cMean = 0; const n = (2 * hp + 1) * (2 * hp + 1);
-  for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) cMean += gc[(cy + dy) * w + (cx + dx)];
-  cMean /= n;
-  let num = 0, cVar = 0;
-  for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) {
-    const t = gt[(ty + dy) * w + (tx + dx)] - tMean, c = gc[(cy + dy) * w + (cx + dx)] - cMean;
-    num += t * c; cVar += c * c;
-  }
-  const cInv = cVar > 1e-6 ? 1 / Math.sqrt(cVar) : 0;
-  return num * tInv * cInv;
-}
+const bilin = (g, w, h, x, y) => {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  if (x0 < 0 || y0 < 0 || x0 >= w - 1 || y0 >= h - 1) return null;
+  const fx = x - x0, fy = y - y0, i = y0 * w + x0;
+  return g[i] * (1 - fx) * (1 - fy) + g[i + 1] * fx * (1 - fy) + g[i + w] * (1 - fx) * fy + g[i + w + 1] * fx * fy;
+};
 
 /* Track features from `prevData` into `nextData`. Each feature carries a
    template center (tx,ty) in prevData and a predicted search center (px,py) in
    nextData. Returns [{px,py,ncc,ok}] — refined (sub-pixel) positions in
-   nextData; ok = ncc ≥ minNcc. A flat/low-texture template returns ok:false. */
+   nextData; ok = ncc ≥ minNcc. A flat/low-texture template returns ok:false.
+   `opts.tScale` (zoom support): how much BIGGER the scene appears in nextData
+   than in prevData — the template is bilinear-resampled from prev at step
+   1/tScale so it matches the next frame's scale before correlating. */
 export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
   const P = opts.patch || 15, S = opts.search || 12, minNcc = opts.minNcc == null ? 0.6 : opts.minNcc;
-  const hp = P >> 1;
+  const tScale = opts.tScale || 1;
+  const hp = P >> 1, n = (2 * hp + 1) * (2 * hp + 1);
   const gt = gray(prevData, w, h), gc = gray(nextData, w, h);
   const out = [];
   for (const f of feats) {
-    const tx = Math.round(f.tx), ty = Math.round(f.ty), cx = Math.round(f.px), cy = Math.round(f.py);
-    // template stats (mean + inverse-norm); reject low-variance patches
-    let tMean = 0, ok = tx - hp >= 0 && ty - hp >= 0 && tx + hp < w && ty + hp < h;
-    if (ok) {
-      const n = (2 * hp + 1) * (2 * hp + 1);
-      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) tMean += gt[(ty + dy) * w + (tx + dx)];
-      tMean /= n;
+    const cx = Math.round(f.px), cy = Math.round(f.py);
+    // extract the template (scale-resampled) and its stats; reject flat patches
+    const T = new Float32Array(n);
+    let ok = true, tMean = 0, k2 = 0;
+    outer: for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) {
+      const v = bilin(gt, w, h, f.tx + dx / tScale, f.ty + dy / tScale);
+      if (v == null) { ok = false; break outer; }
+      T[k2++] = v; tMean += v;
     }
-    let tVar = 0;
-    if (ok) for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) { const t = gt[(ty + dy) * w + (tx + dx)] - tMean; tVar += t * t; }
-    if (!ok || tVar < (opts.minVar || 25)) { out.push({ px: f.px, py: f.py, ncc: 0, ok: false }); continue; }
-    const tInv = 1 / Math.sqrt(tVar);
+    let tInv = 0;
+    if (ok) {
+      tMean /= n;
+      let tVar = 0; for (let i = 0; i < n; i++) { const d = T[i] - tMean; tVar += d * d; }
+      if (tVar < (opts.minVar || 25)) ok = false; else tInv = 1 / Math.sqrt(tVar);
+    }
+    if (!ok) { out.push({ px: f.px, py: f.py, ncc: 0, ok: false }); continue; }
+    const nccC = (px0, py0) => { // zero-mean NCC of T vs the next-frame patch centred at an integer pixel
+      if (px0 - hp < 0 || py0 - hp < 0 || px0 + hp >= w || py0 + hp >= h) return -2;
+      let cMean = 0;
+      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) cMean += gc[(py0 + dy) * w + (px0 + dx)];
+      cMean /= n;
+      let num = 0, cVar = 0, ti = 0;
+      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) {
+        const c = gc[(py0 + dy) * w + (px0 + dx)] - cMean, t = T[ti++] - tMean;
+        num += t * c; cVar += c * c;
+      }
+      return cVar > 1e-6 ? num * tInv / Math.sqrt(cVar) : 0;
+    };
     let best = -2, bx = cx, by = cy;
     for (let dy = -S; dy <= S; dy++) for (let dx = -S; dx <= S; dx++) {
-      const v = nccAt(gt, gc, w, h, tx, ty, cx + dx, cy + dy, hp, tMean, tInv);
+      const v = nccC(cx + dx, cy + dy);
       if (v > best) { best = v; bx = cx + dx; by = cy + dy; }
     }
     // parabolic sub-pixel refine on the NCC peak (x and y independently)
     let sx = bx, sy = by;
-    const nx0 = nccAt(gt, gc, w, h, tx, ty, bx - 1, by, hp, tMean, tInv), nx1 = nccAt(gt, gc, w, h, tx, ty, bx + 1, by, hp, tMean, tInv);
-    const ny0 = nccAt(gt, gc, w, h, tx, ty, bx, by - 1, hp, tMean, tInv), ny1 = nccAt(gt, gc, w, h, tx, ty, bx, by + 1, hp, tMean, tInv);
+    const nx0 = nccC(bx - 1, by), nx1 = nccC(bx + 1, by), ny0 = nccC(bx, by - 1), ny1 = nccC(bx, by + 1);
     if (nx0 > -2 && nx1 > -2) { const d = nx0 - 2 * best + nx1; if (Math.abs(d) > 1e-6) sx = bx + clampN(0.5 * (nx0 - nx1) / d, -1, 1); }
     if (ny0 > -2 && ny1 > -2) { const d = ny0 - 2 * best + ny1; if (Math.abs(d) > 1e-6) sy = by + clampN(0.5 * (ny0 - ny1) / d, -1, 1); }
     out.push({ px: sx, py: sy, ncc: best, ok: best >= minNcc });
@@ -205,6 +216,63 @@ export function stepTracker(tracker, nextData, opts = {}) {
   }
   // 2. track templates from prevData into nextData
   const tracked = trackFeatures(tracker.prevData, nextData, w, h, feats, o);
+  // 2a. FAST-ZOOM RESCUE — a quick zoom (people zoom in and back out FAST)
+  //     defeats plain NCC twice over: predictions overshoot the search window
+  //     (edge features move by (s−1)·r px) AND the features' appearance itself
+  //     is rescaled, so the templates match nowhere. When tracking collapses,
+  //     sweep candidate zoom factors — templates resampled and positions
+  //     re-predicted under each factor's FOV — and adopt the factor that makes
+  //     the background reappear, refined by the matches' pairwise distances.
+  let okIdx0 = 0; for (const t of tracked) if (t.ok) okIdx0++;
+  if (okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
+    const LADDER = [0.35, 0.45, 0.55, 0.67, 0.8, 1.25, 1.5, 1.8, 2.15, 2.6];
+    const sub = feats.slice(0, 10);
+    let best = null;
+    for (const sh of LADDER) {
+      const fovS = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sh) * R2D, 5, 150);
+      const f2 = [];
+      for (const ft of sub) {
+        const p = dirToPixK(ft.g, natW, natH, p0.az, p0.el, p0.roll, fovS, p0.k || 0);
+        if (!p) continue;
+        const bx = p.px / sc, by = p.py / sc;
+        if (bx < 0 || bx > w || by < 0 || by > h) continue;
+        f2.push({ ...ft, px: bx, py: by });
+      }
+      if (f2.length < 3) continue;
+      const tr = trackFeatures(tracker.prevData, nextData, w, h, f2, { ...o, search: 9, tScale: sh });
+      let score = 0, okn = 0; const pts = [];
+      for (let i = 0; i < f2.length; i++) if (tr[i].ok) { score += tr[i].ncc; okn++; pts.push([f2[i], tr[i]]); }
+      if (okn >= 3 && (!best || score > best.score)) best = { sh, score, pts };
+    }
+    if (best) {
+      // refine the factor from the matched pairs' true distance ratio, then re-track EVERYTHING under it
+      const rat = [];
+      for (let i = 0; i < best.pts.length; i++) for (let j = i + 1; j < best.pts.length; j++) {
+        const d0 = Math.hypot(best.pts[i][0].tx - best.pts[j][0].tx, best.pts[i][0].ty - best.pts[j][0].ty);
+        if (d0 < 20) continue;
+        rat.push(Math.hypot(best.pts[i][1].px - best.pts[j][1].px, best.pts[i][1].py - best.pts[j][1].py) / d0);
+      }
+      let sR = best.sh;
+      if (rat.length >= 3) { rat.sort((x, y) => x - y); sR = rat[rat.length >> 1]; }
+      const fovR = clampN(2 * Math.atan(Math.tan((p0.fov * D2R) / 2) / sR) * R2D, 5, 150);
+      const fAll = [], iAll = [];
+      for (let i = 0; i < feats.length; i++) {
+        const p = dirToPixK(feats[i].g, natW, natH, p0.az, p0.el, p0.roll, fovR, p0.k || 0);
+        if (!p) continue;
+        const bx = p.px / sc, by = p.py / sc;
+        if (bx < -8 || bx > w + 8 || by < -8 || by > h + 8) continue;
+        fAll.push({ ...feats[i], px: bx, py: by }); iAll.push(i);
+      }
+      if (fAll.length >= 3) {
+        const trAll = trackFeatures(tracker.prevData, nextData, w, h, fAll, { ...o, search: 10, tScale: sR });
+        let okn2 = 0; for (const t2 of trAll) if (t2.ok) okn2++;
+        if (okn2 > okIdx0) {
+          for (let i = 0; i < feats.length; i++) tracked[i] = { px: feats[i].px, py: feats[i].py, ncc: 0, ok: false };
+          for (let k3 = 0; k3 < iAll.length; k3++) tracked[iAll[k3]] = trAll[k3];
+        }
+      }
+    }
+  }
   // 2b. ZOOM detection — pairwise-distance scale between the tracked features'
   //     previous and current pixels. Rotation/pan preserve those distances;
   //     zoom SCALES them, so a median ratio s≠1 means the lens zoomed. The
@@ -236,7 +304,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
       missI.push(i); missF.push({ ...feats[i], px: bx, py: by });
     }
     if (missF.length) {
-      const tr2 = trackFeatures(tracker.prevData, nextData, w, h, missF, o);
+      const tr2 = trackFeatures(tracker.prevData, nextData, w, h, missF, { ...o, tScale: s });
       for (let k2 = 0; k2 < missI.length; k2++) if (tr2[k2].ok) tracked[missI[k2]] = tr2[k2];
     }
   }
