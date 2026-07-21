@@ -508,7 +508,7 @@ const HELP_SECTIONS = [
       { h: "Time & aim", items: [
         { t: "Sighting date & time", d: "When it happened — anchors the Sun, Moon, stars, satellites and archived aircraft to the real sky." },
         { t: "Viewing direction", d: "The compass bearing you faced (slider + live readout), drawn on the map as a teal ray. This is the SAME field as the sky view's placement — set it here and the sky opens aimed there." },
-        { t: "Field of view", d: "How wide the shot was, drawn as a cone around the aim so you can see how much sky the photo spans. Comes from the lens metadata when the photo carries it (locked, ✓); otherwise a slider you set to match the shot — the same FOV the measurement uses." },
+        { t: "Field of view", d: "How wide the shot was, drawn as a cone that reaches ~25 miles out over the map (roads, towns and landmarks show under it — zoom out to see where you were looking). It foreshortens as you raise the up-angle. Comes from the lens metadata when the photo carries it (locked, ✓); otherwise a slider you set to match the shot — the same FOV the measurement uses." },
         { t: "How high you looked", d: "Your up-angle (−20° to straight-up 90°). A side-view diagram pops up as you slide. Metadata has no up/down angle — set it roughly, fine-tune in the sky view." },
         { t: "Camera height off the ground", d: "How high the camera was above ground. Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony; leave at ground for a normal shot." },
       ]},
@@ -4347,10 +4347,14 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
   const progRef = useRef(false);      // programmatic setView — don't commit
   const coordElRef = useRef(null);
   const distElRef = useRef(null);
+  const coneRef = useRef(null);       // FOV cone polygon (geographic)
+  const aimLineRef = useRef(null);    // centre aim polyline (geographic)
+  const aimRef = useRef({});          // latest bearing/tilt/fov for move-time redraw
   const [ready, setReady] = useState(false);
   const [baseSat, setBaseSat] = useState(true);
   originRef.current = origin;
   onChangeRef.current = onChange;
+  aimRef.current = { bearing, tilt, fov };
 
   const mPerDegN = 111320;
   const mPerDegE = (la) => 111320 * Math.max(0.2, Math.cos((+la || 0) * D2R));
@@ -4366,6 +4370,36 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
       } else distElRef.current.textContent = "";
     }
     if (originLineRef.current && og && isNum(og.lat)) originLineRef.current.setLatLngs([[c.lat, c.lng], [+og.lat, +og.lon]]);
+  };
+
+  /* viewing-direction cone drawn as REAL geography (like the size/compare
+     distance picker): a ~25-mile wedge out over the map so you can see what you
+     were looking toward — city, roads and landmarks under it. Foreshortens with
+     the up-angle (a steep look projects short onto the ground), and follows the
+     pin as you pan (redrawn on every map 'move'). */
+  const drawAim = (c) => {
+    const map = mapRef.current; if (!map) return;
+    const { bearing, tilt, fov } = aimRef.current;
+    const has = isNum(bearing);
+    const t = clampN(isNum(tilt) ? +tilt : 0, -20, 90);
+    const grF = Math.max(0.06, Math.cos(t * D2R));           // ground foreshortening as you aim up
+    const R = 40234 * grF;                                    // ~25 mi, shrinks toward the pin when steep
+    const dp = (az, d) => [c.lat + (d * Math.cos(az * D2R)) / mPerDegN, c.lng + (d * Math.sin(az * D2R)) / mPerDegE(c.lat)];
+    /* cone first so the bright aim line sits on top of the fill */
+    const conePts = (has && isNum(fov)) ? (() => {
+      const half = clampN(+fov, 1, 170) / 2, n = 24, arc = [[c.lat, c.lng]];
+      for (let i = 0; i <= n; i++) arc.push(dp(bearing - half + (2 * half) * i / n, R));
+      return arc;
+    })() : null;
+    if (conePts) {
+      if (!coneRef.current) coneRef.current = L.polygon(conePts, { color: "#5FD3BC", weight: 1, opacity: 0.6, fillColor: "#5FD3BC", fillOpacity: 0.12, interactive: false }).addTo(map);
+      else coneRef.current.setLatLngs(conePts);
+    } else if (coneRef.current) { map.removeLayer(coneRef.current); coneRef.current = null; }
+    if (has) {
+      const aimPts = [[c.lat, c.lng], dp(bearing, R)];
+      if (!aimLineRef.current) aimLineRef.current = L.polyline(aimPts, { color: "#5FD3BC", weight: 2.5, opacity: 0.9, interactive: false }).addTo(map);
+      else aimLineRef.current.setLatLngs(aimPts);
+    } else if (aimLineRef.current) { map.removeLayer(aimLineRef.current); aimLineRef.current = null; }
   };
 
   useEffect(() => {
@@ -4384,15 +4418,20 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
     const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 21, maxNativeZoom: 19, attribution: "© OpenStreetMap contributors", className: "pinmap-street-tiles",
     });
-    sat.addTo(map);
-    map.on("move", () => hud(map.getCenter()));
+    /* Esri reference overlays over the imagery — roads + boundaries/place labels,
+       so a satellite view still reads towns, highways and landmarks under the
+       viewing cone (same layers the report basemap and distance picker use). */
+    const trans = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, opacity: 0.9 });
+    const ref = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19 });
+    sat.addTo(map); trans.addTo(map); ref.addTo(map);
+    map.on("move", () => { const c = map.getCenter(); hud(c); drawAim(c); });
     map.on("moveend", () => {
       if (progRef.current) { progRef.current = false; return; }
       const c = map.getCenter();
       onChangeRef.current(c.lat, c.lng);
     });
-    mapRef.current = map; layersRef.current = { sat, street };
-    hud(map.getCenter());
+    mapRef.current = map; layersRef.current = { sat, street, trans, ref };
+    hud(map.getCenter()); drawAim(map.getCenter());
     setReady(true);
     return () => { map.remove(); mapRef.current = null; setReady(false); };
   }, []);
@@ -4405,16 +4444,22 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
     if (Math.abs(c.lat - +lat) > 2e-6 || Math.abs(c.lng - +lon) > 2e-6) {
       progRef.current = true;
       map.setView([+lat, +lon], map.getZoom(), { animate: false });
-      hud(map.getCenter());
+      hud(map.getCenter()); drawAim(map.getCenter());
     }
   }, [lat, lon]);
 
   useEffect(() => {
     const map = mapRef.current; if (!map || !ready) return;
-    const { sat, street } = layersRef.current;
-    if (baseSat) { map.removeLayer(street); sat.addTo(map); }
-    else { map.removeLayer(sat); street.addTo(map); }
+    const { sat, street, trans, ref } = layersRef.current;
+    if (baseSat) { map.removeLayer(street); sat.addTo(map); trans.addTo(map); ref.addTo(map); }
+    else { map.removeLayer(sat); map.removeLayer(trans); map.removeLayer(ref); street.addTo(map); }
   }, [baseSat, ready]);
+
+  /* redraw the viewing cone when the aim (bearing/tilt/fov) changes */
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !ready) return;
+    drawAim(map.getCenter());
+  }, [bearing, tilt, fov, ready]);
 
   /* photo-GPS origin + fellow observers */
   useEffect(() => {
@@ -4455,41 +4500,18 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
         <div ref={boxRef} style={{ position: "absolute", inset: 0 }} />
         <div className="map-north">N ↑</div>
         {isNum(bearing) && (() => {
-          /* which way you were looking — north-up map, so screen rotation = bearing.
-             A steep sight-line projects SHORT onto the ground (cos foreshortening),
-             so the ray shrinks toward the pin as you aim up; a dot rising at the pin
-             cues "looking up out of the map" and grows to dominate near the zenith. */
+          /* The viewing cone itself is drawn as real geography on the map (see
+             drawAim). Here we only add the "looking up out of the map" cue at the
+             pin: as the up-angle steepens the ground cone foreshortens toward the
+             pin and this rising ring grows to dominate near the zenith. */
           const t = clampN(isNum(tilt) ? +tilt : 0, -20, 90);
           const upF = Math.max(0, Math.sin(t * D2R));        // 0 at/below horizon → 1 straight up
-          const grF = Math.max(0.14, Math.cos(t * D2R));     // ground foreshortening (keep a stub)
-          const len = 78 * grF;
-          /* field-of-view wedge — a cone spanning ±fov/2 about the aim, the same
-             representation the size/compare distance picker draws. Only when we
-             have an FOV (from lens metadata, or a user estimate); otherwise just
-             the plain arrow. Foreshortens with tilt exactly like the ray. */
-          const wedge = isNum(fov) ? (() => {
-            const h = (clampN(+fov, 1, 170) / 2) * D2R;
-            const wr = len * 1.06, N = 16, pts = ["0,0"];
-            for (let i = 0; i <= N; i++) { const a = -h + (2 * h) * i / N; pts.push(`${(wr * Math.sin(a)).toFixed(1)},${(-wr * Math.cos(a)).toFixed(1)}`); }
-            const ex = (wr * Math.sin(h)).toFixed(1), ey = (-wr * Math.cos(h)).toFixed(1);
-            return { poly: pts.join(" "), ex, ey };
-          })() : null;
+          if (upF <= 0.03) return null;
           return (
-            <>
-              <svg className="pinmap-ray" width="0" height="0" style={{ transform: `rotate(${((+bearing % 360) + 360) % 360}deg)`, opacity: 0.55 + 0.45 * grF }}>
-                {wedge && <polygon points={wedge.poly} fill="#5FD3BC" fillOpacity="0.13" stroke="none" />}
-                {wedge && <line x1="0" y1="0" x2={wedge.ex} y2={wedge.ey} stroke="#5FD3BC" strokeWidth="1.2" opacity="0.55" />}
-                {wedge && <line x1="0" y1="0" x2={-wedge.ex} y2={wedge.ey} stroke="#5FD3BC" strokeWidth="1.2" opacity="0.55" />}
-                <line x1="0" y1="0" x2="0" y2={-len} stroke="#5FD3BC" strokeWidth="2.5" />
-                <polygon points={`0,${-(len + 12)} -6,${-len} 6,${-len}`} fill="#5FD3BC" />
-              </svg>
-              {upF > 0.03 && (
-                <svg className="pinmap-ray" width="0" height="0" style={{ transform: "none" }}>
-                  <circle cx="0" cy="0" r={4 + upF * 13} fill="none" stroke="#5FD3BC" strokeWidth="2" opacity={0.3 + 0.55 * upF} />
-                  <circle cx="0" cy="0" r={1.5 + upF * 5} fill="#5FD3BC" opacity={0.5 + 0.5 * upF} />
-                </svg>
-              )}
-            </>
+            <svg className="pinmap-ray" width="0" height="0" style={{ transform: "none" }}>
+              <circle cx="0" cy="0" r={4 + upF * 13} fill="none" stroke="#5FD3BC" strokeWidth="2" opacity={0.3 + 0.55 * upF} />
+              <circle cx="0" cy="0" r={1.5 + upF * 5} fill="#5FD3BC" opacity={0.5 + 0.5 * upF} />
+            </svg>
           );
         })()}
         <svg className="pinmap-cross" viewBox="-14 -14 28 28" width="28" height="28">
