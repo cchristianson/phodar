@@ -20,6 +20,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
@@ -967,6 +968,39 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxDev(weak) < 0.1 ? 1 : 0, 1, 0, "smooth: weak-frame wiggle nearly killed (<0.1°)");
     const ramp = Array.from({ length: 9 }, (_, i) => mk(i * 0.25, 250 + i * 0.5, 20)); smoothPath(ramp);
     approx(Math.max(...ramp.map((q, i) => Math.abs(q.az - (250 + i * 0.5)))) < 1e-6 ? 1 : 0, 1, 0, "smooth: a real linear pan is untouched");
+  }
+
+  // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —
+  // box layout, chunk offset landing on the mdat payload, sample table
+  // consistency. (Full decode validation was done against a real x264
+  // elementary stream; this guards the byte-packing against regressions.)
+  {
+    const avcC = new Uint8Array([1, 0x64, 0, 0x28, 0xff, 0xe1, 0, 2, 0x67, 0x64, 1, 0, 1, 0x68, 0xee]);
+    const samples = [
+      { data: new Uint8Array([0, 0, 0, 3, 1, 2, 3]), key: true },
+      { data: new Uint8Array([0, 0, 0, 2, 9, 9]), key: false },
+      { data: new Uint8Array([0, 0, 0, 1, 5]), key: true },
+    ];
+    const f = muxMp4({ width: 320, height: 180, fps: 30, avcC, samples });
+    const dv = new DataView(f.buffer);
+    const tag = (o) => String.fromCharCode(f[o], f[o + 1], f[o + 2], f[o + 3]);
+    approx(tag(4) === "ftyp" ? 1 : 0, 1, 0, "mp4: starts with ftyp");
+    const ftypLen = dv.getUint32(0), moovLen = dv.getUint32(ftypLen);
+    approx(tag(ftypLen + 4) === "moov" ? 1 : 0, 1, 0, "mp4: moov follows ftyp");
+    const mdatOff = ftypLen + moovLen;
+    approx(tag(mdatOff + 4) === "mdat" ? 1 : 0, 1, 0, "mp4: mdat follows moov");
+    approx(dv.getUint32(mdatOff), 8 + 7 + 6 + 5, 0, "mp4: mdat size = header + samples");
+    let stco = -1, stsz = -1, stss = -1;
+    for (let i = ftypLen; i < mdatOff; i++) {
+      const t = tag(i);
+      if (t === "stco") stco = i; else if (t === "stsz") stsz = i; else if (t === "stss") stss = i;
+    }
+    approx(dv.getUint32(stco + 12), mdatOff + 8, 0, "mp4: stco entry points at the mdat payload");
+    approx(dv.getUint32(stsz + 12), 3, 0, "mp4: stsz sample count");
+    approx(dv.getUint32(stsz + 16), 7, 0, "mp4: first sample size");
+    approx(dv.getUint32(stss + 8), 2, 0, "mp4: two sync samples");
+    approx(dv.getUint32(stss + 12), 1, 0, "mp4: first sync sample is #1");
+    approx(f[mdatOff + 8 + 4], 1, 0, "mp4: first sample payload lands at the chunk offset");
   }
 
   // 4i. posePathAt: wrap-aware pose interpolation between path samples

@@ -504,16 +504,27 @@ terrain stay frozen and only the object moves. Build ladder:
    PROPORTIONAL zoom, so a far/small object crops much tighter than a
    near/big one; finer 16-col mesh with off-canvas cell culling, grid
    pitch scales with FOV down to 0.5°). Mesh warp + burned az/el grid +
-   readout per frame, canvas.captureStream(30) + MediaRecorder (mp4 →
-   webm fallback). Pacing is wall-clock BOTH WAYS: MediaRecorder stamps
-   wall time, so the loop skips ahead when seeks lag AND WAITS when it
-   runs ahead — advancing a fixed 1/30 min regardless compressed an
-   18.6 s clip to a 14 s output playing 1.3× fast (field-observed).
+   readout per frame. **Encoder: WebCodecs VideoEncoder is the PRIMARY
+   path** — offline frame-by-frame encode with explicit timestamps and
+   queue backpressure, muxed by the hand-rolled single-track H.264 muxer
+   `src/video/mp4mux.js` (validated by full ffmpeg decode of a muxed real
+   x264 stream; byte-layout asserted in mathcheck; assumes PTS==DTS,
+   which `latencyMode:"realtime"` guarantees). This exists because
+   MediaRecorder is a REALTIME API: a phone encoder that can't sustain
+   30 fps at high resolution silently drops/queues frames until the
+   output truncates (field-observed twice on an iPhone 14 — at 3840 AND
+   2560 wide), so no realtime cap is ever safe. With offline encode,
+   full 3840 is allowed everywhere WebCodecs supports it. MediaRecorder
+   (canvas.captureStream, mp4 → webm) remains the no-WebCodecs fallback
+   with the conservative iOS 2560 cap and wall-clock pacing BOTH WAYS
+   (skip ahead when seeks lag, WAIT when ahead — advancing a fixed 1/30
+   min regardless compressed an 18.6 s clip to 14 s playing 1.3× fast).
    Seeks are clamped below the media duration (near-end seeks stall the
-   decoder — field-observed as an export truncated 1.1 s early), and a
-   seek running >300 ms PAUSES the recorder with the paused span excluded
-   from the pacing clock, so a stall can neither eat recorded time nor
-   leapfrog the remaining content.
+   decoder — field-observed as an export truncated 1.1 s early), and in
+   the fallback a seek running >300 ms PAUSES the recorder with the span
+   excluded from the pacing clock; the WebCodecs path just re-encodes
+   the previous texture at the correct timestamp (brief freeze, exact
+   duration).
    The render is persisted to IndexedDB (`mediaStore`, key
    `sourceId + ":stab"`; re-stabilizing deletes it as stale, source
    removal cleans it) and the report .zip bundle packs each observer's
