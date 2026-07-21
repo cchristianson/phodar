@@ -351,11 +351,26 @@ export function stepTracker(tracker, nextData, opts = {}) {
         const ancR = [];
         for (let i = 0; i < fR.length; i++) if (trR[i].ok) ancR.push({ px: trR[i].px * sc, py: trR[i].py * sc, g: fR[i].g });
         if (ancR.length >= Math.max(minMatch, 8)) {
-          const solR = poseFromTracks(ancR, natW, natH, pose, { ...o, lockFov: false, maxRms: 0.5 });
+          /* the anchor owns ANGULAR drift — not zoom. FOV is only freed when
+             the matches have real radial leverage (mid-zoom the outer refs are
+             off-frame, and a central-only cluster lets a free-FOV solve slide
+             FOV back toward the reference on weak evidence, flattening the
+             tracked zoom step by step). Otherwise FOV stays locked to the
+             incremental estimate — the scale detector owns the zoom. */
+          let rMax = 0;
+          for (const a of ancR) rMax = Math.max(rMax, Math.hypot(a.px / sc - w / 2, a.py / sc - h / 2));
+          const fovFree = rMax > 0.35 * Math.min(w, h) && ancR.length >= 12;
+          const solR = poseFromTracks(ancR, natW, natH, pose, { ...o, lockFov: !fovFree, maxRms: 0.5 });
           if (solR) {
-            drift = { dAz: ((solR.az - pose.az + 540) % 360) - 180, dEl: solR.el - pose.el, dRoll: solR.roll - pose.roll, dFov: solR.fov - pose.fov };
-            pose = { az: solR.az, el: solR.el, roll: solR.roll, fov: solR.fov, k: solR.k };
-            nInliers = solR.n; anchored = true;
+            const dA = ((solR.az - pose.az + 540) % 360) - 180, dE = solR.el - pose.el, dR = solR.roll - pose.roll, dF = solR.fov - pose.fov;
+            /* re-anchoring fixes SMALL drift; a big disagreement means the
+               anchor itself mis-matched (self-similar texture) — reject it and
+               keep the chain rather than snapping to a wrong absolute */
+            if (Math.abs(dA) <= 3 && Math.abs(dE) <= 3 && Math.abs(dR) <= 4 && Math.abs(dF) <= Math.max(2.5, pose.fov * 0.1)) {
+              drift = { dAz: dA, dEl: dE, dRoll: dR, dFov: dF };
+              pose = { az: solR.az, el: solR.el, roll: solR.roll, fov: solR.fov, k: solR.k };
+              nInliers = solR.n; anchored = true;
+            }
           }
         }
       }
