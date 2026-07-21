@@ -846,6 +846,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxAzErr < 0.3 ? 1 : 0, 1, 0, "foliage zoom cycle: az stays locked");
   }
 
+  // 4g. AREA-TEXTURED world (the real-clip case, derived from a field video
+  // that beat every feature-only approach): GLOBAL registration must engage
+  // and carry a deep zoom cycle end-to-end. The texture mixes incommensurate
+  // scales incl. a long-wavelength term — real scenes are not periodic, and a
+  // purely periodic synthetic aliases sideways by one period.
+  {
+    const texAt = (az, el) => 120 + 48 * Math.sin(az * 0.23 + 1.1) + 40 * Math.sin(az * 0.9) * Math.cos(el * 1.3) + 30 * Math.sin(az * 2.7 + el * 1.9) + 22 * Math.cos(az * 5.1 - el * 3.7) + 14 * Math.sin(az * 11 + el * 7);
+    const renderTex = (pose) => {
+      const data = new Uint8ClampedArray(TW * TH * 4);
+      const b = photoBasis(pose.az, pose.el, pose.roll);
+      const fpx = (TW / 2) / Math.tan((pose.fov * D2R) / 2);
+      for (let y = 0; y < TH; y++) for (let x = 0; x < TW; x++) {
+        const xx = (x - TW / 2) / fpx, yy = (TH / 2 - y) / fpx;
+        const d = unit([b.f[0] + b.r[0] * xx + b.u[0] * yy, b.f[1] + b.r[1] * xx + b.u[1] * yy, b.f[2] + b.r[2] * xx + b.u[2] * yy]);
+        const ae = dirToAzEl(d);
+        const v = Math.max(0, Math.min(255, texAt(ae.az, ae.el)));
+        const i = (y * TW + x) * 4;
+        data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+      }
+      return data;
+    };
+    const tf = [60, 52, 44, 36, 30, 30, 36, 44, 52, 60];
+    const tposes = tf.map((f, i) => ({ az: 250 + i * 0.15, el: 12 + i * 0.05, roll: 0, fov: f, k: 0 }));
+    const tframes = tposes.map(renderTex);
+    const tk = initTracker(tframes[0], TW, TH, natW, natH, P0, { mode: "day", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+    let maxF = 0, maxA = 0, globN = 0;
+    for (let i = 1; i < tframes.length; i++) {
+      const r = stepTracker(tk, tframes[i]);
+      maxF = Math.max(maxF, Math.abs(r.pose.fov - tposes[i].fov));
+      maxA = Math.max(maxA, Math.abs(r.pose.az - tposes[i].az));
+      if (r.global != null) globN++;
+    }
+    approx(maxF < 1.5 ? 1 : 0, 1, 0, "textured world: 2x zoom cycle tracked via global registration (<1.5°)");
+    approx(maxA < 0.3 ? 1 : 0, 1, 0, "textured world: az locked through the zoom");
+    approx(globN >= 7 ? 1 : 0, 1, 0, "textured world: global registration engaged");
+  }
+
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
   // a +0.4° az error into every g and the pose) — the incremental solve alone
   // would confirm the drift, but matching the pristine REFERENCE features must

@@ -249,23 +249,51 @@ export function registerToRef(tracker, curG, opts = {}) {
   const { natW, natH } = tracker;
   const rp = tracker.ref.pose;
   const minScore = opts.minScore == null ? 0.5 : opts.minScore;
+  /* the template is a CENTRAL CROP (80%) of the moving frame, so every rung —
+     including s≈1 — has translation freedom. Without the crop, the s=1
+     template is the whole frame (zero slide room) and a handheld PAN makes a
+     slightly-shrunk rung score better, biasing the scale (field-observed as a
+     steady ~5% FOV error while un-zoomed). */
+  const crop = (im, f) => {
+    const tw = Math.round(im.w * f), th = Math.round(im.h * f);
+    const x0 = (im.w - tw) >> 1, y0 = (im.h - th) >> 1;
+    const g = new Float32Array(tw * th);
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) g[y * tw + x] = im.g[(y0 + y) * im.w + (x0 + x)];
+    return { g, w: tw, h: th };
+  };
+  /* global registration is only meaningful on AREA-TEXTURED content (terrain,
+     foliage, clouds, buildings). A sparse POINT field (stars) at 96 px is a
+     handful of sub-pixel dots: the honest scale's correlation dies of
+     sub-pixel misalignment while an aliased scale can land dots-on-dots and
+     win confidently. Point content is precisely what the differential feature
+     chain is best at — hand it over. Gate: the fraction of coarse pixels
+     carrying signal must look like area texture, not isolated dots. */
+  const areaFrac = (im) => {
+    let m = 0; for (let i = 0; i < im.g.length; i++) m += im.g[i];
+    m /= im.g.length;
+    let act = 0;
+    for (let i = 0; i < im.g.length; i++) if (Math.abs(im.g[i] - m) > 6) act++;
+    return act / im.g.length;
+  };
+  if (areaFrac(refG) < 0.12 || areaFrac(curG) < 0.12) return null;
+  const curC = crop(curG, 0.8), refC = crop(refG, 0.8);
   const rungs = [];
-  for (let s = 0.72; s <= 3.65; s *= 1.115) rungs.push(+s.toFixed(4));
+  for (let s = 0.7; s <= 5.05; s *= 1.115) rungs.push(+s.toFixed(4));
   const tryS = (s) => {
     if (s >= 1) {              // zoomed IN vs ref: cur = magnified sub-region of ref
-      const tp = shrinkGray(curG, s);
+      const tp = shrinkGray(curC, s);
       if (tp.w >= refG.w || tp.h >= refG.h) return null;
       const m = nccSweep(refG, tp);
       if (m.ncc <= -1) return null;
       return { s, ncc: m.ncc, cx: m.x + tp.w / 2, cy: m.y + tp.h / 2 };
     }
     // zoomed OUT vs ref: ref content is a sub-region of cur
-    const tp = shrinkGray(refG, 1 / s);
+    const tp = shrinkGray(refC, 1 / s);
     if (tp.w >= curG.w || tp.h >= curG.h) return null;
     const m = nccSweep(curG, tp);
     if (m.ncc <= -1) return null;
-    // cur center mapped into ref coords
-    return { s, ncc: m.ncc, cx: (curG.w / 2 - m.x) / s, cy: (curG.h / 2 - m.y) / s };
+    // ref-crop center found at (m.x,m.y) in cur → map cur's center into ref coords
+    return { s, ncc: m.ncc, cx: refG.w / 2 + (curG.w / 2 - (m.x + tp.w / 2)) / s, cy: refG.h / 2 + (curG.h / 2 - (m.y + tp.h / 2)) / s };
   };
   const res = rungs.map(tryS);
   let bi = -1;
