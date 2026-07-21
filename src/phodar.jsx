@@ -14,6 +14,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
+import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -3624,17 +3625,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (mode !== "crop") camFov = clampN(2 * Math.atan(Math.max(mx, my / aspect) / 0.94) * R2D, 20, 118);
       /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
          most-zoomed frame's pixel density survives (tan-space ratio of the
-         camera FOV to the finest source FOV), within canvas/encoder limits.
-         iOS caps lower — a 3840-wide canvas + 4K MediaRecorder encode crashed
-         Safari outright on an iPhone 14 (page reset). Upscale floor keeps a
-         tight crop watchable. */
+         camera FOV to the finest source FOV). PREFERRED ENCODER: WebCodecs
+         VideoEncoder, encoding OFFLINE frame-by-frame with explicit
+         timestamps + backpressure — MediaRecorder is a REALTIME API, and a
+         phone encoder that can't keep 30 fps at high resolution silently
+         drops/queues frames until the output truncates (field-observed twice
+         on an iPhone 14 at 3840 then 2560 wide). The offline path has no
+         realtime constraint, so full 3840 is safe everywhere it's supported;
+         the MediaRecorder fallback keeps the conservative iOS cap. */
       const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
       let OUT_W = Math.min(1920, natW);
       if (mode !== "view") {
         const ideal = natW * Math.tan((camFov * RAD) / 2) / Math.tan((minFov * RAD) / 2);
-        OUT_W = mode === "full" ? Math.min(isIOS ? 2560 : 3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
+        OUT_W = mode === "full" ? Math.min(3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
           : Math.min(1920, Math.max(1280, Math.round(ideal / 2) * 2));
       }
+      const bpsFor = (w2, h2) => clampN(Math.round(8e6 * (w2 * h2) / (1920 * 1080)), 6e6, isIOS ? 16e6 : 25e6);
+      let wcCfg = null;
+      if (typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined") {
+        const widths = [...new Set([OUT_W, Math.min(OUT_W, 2560), Math.min(OUT_W, 1920)])];
+        probe: for (const w2 of widths) {
+          const h2 = Math.round(w2 * aspect / 2) * 2;
+          for (const codec of ["avc1.640033", "avc1.640032", "avc1.64002a", "avc1.4d0028", "avc1.42e01f"]) {
+            const cfg = { codec, width: w2, height: h2, bitrate: bpsFor(w2, h2), framerate: 30, latencyMode: "realtime", avc: { format: "avc" } };
+            try { const s2 = await VideoEncoder.isConfigSupported(cfg); if (s2 && s2.supported) { wcCfg = cfg; OUT_W = w2; break probe; } } catch (e) { }
+          }
+        }
+      }
+      if (!wcCfg && mode === "full") OUT_W = Math.min(OUT_W, isIOS ? 2560 : 3840); // realtime-encoder fallback: keep the safer cap
       const OUT_H = Math.round(OUT_W * aspect / 2) * 2;
       const tH = Math.tan((camFov * RAD) / 2), tV = tH * OUT_H / OUT_W;
       const proj = (d) => { const z = dot(d, B.f); if (z <= 0.001) return null; return [(0.5 + (dot(d, B.r) / z) / (2 * tH)) * OUT_W, (0.5 - (dot(d, B.u) / z) / (2 * tV)) * OUT_H]; };
@@ -3650,14 +3668,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tsc = Math.min(1, texCap / Math.max(v.videoWidth || natW, v.videoHeight || natH));
       tex.width = Math.max(2, Math.round((v.videoWidth || natW) * tsc)); tex.height = Math.max(2, Math.round((v.videoHeight || natH) * tsc));
       const tctx = tex.getContext("2d");
-      const stream = cvs.captureStream(30);
-      const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
-      const bps = clampN(Math.round(8e6 * (OUT_W * OUT_H) / (1920 * 1080)), 6e6, isIOS ? 16e6 : 25e6);
-      const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bps } : { videoBitsPerSecond: bps });
-      const chunks = [];
-      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-      const recDone = new Promise((res) => { rec.onstop = res; });
-      rec.start(1000);
       const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
       const drawFrame = (p) => {
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
@@ -3733,38 +3743,81 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         catch (e) { if (!f) { f = true; clearTimeout(wd); res(false); } }
       });
       const t0 = path[0].t, t1 = path[path.length - 1].t;
-      const wall0 = performance.now();
-      let pausedMs = 0, mediaT = t0;
-      const effElapsed = () => (performance.now() - wall0 - pausedMs) / 1000;
-      while (mediaT < t1) {
-        if (exportAbortRef.current !== run) break;
-        /* a stalled seek must not eat recorded time: pause the recorder if the
-           seek runs long, and exclude the paused span from the pacing clock —
-           otherwise one 3 s stall leapfrogs the remaining content (the
-           truncated-ending failure mode) */
-        const st = performance.now();
-        let recPaused = false;
-        const guard = setTimeout(() => { try { rec.pause(); recPaused = true; } catch (e) { } }, 300);
-        const ok = await seekX(mediaT);
-        clearTimeout(guard);
-        if (recPaused) { pausedMs += performance.now() - st - 300; try { rec.resume(); } catch (e) { } }
-        if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mediaT)); }
-        /* wall-clock pacing BOTH ways: MediaRecorder stamps frames with wall
-           time, so the render must neither lag the clock (slow seeks → skip
-           ahead, dropping frames) nor OUTRUN it (fast seeks → WAIT — advancing
-           anyway compressed an 18.6 s clip into a 14 s output that played
-           ~1.3× fast, field-observed) */
-        const next = (mediaT - t0) + 1 / 30;
-        const ahead = next - effElapsed();
-        if (ahead > 0.002) await new Promise((r) => setTimeout(r, ahead * 1000));
-        mediaT = t0 + Math.max(effElapsed(), next);
-        setExporting(clampN((mediaT - t0) / (t1 - t0), 0.01, 0.99));
-        await new Promise((r) => setTimeout(r, 0));
+      let blob = null, ext = "mp4";
+      if (wcCfg) {
+        /* ---- OFFLINE encode (WebCodecs): each frame gets an explicit
+           timestamp, so duration is exact by construction; the encoder is
+           throttled by its own queue, never by the wall clock. A failed seek
+           re-encodes the previous texture at the right timestamp (a brief
+           freeze, never lost time). ---- */
+        const samples = []; let avcC = null, encErr = null;
+        const enc = new VideoEncoder({
+          output: (c, m) => {
+            const desc = m && m.decoderConfig && m.decoderConfig.description;
+            if (!avcC && desc) avcC = desc instanceof ArrayBuffer ? new Uint8Array(desc.slice(0)) : new Uint8Array(desc.buffer.slice(desc.byteOffset, desc.byteOffset + desc.byteLength));
+            const d = new Uint8Array(c.byteLength); c.copyTo(d);
+            samples.push({ data: d, key: c.type === "key" });
+          },
+          error: (e) => { encErr = e; },
+        });
+        enc.configure(wcCfg);
+        const total = Math.max(2, Math.round((t1 - t0) * 30));
+        for (let fi = 0; fi < total; fi++) {
+          if (exportAbortRef.current !== run || encErr) break;
+          const mt = t0 + fi / 30;
+          const ok = await seekX(mt);
+          if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mt)); }
+          const vf = new VideoFrame(cvs, { timestamp: Math.round(fi * 1e6 / 30), duration: Math.round(1e6 / 30) });
+          enc.encode(vf, { keyFrame: fi % 60 === 0 });
+          vf.close();
+          while (enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5));
+          setExporting(clampN(fi / total, 0.01, 0.99));
+          if ((fi & 7) === 0) await new Promise((r) => setTimeout(r, 0));
+        }
+        if (!encErr && exportAbortRef.current === run) await enc.flush();
+        try { enc.close(); } catch (e) { }
+        if (encErr) throw encErr;
+        if (exportAbortRef.current === run && avcC && samples.length)
+          blob = new Blob([muxMp4({ width: OUT_W, height: OUT_H, fps: 30, avcC, samples })], { type: "video/mp4" });
+      } else {
+        /* ---- REALTIME fallback (MediaRecorder) for browsers without
+           WebCodecs. Wall-clock paced both ways: neither lag the clock (slow
+           seeks → skip ahead) nor outrun it (fast seeks → wait); a stalled
+           seek pauses the recorder with the span excluded from the pacing
+           clock, so a stall can neither eat recorded time nor skip content. ---- */
+        const stream = cvs.captureStream(30);
+        const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
+        const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bpsFor(OUT_W, OUT_H) } : { videoBitsPerSecond: bpsFor(OUT_W, OUT_H) });
+        const chunks = [];
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        const recDone = new Promise((res) => { rec.onstop = res; });
+        rec.start(1000);
+        const wall0 = performance.now();
+        let pausedMs = 0, mediaT = t0;
+        const effElapsed = () => (performance.now() - wall0 - pausedMs) / 1000;
+        while (mediaT < t1) {
+          if (exportAbortRef.current !== run) break;
+          const st = performance.now();
+          let recPaused = false;
+          const guard = setTimeout(() => { try { rec.pause(); recPaused = true; } catch (e) { } }, 300);
+          const ok = await seekX(mediaT);
+          clearTimeout(guard);
+          if (recPaused) { pausedMs += performance.now() - st - 300; try { rec.resume(); } catch (e) { } }
+          if (ok && v.videoWidth) { tctx.drawImage(v, 0, 0, tex.width, tex.height); drawFrame(posePathAt(path, mediaT)); }
+          const next = (mediaT - t0) + 1 / 30;
+          const ahead = next - effElapsed();
+          if (ahead > 0.002) await new Promise((r) => setTimeout(r, ahead * 1000));
+          mediaT = t0 + Math.max(effElapsed(), next);
+          setExporting(clampN((mediaT - t0) / (t1 - t0), 0.01, 0.99));
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        rec.stop(); await recDone;
+        if (exportAbortRef.current === run && chunks.length) {
+          blob = new Blob(chunks, { type: mime || "video/webm" });
+          ext = (mime || "").includes("mp4") ? "mp4" : "webm";
+        }
       }
-      rec.stop(); await recDone;
-      if (exportAbortRef.current === run && chunks.length) {
-        const blob = new Blob(chunks, { type: mime || "video/webm" });
-        const ext = (mime || "").includes("mp4") ? "mp4" : "webm";
+      if (blob) {
         /* keep the render: the share bundle packs the before/after pair, so
            the stabilized video must survive past this download (re-export
            overwrites; a new stabilize run deletes it as stale) */
