@@ -68,9 +68,12 @@ comments, in this order:
    static image (≤1600 px): for video, the marked frame
    (`A.videoTime`) is baked to a canvas off the render path — the warp never
    draws a live `<video>` (per-render video→canvas draws were slow, janky, and
-   crashed iOS on memory). Single-frame analysis, so the aimer has no scrubber;
-   the frame is locked to what was set on the measure step. (Phase-2
-   reference-locked video will rebuild this with a per-frame pose.)
+   crashed iOS on memory). This holds for STABILIZED PLAYBACK too: it is a
+   single-in-flight SEEK loop on an offscreen video — each step bakes THAT
+   frame to the texture and sets the frame's solved pose (`playPose`, a
+   display-only override; placement state is never touched, so
+   commitPlacement can't absorb a mid-video pose). Analysis (marks/shape)
+   stays single-frame on the marked frame set on the measure step.
 2. **Projection aspect is tangent-scaled:** `tanV = tanH · (h/w)`. Degree
    scaling is wrong and was the original geometry bug.
 3. **`pixelDirFromAnchor` handles azimuth convergence** (1/cos el). Never
@@ -370,9 +373,26 @@ terrain stay frozen and only the object moves. Build ladder:
 1. Per-frame pose: pure-rotation (3-DOF) solve from sparse optical-flow tracks
    of static background features, anchored to reference KEYFRAMES (terrain
    skyline / star plate-solve / sun). Distant scenes ⇒ translation negligible.
+   **DONE (rungs A+B)** — `src/video/postrack.js` (pure, mathcheck-asserted):
+   `detectBgFeatures` (day corners / night star-blobs), `trackFeatures` (NCC
+   + sub-pixel), `poseFromTracks` (solvePoseAnchors + the autoStarAlign
+   median trim; FOV/k locked via `seed.lockFov/lockK`), `initTracker`/
+   `stepTracker` (predict→track→solve→re-acquire, walks OUTWARD from the
+   marked frame). SkyAimer "🎞 Stabilize video" (place tools, video only)
+   seeks an offscreen video every 0.25 s (≤140 samples, tracked at ≤768 px —
+   pose is resolution-independent) and writes `source.posePath =
+   [{t,az,el,roll,fov,k,n}]` (persists through autosave/pack; only media
+   handles are stripped). Frames with <6 background refs HOLD the previous
+   pose and are counted honestly.
 2. Track points convert through their own frame's pose (removes the current
    "camera never moved" assumption — the biggest hidden video error today).
 3. World-stabilized playback/exhibit render = existing mesh warp, per frame.
+   **DONE (rung B)** — ▶ + scrubber in look mode when a posePath exists:
+   single-in-flight seek → bake frame → set `playPose` (a DISPLAY-ONLY pose
+   override; `poseNow = playPose || placement`, so commitPlacement never
+   absorbs a mid-video pose). Entering place/any tool mode exits playback;
+   exit re-bakes the marked frame before dropping the override so texture
+   and pose always agree.
 4. Auto object tracking (template correlation seeded by first tap) → dense
    trajectories → real g-load curves.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
