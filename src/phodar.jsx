@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker } from "./video/postrack.js";
+import { initTracker, stepTracker, smearDrift } from "./video/postrack.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
@@ -3343,9 +3343,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
-      let done = 0; const total = fwd.length + bwd.length;
+      let done = 0, ancCount = 0; const total = fwd.length + bwd.length;
       const walk = async (list, tracker) => {
         let prevT = refT;
+        /* "meet in the middle": when a step RE-ANCHORS absolutely against the
+           reference frame, distribute its drift correction back across this
+           pass's entries since the last anchor, so the incremental chain bends
+           smoothly onto the fix instead of snapping (smearDrift). */
+        let segFrom = path.length, segT = refT;
         for (const t of list) {
           if (stabAbortRef.current !== run) return false;
           /* snapshot so a failed step can rewind and BISECT in time — a fast
@@ -3368,6 +3373,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           };
           const r = await tryStep(prevT, t, 2);
           path.push(entry(t, r));
+          if (r.anchored) {
+            const k = path.length - 1;
+            path[k].anc = 1; ancCount++;
+            if (r.drift && (Math.abs(r.drift.dAz) > 0.02 || Math.abs(r.drift.dEl) > 0.02 || Math.abs(r.drift.dRoll) > 0.05 || Math.abs(r.drift.dFov) > 0.1)) smearDrift(path, segFrom, k, segT, r.drift);
+            segFrom = k + 1; segT = path[k].t;
+          }
           prevT = t;
           done++;
           if (done % 5 === 0) { setStabBusy(done); setFlash(`🎞 solving camera path… ${done}/${total} frames`); await new Promise((r2) => setTimeout(r2, 0)); } // yield so the flash paints (and iOS stays happy)
@@ -3386,9 +3397,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setStabBusy(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
+      const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };

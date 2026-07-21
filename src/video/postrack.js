@@ -189,11 +189,16 @@ export function initTracker(refData, w, h, natW, natH, refPose, opts = {}) {
   const sc = natW / w;                               // tracking-buffer px → native px
   const seeds = detectBgFeatures(refData, w, h, opts);
   const features = seeds.map((f, i) => ({
-    id: i,
+    id: i, prime: true,                              // prime = seeded on the ALIGNED reference frame (uncontaminated g)
     g: pixToDirK(f.x * sc, f.y * sc, natW, natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
     tx: f.x, ty: f.y, px: f.x, py: f.y,
   }));
-  return { w, h, natW, natH, sc, prevData: refData, lastPose: { ...refPose }, features, nextId: features.length, opts };
+  return {
+    w, h, natW, natH, sc, prevData: refData, lastPose: { ...refPose }, features, nextId: features.length, opts,
+    /* the reference frame is kept forever: whenever the zoom returns near its
+       scale, frames re-anchor DIRECTLY against it (see stepTracker 4b) */
+    ref: { data: refData, pose: { ...refPose }, feats: features.map((f) => ({ g: f.g, tx: f.tx, ty: f.ty })) },
+  };
 }
 
 /* Advance the tracker onto `nextData` (adjacent frame). Predicts each feature's
@@ -321,6 +326,41 @@ export function stepTracker(tracker, nextData, opts = {}) {
     const sol = poseFromTracks(anchors, natW, natH, seed2, { ...o, lockFov: zoom ? anchors.length < 8 : o.lockFov !== false });
     if (sol) { pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k }; nInliers = sol.n; }
   }
+  // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
+  //     TURNOVER: replacements get their world dir from the current pose
+  //     estimate, baking in its error (a zoom episode churns many features).
+  //     Whenever the current zoom is near enough the reference frame's scale
+  //     that its templates are recognizable, match the PRISTINE reference
+  //     features directly into this frame and re-solve absolutely — zeroing
+  //     the accumulated drift instead of carrying it forward.
+  let anchored = false, drift = null;
+  const ref = tracker.ref;
+  if (ref && anchors.length >= minMatch && o.reanchor !== false) {
+    const tS = Math.tan((ref.pose.fov * D2R) / 2) / Math.tan((pose.fov * D2R) / 2); // scene scale: current vs reference
+    if (tS > 0.65 && tS < 1.55) {
+      const fR = [];
+      for (const rf of ref.feats.slice(0, 20)) {
+        const p = dirToPixK(rf.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+        if (!p) continue;
+        const bx = p.px / sc, by = p.py / sc;
+        if (bx < 0 || bx > w || by < 0 || by > h) continue;
+        fR.push({ g: rf.g, tx: rf.tx, ty: rf.ty, px: bx, py: by });
+      }
+      if (fR.length >= minMatch) {
+        const trR = trackFeatures(ref.data, nextData, w, h, fR, { ...o, search: 12, tScale: tS });
+        const ancR = [];
+        for (let i = 0; i < fR.length; i++) if (trR[i].ok) ancR.push({ px: trR[i].px * sc, py: trR[i].py * sc, g: fR[i].g });
+        if (ancR.length >= Math.max(minMatch, 8)) {
+          const solR = poseFromTracks(ancR, natW, natH, pose, { ...o, lockFov: false, maxRms: 0.5 });
+          if (solR) {
+            drift = { dAz: ((solR.az - pose.az + 540) % 360) - 180, dEl: solR.el - pose.el, dRoll: solR.roll - pose.roll, dFov: solR.fov - pose.fov };
+            pose = { az: solR.az, el: solR.el, roll: solR.roll, fov: solR.fov, k: solR.k };
+            nInliers = solR.n; anchored = true;
+          }
+        }
+      }
+    }
+  }
   // 5. update templates (successful → new pixel), re-acquire the rest under the new pose
   const kept = [];
   for (let i = 0; i < feats.length; i++) {
@@ -333,10 +373,31 @@ export function stepTracker(tracker, nextData, opts = {}) {
   if (kept.length < minMatch + 4) {
     for (const f of detectBgFeatures(nextData, w, h, { ...o, maxN })) {
       if (kept.some((k) => Math.hypot(k.tx - f.x, k.ty - f.y) < sep)) continue;
-      kept.push({ id: tracker.nextId++, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y });
+      kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y });
       if (kept.length >= maxN) break;
     }
   }
+  // a successful anchor purges contamination: non-prime features (whose g was
+  // assigned from a possibly-drifted estimate) get their world dir re-derived
+  // under the corrected pose
+  if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
-  return { pose, nInliers, features: kept, scale: s };
+  return { pose, nInliers, features: kept, scale: s, anchored, drift };
+}
+
+/* Distribute a re-anchor's drift correction back across the un-anchored span
+   ("meet in the middle"): entries between the last anchor (at time ancT) and
+   the anchored entry at kIdx get the correction scaled by their time fraction,
+   so the incremental chain bends smoothly onto the absolute fix instead of
+   snapping. Mutates path[segFrom..kIdx-1]. */
+export function smearDrift(path, segFrom, kIdx, ancT, dr) {
+  const span = Math.abs(path[kIdx].t - ancT);
+  if (!(span > 1e-6)) return;
+  for (let i = segFrom; i < kIdx; i++) {
+    const f = clampN(Math.abs(path[i].t - ancT) / span, 0, 1);
+    path[i].az = +((((path[i].az + f * dr.dAz) % 360) + 360) % 360).toFixed(3);
+    path[i].el = +(path[i].el + f * dr.dEl).toFixed(3);
+    path[i].roll = +(path[i].roll + f * dr.dRoll).toFixed(3);
+    path[i].fov = +clampN(path[i].fov + f * dr.dFov, 5, 150).toFixed(2);
+  }
 }
