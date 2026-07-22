@@ -1949,6 +1949,24 @@ function MediaMeasure({ src, update, wizard }) {
                         </g>
                       );
                     })}
+                    {/* STILL only: a little Δt stamp at each leg's midpoint — a
+                       photo has no scrubber, so the leg duration (time from the
+                       previous point) is otherwise invisible. Videos read timing
+                       off the frame clock, so no stamp there. */}
+                    {!isVid && tp.length >= 2 && pts2.map((p, i) => {
+                      if (i === 0) return null;
+                      const dt = +p.t - +pts2[i - 1].t;
+                      if (!(dt > 0)) return null;
+                      const mx = (tp[i][0] + tp[i - 1][0]) / 2, my = (tp[i][1] + tp[i - 1][1]) / 2;
+                      const label = `${dt >= 10 ? dt.toFixed(0) : dt.toFixed(1)}s`;
+                      const w = label.length * 6.2 + 8;
+                      return (
+                        <g key={"dt" + i}>
+                          <rect x={mx - w / 2} y={my - 8} width={w} height={16} rx={5} fill="rgba(7,11,20,.72)" stroke={trkCol(0.5)} strokeWidth="0.75" />
+                          <text x={mx} y={my + 0.5} textAnchor="middle" dominantBaseline="central" fontFamily="ui-monospace, monospace" fontSize="10.5" fill={trkCol(1)}>{label}</text>
+                        </g>
+                      );
+                    })}
                     {/* wireframe GHOSTS at sized points (and the point being
                        sized): the fitted shape re-centred on the tap, scaled to
                        that frame's stored width — frame-local like the dots */}
