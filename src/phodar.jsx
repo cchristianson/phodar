@@ -16,7 +16,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
-import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
+import { trackDirections, kinematics, analyzeTracks, videoKinematics } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
@@ -587,6 +587,7 @@ const HELP_SECTIONS = [
         { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar." },
       ]},
       { h: "Extra checks in the report", items: [
+        { t: "Video analysis", d: "For a stabilized, object-tracked clip: the object's dense per-frame angular trajectory measured with NO distance assumption — total sky sweep, average & peak angular rate (°/s, a strong discriminator: satellites track at a near-constant rate, aircraft vary, a hover ≈ 0) and an angular-rate plot. Then a size/distance/speed table showing what every candidate distance implies (or the one triangulated distance if a second observer fixed it), plus its apparent-size range if you sized the object across frames (that recovers toward/away motion). Ends with a keyframe strip — sampled frames with the tracked object marked and captioned (time, az/el, angular size, rate)." },
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
@@ -7541,6 +7542,128 @@ ${momStrip}`;
       }
     }
   }
+  /* --- VIDEO ANALYSIS: for each stabilized + object-tracked video, the dense
+     per-frame ANGULAR trajectory (measured, distance-free) → angular rate,
+     total sweep, angular-size profile → what it all implies at a ladder of
+     candidate distances (or the actual stereo-fix distance), plus a strip of
+     keyframes with the tracked object marked and captioned. This is the
+     scientific-analysis surface for footage. --- */
+  let videoHtml = "";
+  {
+    const vids = origAct.filter((s) => s.mediaKind === "video" && s.mediaUrl && Array.isArray(s.objPath) && s.objPath.length >= 3 && Array.isArray(s.posePath) && s.posePath.length >= 2 && s.natW && s.natH);
+    if (vids.length && typeof document !== "undefined") {
+      const spd = (mps) => isImperialUnits() ? `${Math.round(mps * 2.23694)} mph` : `${mps < 1 ? mps.toFixed(1) : Math.round(mps)} m/s`;
+      /* bake keyframes: seek an offscreen video to each time, draw to a capped
+         canvas, mark the tracked object (world dir → this frame's solved pose →
+         pixel), return {t, jpeg, mark, ...}. Sequential single-in-flight seeks. */
+      const bakeKeyframes = (s, vk, times) => new Promise((resolve) => {
+        const v = document.createElement("video");
+        v.muted = true; v.playsInline = true; v.preload = "auto";
+        const objAt = (t) => {
+          const op = s.objPath;
+          let lo = 0, hi = op.length - 1;
+          if (t <= op[0].t) hi = 0; else if (t >= op[op.length - 1].t) lo = op.length - 1;
+          else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (op[m].t <= t) lo = m; else hi = m; }
+          const a = op[lo], b = op[hi], u = hi === lo ? 0 : (t - a.t) / Math.max(1e-9, b.t - a.t);
+          const dAz = ((b.az - a.az + 540) % 360) - 180;
+          return { az: (((a.az + dAz * u) % 360) + 360) % 360, el: a.el + (b.el - a.el) * u };
+        };
+        const out = [];
+        let idx = 0;
+        const done = () => { try { v.removeAttribute("src"); v.load(); } catch (e) { } resolve(out); };
+        const step = () => {
+          if (idx >= times.length) return done();
+          const t = times[idx];
+          let fired = false;
+          const wd = setTimeout(() => { if (!fired) { fired = true; out.push(null); idx++; step(); } }, 3000);
+          v.onseeked = () => {
+            if (fired) return; fired = true; clearTimeout(wd); v.onseeked = null;
+            try {
+              const cap = 900, sc = Math.min(1, cap / Math.max(v.videoWidth, v.videoHeight));
+              const cw = Math.round(v.videoWidth * sc), ch = Math.round(v.videoHeight * sc);
+              const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+              const ctx = cv.getContext("2d");
+              if (imgAdjFilter(s.imgAdj) !== "none") ctx.filter = imgAdjFilter(s.imgAdj);
+              ctx.drawImage(v, 0, 0, cw, ch); ctx.filter = "none";
+              const pp = posePathAt(s.posePath, t);
+              const od = objAt(t);
+              let mark = null;
+              if (pp) { const px = dirToPixK(dirFromAzEl(od.az, od.el), s.natW, s.natH, pp.az, pp.el, pp.roll || 0, pp.fov, pp.k || 0); if (px) mark = { x: px.px * sc, y: px.py * sc }; }
+              // angular size at t (interpolated), and instantaneous rate
+              const smp = vk.samples.reduce((best, x) => Math.abs(x.t - t) < Math.abs(best.t - t) ? x : best, vk.samples[0]);
+              const rr = vk.rate.reduce((best, x) => Math.abs(x.t - t) < Math.abs(best.t - t) ? x : best, vk.rate[0]);
+              out.push({ t, jpeg: cv.toDataURL("image/jpeg", 0.82), w: cw, h: ch, mark, az: od.az, el: od.el, ang: smp.ang, omega: rr ? rr.omega : null });
+            } catch (e) { out.push(null); }
+            idx++; step();
+          };
+          try { v.currentTime = Math.min(t, (v.duration || t + 1) - 0.05); } catch (e) { if (!fired) { fired = true; clearTimeout(wd); out.push(null); idx++; step(); } }
+        };
+        v.onloadeddata = () => step();
+        v.onerror = () => done();
+        v.src = s.mediaUrl;
+        try { v.load(); } catch (e) { }
+      });
+      const blocks = [];
+      for (let vi = 0; vi < vids.length; vi++) {
+        const s = vids[vi];
+        const vk = videoKinematics(s);
+        if (!vk) continue;
+        /* absolute distance from THIS observer, if a stereo fix nailed it */
+        let fixDist = null;
+        if (fix.ok && isNum(s.lat) && isNum(s.lon)) {
+          const Po = [(+s.lon - fix.ref.lon) * 111320 * Math.cos(fix.ref.lat * D2R), (+s.lat - fix.ref.lat) * 111320, (isNum(s.alt) ? +s.alt : 0) - fix.ref.alt];
+          fixDist = Math.hypot(fix.solA.X[0] - Po[0], fix.solA.X[1] - Po[1], fix.solA.X[2] - Po[2]);
+        }
+        /* candidate distance ladder (+ the fix distance if we have one) */
+        const ladder = [100, 300, 1000, 3000, 10000];
+        const dists = fixDist ? [fixDist] : ladder;
+        const distRows = dists.map((D) => {
+          const a = vk.atDistance(D);
+          if (!a) return "";
+          return `<tr${fixDist ? ' style="background:#eef7ff"' : ""}><td>${fmtLenShort(D)}${fixDist ? " <b>(triangulated)</b>" : ""}</td><td>${a.sizeM != null ? fmtLenShort(a.sizeM) : "<span class='cap'>size not marked</span>"}</td><td>${spd(a.avgSpeed)}</td><td>${spd(a.peakSpeed)}</td><td>${fmtLenShort(a.path)}</td></tr>`;
+        }).join("");
+        /* angular-rate mini plot (ω vs t), self-contained SVG */
+        const rateSvg = (() => {
+          const W = 480, H = 120, m = 26;
+          const ts = vk.rate.map((r) => r.t), ws = vk.rate.map((r) => r.omega);
+          const t0 = ts[0], t1 = ts[ts.length - 1], wMax = Math.max(...ws, 0.1);
+          const X = (t) => m + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (W - m - 8);
+          const Y = (w) => H - m - (w / wMax) * (H - m - 10);
+          const pts = vk.rate.map((r) => `${X(r.t).toFixed(1)},${Y(r.omega).toFixed(1)}`).join(" ");
+          return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto;border:1px solid #e2e2e2;border-radius:6px;background:#fff">
+<line x1="${m}" y1="${H - m}" x2="${W - 8}" y2="${H - m}" stroke="#bbb"/><line x1="${m}" y1="10" x2="${m}" y2="${H - m}" stroke="#bbb"/>
+<polyline fill="none" stroke="#1188aa" stroke-width="1.8" points="${pts}"/>
+<text x="${m}" y="9" fill="#666" font-size="10">${wMax.toFixed(1)}°/s</text>
+<text x="${W - 8}" y="${H - 9}" font-size="10" fill="#666" text-anchor="end">${(t1 - t0).toFixed(1)} s</text>
+<text x="4" y="${(H) / 2}" font-size="10" fill="#666" transform="rotate(-90 10 ${H / 2})">angular rate</text></svg>`;
+        })();
+        // keyframes: evenly spaced across the tracked span + the marked frame
+        const span = vk.samples;
+        const t0 = span[0].t, t1 = span[span.length - 1].t;
+        const nKF = clampN(Math.round((t1 - t0) / 1.2) + 2, 4, 8);
+        const kfTimes = Array.from({ length: nKF }, (_, i) => +(t0 + (t1 - t0) * i / (nKF - 1)).toFixed(3));
+        const kf = await bakeKeyframes(s, vk, kfTimes);
+        const kfCards = kf.filter(Boolean).map((f) => {
+          const col = s.shapeFit ? `hsl(${s.shapeFit.hue ?? 36},85%,45%)` : "#e23";
+          const markSvg = f.mark ? `<svg viewBox="0 0 ${f.w} ${f.h}" style="position:absolute;left:0;top:0;width:100%;height:100%"><circle cx="${f.mark.x.toFixed(1)}" cy="${f.mark.y.toFixed(1)}" r="${Math.max(8, f.w / 34).toFixed(1)}" fill="none" stroke="${col}" stroke-width="${Math.max(1.5, f.w / 320).toFixed(2)}"/><line x1="${f.mark.x.toFixed(1)}" y1="${(f.mark.y - f.w / 22).toFixed(1)}" x2="${f.mark.x.toFixed(1)}" y2="${(f.mark.y + f.w / 22).toFixed(1)}" stroke="${col}" stroke-width="${Math.max(0.8, f.w / 500).toFixed(2)}"/><line x1="${(f.mark.x - f.w / 22).toFixed(1)}" y1="${f.mark.y.toFixed(1)}" x2="${(f.mark.x + f.w / 22).toFixed(1)}" y2="${f.mark.y.toFixed(1)}" stroke="${col}" stroke-width="${Math.max(0.8, f.w / 500).toFixed(2)}"/></svg>` : "";
+          const adjSty = imgAdjFilter(s.imgAdj) === "none" ? "" : `filter:${imgAdjFilter(s.imgAdj)};`;
+          return `<div style="flex:1 1 210px;min-width:170px;max-width:300px"><div style="position:relative"><img src="${f.jpeg}" style="width:100%;display:block;border:1px solid #ccc;border-radius:4px;${adjSty}"/>${markSvg}</div><div class="cap">t ${f.t.toFixed(2)} s · ${f.az.toFixed(1)}° az / ${f.el.toFixed(1)}° el${f.ang != null ? ` · ${f.ang.toFixed(2)}° wide` : ""}${f.omega != null ? ` · ${f.omega.toFixed(1)}°/s` : ""}</div></div>`;
+        }).join("");
+        const held = vk.samples.filter((x) => (x.q || 0) < 0.15).length;
+        const angLine = vk.angMin != null
+          ? `Its apparent width ranged ${vk.angMin.toFixed(2)}°–${vk.angMax.toFixed(2)}°${vk.rangeRatio && Math.abs(vk.rangeRatio - 1) > 0.05 ? ` — a <b>${vk.rangeRatio.toFixed(2)}× range change</b> (it moved ${vk.rangeRatio > 1 ? "closer then" : ""} ${vk.angMax > vk.angMin ? "nearer" : "farther"} over the clip)` : " (near-constant — little toward/away motion)"}.`
+          : `Angular size was not marked frame-to-frame, so only transverse (across-sky) motion is measured — mark the object's width on a few frames (measure step) to recover toward/away motion.`;
+        blocks.push(`${vids.length > 1 ? `<h3>${e2(s.name || "Observer " + (vi + 1))}</h3>` : ""}
+<p class="lead"><b>Measured angular motion:</b> the object swept <b>${vk.sweep.toFixed(1)}°</b> of sky over <b>${vk.dur.toFixed(1)} s</b> (${vk.n} tracked frames), averaging <b>${vk.avgOmega.toFixed(2)}°/s</b> and peaking at <b>${vk.peakOmega.toFixed(2)}°/s</b>. ${angLine}${held ? ` <span class="cap">(${held} frame${held > 1 ? "s" : ""} held on the guide, not pixel-locked.)</span>` : ""}</p>
+${rateSvg}
+<p class="cap" style="margin-top:8px">Angular position &amp; rate are measured directly from the world-locked track — no distance needed. Linear size and speed below follow only once a distance is assumed${fixDist ? " (here fixed by triangulation)" : ""}:</p>
+<table><tr><th>Assumed distance</th><th>True size</th><th>Avg speed</th><th>Peak speed</th><th>Path length</th></tr>${distRows}</table>
+${fixDist ? "" : `<p class="cap">Single viewpoint — distance is unknown, so the row you believe fixes everything else. A second observer's video triangulates the true distance and collapses this to one row.</p>`}
+${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tracked object marked (${s.shapeFit ? "shape colour" : "red"} reticle) at sampled moments:</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">${kfCards}</div>` : ""}`);
+      }
+      if (blocks.length) videoHtml = `<h2>Video analysis</h2>${blocks.join('<hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>')}`;
+    }
+  }
   /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
      at the primary observer's time & place. Flags glare, a bright Moon as
      the light source, and pins the local-time / twilight state. --- */
@@ -7825,6 +7948,7 @@ details.sec>*:last-child{margin-bottom:14px}
 ${(() => { const ws = origAct.filter((s) => s.statement && String(s.statement).trim()); return ws.length ? `<h2>Witness accounts</h2>` + ws.map((s, i) => `<div style="margin:0 0 12px"><b>${e2(s.name || "Observer " + (i + 1))}</b>${s.whenMs ? ` <span class="cap">· ${new Date(+s.whenMs).toLocaleString()}</span>` : ""}<blockquote class="stmt">${e2(String(s.statement).trim())}</blockquote></div>`).join("") : ""; })()}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
+${collapsible(videoHtml, false)}
 ${collapsible(alignHtml, true)}
 ${collapsible(adsbHtml, false)}
 ${collapsible(airportsHtml, false)}

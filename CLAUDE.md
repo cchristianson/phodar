@@ -263,7 +263,22 @@ photo was adjusted.
    server, upstream down) falls back to the plain background — never blocks
    the report. Report HTML also carries a
    viewport meta + responsive rules so it fits mobile width. Print CSS
-   polish still open.
+   polish still open. **Video analysis section: DONE** — for any
+   stabilized + object-tracked clip the report adds a "Video analysis"
+   section built on `videoKinematics` (math/kinematics.js, pure,
+   mathcheck-asserted): the DENSE per-frame objPath → angular rate ω(t)
+   in °/s (peak/avg + a self-contained SVG plot), total sky sweep and
+   duration — all distance-free — then `atDistance(D)` turns any assumed
+   distance into true size + avg/peak tangential speed + path length,
+   rendered as a ladder table (or a single row highlighted when a stereo
+   fix nails the distance). If the object was sized across frames the
+   angular-size range + range-ratio (toward/away motion) is reported.
+   Ends with a KEYFRAME strip: N frames baked from the video (offscreen
+   seek → canvas → JPEG data URI, capped 900 px), each with the tracked
+   object marked (world dir → that frame's solved pose → pixel via
+   dirToPixK) and captioned (t, az/el, angular size, rate). All async +
+   document-gated; verified end-to-end through the wizard UI to the
+   report (8 keyframes, rate plot, table).
 9. **Reference-locked video** (after the still reference stack — video composes
    the same primitives). Phase A: pose(t) timeline — per-frame Δpose from
    horizon/ridge tracking (pitch+roll; detector exists) + distant-feature

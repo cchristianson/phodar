@@ -5,7 +5,7 @@ import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack, videoKinematics } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -1091,6 +1091,32 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const clean = Array.from({ length: 9 }, (_, i) => mko(i * 0.25, truthAz(i), truthEl(i), 0.9));
     smoothObjPath(clean);
     approx(Math.max(...clean.map((p, i) => Math.abs(p.az - truthAz(i)))) < 1e-6 ? 1 : 0, 1, 0, "smoothObj: a clean linear sweep is untouched");
+  }
+
+  // 4h-e. videoKinematics: dense per-frame ANGULAR kinematics from objPath.
+  // An object crossing the sky at a constant angular rate near the horizon
+  // (az sweeps, el ~0 so dθ ≈ dAz) must recover ω ≈ that rate, sweep ≈ ω·dur;
+  // with a per-frame angular SIZE that halves, the range doubles and speed at
+  // an assumed distance includes the radial (approach) component.
+  {
+    const RATE = 4;         // deg/s of true angular motion
+    const dt = 0.2, N = 21; // 4 s clip
+    const objPath = Array.from({ length: N }, (_, i) => ({ t: +(i * dt).toFixed(3), az: (100 + RATE * i * dt) % 360, el: 0, q: 0.9 }));
+    const vk = videoKinematics({ objPath });
+    approx(vk != null ? 1 : 0, 1, 0, "videoKin: returns a result for a ≥3-sample track");
+    approx(vk.avgOmega, RATE, 0.05, "videoKin: average angular rate ≈ truth (deg/s)");
+    approx(Math.abs(vk.peakOmega - RATE) < 0.1 ? 1 : 0, 1, 0, "videoKin: peak angular rate ≈ truth (constant-rate clip)");
+    approx(vk.sweep, RATE * (N - 1) * dt, 0.1, "videoKin: total angular sweep = rate × duration");
+    // no sizes → atDistance is pure tangential at a fixed range
+    const flat = vk.atDistance(1000);
+    approx(flat.avgSpeed, 1000 * (RATE * D2R), 1.5, "videoKin: tangential speed = range · ω(rad/s) when size is constant");
+    approx(flat.sizeM == null ? 1 : 0, 1, 0, "videoKin: no size info ⇒ no linear size");
+    // add sizes that HALVE across the clip → range doubles, rangeRatio ≈ 2
+    const track = [{ t: 0, ang: 2.0 }, { t: (N - 1) * dt, ang: 1.0 }];
+    const vk2 = videoKinematics({ objPath, track });
+    approx(vk2.rangeRatio, 2, 0.06, "videoKin: range ratio from a halving angular size ≈ 2×");
+    const d2 = vk2.atDistance(1000);
+    approx(d2.sizeM > 0 && d2.peakSpeed > flat.peakSpeed ? 1 : 0, 1, 0, "videoKin: receding object's speed exceeds the pure-tangential case");
   }
 
   // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —
