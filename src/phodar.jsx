@@ -846,7 +846,7 @@ function MediaMeasure({ src, update, wizard }) {
     measureWrap();
     window.addEventListener("resize", measureWrap);
     return () => window.removeEventListener("resize", measureWrap);
-  }, [measureWrap, src.mediaUrl]);
+  }, [measureWrap, src.mediaUrl, natW, natH]); // natW/natH: the portrait height-cap changes the wrap width once dimensions are known
 
   /* While dragging a marker, hard-lock page scroll & pull-to-refresh.
      pointermove preventDefault doesn't stop iOS scrolling — a non-passive
@@ -1493,12 +1493,12 @@ function MediaMeasure({ src, update, wizard }) {
               🎯 <b style={{ color: "var(--track)" }}>Moving object?</b> Tap <b style={{ color: "var(--track)" }}>Track</b> (top row), then scrub the clip with the slider below and tap the object every second or so. Your taps become the trajectory the auto-tracker locks onto during Stabilize.
             </div>
           )}
-          {wizard && media.kind === "video" && src.shapeFit && !isNum(src.alignT) && (
+          {wizard && media.kind === "video" && src.shapeFit && !isNum(src.alignT) && active !== "trk" && (
             <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--teal)", borderRadius: 10, background: "rgba(64,199,178,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
               ⛰ <b style={{ color: "var(--teal)" }}>Pick an alignment frame:</b> scrub to the moment with the clearest horizon (or stars) and tap <b style={{ color: "var(--teal)" }}>⛰ Align on this frame</b> below the slider. The sky alignment is done on that frame — otherwise the object's frame is used, which may be zoomed or horizon-free.
             </div>
           )}
-          {src.shapeFit && (
+          {src.shapeFit && active !== "trk" && (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
                 <span className="microlabel" style={{ marginBottom: 0 }}>size</span>
@@ -1567,8 +1567,18 @@ function MediaMeasure({ src, update, wizard }) {
             </>
           )}
           <div style={{ position: "relative", marginTop: 10 }}>
+            {/* PORTRAIT clips are height-capped (≈ half the screen) — at full
+               column width a 9:16 video pushed the frame slider and the whole
+               Track panel below the fold. Width follows from the cap via the
+               aspect ratio; dispW/TT() adapt automatically off clientWidth. */}
             <div ref={wrapRef}
-              style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", touchAction: "none", height: dispH || "auto" }}
+              style={{
+                position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", touchAction: "none", height: dispH || "auto",
+                ...(media.kind === "video" && natW && natH > natW ? {
+                  width: `min(100%, ${Math.round(Math.min(440, (typeof window !== "undefined" ? window.innerHeight : 800) * 0.5) * natW / natH)}px)`,
+                  margin: "0 auto",
+                } : {}),
+              }}
               onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
               {/* Zoom by SIZING the media element (width = dispW·z), not by
                  CSS-scaling a width:100% copy. A transform:scale() magnifies the
@@ -1808,16 +1818,20 @@ function MediaMeasure({ src, update, wizard }) {
                               onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== szIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
                           )}
                         </div>
-                        <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
-                          Match the outline to the object at each tapped frame — the size change between frames is what recovers closer/farther motion.{isNum(p.wpx) ? "" : " This point currently assumes the fitted size."}
-                        </div>
+                        {!trkSorted.some((q) => isNum(q.wpx)) && (
+                          <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
+                            Match the outline to the object at each tapped frame — the size change between frames is what recovers closer/farther motion.
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
                   {(() => {
-                    if (wizard) return (
+                    /* onboarding paragraph only until the guide is armed (2+ pts) —
+                       after that the header count + size block say everything */
+                    if (wizard) return (src.track || []).length >= 2 ? null : (
                       <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-                        Rough trajectory for the auto-tracker: scrub through the clip and tap the object every second or so ({(src.track || []).length >= 2 ? "✓ these points will GUIDE the tracker — it fine-tunes each frame around your path" : "2+ points activate the guided track"}). Big steps are fine — precision comes from the pixel matcher.
+                        Rough trajectory for the auto-tracker: scrub through the clip and tap the object every second or so (2+ points activate the guided track). Big steps are fine — precision comes from the pixel matcher.
                       </div>
                     );
                     if ((src.track || []).length < 3) return (
