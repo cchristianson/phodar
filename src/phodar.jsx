@@ -1532,13 +1532,22 @@ function MediaMeasure({ src, update, wizard }) {
     const cx = src.shapeFit.cx, cy = src.shapeFit.cy, rad = Math.max(28 / (scale * (view.z || 1)), wFit * 0.6);
     return Math.hypot(x - cx, y - cy) <= rad ? { x: cx, y: cy, anchor: true } : { x, y };
   };
-  /* ADJUST mode: drag a placed point to a new spot on the photo. Only its pixel
-     position (x/y) changes — timing, size, attitude, turn and the anchor flag
-     ride along. Dragging the anchor re-references the whole recalled path (it's
-     the point pinned to the measured object direction), which is the point. */
+  /* ADJUST mode: drag a placed point to a new spot on the photo. Timing, size,
+     attitude and turn ride along. Like PLACING, the drag SNAPS to the fitted 3D
+     object: come within the object's radius and the point locks to its centre
+     and becomes the trajectory anchor (the sole point pinned to the measured
+     object direction — any previous anchor is cleared); drag away and it lets go.
+     Dragging the anchor thus re-references the whole recalled path, which is the
+     point. */
   const moveTrkTo = (i, x, y) => {
     if (i < 0 || i >= trkSorted.length) return;
-    update({ track: trkSorted.map((p, k) => (k === i ? { ...p, x, y } : p)) });
+    const sp = snapPlace(x, y);          // {x,y} or {x:cx,y:cy,anchor:true} when on the object
+    const snap = !!sp.anchor;
+    update({ track: trkSorted.map((p, k) => {
+      if (k === i) { const { anchor, ...rest } = p; return snap ? { ...rest, x: sp.x, y: sp.y, anchor: true } : { ...rest, x: sp.x, y: sp.y }; }
+      if (snap && p.anchor) { const { anchor, ...rest } = p; return rest; }   // only one anchor at a time
+      return p;
+    }) });
   };
   const selectNearestTrk = (nat) => {
     if (!trkSorted.length) { setSelTrk(-1); return; }
