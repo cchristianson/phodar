@@ -769,6 +769,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [vidT, setVidT] = useState(0);
   const [vidDur, setVidDur] = useState(0);
   const [trkAdv, setTrkAdv] = useState(15); // frames to auto-advance after dropping a track point (½ s at 30 fps)
+  const [trkAdjust, setTrkAdjust] = useState(false); // Track sub-mode: place points (false) vs adjust size/shape at the nearest point (true)
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
   const ptsRef = useRef(new Map());
@@ -1163,6 +1164,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (!pd) return;
     killPending();
     if (pd.mode === "trk") {
+      if (trkAdjust) return;   // adjust mode: taps don't add points — scrub + tune the nearest one
       const el = mediaRef.current;
       const tv = el ? el.currentTime : vidT;
       update({ track: [...(src.track || []), { t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y }] });
@@ -1436,8 +1438,12 @@ function MediaMeasure({ src, update, wizard }) {
      current fovH; re-derived from the solved per-frame FOV after
      stabilization, so a camera zoom can't masquerade as approach). --- */
   const trkSorted = [...(src.track || [])].filter((p) => p.x != null && isNum(p.t)).sort((a, b) => a.t - b.t);
+  /* which placed point the size/attitude controls target. Normally the point
+     owning the frame you're on (within 0.55 s); in ADJUST mode the NEAREST
+     placed point regardless of distance — scrub anywhere and the model snaps
+     to the closest point so you can tune its size/attitude. */
   const szIdx = (media?.kind === "video" && src.shapeFit && trkSorted.length) ? (() => {
-    let bi = -1, bd = 0.55; // the point owning the frame you're on (nearest tap within 0.55 s)
+    let bi = -1, bd = trkAdjust ? Infinity : 0.55;
     trkSorted.forEach((p, i) => { const d = Math.abs(+p.t - vidT); if (d < bd) { bd = d; bi = i; } });
     return bi;
   })() : -1;
@@ -1450,6 +1456,12 @@ function MediaMeasure({ src, update, wizard }) {
     const a2 = angOfW(w2);
     update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
   };
+  /* rotate the targeted point's model (per-frame attitude keyframe). Left-
+     multiply so the nudge is in the VIEW frame (drag-right yaws right etc.). */
+  const ptRotOf = (i) => (Array.isArray(trkSorted[i]?.rotM) && trkSorted[i].rotM.length === 9) ? trkSorted[i].rotM : (src.shapeFit?.rotM || I3);
+  const setPtRotM = (m) => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, rotM: m } : p)) }); };
+  const nudgeRot = (which, deg) => { const R = which === "x" ? rotX3(deg) : which === "y" ? rotY3(deg) : rotZ3(deg); setPtRotM(mul3(R, ptRotOf(szIdx))); };
+  const resetPtRotM = () => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? (({ rotM, ...rest }) => rest)(p) : p)) }); };
   const markStyle = {
     p1: { borderColor: "var(--amber)", color: "var(--amber)" },
     p2: { borderColor: "var(--amber)", color: "var(--amber)" },
@@ -1695,7 +1707,13 @@ function MediaMeasure({ src, update, wizard }) {
                       const op = isSz ? Math.max(0.5, f) : f;
                       if (op <= 0.02) return null;
                       const w = has ? +p.wpx : wFit;
-                      const prG = shapeProjNat({ ...src.shapeFit, cx: p.x, cy: p.y, sizeNat: src.shapeFit.sizeNat * (w / wFit) });
+                      /* reflect this point's ATTITUDE too, then normalise the
+                         apparent width through the rotated projection so it hits w */
+                      const rot = (Array.isArray(p.rotM) && p.rotM.length === 9) ? p.rotM : (src.shapeFit.rotM || I3);
+                      let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: rot, roll: 0 };
+                      const pwG = (() => { const pr = shapeProjNat(sfG); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
+                      sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pwG };
+                      const prG = shapeProjNat(sfG);
                       const colG = `hsl(${src.shapeFit.hue ?? 36},88%,60%)`;
                       return prG.curves.map((c, j) => (
                         <polyline key={`g${i}-${j}`} points={c.map((pt2) => TT(pt2.x, pt2.y).join(",")).join(" ")}
@@ -1830,6 +1848,21 @@ function MediaMeasure({ src, update, wizard }) {
                     <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length} title="remove all track points"
                       onClick={() => update({ track: [] })}>🗑</button>
                   </div>
+                  {/* PLACE vs ADJUST — lay all the points down first (taps add),
+                     then flip to Adjust: scrub to any point and tune its size +
+                     attitude; taps no longer add. */}
+                  {wizard && src.shapeFit && (src.track || []).length > 0 && (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                      <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }}>
+                        {[["＋ Place points", false], ["✎ Adjust size/shape", true]].map(([label, v]) => (
+                          <button key={String(v)} className="btn sm"
+                            style={{ borderRadius: 0, border: "none", padding: "5px 9px", fontSize: 11, fontWeight: trkAdjust === v ? 700 : 500, background: trkAdjust === v ? "rgba(143,180,255,.18)" : "transparent", color: trkAdjust === v ? "var(--track)" : "var(--dim)" }}
+                            onClick={() => setTrkAdjust(v)}>{label}</button>
+                        ))}
+                      </div>
+                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>scrub to a point · taps won't add</span>}
+                    </div>
+                  )}
                   {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
                      outline to the object as it appears RIGHT THERE. Apparent
                      size across frames ⇒ range ratio over time (the radial
@@ -1845,13 +1878,14 @@ function MediaMeasure({ src, update, wizard }) {
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
-                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — size on THIS frame · bigger = closer
+                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — {trkAdjust ? "size + attitude" : "size on THIS frame"} · bigger = closer
                           </span>
                           <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                             {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
                           </span>
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                          <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>size</span>
                           <button className="btn sm" onClick={() => setPtW(w / 1.08)}>−</button>
                           <input type="range" min={0} max={1} step={0.004} value={sv}
                             onChange={(e) => setPtW(lo * Math.pow(hi / lo, +e.target.value))} style={{ flex: 1 }} />
@@ -1861,7 +1895,19 @@ function MediaMeasure({ src, update, wizard }) {
                               onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== szIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
                           )}
                         </div>
-                        {!trkSorted.some((q) => isNum(q.wpx)) && (
+                        {/* per-point ATTITUDE — tumble/roll this point's model; it
+                           SLERPs to the next attitude keyframe in playback/export */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
+                          <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>tilt</span>
+                          <button className="btn sm" title="pitch up" onClick={() => nudgeRot("x", -12)}>↑</button>
+                          <button className="btn sm" title="pitch down" onClick={() => nudgeRot("x", 12)}>↓</button>
+                          <button className="btn sm" title="yaw left" onClick={() => nudgeRot("y", -12)}>←</button>
+                          <button className="btn sm" title="yaw right" onClick={() => nudgeRot("y", 12)}>→</button>
+                          <button className="btn sm" title="roll left" onClick={() => nudgeRot("z", -12)}>⟲</button>
+                          <button className="btn sm" title="roll right" onClick={() => nudgeRot("z", 12)}>⟳</button>
+                          {Array.isArray(trkSorted[szIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
+                        </div>
+                        {!trkSorted.some((q) => isNum(q.wpx)) && !trkAdjust && (
                           <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
                             Match the outline to the object at each tapped frame — the size change between frames is what recovers closer/farther motion.
                           </div>
