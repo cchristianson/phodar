@@ -1563,6 +1563,20 @@ function MediaMeasure({ src, update, wizard }) {
     update({ track: trkSorted.map((p, k) => (k >= i ? { ...p, t: +(+p.t + delta).toFixed(3) } : p)) });
   };
   const setPtR = (i, r) => { if (i < 0) return; update({ track: trkSorted.map((p, k) => (k === i ? { ...p, r } : p)) }); };
+  /* SNAP a point onto the fitted 3D object: it takes the object's centre pixel
+     and becomes the trajectory's ANCHOR (its direction = the object's measured
+     A.az/el), with its size/attitude cleared back to the fit. The anchor can be
+     ANY point along the path — the object may have been photographed mid-flight,
+     not at the start. Clears any previous anchor. */
+  const snapPtToObject = (i) => {
+    if (i < 0 || !src.shapeFit) return;
+    pushTrkHist();
+    update({ track: trkSorted.map((p, k) => {
+      if (k === i) { const { wpx, ang, rotM, ...rest } = p; return { ...rest, x: src.shapeFit.cx, y: src.shapeFit.cy, anchor: true }; }
+      if (p.anchor) { const { anchor, ...rest } = p; return rest; }
+      return p;
+    }) });
+  };
   const deleteTrkAt = (i) => { if (i < 0) return; pushTrkHist(); update({ track: (src.track || []).filter((p) => p !== trkSorted[i]) }); setSelTrk(-1); };
   const markStyle = {
     p1: { borderColor: "var(--amber)", color: "var(--amber)" },
@@ -2107,8 +2121,18 @@ function MediaMeasure({ src, update, wizard }) {
                     const r = +(p.r ?? 0);
                     return (
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 4 }}>
-                          point {selIdx + 1} of {trkSorted.length}{selIdx === 0 ? " (path start)" : ` @ ${(+p.t).toFixed(1)}s`}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
+                            point {selIdx + 1} of {trkSorted.length}{selIdx === 0 ? " (path start)" : ` @ ${(+p.t).toFixed(1)}s`}{p.anchor ? " · ⌖ object" : ""}
+                          </span>
+                          {/* SNAP this point onto the measured 3D object — it becomes
+                             the trajectory anchor at the object's real direction.
+                             Any point can be it (the object may be mid-path). */}
+                          {src.shapeFit && !p.anchor && (
+                            <button className="btn sm" style={{ marginLeft: "auto", padding: "4px 8px" }}
+                              title="Move this point onto the fitted 3D object and anchor the whole path to its measured direction (the object may have been photographed anywhere along the path)."
+                              onClick={() => snapPtToObject(selIdx)}>⌖ Snap to object</button>
+                          )}
                         </div>
                         {dt != null && (
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -3702,7 +3726,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          curve point (native px on the marked frame) → world dir under the
          placement pose → rotated onto the tracked dir during playback */
       let wire = null;
-      if (objOn && source.shapeFit) {
+      /* NOT while the Trajectory tool is open: its numbered points already draw
+         the object at every point, so the standalone fitted-object wireframe was
+         an EXTRA saucer floating at the measured spot (field report). */
+      if (objOn && source.shapeFit && !trajOn) {
         /* KEYFRAMED size + attitude: during playback interpolate the size/
            rotation the user marked along the track at the playing time; on the
            static marked frame use its own time. So the model breathes and
@@ -3726,8 +3753,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          rings as a fallback when no shape is fitted) — track dots and the B
          point cluttered the world view and were dropped by request */
       photoMarks = {
-        a1: objOn && !wire && source.A?.p1 ? PF(source.A.p1) : null,
-        a2: objOn && !wire && source.A?.p2 ? PF(source.A.p2) : null,
+        a1: objOn && !wire && !trajOn && source.A?.p1 ? PF(source.A.p1) : null,
+        a2: objOn && !wire && !trajOn && source.A?.p2 ? PF(source.A.p2) : null,
         wire,
       };
     }

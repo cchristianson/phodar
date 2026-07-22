@@ -113,7 +113,12 @@ export function trackDirections(s) {
   if (!track || track.length < 2) return null;
   const pts = [...track].sort((a, b) => a.t - b.t);
   const fov = isNum(s.fovH) ? +s.fovH : null;
-  const p0 = pts.find((p) => p.x != null);
+  /* the ANCHOR pixel point sits at A.az/el; every other pixel point is an offset
+     from it. Normally that's the first tapped point, but a point flagged
+     `anchor` (SNAPPED to the measured 3D object — which may be anywhere ALONG
+     the path, not just the start) wins, so the recalled path is pinned to the
+     object's real measured direction at the right point. */
+  const p0 = pts.find((p) => p.x != null && p.anchor) || pts.find((p) => p.x != null);
   const anchored = isNum(s.A?.az) && isNum(s.A?.el);
   const useAim = s.mediaAim && isNum(s.mediaAim.az) && s.natW && fov;
   const out = [];

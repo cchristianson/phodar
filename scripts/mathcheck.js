@@ -373,6 +373,23 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else { fails++; console.error(`  FAIL rounding didn't soften the corner bend: ${bR} vs ${bH}`); }
 }
 
+// --- SNAP anchor: a pixel track point flagged `anchor` sits at A.az/el even
+//     mid-path (the object was photographed anywhere along the recalled path) ---
+{
+  const base = { natW: 1000, natH: 1000, fovH: 60, A: { az: 100, el: 20 } };
+  // no anchor → the FIRST point anchors at A.az/el (legacy behaviour)
+  const d0 = trackDirections({ ...base, track: [{ t: 0, x: 400, y: 500 }, { t: 1, x: 500, y: 500 }, { t: 2, x: 600, y: 500 }] });
+  if (d0 && Math.abs(d0[0].az - 100) < 1e-6 && Math.abs(d0[0].el - 20) < 1e-6) console.log("  ok   no anchor flag ⇒ first point sits at A.az/el");
+  else { fails++; console.error("  FAIL default anchor:", d0 && [d0[0].az, d0[0].el]); }
+  // MIDDLE point flagged anchor (at the image centre) ⇒ IT sits at A.az/el
+  const d1 = trackDirections({ ...base, track: [{ t: 0, x: 400, y: 500 }, { t: 1, x: 500, y: 500, anchor: true }, { t: 2, x: 600, y: 500 }] });
+  if (d1 && Math.abs(d1[1].az - 100) < 1e-6 && Math.abs(d1[1].el - 20) < 1e-6) console.log("  ok   mid-path `anchor` point snaps to the object's measured A.az/el");
+  else { fails++; console.error("  FAIL mid-path anchor:", d1 && [d1[1].az, d1[1].el]); }
+  // and the neighbours are OFFSET to opposite sides of it (monotet in az)
+  if (d1 && d1[0].az < d1[1].az && d1[1].az < d1[2].az) console.log("  ok   neighbours offset either side of the anchored point");
+  else { fails++; console.error("  FAIL anchor neighbours:", d1 && d1.map((p) => +p.az.toFixed(2))); }
+}
+
 // --- multi-moment track: placed primary + moments become a time-ordered
 //     angular trajectory; a single placed shot falls back to the manual track ---
 {
