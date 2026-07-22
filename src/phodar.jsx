@@ -768,7 +768,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [winH, setWinH] = useState(() => (typeof window !== "undefined" ? window.innerHeight : 800)); // stable portrait-cap reference
   const [vidT, setVidT] = useState(0);
   const [vidDur, setVidDur] = useState(0);
-  const [trkAdv, setTrkAdv] = useState(3); // frames to auto-advance after dropping a track point
+  const [trkAdv, setTrkAdv] = useState(15); // frames to auto-advance after dropping a track point (½ s at 30 fps)
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
   const ptsRef = useRef(new Map());
@@ -1823,6 +1823,7 @@ function MediaMeasure({ src, update, wizard }) {
                     <select value={trkAdv} onChange={(e) => setTrkAdv(+e.target.value)} style={{ width: "auto", padding: "4px 6px", fontSize: 12 }}>
                       <option value={0}>off</option><option value={1}>1 fr</option><option value={2}>2 fr</option>
                       <option value={3}>3 fr</option><option value={6}>6 fr</option><option value={15}>15 fr</option>
+                      <option value={30}>30 fr</option><option value={45}>45 fr</option><option value={60}>60 fr</option><option value={90}>90 fr</option>
                     </select>
                     <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length}
                       onClick={() => update({ track: (src.track || []).slice(0, -1) })}>Undo</button>
@@ -2518,7 +2519,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   });
   useEffect(() => { try { localStorage.setItem("phodar:uiHue", String(ridgeHue)); } catch (e) { } }, [ridgeHue]);
   const ridgeCol = (a) => `hsla(${ridgeHue},58%,71%,${a})`;             // softer tint for ridge/terrain lines
-  const accentCol = `hsl(${ridgeHue},92%,58%)`;                        // punchy accent for crosshair + object outline
+  const accentCol = `hsl(${ridgeHue},92%,58%)`;                        // punchy accent for crosshair + marks + ridges
+  /* the OBJECT wireframe carries its OWN colour (shapeFit.hue, set by the
+     measure-step "color" slider) — consistent across measure/dome/export, so
+     that slider actually recolours the object everywhere. accentCol (the
+     sky-view swatch) stays for the crosshair, marks and terrain accents. */
+  const objCol = source?.shapeFit ? `hsl(${source.shapeFit.hue ?? 36},88%,60%)` : accentCol;
   useEffect(() => {
     if (!open || !terrOn || !hasPos) return;
     let dead = false;
@@ -4443,7 +4449,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             const kd = dot(k3, v2);
             return [v2[0] * c3 + kv[0] * s3 + k3[0] * kd * (1 - c3), v2[1] * c3 + kv[1] * s3 + k3[1] * kd * (1 - c3), v2[2] * c3 + kv[2] * s3 + k3[2] * kd * (1 - c3)];
           };
-          ctx.strokeStyle = accentCol; ctx.lineWidth = Math.max(1, OUT_W / 1600); ctx.globalAlpha = 0.85;
+          ctx.strokeStyle = objCol; ctx.lineWidth = Math.max(1, OUT_W / 1600); ctx.globalAlpha = 0.85;
           for (const c2 of wireDirs) {
             ctx.beginPath();
             let first = true;
@@ -4660,7 +4666,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
             {photoMarks.wire && photoMarks.wire.map((seg, i) => (
               <polyline key={"w" + i} points={seg.map((p) => p.join(",")).join(" ")} fill="none"
-                stroke={accentCol} strokeWidth="1.2" opacity="0.9" vectorEffect="non-scaling-stroke" />
+                stroke={objCol} strokeWidth="1.2" opacity="0.9" vectorEffect="non-scaling-stroke" />
             ))}
             {photoMarks.a1 && photoMarks.a2 && !photoMarks.wire && (
               <line x1={photoMarks.a1[0]} y1={photoMarks.a1[1]} x2={photoMarks.a2[0]} y2={photoMarks.a2[1]}
@@ -5333,13 +5339,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 2px", fontSize: 11, overflow: "hidden" }}
                     onClick={() => selectMode(k)}>{label}</button>
                 ))}
-                <button title="Overlay color — recolors the crosshair, object outline and terrain ridges so they stand out against your photo. Tap to open the hue slider."
+                <button title="Accent color — recolors the crosshair, marks and terrain ridge lines so they stand out against your photo (the object keeps its own colour, set on the measure step). Tap to open the hue slider."
                   onClick={() => setHueOpen((v) => !v)}
                   style={{ width: 22, height: 22, borderRadius: 11, flex: "0 0 auto", padding: 0, background: accentCol, border: hueOpen ? "2px solid #fff" : "1px solid rgba(255,255,255,.35)" }} />
               </div>
             )}
             {!single && !calibOn && hueOpen && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolor the crosshair, object outline and terrain ridges so they stand out against your photo">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }} title="Recolor the crosshair, marks and terrain ridges (the object keeps its own colour from the measure step)">
                 <span className="microlabel" style={{ marginBottom: 0 }}>color</span>
                 <input type="range" min={0} max={360} step={2} value={ridgeHue} onChange={(e) => setRidgeHue(+e.target.value)} style={{ flex: 1 }} />
                 <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => setHueOpen(false)}>✓</button>
