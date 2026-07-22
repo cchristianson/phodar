@@ -748,6 +748,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [active, setActive] = useState("shape");
   const [drag, setDrag] = useState(false);
   const [dispW, setDispW] = useState(0);
+  const [winH, setWinH] = useState(() => (typeof window !== "undefined" ? window.innerHeight : 800)); // stable portrait-cap reference
   const [vidT, setVidT] = useState(0);
   const [vidDur, setVidDur] = useState(0);
   const [trkAdv, setTrkAdv] = useState(3); // frames to auto-advance after dropping a track point
@@ -807,7 +808,10 @@ function MediaMeasure({ src, update, wizard }) {
     setActive("shape");
     syncShape(base);
   };
-  const clearShape = () => { update({ shapeFit: null }); setActive("shape"); setShapePicker(false); };
+  /* removing the object clears its edge marks too — A.p1/A.p2 are DERIVED from
+     the shape's silhouette (syncShape), so leaving them behind stranded two
+     orphan points on the photo until a new shape was added */
+  const clearShape = () => { update({ shapeFit: null, A: { ...src.A, p1: null, p2: null } }); setActive("shape"); setShapePicker(false); };
   const [shapeMag, setShapeMag] = useState(false);
   const [shapePicker, setShapePicker] = useState(false);   // the collapsed "＋ Add object" shape menu
   const magTimer = useRef(null);
@@ -843,6 +847,10 @@ function MediaMeasure({ src, update, wizard }) {
 
   const measureWrap = useCallback(() => {
     if (wrapRef.current) setDispW(wrapRef.current.clientWidth);
+    /* portrait cap height — update only on a BIG change (orientation flip),
+       ignoring the ±small iOS URL-bar deltas that fire while scrolling, so the
+       video window doesn't jitter its size every scrubbed frame */
+    if (typeof window !== "undefined") setWinH((h) => Math.abs(window.innerHeight - h) > 120 ? window.innerHeight : h);
   }, []);
   useEffect(() => {
     measureWrap();
@@ -1441,9 +1449,23 @@ function MediaMeasure({ src, update, wizard }) {
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
-        {media && (
+        {media && wizard && media.kind === "video" ? (
+          /* explicit MODE TOGGLE — tapping the photo either places/rotates the
+             3D object (measures size) or drops trajectory track points. A
+             segmented control so it's always obvious which one is live. */
+          <div style={{ display: "inline-flex", borderRadius: 9, overflow: "hidden", border: "1px solid var(--line)" }}>
+            {[["shape", "◆ 3D object", "var(--amber)", "rgba(245,169,63,.18)"], ["trk", "⊕ Track points", "var(--track)", "rgba(143,180,255,.18)"]].map(([k, label, col, bg]) => (
+              <button key={k} className="btn sm"
+                title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : "Tap the object across frames to lay down its trajectory"}
+                onClick={() => setActive(k)}
+                style={{ borderRadius: 0, border: "none", padding: "6px 10px", fontWeight: active === k ? 700 : 500, background: active === k ? bg : "transparent", color: active === k ? col : "var(--dim)" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : media && (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {(wizard ? (media.kind === "video" ? ["trk"] : []) : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
+            {(wizard ? [] : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
               <button key={k} className="btn sm" onClick={() => setActive(k)}
                 style={active === k ? { borderColor: markStyle[k].borderColor, color: markStyle[k].color } : {}}>
                 {k === "p1" ? "Edge 1" : k === "p2" ? "Edge 2" : k === "pb" ? "Pos @ B" : "Track"}
@@ -1573,7 +1595,7 @@ function MediaMeasure({ src, update, wizard }) {
               style={{
                 position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", touchAction: "none", height: dispH || "auto",
                 ...(media.kind === "video" && natW && natH > natW ? {
-                  width: `min(100%, ${Math.round(Math.min(440, (typeof window !== "undefined" ? window.innerHeight : 800) * 0.5) * natW / natH)}px)`,
+                  width: `min(100%, ${Math.round(Math.min(440, winH * 0.5) * natW / natH)}px)`,
                   margin: "0 auto",
                 } : {}),
               }}
