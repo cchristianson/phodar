@@ -794,6 +794,7 @@ function MediaMeasure({ src, update, wizard }) {
   const wrapRef = useRef(null), mediaRef = useRef(null), loupeRef = useRef(null);
   const trkDragRef = useRef(null);   // live position of a loupe-assisted Track drag (committed on lift)
   const trkMoveRef = useRef(null);   // ADJUST mode: index (in trkSorted) of the point being dragged to a new spot
+  const trkRotRef = useRef(null);    // ADJUST mode: live 3D-rotation gesture on the selected point's model ({R0,sx,sy,pid,cur})
   const trkHistRef = useRef([]);     // Track-point undo stack (snapshots before each place/delete/clear)
 
   const natW = src.natW, natH = src.natH;
@@ -1252,6 +1253,18 @@ function MediaMeasure({ src, update, wizard }) {
         };
         return;
       }
+      /* same twist-to-roll, but ADJUSTING the selected track point's model */
+      if (drag && active === "trk" && trkRotRef.current && !trkMoveRef.current && src.shapeFit) {
+        killPending();
+        const anchorId = e.pointerId, driverId = trkRotRef.current.pid;
+        const anc = ptsRef.current.get(anchorId), drv = ptsRef.current.get(driverId) || anc;
+        twistRef.current = {
+          anchorId, driverId, trk: true,
+          a0: Math.atan2(drv.y - anc.y, drv.x - anc.x),
+          R0: trkRotRef.current.cur || ptRotOf(selIdx) || I3,
+        };
+        return;
+      }
       /* second finger: a pinch — discard any undecided touch, place nothing */
       killPending();
       setDrag(false); setFinger(null);
@@ -1302,9 +1315,10 @@ function MediaMeasure({ src, update, wizard }) {
       const anc = ptsRef.current.get(tw.anchorId), drv = ptsRef.current.get(tw.driverId);
       if (anc && drv) {
         const a1 = Math.atan2(drv.y - anc.y, drv.x - anc.x);
-        const nsf = { ...src.shapeFit, rotM: mul3(rotZ3((a1 - tw.a0) * R2D), tw.R0) }; // roll about the view axis
-        tw.cur = nsf.rotM; // live orientation, so lifting back to one finger continues from here
-        syncShape(nsf); shapeLoupeFor(nsf);
+        const m = mul3(rotZ3((a1 - tw.a0) * R2D), tw.R0); // roll about the view axis
+        tw.cur = m; // live orientation, so lifting back to one finger continues from here
+        if (tw.trk) setPtRotM(m);
+        else { const nsf = { ...src.shapeFit, rotM: m }; syncShape(nsf); shapeLoupeFor(nsf); }
       }
       return;
     }
@@ -1337,7 +1351,17 @@ function MediaMeasure({ src, update, wizard }) {
               requestAnimationFrame(() => requestAnimationFrame(() => { if (trkDragRef.current) drawLoupe(trkDragRef.current); }));
               return;
             }
-            killPending(); return;              // empty space: dragging does nothing
+            /* empty space with a point selected + a shape fitted: drag ROTATES
+               that point's model in 3D (front face follows the finger), just
+               like the original object-placement rotate gesture. */
+            if (selIdx >= 0 && src.shapeFit) {
+              killPending();
+              pushTrkHist();
+              trkRotRef.current = { R0: ptRotOf(selIdx), sx: e.clientX, sy: e.clientY, pid: e.pointerId, cur: ptRotOf(selIdx) };
+              setDrag(true); setFinger(null);
+              return;
+            }
+            killPending(); return;              // nothing selected: dragging does nothing
           }
           /* Track DRAG = loupe-assisted placement (the object is almost
              always small): magnifier follows the finger, the point commits
@@ -1356,6 +1380,15 @@ function MediaMeasure({ src, update, wizard }) {
     if (!drag) return;
     const p = toNat(e.clientX, e.clientY);
     if (active === "trk") {
+      if (trkRotRef.current) {
+        /* adjust: rotate the selected point's model — same mapping as the shape
+           rotate (drag-right yaws, drag-down pitches). */
+        const rr = trkRotRef.current, k = 0.45;
+        const m = mul3(rotX3(-(e.clientY - rr.sy) * k), rotY3((e.clientX - rr.sx) * k));
+        rr.cur = mul3(m, rr.R0);
+        setPtRotM(rr.cur);
+        return;
+      }
       if (!trkDragRef.current) return;
       trkDragRef.current = p;
       setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
@@ -1391,10 +1424,13 @@ function MediaMeasure({ src, update, wizard }) {
       /* lifting out of a two-finger twist: hand control back to whichever
          finger remains, seeded at the post-twist orientation so it doesn't jump */
       const cur = twistRef.current.cur || twistRef.current.R0;
+      const wasTrk = twistRef.current.trk;
       twistRef.current = null;
       const rem = [...ptsRef.current.entries()][0];
-      if (rem && active === "shape" && src.shapeFit && drag)
-        rotRef.current = { R0: cur, sx: rem[1].x, sy: rem[1].y, pid: rem[0] };
+      if (rem && src.shapeFit && drag) {
+        if (wasTrk && active === "trk") trkRotRef.current = { R0: cur, sx: rem[1].x, sy: rem[1].y, pid: rem[0], cur };
+        else if (active === "shape") rotRef.current = { R0: cur, sx: rem[1].x, sy: rem[1].y, pid: rem[0] };
+      }
     }
     if (pendingRef.current && pendingRef.current.id === e.pointerId) {
       if (e.type === "pointercancel") killPending(); // OS ate the touch — place nothing
@@ -1422,6 +1458,7 @@ function MediaMeasure({ src, update, wizard }) {
         }
         trkDragRef.current = null;
         trkMoveRef.current = null;
+        trkRotRef.current = null;
         if (active === "p1" && !src.A.p2) setActive("p2");
       }
     }
@@ -1430,7 +1467,7 @@ function MediaMeasure({ src, update, wizard }) {
   /* safety valve: app-switch or system gesture mid-touch must release the lock */
   useEffect(() => {
     const hardReset = () => {
-      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null; trkMoveRef.current = null;
+      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null; trkMoveRef.current = null; trkRotRef.current = null;
       killPending(); setTouching(false); setDrag(false); setFinger(null);
     };
     window.addEventListener("blur", hardReset);
@@ -2119,7 +2156,7 @@ function MediaMeasure({ src, update, wizard }) {
                             }}>{label}</button>
                         ))}
                       </div>
-                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · drag a point to move it · taps won't add" : "tap a point · drag to move it · taps won't add"}</span>}
+                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · drag it to move · drag off it to rotate · twist = roll" : "tap a point · drag it to move · drag off it to rotate · twist = roll"}</span>}
                     </div>
                   )}
                   {/* COLOUR — recolour the object and/or the track points so they
