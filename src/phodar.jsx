@@ -768,6 +768,7 @@ function Section({ title, right, children, collapsible, defaultOpen = true }) {
    ============================================================ */
 function MediaMeasure({ src, update, wizard }) {
   const media = src.mediaUrl ? { url: src.mediaUrl, kind: src.mediaKind } : null;
+  const isVid = media?.kind === "video";
   const fileRef = useRef(null);
   const [triedData, setTriedData] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -779,6 +780,8 @@ function MediaMeasure({ src, update, wizard }) {
   const [vidT, setVidT] = useState(0);
   const [vidDur, setVidDur] = useState(0);
   const [trkAdv, setTrkAdv] = useState(15); // frames to auto-advance after dropping a track point (½ s at 30 fps)
+  const [trkGap, setTrkGap] = useState(1);  // STILL: seconds between tapped trajectory points (a photo has no frame clock)
+  const [selTrk, setSelTrk] = useState(-1); // STILL: tap-selected track point (video selects by scrub position instead)
   const [trkAdjust, setTrkAdjust] = useState(false); // Track sub-mode: place points (false) vs adjust size/shape at the nearest point (true)
   const [colorOpen, setColorOpen] = useState(null);  // which colour slider is open in the Track panel: null | "obj" | "pts"
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
@@ -1180,11 +1183,15 @@ function MediaMeasure({ src, update, wizard }) {
     if (!pd) return;
     killPending();
     if (pd.mode === "trk") {
-      if (trkAdjust) return;   // adjust mode: taps don't add points — scrub + tune the nearest one
-      const el = mediaRef.current;
-      const tv = el ? el.currentTime : vidT;
-      addTrkPt({ t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y });
-      if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
+      if (trkAdjust) { if (!isVid) selectNearestTrk(pd.nat); return; }   // adjust: video scrubs to select, still taps to select
+      if (isVid) {
+        const el = mediaRef.current;
+        const tv = el ? el.currentTime : vidT;
+        addTrkPt({ t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y });
+        if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
+      } else {
+        addTrkPt({ t: +stillNextT().toFixed(3), x: pd.nat.x, y: pd.nat.y });   // still: sequential time from the gap selector
+      }
       return;
     }
     if (pd.mode === "shapeMove") {
@@ -1255,7 +1262,7 @@ function MediaMeasure({ src, update, wizard }) {
       };
       return;
     }
-    if (active === "trk" && media?.kind !== "video") return;
+    if (active === "trk" && !media) return;   // trk works on a still OR a video (lay the recalled path on the photo)
     if (active === "shape" && !src.shapeFit) return; // pick a shape first — no stray marks
     const p = toNat(e.clientX, e.clientY);
     const shapeMode = active === "shape" && !!src.shapeFit;
@@ -1375,10 +1382,14 @@ function MediaMeasure({ src, update, wizard }) {
         if (active === "trk" && !trkAdjust && trkDragRef.current && e.type !== "pointercancel") {
           /* commit the loupe-assisted Track drag where the finger lifted */
           const p2 = trkDragRef.current;
-          const el2 = mediaRef.current;
-          const tv = el2 && media?.kind === "video" ? el2.currentTime : vidT;
-          addTrkPt({ t: +tv.toFixed(3), x: p2.x, y: p2.y });
-          if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
+          if (isVid) {
+            const el2 = mediaRef.current;
+            const tv = el2 ? el2.currentTime : vidT;
+            addTrkPt({ t: +tv.toFixed(3), x: p2.x, y: p2.y });
+            if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
+          } else {
+            addTrkPt({ t: +stillNextT().toFixed(3), x: p2.x, y: p2.y });
+          }
         }
         trkDragRef.current = null;
         if (active === "p1" && !src.A.p2) setActive("p2");
@@ -1469,6 +1480,19 @@ function MediaMeasure({ src, update, wizard }) {
     update({ track: (src.track || []).slice(0, -1) }); // no history (e.g. after reload) → drop the last point
   };
   const addTrkPt = (pt) => { pushTrkHist(); update({ track: [...(src.track || []), pt] }); };
+  /* STILL trajectory helpers — a photo has no frame clock, so each tapped point
+     is stamped `t` = (latest so far) + the chosen gap, and selection is by TAP
+     (find the nearest dot) instead of the video path's scrub position. */
+  const stillNextT = () => {
+    const ts = (src.track || []).map((p) => +p.t).filter(isNum);
+    return ts.length ? Math.max(...ts) + Math.max(0.05, +trkGap || 1) : 0;
+  };
+  const selectNearestTrk = (nat) => {
+    if (!trkSorted.length) { setSelTrk(-1); return; }
+    let bi = -1, bd = 40 / (scale * (view.z || 1));   // ~40 screen px tap radius
+    trkSorted.forEach((p, i) => { const d = Math.hypot(p.x - nat.x, p.y - nat.y); if (d < bd) { bd = d; bi = i; } });
+    setSelTrk(bi);
+  };
   /* which placed point the size/attitude controls target. Normally the point
      owning the frame you're on (within 0.55 s); in ADJUST mode the NEAREST
      placed point regardless of distance — scrub anywhere and the model snaps
@@ -1487,6 +1511,13 @@ function MediaMeasure({ src, update, wizard }) {
     trkSorted.forEach((p, i) => { const d = Math.abs(+p.t - vidT); if (d < bd) { bd = d; bi = i; } });
     return bi;
   })() : -1;
+  /* unified SELECTED-point index: video derives it from the scrub position
+     (szIdx / delIdx); a still uses the tap-selected index (selTrk), clamped in
+     case the track shrank under it. selIdx feeds the adjust panel, delTarget the
+     trash. */
+  const selClamped = selTrk >= 0 && selTrk < trkSorted.length ? selTrk : -1;
+  const selIdx = isVid ? szIdx : selClamped;
+  const delTarget = isVid ? delIdx : selClamped;
   const wFit = src.shapeFit ? (() => { const pr = shapeProjNat(src.shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })() : 1;
   const fpxM = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
   const angOfW = (w) => (fpxM ? 2 * Math.atan((w / 2) / fpxM) * R2D : null);
@@ -1517,6 +1548,19 @@ function MediaMeasure({ src, update, wizard }) {
   };
   const nudgeRot = (which, deg) => { const R = which === "x" ? rotX3(deg) : which === "y" ? rotY3(deg) : rotZ3(deg); setPtRotM(mul3(R, ptRotOf(szIdx))); };
   const resetPtRotM = () => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? (({ rotM, ...rest }) => rest)(p) : p)) }); };
+  /* STILL per-point editing (no per-frame size/attitude — the object appears in
+     the photo only once): the leg's DURATION (Δt from the previous point) and
+     the TURN tightness (r) that the sky view used to own. Setting Δt shifts this
+     point and every later point by the same delta so downstream legs keep
+     their timing. */
+  const setPtDt = (i, dt) => {
+    if (i <= 0 || i >= trkSorted.length) return;      // the first point has no "previous" leg
+    const newT = +trkSorted[i - 1].t + Math.max(0.05, +dt || 0);
+    const delta = newT - +trkSorted[i].t;
+    update({ track: trkSorted.map((p, k) => (k >= i ? { ...p, t: +(+p.t + delta).toFixed(3) } : p)) });
+  };
+  const setPtR = (i, r) => { if (i < 0) return; update({ track: trkSorted.map((p, k) => (k === i ? { ...p, r } : p)) }); };
+  const deleteTrkAt = (i) => { if (i < 0) return; pushTrkHist(); update({ track: (src.track || []).filter((p) => p !== trkSorted[i]) }); setSelTrk(-1); };
   const markStyle = {
     p1: { borderColor: "var(--amber)", color: "var(--amber)" },
     p2: { borderColor: "var(--amber)", color: "var(--amber)" },
@@ -1533,14 +1577,16 @@ function MediaMeasure({ src, update, wizard }) {
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
-        {media && wizard && media.kind === "video" ? (
+        {media && wizard ? (
           /* explicit MODE TOGGLE — tapping the photo either places/rotates the
              3D object (measures size) or drops trajectory track points. A
-             segmented control so it's always obvious which one is live. */
+             segmented control so it's always obvious which one is live. Both a
+             VIDEO (tap across frames) and a STILL (tap the recalled path on the
+             one photo) lay the trajectory HERE — the sky view just shows it. */
           <div style={{ display: "inline-flex", borderRadius: 9, overflow: "hidden", border: "1px solid var(--line)" }}>
             {[["shape", "◆ 3D object", "var(--amber)", "rgba(245,169,63,.18)"], ["trk", "⊕ Track points", "var(--track)", "rgba(143,180,255,.18)"]].map(([k, label, col, bg]) => (
               <button key={k} className="btn sm"
-                title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : "Tap the object across frames to lay down its trajectory"}
+                title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : (isVid ? "Tap the object across frames to lay down its trajectory" : "Tap the object's path across the photo — where it was at each moment")}
                 onClick={() => setActive(k)}
                 style={{ borderRadius: 0, border: "none", padding: "6px 10px", fontWeight: active === k ? 700 : 500, background: active === k ? bg : "transparent", color: active === k ? col : "var(--dim)" }}>
                 {label}
@@ -1743,9 +1789,10 @@ function MediaMeasure({ src, update, wizard }) {
                     <polyline points={tp.map((q) => q.join(",")).join(" ")}
                       fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
                     {tp.map((q, i) => {
-                      /* the DELETE target (dot you're parked on, within ~2 frames)
-                         gets a bright ring so it's unmistakable which one 🗑 removes */
-                      const isDel = delIdx >= 0 && pts2[i] === trkSorted[delIdx];
+                      /* the selected/delete target (video: dot you're parked on;
+                         still: the tapped dot) gets a bright ring — what 🗑 removes
+                         and what Adjust edits */
+                      const isDel = delTarget >= 0 && pts2[i] === trkSorted[delTarget];
                       const op = isDel ? 1 : fadeT(pts2[i]);
                       if (op <= 0.01) return null;
                       return (
@@ -1849,8 +1896,12 @@ function MediaMeasure({ src, update, wizard }) {
             })()}
           </div>
 
-          {media.kind === "video" && (
+          {media && (
             <div style={{ marginTop: 8 }}>
+              {/* the frame slider + align/set-time controls are VIDEO-only; the
+                 Track panel below renders for a STILL too (tap the recalled path
+                 on the one photo) */}
+              {isVid && (<>
               {/* frame slider with placement TICKS: amber ▾ = the frame the
                   shape/marks live on, blue dots = trajectory taps — so you can
                   find your way back to where things were placed */}
@@ -1893,10 +1944,11 @@ function MediaMeasure({ src, update, wizard }) {
                 )}
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
+              </>)}
               {/* Track tools follow the mode toggle in the wizard — hidden in
                  3D-object mode even when points already exist (they reappear on
                  ⊕ Track points). Non-wizard keeps the "show if any points" rule. */}
-              {(!wizard || media.kind === "video") && (active === "trk" || (!wizard && (src.track || []).length > 0)) && (
+              {(!wizard || media) && (active === "trk" || (!wizard && (src.track || []).length > 0)) && (
                 <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)" }}>
                   {/* one compact row: count · auto-step · Undo · Clear (was two
                      rows that wrapped on a phone) */}
@@ -1904,26 +1956,31 @@ function MediaMeasure({ src, update, wizard }) {
                     <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--track)", fontWeight: 700, whiteSpace: "nowrap" }}>
                       Track · {(src.track || []).length}
                     </span>
-                    <span style={{ fontSize: 11, color: "var(--dim)" }} title="how many frames to auto-advance after each tap">step</span>
-                    <select value={trkAdv} onChange={(e) => setTrkAdv(+e.target.value)} style={{ width: "auto", padding: "4px 6px", fontSize: 12 }}>
-                      <option value={0}>off</option><option value={1}>1 fr</option><option value={2}>2 fr</option>
-                      <option value={3}>3 fr</option><option value={6}>6 fr</option><option value={15}>15 fr</option>
-                      <option value={30}>30 fr</option><option value={45}>45 fr</option><option value={60}>60 fr</option><option value={90}>90 fr</option>
-                    </select>
+                    {isVid ? (<>
+                      <span style={{ fontSize: 11, color: "var(--dim)" }} title="how many frames to auto-advance after each tap">step</span>
+                      <select value={trkAdv} onChange={(e) => setTrkAdv(+e.target.value)} style={{ width: "auto", padding: "4px 6px", fontSize: 12 }}>
+                        <option value={0}>off</option><option value={1}>1 fr</option><option value={2}>2 fr</option>
+                        <option value={3}>3 fr</option><option value={6}>6 fr</option><option value={15}>15 fr</option>
+                        <option value={30}>30 fr</option><option value={45}>45 fr</option><option value={60}>60 fr</option><option value={90}>90 fr</option>
+                      </select>
+                    </>) : (<>
+                      {/* STILL: no frame clock — each tap is `gap` seconds after the last */}
+                      <span style={{ fontSize: 11, color: "var(--dim)" }} title="seconds between each tapped point (edit any leg later in Adjust)">gap</span>
+                      <select value={trkGap} onChange={(e) => setTrkGap(+e.target.value)} style={{ width: "auto", padding: "4px 6px", fontSize: 12 }}>
+                        <option value={0.1}>0.1 s</option><option value={0.25}>0.25 s</option><option value={0.5}>0.5 s</option>
+                        <option value={1}>1 s</option><option value={2}>2 s</option><option value={3}>3 s</option><option value={5}>5 s</option>
+                      </select>
+                    </>)}
                     <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length && !trkHistRef.current.length}
                       title="undo the last place or delete" onClick={undoTrack}>Undo</button>
-                    {/* Parked on a dot (within ~2 frames) → the trash deletes JUST
-                       that highlighted point (undoable); otherwise it clears the
-                       whole track. Scrub onto the dot you want gone. */}
+                    {/* selected/parked dot → trash deletes JUST it (undoable);
+                       otherwise it clears the whole track */}
                     <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length}
-                      title={delIdx >= 0 ? `delete point ${delIdx + 1} (the highlighted dot)` : "remove all track points"}
+                      title={delTarget >= 0 ? `delete point ${delTarget + 1} (the highlighted dot)` : "remove all track points"}
                       onClick={() => {
-                        if (delIdx >= 0) {
-                          const target = trkSorted[delIdx];
-                          pushTrkHist();
-                          update({ track: (src.track || []).filter((p) => p !== target) });
-                        } else { pushTrkHist(); update({ track: [] }); }
-                      }}>{delIdx >= 0 ? `🗑 pt ${delIdx + 1}` : "🗑 all"}</button>
+                        if (delTarget >= 0) deleteTrkAt(delTarget);
+                        else { pushTrkHist(); update({ track: [] }); }
+                      }}>{delTarget >= 0 ? `🗑 pt ${delTarget + 1}` : "🗑 all"}</button>
                   </div>
                   {/* END-OF-CLIP notice: once auto-advance clamps at the last
                      frame, more taps just stack points on the SAME frame. Warn
@@ -1936,16 +1993,16 @@ function MediaMeasure({ src, update, wizard }) {
                   {/* PLACE vs ADJUST — lay all the points down first (taps add),
                      then flip to Adjust: scrub to any point and tune its size +
                      attitude; taps no longer add. */}
-                  {wizard && src.shapeFit && (src.track || []).length > 0 && (
+                  {wizard && (src.shapeFit || !isVid) && (src.track || []).length > 0 && (
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
                       <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }}>
-                        {[["＋ Place points", false], ["✎ Adjust size/shape", true]].map(([label, v]) => (
+                        {[["＋ Place points", false], [isVid ? "✎ Adjust size/shape" : "✎ Adjust timing", true]].map(([label, v]) => (
                           <button key={String(v)} className="btn sm"
                             style={{ borderRadius: 0, border: "none", padding: "5px 9px", fontSize: 11, fontWeight: trkAdjust === v ? 700 : 500, background: trkAdjust === v ? "rgba(143,180,255,.18)" : "transparent", color: trkAdjust === v ? "var(--track)" : "var(--dim)" }}
-                            onClick={() => setTrkAdjust(v)}>{label}</button>
+                            onClick={() => { setTrkAdjust(v); if (!v) setSelTrk(-1); }}>{label}</button>
                         ))}
                       </div>
-                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>scrub to a point · taps won't add</span>}
+                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · taps won't add" : "tap a point · taps won't add"}</span>}
                     </div>
                   )}
                   {/* COLOUR — recolour the object and/or the track points so they
@@ -2018,17 +2075,62 @@ function MediaMeasure({ src, update, wizard }) {
                       </div>
                     );
                   })()}
+                  {/* STILL adjust: a photo shows the object only once, so there's
+                     no per-point size — instead tune the leg's DURATION (Δt) and
+                     the TURN tightness that turn the recalled path into speed +
+                     g-load (the same controls the sky view used to own). */}
+                  {wizard && !isVid && trkAdjust && selIdx >= 0 && trkSorted[selIdx] && (() => {
+                    const p = trkSorted[selIdx];
+                    const interior = selIdx > 0 && selIdx < trkSorted.length - 1;
+                    const dt = selIdx > 0 ? +p.t - +trkSorted[selIdx - 1].t : null;
+                    const r = +(p.r ?? 0);
+                    return (
+                      <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginBottom: 4 }}>
+                          point {selIdx + 1} of {trkSorted.length}{selIdx === 0 ? " (path start)" : ` @ ${(+p.t).toFixed(1)}s`}
+                        </div>
+                        {dt != null && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>Δt</span>
+                            <button className="btn sm" onClick={() => setPtDt(selIdx, Math.max(0.05, +(dt - 0.1).toFixed(2)))}>−0.1</button>
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 14, fontWeight: 700, color: "var(--amber)", minWidth: 52, textAlign: "center" }}>{dt.toFixed(1)} s</span>
+                            <button className="btn sm" onClick={() => setPtDt(selIdx, +(dt + 0.1).toFixed(2))}>+0.1</button>
+                            <span style={{ marginLeft: 6, display: "flex", gap: 3, flexWrap: "wrap" }}>
+                              {[0.5, 1, 2, 5].map((v) => (
+                                <button key={v} className={"btn sm" + (Math.abs(dt - v) < 0.05 ? " amber" : "")} style={{ padding: "3px 6px" }} onClick={() => setPtDt(selIdx, v)}>{v}s</button>
+                              ))}
+                            </span>
+                          </div>
+                        )}
+                        {interior && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+                            <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>turn</span>
+                            {[["Hard corner", 0], ["Tight", 0.15], ["Normal", 0.3], ["Wide", 0.45]].map(([l, v]) => (
+                              <button key={l} className={"btn sm" + (Math.abs(r - v) < 0.03 ? " amber" : "")} style={{ padding: "4px 7px", fontSize: 11 }} onClick={() => setPtR(selIdx, v)}>{l}</button>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ marginTop: 5, fontSize: 10, color: "var(--dim)", lineHeight: 1.4 }}>
+                          {interior ? "A hard corner = an instantaneous direction change (an extraordinary claim); a wider arc is what most real objects fly." : "Δt is the time from the previous point — it sets the speed along this leg."}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     /* onboarding paragraph only until the guide is armed (2+ pts) —
                        after that the header count + size block say everything */
                     if (wizard) return (src.track || []).length >= 2 ? null : (
                       <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-                        Rough trajectory for the auto-tracker: scrub through the clip and tap the object every second or so (2+ points activate the guided track). Big steps are fine — precision comes from the pixel matcher.
+                        {isVid
+                          ? "Rough trajectory for the auto-tracker: scrub through the clip and tap the object every second or so (2+ points activate the guided track). Big steps are fine — precision comes from the pixel matcher."
+                          : "Tap the object's PATH across the photo — where it was at each moment (point 1 = its marked spot). Each tap is one “gap” apart in time; tune any leg later in ✎ Adjust timing."}
                       </div>
                     );
                     if ((src.track || []).length < 3) return (
                       <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
-                        Scrub to the frame Moment A's bearing was taken, tap the object for point 1 (it anchors the absolute direction), then keep tapping as the video steps forward.
+                        {isVid
+                          ? "Scrub to the frame Moment A's bearing was taken, tap the object for point 1 (it anchors the absolute direction), then keep tapping as the video steps forward."
+                          : "Point 1 anchors the absolute direction (drop it where the object actually is in the photo); keep tapping along its recalled path."}
                       </div>
                     );
                     const d = trackDirections(src);
@@ -5237,10 +5339,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   n++;
                   if (!p) return null;
                   const idx = n, sel = selPt === idx;
-                  /* VIDEO: the trajectory comes from the measure-step Track tool
-                     + auto-tracking, so it's READ-ONLY here — shown for reference,
-                     not editable. Only manual (photo) trajectories are tappable. */
-                  const tappable = wizard && source?.mediaKind !== "video";
+                  /* the trajectory is laid down on the MEASURE step now (for both
+                     stills and video), so the world view is READ-ONLY — points
+                     are shown for reference, never tappable here. */
+                  const tappable = false;
                   const col = sel ? "var(--amber)" : "var(--track)";
                   /* TRUE apparent size: angular size → screen px via the LIVE FOV,
                      so the shape scales with the sky as you zoom in/out (a distant
@@ -5299,9 +5401,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           );
         })()}
 
-        {/* aiming crosshair — sits at the projection centre (cx,cy); when the
-            size/compare panel opens, cy lifts so it stays in the visible band */}
-        {pMode !== "place" && (
+        {/* aiming crosshair — sits at the projection centre (cx,cy). Only the
+            tools that actually AIM with it still show it: ⚖ Compare (drop a ghost
+            at the centre) and ✦ manual star-align (centre a star). Trajectory
+            moved to the measure step, so the plain look/trajectory view no longer
+            needs a reticle. */}
+        {pMode !== "place" && (cmpOn || calibOn) && (
         <svg style={{ position: "absolute", left: (cx * 100) + "%", top: (cy * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", overflow: "visible", opacity: 0.75 }} width="48" height="48" viewBox="-32 -32 64 64">
           <circle cx="0" cy="0" r="14" fill="none" stroke={aimColor} strokeWidth="1.6" />
           <line x1="0" y1="-26" x2="0" y2="-8" stroke={aimColor} strokeWidth="1.6" />
@@ -5696,48 +5801,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ↳ This observer has placed photo-moments. Points you drop here are timed from this photo and <b>interleave with the moments</b> on one trajectory — fill in the gaps between shots.
               </div>
             )}
-            {/* VIDEO: no drop/undo here — the path comes from the measure-step
-               Track tool + auto-tracking and is shown read-only. MANUAL (photo)
-               trajectories keep the drop/undo editing controls. */}
-            {source?.mediaKind === "video" ? (
-              <div style={{ fontSize: 10.5, color: "var(--dim)", lineHeight: 1.45, fontStyle: "italic" }}>
-                Shown for reference. Edit this object's trajectory on the <b style={{ color: "var(--track)" }}>measure step</b> — <b>Track</b> tool (place points, then <b>✎ Adjust size/shape</b>).
-              </div>
-            ) : (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
-                  <button className="btn sm amber" onClick={point1FromMarks}>⌖ Start at marked object</button>
-                )}
-                <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
-                {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-              </div>
-            )}
+            {/* READ-ONLY for both stills and video: the trajectory is laid down
+               on the measure step (Track tool) now, so there's no drop/aim here
+               — that's why the world view no longer needs an aiming crosshair. */}
+            <div style={{ fontSize: 10.5, color: "var(--dim)", lineHeight: 1.45, fontStyle: "italic" }}>
+              Shown for reference. Lay down &amp; edit this object's trajectory on the <b style={{ color: "var(--track)" }}>measure step</b> — <b>⊕ Track points</b> (tap the path on the photo; <b>✎ Adjust</b> for timing/turn/size).
+            </div>
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--track)" }}>t₀</span>
-                {/* VIDEO: every point carries its real frame time, so per-segment
-                   Δt is fixed by the clip — editing it would corrupt the known
-                   timing, and one chip per frame-point floods the screen. Show a
-                   note + the total only; the +Δt chips are for MANUAL (photo)
-                   trajectories where you set each leg's duration yourself. */}
-                {source?.mediaKind === "video" ? (
-                  <span style={{ fontSize: 10, color: "var(--dim)", fontStyle: "italic" }}>timing set by the video frames</span>
-                ) : (
-                  sortedTrack.slice(1).map((p, i) => {
-                    const dt = +(p.t - sortedTrack[i].t).toFixed(1);
-                    const on = selSeg === i + 1;
-                    return (
-                      <button key={i} className="btn sm" style={{ fontFamily: "var(--mono)", ...(on ? { borderColor: "var(--track)", color: "var(--track)" } : {}) }}
-                        onClick={() => { setSelSeg((s) => (s === i + 1 ? null : i + 1)); setSelPt(null); }}>+{dt}s</button>
-                    );
-                  })
-                )}
+                <span style={{ fontSize: 10, color: "var(--dim)", fontStyle: "italic" }}>{source?.mediaKind === "video" ? "timing set by the video frames" : "timing set on the measure step"}</span>
                 <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                   total {trajTotal.toFixed(1)} s · {sortedTrack.length} pt{sortedTrack.length > 1 ? "s" : ""}
                 </span>
               </div>
             )}
-            {selSeg != null && sortedTrack[selSeg] && source?.mediaKind !== "video" && (() => {
+            {false && selSeg != null && sortedTrack[selSeg] && (() => {
               const dt = sortedTrack[selSeg].t - sortedTrack[selSeg - 1].t;
               return (
                 <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
@@ -5759,7 +5838,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               );
             })()}
-            {selPt != null && sortedTrack[selPt] && source?.mediaKind !== "video" && (() => {
+            {false && selPt != null && sortedTrack[selPt] && (() => {
               const interior = selPt > 0 && selPt < sortedTrack.length - 1;
               const r = +(sortedTrack[selPt].r ?? 0);
               const setR = (v) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, r: v } : p)) });
