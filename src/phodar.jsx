@@ -3274,9 +3274,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return [v2[0] * c + kv[0] * s + k[0] * kd * (1 - c), v2[1] * c + kv[1] * s + k[1] * kd * (1 - c), v2[2] * c + kv[2] * s + k[2] * kd * (1 - c)];
         };
       })();
-      const P = (pt) => { const pr = projectD(pixDirMarked(pt.x, pt.y)); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
       const PF = (pt) => { const d = pixDirMarked(pt.x, pt.y); const pr = projectD(objFollow ? objFollow(d) : d); return pr.inFront ? [pr.x * 100, pr.y * 100] : null; };
-      const tr = (source.track || []).filter((p) => p.x != null).sort((a, b) => a.t - b.t).map(P).filter(Boolean);
       /* the fitted 3D WIREFRAME rides the same pipeline as the marks: each
          curve point (native px on the marked frame) → world dir under the
          placement pose → rotated onto the tracked dir during playback */
@@ -3288,12 +3286,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           if (cur.length > 1) segs.push(cur);
           return segs;
         }).flat();
+        /* legibility floor: a distant object projects the wireframe at its TRUE
+           angular size — often a couple of pixels, which read as a smudge. Below
+           ~2.4% of the view the glyph is magnified about its own centre so the
+           SHAPE stays readable (display marker only — measurements never touch
+           this; the export burn-in keeps true scale via its own pipeline). */
+        if (wire.length) {
+          let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+          for (const seg of wire) for (const q of seg) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+          const span = Math.max(x1 - x0, y1 - y0), MINW = 2.4;
+          if (span > 1e-6 && span < MINW) {
+            const s2 = MINW / span, mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+            wire = wire.map((seg) => seg.map((q) => [mx + (q[0] - mx) * s2, my + (q[1] - my) * s2]));
+          }
+          if (!wire.length) wire = null;
+        } else wire = null;
       }
+      /* look-mode overlay carries ONLY the object (wireframe, or the two mark
+         rings as a fallback when no shape is fitted) — track dots and the B
+         point cluttered the world view and were dropped by request */
       photoMarks = {
-        a1: objOn && source.A?.p1 ? PF(source.A.p1) : null,
-        a2: objOn && source.A?.p2 ? PF(source.A.p2) : null,
-        pb: source.B?.pb ? P(source.B.pb) : null,
-        trk: tr,
+        a1: objOn && !wire && source.A?.p1 ? PF(source.A.p1) : null,
+        a2: objOn && !wire && source.A?.p2 ? PF(source.A.p2) : null,
         wire,
       };
     }
@@ -3834,7 +3848,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         seekSafe(v, p.t, (okSeek) => {
           if (!okSeek) { seekBusyRef.current = false; playingRef.current = false; setPlaying(false); setFlash("🎞 playback seek stalled — tap ▶ to retry"); return; }
           if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
-          setPlayPose({ az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 });
+          setPlayPose({ t: p.t, az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 }); // t drives the object-track follow
           setPlayIdx(j);
           if (pendingIdxRef.current !== j) { step(); return; }   // scrub moved on — chase it
           seekBusyRef.current = false;
@@ -4282,21 +4296,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         )}
         {!placing && photoMarks && (
           <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} preserveAspectRatio="none" viewBox="0 0 100 100">
-            {photoMarks.trk.length > 1 && (
-              <polyline points={photoMarks.trk.map((p) => p.join(",")).join(" ")} fill="none"
-                stroke="var(--track)" strokeWidth="1.4" strokeDasharray="1.5 2" vectorEffect="non-scaling-stroke" />
-            )}
-            {photoMarks.trk.map((p, i) => <circle key={"t" + i} cx={p[0]} cy={p[1]} r="0.55" fill="var(--track)" />)}
             {photoMarks.wire && photoMarks.wire.map((seg, i) => (
               <polyline key={"w" + i} points={seg.map((p) => p.join(",")).join(" ")} fill="none"
-                stroke={accentCol} strokeWidth="1" opacity="0.85" vectorEffect="non-scaling-stroke" />
+                stroke={accentCol} strokeWidth="1.2" opacity="0.9" vectorEffect="non-scaling-stroke" />
             ))}
             {photoMarks.a1 && photoMarks.a2 && !photoMarks.wire && (
               <line x1={photoMarks.a1[0]} y1={photoMarks.a1[1]} x2={photoMarks.a2[0]} y2={photoMarks.a2[1]}
                 stroke={accentCol} strokeWidth="1.4" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
             )}
-            {[photoMarks.a1, photoMarks.a2].map((p, i) => p && <circle key={"a" + i} cx={p[0]} cy={p[1]} r="0.8" fill="none" stroke={accentCol} strokeWidth="1.4" vectorEffect="non-scaling-stroke" />)}
-            {photoMarks.pb && <circle cx={photoMarks.pb[0]} cy={photoMarks.pb[1]} r="0.8" fill="none" stroke="var(--teal)" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />}
+            {!photoMarks.wire && [photoMarks.a1, photoMarks.a2].map((p, i) => p && <circle key={"a" + i} cx={p[0]} cy={p[1]} r="0.8" fill="none" stroke={accentCol} strokeWidth="1.4" vectorEffect="non-scaling-stroke" />)}
           </svg>
         )}
 
@@ -4650,9 +4658,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         ))}
 
-        {/* wizard trajectory — world-anchored points (may run past the photo) */}
+        {/* wizard trajectory — world-anchored points (may run past the photo).
+            Shown ONLY while the ⊕ Trajectory tool is active: outside it the
+            numbered chips + dashed path just clutter the world view (the
+            object itself is represented by the wireframe overlay). */}
         {(() => {
-          if (!source) return null;
+          if (!source || !trajOn) return null;
           const dirs = trackDirections(source);
           if (!dirs || !dirs.length) return null;
           const ps = dirs.map((d) => { const pr = projectD(d.d); return pr.inFront ? [pr.x, pr.y] : null; });

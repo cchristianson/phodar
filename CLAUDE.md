@@ -608,7 +608,16 @@ terrain stay frozen and only the object moves. Build ladder:
    placement-pose dirs → Rodrigues onto the tracked dir, same pipeline
    as the marks) and burned into ALL export framings — gated by the 🛸
    header toggle (objOn), which controls the dome overlay AND the
-   export burn-in. Measure-step track markers fade away from their own
+   export burn-in. playPose CARRIES t — the dome follow keys off
+   `playPose.t` (it shipped without t once and the overlay froze at
+   the marked spot all playback while the export tracked fine). The
+   look-mode dome shows ONLY the wireframe (the two mark rings are a
+   no-shape fallback; track dots + B circle were dropped as clutter,
+   and the numbered trajectory chips render only while the ⊕
+   Trajectory tool is active). The dome wire has a LEGIBILITY FLOOR:
+   below ~2.4% of the view it is magnified about its own centre
+   (display marker only — a distant object's true projection is a
+   2 px smudge; measurements and the export burn-in keep true scale). Measure-step track markers fade away from their own
    frame (full ≤0.3 s, gone by 1.1 s, 0.15 floor while the Track tool
    is active; the route polyline stays faint). Verified visually: the
    wireframe sits on the ground-truth dot across an in-app world-view
