@@ -4155,6 +4155,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       try { v.load(); } catch (e) { }
     });
   };
+  const SCRUB_MIN_MS = 75;   // min gap between chased scrub seeks (iOS decoder pacing)
   const showFrame = (i) => {
     const path = source?.posePath; if (!path || !path.length) return;
     pendingIdxRef.current = clampN(Math.round(i), 0, path.length - 1);
@@ -4163,12 +4164,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     ensurePlayVid().then((v) => {
       const step = () => {
         const j = pendingIdxRef.current, p = path[j];
+        const t0 = Date.now();
         seekSafe(v, p.t, (okSeek) => {
           if (!okSeek) { seekBusyRef.current = false; playingRef.current = false; setPlaying(false); setFlash("🎞 playback seek stalled — tap ▶ to retry"); return; }
           if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
           setPlayPose({ t: p.t, az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 }); // t drives the object-track follow
           setPlayIdx(j);
-          if (pendingIdxRef.current !== j) { step(); return; }   // scrub moved on — chase it
+          if (pendingIdxRef.current !== j) {
+            /* a fast drag outran this seek — CHASE the latest, but PACE it: a
+               back-to-back seek→decode→bake loop at drag speed floods the iOS
+               video decoder (buffers accumulate faster than they're freed) and
+               crashes the tab. ~75 ms floor caps the loop to ~13 seeks/s — a
+               smooth scrub preview the decoder can actually sustain. */
+            const gap = SCRUB_MIN_MS - (Date.now() - t0);
+            if (gap > 0) setTimeout(step, gap); else step();
+            return;
+          }
           seekBusyRef.current = false;
           if (playingRef.current) {
             if (j + 1 < path.length) {
