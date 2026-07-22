@@ -1789,8 +1789,23 @@ function MediaMeasure({ src, update, wizard }) {
                 };
                 return (
                   <svg style={{ position: "absolute", inset: 0, pointerEvents: "none" }} width="100%" height="100%">
-                    <polyline points={tp.map((q) => q.join(",")).join(" ")}
-                      fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
+                    {/* the connecting path ROUNDS each interior corner by its turn
+                       tightness r (0 = hard corner, up to ~0.49 = wide arc) — the
+                       same quadratic the trajectory uses, so setting turn on the
+                       measure step visibly curves the path instead of doing
+                       nothing here. Video points carry no r ⇒ straight. */}
+                    {tp.length >= 2 && (() => {
+                      const lerp = (a, b, ff) => [a[0] + (b[0] - a[0]) * ff, a[1] + (b[1] - a[1]) * ff];
+                      let d = `M ${tp[0][0]} ${tp[0][1]}`;
+                      for (let i = 1; i < tp.length; i++) {
+                        const rr = clampN(+pts2[i]?.r || 0, 0, 0.49);
+                        if (i < tp.length - 1 && rr > 0) {
+                          const cs = lerp(tp[i], tp[i - 1], rr), ce = lerp(tp[i], tp[i + 1], rr);
+                          d += ` L ${cs[0]} ${cs[1]} Q ${tp[i][0]} ${tp[i][1]} ${ce[0]} ${ce[1]}`;
+                        } else d += ` L ${tp[i][0]} ${tp[i][1]}`;
+                      }
+                      return <path d={d} fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />;
+                    })()}
                     {tp.map((q, i) => {
                       /* the selected/delete target (video: dot you're parked on;
                          still: the tapped dot) gets a bright ring — what 🗑 removes
