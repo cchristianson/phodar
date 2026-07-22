@@ -571,6 +571,16 @@ terrain stay frozen and only the object moves. Build ladder:
      wrong frame entirely).
    Misses hold the velocity prediction and count honestly; the track is
    kept only if ≥30% matched (else "object lost", outline stays put).
+   The finished objPath is run through `smoothObjPath` (postrack, pure,
+   mathcheck-asserted): an evidence-weighted despike+smooth keyed on `q`
+   (the match confidence) — a background-lookalike LATCH (a lone big jump
+   on a low-q frame) is snapped back onto the neighbours' time-
+   interpolation, per-frame matcher jitter is damped by a light 3-tap
+   pull (strong pixel locks barely move, misses lean on their
+   neighbours), and a real smooth object sweep (low-frequency across
+   samples) passes through untouched. This is what makes the outline
+   GLIDE on the tracked object instead of stuttering; the flash reports
+   "N jumps smoothed".
    `source.objPath = [{t,az,el,q}]` persists; playback rotates the object
    marks onto the tracked dir (Rodrigues d0→dT; B sight-line and track
    points stay pinned — their own observations), and the crop export's

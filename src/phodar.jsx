@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
-import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks } from "./math/kinematics.js";
@@ -303,7 +303,8 @@ const css = `
   border-radius:50%; border:2px solid; display:flex; align-items:center;
   justify-content:center; font-size:10px; font-weight:800; font-family:var(--mono);
   touch-action:none; pointer-events:none;}
-.pinmapwrap{position:relative; isolation:isolate; z-index:0; height:200px;
+.pinmapwrap{position:relative; isolation:isolate; z-index:0;
+  height:min(46vh, 340px);
   border-radius:10px; border:1px solid var(--line); overflow:hidden;
   background:#08101F;}
 .pinmapwrap .leaflet-container{width:100%; height:100%; background:#08101F;
@@ -461,7 +462,6 @@ const HELP_SECTIONS = [
     groups: [
       { h: "Load the media", items: [
         { t: "Load photo or video / Replace media", d: "Pick any image or video from your device." },
-        { t: "📷 Shoot now", d: "Open the camera and capture right now — the freshest possible EXIF (GPS, time, bearing)." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
@@ -707,12 +707,13 @@ function HelpOverlay({ start, onClose }) {
    user should wait). Inherits color from its context via currentColor. */
 const Spin = ({ style }) => <span className="spin" style={style} aria-label="loading" />;
 
-function Num({ label, value, onChange, unit, ph, after }) {
+function Num({ label, value, onChange, unit, ph, after, compact }) {
   return (
     <div>
-      {label && <ML>{label}{unit ? <span style={{ opacity: .7 }}> ({unit})</span> : null}</ML>}
+      {label && <ML style={compact ? { marginBottom: 1, fontSize: 9 } : undefined}>{label}{unit ? <span style={{ opacity: .7 }}> ({unit})</span> : null}</ML>}
       <input inputMode="decimal" value={value ?? ""} placeholder={ph || ""}
-        onChange={(e) => onChange(e.target.value)} />
+        onChange={(e) => onChange(e.target.value)}
+        style={compact ? { padding: "6px 8px", fontSize: 12 } : undefined} />
       {after}
     </div>
   );
@@ -1439,10 +1440,6 @@ function MediaMeasure({ src, update, wizard }) {
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
-        <label className="btn sm teal" style={{ display: "inline-block" }} title="Open the camera and shoot right now — freshest possible EXIF (GPS, time, bearing)">
-          📷 Shoot now
-          <input type="file" accept="image/*" capture="environment" onChange={onFile} style={{ display: "none" }} />
-        </label>
         {media && (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {(wizard ? (media.kind === "video" ? ["trk"] : []) : ["pb", ...(media.kind === "video" ? ["trk"] : [])]).map((k) => (
@@ -1749,22 +1746,22 @@ function MediaMeasure({ src, update, wizard }) {
                 <input type="range" min={0} max={vidDur || 0} step={0.033} value={vidT}
                   onChange={(e) => seek(+e.target.value)} />
               </div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <button className="btn sm" onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
-                <button className="btn sm" onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>{vidT.toFixed(2)} s</span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
+                <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)" }}>{vidT.toFixed(2)}s</span>
                 {wizard ? (
                   /* the ALIGNMENT frame is chosen HERE (cheap scrubbing) — the
                      sky view bakes it and the world alignment describes it.
                      The OBJECT's frame is stamped automatically by the shape
                      fit, so the two are independent: clearest horizon for
-                     alignment, clearest object for measurement. (A scrubber in
-                     the sky view was tried — every tick re-rendered the whole
-                     dome and it crawled.) */
-                  <button className="btn sm teal"
+                     alignment, clearest object for measurement. Compact label
+                     so it shares the frame-step row on a phone (tooltip + the
+                     teal slider tick carry the detail). */
+                  <button className="btn sm teal" style={{ marginLeft: "auto", padding: "6px 8px" }}
                     title="Alignment frame: the sky view shows THIS frame and the horizon/star alignment is done on it. Scrub to the clearest-horizon (or star) moment and tap. The object stays measured on the frame where you fitted the shape."
                     onClick={() => update({ alignT: +vidT.toFixed(3) })}>
-                    ⛰ Align on this frame{isNum(src.alignT) ? ` · ${(+src.alignT).toFixed(2)}s ✓` : ""}
+                    ⛰ Align{isNum(src.alignT) ? " ✓" : ""}
                   </button>
                 ) : (
                   <button className="btn sm amber" onClick={() => update({ A: { ...src.A, t: vidT.toFixed(2), videoTime: vidT } })}>Set time A</button>
@@ -1773,19 +1770,21 @@ function MediaMeasure({ src, update, wizard }) {
               </div>
               {(!wizard || media.kind === "video") && (active === "trk" || (src.track || []).length > 0) && (
                 <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)" }}>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--track)", fontWeight: 700 }}>
-                      Track · {(src.track || []).length} pts
+                  {/* one compact row: count · auto-step · Undo · Clear (was two
+                     rows that wrapped on a phone) */}
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--track)", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      Track · {(src.track || []).length}
                     </span>
-                    <span style={{ fontSize: 11, color: "var(--dim)" }}>step after tap:</span>
-                    <select value={trkAdv} onChange={(e) => setTrkAdv(+e.target.value)} style={{ width: "auto", padding: "4px 8px", fontSize: 12 }}>
+                    <span style={{ fontSize: 11, color: "var(--dim)" }} title="how many frames to auto-advance after each tap">step</span>
+                    <select value={trkAdv} onChange={(e) => setTrkAdv(+e.target.value)} style={{ width: "auto", padding: "4px 6px", fontSize: 12 }}>
                       <option value={0}>off</option><option value={1}>1 fr</option><option value={2}>2 fr</option>
                       <option value={3}>3 fr</option><option value={6}>6 fr</option><option value={15}>15 fr</option>
                     </select>
-                    <button className="btn sm" disabled={!(src.track || []).length}
+                    <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length}
                       onClick={() => update({ track: (src.track || []).slice(0, -1) })}>Undo</button>
-                    <button className="btn sm" disabled={!(src.track || []).length} style={{ color: "var(--red)" }}
-                      onClick={() => update({ track: [] })}>Clear</button>
+                    <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length} title="remove all track points"
+                      onClick={() => update({ track: [] })}>🗑</button>
                   </div>
                   {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
                      outline to the object as it appears RIGHT THERE. Apparent
@@ -3870,6 +3869,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* keep the track only when the template held on for a usable fraction —
          with a manual guide the human's path stands even where pixels failed */
       objPath.sort((a, b) => a.t - b.t);
+      /* smooth the object track: the per-frame matcher jitters and
+         occasionally latches a background lookalike — an evidence-weighted
+         despike+smooth (q = match confidence) makes the outline glide instead
+         of stutter, without dragging real motion (low-frequency, passes) */
+      const objSpiked = smoothObjPath(objPath);
       const objGood = objMid && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
       /* per-frame SIZED track points (wpx from the measure step) get their
          angular size re-derived from each frame's SOLVED FOV — sized under a
@@ -3895,7 +3899,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
       const sizeNote = resized ? ` · ${resized} sized point${resized > 1 ? "s" : ""} re-scaled to the solved zoom` : "";
       const guideNote = guideN >= 2 ? `, guided by your ${guideN} track points` : "";
-      const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
+      const objSmoothNote = objGood && objSpiked ? `, ${objSpiked} jump${objSpiked > 1 ? "s" : ""} smoothed` : "";
+      const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
         : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
@@ -6216,17 +6221,18 @@ function PositionEditor({ src, update, others }) {
               </div>
             )}
             {places && places.err && <div className="warn">{places.err}</div>}
-            <div style={{ fontSize: 10, color: "var(--dim)", margin: "3px 0 7px" }}>OpenStreetMap · Nominatim — then drag the pin to your exact spot.</div>
-            <div className="grid3">
-              <Num label="Latitude" value={src.lat} onChange={(v) => {
+            {/* compact manual coordinate entry — the MAP below is the focus;
+                these are the type/paste fallback + fine-tune */}
+            <div className="grid3" style={{ marginTop: 6, gap: 6 }}>
+              <Num compact label="Latitude" value={src.lat} onChange={(v) => {
                 const m = String(v).match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
                 if (m) update({ lat: m[1], lon: m[2] }); else update({ lat: v });
               }} ph="e.g. 42.1638" />
-              <Num label="Longitude" value={src.lon} onChange={(v) => {
+              <Num compact label="Longitude" value={src.lon} onChange={(v) => {
                 const m = String(v).match(/(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/);
                 if (m) update({ lat: m[1], lon: m[2] }); else update({ lon: v });
               }} ph="e.g. −123.6480" />
-              <Num label="Elev" unit="m, opt" value={src.alt} onChange={(v) => update({ alt: v })} ph="0" />
+              <Num compact label="Elev" unit="m, opt" value={src.alt} onChange={(v) => update({ alt: v })} ph="0" />
             </div>
             <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               {ENABLE_GPS_BUTTON && (
@@ -6240,7 +6246,6 @@ function PositionEditor({ src, update, others }) {
               {posDone && (
                 <button className="btn sm" onClick={grabDem} disabled={demBusy}>{demBusy ? <Spin /> : "⛰ Use terrain elevation"}</button>
               )}
-              <span style={{ fontSize: 11, color: "var(--dim)" }}>{ENABLE_GPS_BUTTON ? "or long-press the spot in a maps app → paste" : "long-press your spot in a maps app → paste, or drag the map below"}</span>
             </div>
             {demMsg && <div style={{ fontSize: 11, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 5 }}>{demMsg}</div>}
             {geoErr && <div className="warn">{geoErr}</div>}
