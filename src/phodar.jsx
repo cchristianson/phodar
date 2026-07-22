@@ -3286,21 +3286,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           if (cur.length > 1) segs.push(cur);
           return segs;
         }).flat();
-        /* legibility floor: a distant object projects the wireframe at its TRUE
-           angular size — often a couple of pixels, which read as a smudge. Below
-           ~2.4% of the view the glyph is magnified about its own centre so the
-           SHAPE stays readable (display marker only — measurements never touch
-           this; the export burn-in keeps true scale via its own pipeline). */
-        if (wire.length) {
-          let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
-          for (const seg of wire) for (const q of seg) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
-          const span = Math.max(x1 - x0, y1 - y0), MINW = 2.4;
-          if (span > 1e-6 && span < MINW) {
-            const s2 = MINW / span, mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-            wire = wire.map((seg) => seg.map((q) => [mx + (q[0] - mx) * s2, my + (q[1] - my) * s2]));
-          }
-          if (!wire.length) wire = null;
-        } else wire = null;
+        /* TRUE SIZE, always: the wireframe renders at exactly the angular size
+           fitted on the measure step and scales with the dome zoom through the
+           projection — no magnification floor (tried once; the user wants the
+           set size honoured — a distant object really is tiny, zoom in to see
+           it, same doctrine as the trajectory chips). */
+        if (!wire.length) wire = null;
       }
       /* look-mode overlay carries ONLY the object (wireframe, or the two mark
          rings as a fallback when no shape is fitted) — track dots and the B
@@ -4015,27 +4006,216 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         ? shapeProjNat(source.shapeFit).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
         : null;
       const objD0 = wireDirs ? pixToDirK((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
+      /* --- every dome layer that is VISIBLE in the world view is burned into
+         the export, honouring the same toggles: terrain skyline + ridges +
+         named peaks, building boxes, stars/planets/Sun/Moon, satellites +
+         Starlink (with trails), aircraft chips + sky-tracks, compass letters.
+         All drawn from WORLD az/el data through the export camera each frame
+         (the crop camera moves), so they stay world-locked like the grid.
+         The schematic overlays (winds-aloft stack, cloud veil) are screen-
+         space aids with made-up heights — burning them into a world-locked
+         exhibit would lie, so they stay dome-only. --- */
+      let bldgLayerCache = null; // hidden-line removal is the pricey bit — cache for the fixed camera
+      const drawSkyLayers = (span) => {
+        const u = OUT_W / 100, lw = Math.max(1, OUT_W / 1400);
+        const lfs = Math.max(9, Math.round(OUT_H / 70));
+        const P = (az, el) => proj(dirFromAzEl(az, el));
+        const text = (s, x, y, col, size, weight, align) => {
+          ctx.font = `${weight || 700} ${size || lfs}px Menlo, monospace`;
+          ctx.textAlign = align || "center"; ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 3;
+          ctx.fillStyle = col; ctx.fillText(s, x, y);
+          ctx.shadowBlur = 0; ctx.textAlign = "left";
+        };
+        const poly = (pts, col, width, dash) => { // pts: [x,y]|null — null breaks the pen
+          ctx.strokeStyle = col; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.lineCap = dash ? "round" : "butt";
+          ctx.beginPath();
+          let pen = false;
+          for (const q of pts) {
+            if (!q || q[0] < -OUT_W || q[0] > 2 * OUT_W || q[1] < -OUT_H || q[1] > 2 * OUT_H) { pen = false; continue; }
+            if (pen) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); pen = true; }
+          }
+          ctx.stroke(); ctx.setLineDash([]);
+        };
+        const sightD = isNum(source?.A?.az) && isNum(source?.A?.el) ? dirFromAzEl(+source.A.az, +source.A.el) : null;
+        const lookD = dirFromAzEl(ce.az, ce.el);
+        const near = (r, d, deg) => r && Math.acos(clampN(dot(r, d), -1, 1)) * R2D <= deg;
+        /* terrain skyline + interior ridges (same green, ridges faded by distance) */
+        if (terrOn && terr?.els) {
+          for (const r of terr.ridges || []) {
+            const t = clampN(Math.log(r.dist / 800) / Math.log(35000 / 800), 0, 1);
+            poly(r.pts.map(([raz, rel]) => { const da = ((raz - ce.az + 540) % 360) - 180; return Math.abs(da) <= span + 10 ? P(ce.az + da, rel) : null; }), ridgeCol(0.60 - 0.35 * t), lw, [7 * lw, 4 * lw]);
+          }
+          const pts = []; for (let a = -span - 10; a <= span + 10; a += 0.4) pts.push(P(ce.az + a, skylineElAt(terr.els, ce.az + a)));
+          poly(pts, ridgeCol(0.9), 1.4 * lw, [7 * lw, 4 * lw]);
+          const tl = P(ce.az, skylineElAt(terr.els, ce.az));
+          if (tl) text("TERRAIN", tl[0], tl[1] - 6 * lw, ridgeCol(0.95), Math.max(8, lfs - 1));
+        }
+        /* named peaks that sit on the drawn silhouette (top 8 by height, like the dome) */
+        if (peaksOn && peakMarks.length) {
+          const inv = peakMarks.map((pk) => ({ pk, q: P(pk.az, pk.elv) })).filter((c) => c.q && c.q[0] > 0.01 * OUT_W && c.q[0] < 0.99 * OUT_W && c.q[1] > -0.02 * OUT_H && c.q[1] < 1.02 * OUT_H)
+            .sort((a, b) => (b.pk.eleM || 0) - (a.pk.eleM || 0)).slice(0, 8);
+          for (const { pk, q } of inv) {
+            ctx.fillStyle = ridgeCol(0.98);
+            ctx.beginPath(); ctx.moveTo(q[0], q[1]); ctx.lineTo(q[0] - 3.5 * lw, q[1] - 6 * lw); ctx.lineTo(q[0] + 3.5 * lw, q[1] - 6 * lw); ctx.closePath(); ctx.fill();
+            const ele = pk.eleM != null ? (isImperialUnits() ? Math.round(pk.eleM * 3.28084).toLocaleString() + " ft" : Math.round(pk.eleM).toLocaleString() + " m") : null;
+            text(pk.name, q[0], q[1] - (ele ? 22 : 10) * lw, ridgeCol(0.98));
+            if (ele) text(ele, q[0], q[1] - 10 * lw, ridgeCol(0.78), Math.max(8, lfs - 1), 400);
+          }
+        }
+        /* building boxes — accurate footprints faint, known-height extrusions
+           with hidden-line removal (mirrors the dome). The crop camera moves
+           per frame and the occlusion pass is too heavy to redo 30×/s, so the
+           object close-up skips this layer. */
+        if (bldgOn && bldg?.boxes && mode !== "crop") {
+          if (!bldgLayerCache) bldgLayerCache = (() => {
+            const K = 0.13, eye = camH, foot = [], known = [];
+            for (const b of bldg.boxes) {
+              let cE = 0, cN = 0;
+              for (const q2 of b.ring) { cE += q2[0]; cN += q2[1]; }
+              cE /= b.ring.length; cN /= b.ring.length;
+              const da = ((((Math.atan2(cE, cN) * R2D) + 360) % 360) - ce.az + 540) % 360 - 180;
+              if (Math.abs(da) > span + 15) continue;
+              const base = [], roof = [], all = []; let ok = true;
+              for (const [e, n] of b.ring) {
+                const dist = Math.hypot(e, n);
+                const az = ((Math.atan2(e, n) * R2D) + 360) % 360;
+                const curv = (dist * dist * (1 - K)) / (2 * 6371000);
+                const bp = P(az, Math.atan2(-eye - curv, dist) * R2D);
+                if (!bp) { ok = false; break; }
+                base.push(bp); all.push(bp);
+                if (!b.assumed) {
+                  const rp = P(az, Math.atan2(b.h - eye - curv, dist) * R2D);
+                  if (!rp) { ok = false; break; }
+                  roof.push(rp); all.push(rp);
+                }
+              }
+              if (!ok || base.length < 3) continue;
+              foot.push(base);
+              if (!b.assumed) {
+                let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+                for (const [x, y] of all) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+                known.push({ base, roof, hull: convexHull2(all), bbox: [x0, y0, x1, y1] });
+              }
+            }
+            const segs = [];
+            for (let i = 0; i < known.length; i++) {
+              const Bx = known[i], hulls = [];
+              for (let j = 0; j < i && hulls.length < 40; j++) if (bboxHit(Bx.bbox, known[j].bbox)) hulls.push(known[j].hull);
+              const edges = [], N = Bx.base.length;
+              for (let k = 0; k < N; k++) edges.push([Bx.roof[k], Bx.roof[(k + 1) % N]]);
+              for (let k = 0; k < N; k++) edges.push([Bx.base[k], Bx.roof[k]]);
+              for (const [p2, q2] of edges) for (const [t0, t1] of visibleSegs(p2, q2, hulls))
+                segs.push([[p2[0] + (q2[0] - p2[0]) * t0, p2[1] + (q2[1] - p2[1]) * t0], [p2[0] + (q2[0] - p2[0]) * t1, p2[1] + (q2[1] - p2[1]) * t1]]);
+            }
+            return { foot, segs };
+          })();
+          ctx.strokeStyle = "rgba(255,178,74,0.5)"; ctx.lineWidth = lw; ctx.lineJoin = "round";
+          for (const f of bldgLayerCache.foot) { ctx.beginPath(); f.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); ctx.stroke(); }
+          ctx.strokeStyle = "rgba(255,178,74,0.95)"; ctx.lineWidth = 1.4 * lw;
+          ctx.beginPath();
+          for (const [a2, b2] of bldgLayerCache.segs) { ctx.moveTo(a2[0], a2[1]); ctx.lineTo(b2[0], b2[1]); }
+          ctx.stroke();
+        }
+        /* stars (halo + core, brightness-scaled) + labels for the bright named ones */
+        for (const s of stars) {
+          const q = P(s.az, s.alt); if (!q || q[0] < -0.05 * OUT_W || q[0] > 1.05 * OUT_W || q[1] < -0.05 * OUT_H || q[1] > 1.05 * OUT_H) continue;
+          ctx.globalAlpha = s.o * 0.35; ctx.fillStyle = "#bcd2ff";
+          ctx.beginPath(); ctx.arc(q[0], q[1], s.r * 0.5 * u, 0, 7); ctx.fill();
+          ctx.globalAlpha = clampN(s.o + 0.1, 0, 1); ctx.fillStyle = "#fff";
+          ctx.beginPath(); ctx.arc(q[0], q[1], s.r * 0.24 * u, 0, 7); ctx.fill();
+          ctx.globalAlpha = 1;
+          if (s.name && (s.mag <= 1.6 || (camFov < 42 && s.mag <= 2.6))) text(s.name, q[0] + 7 * lw, q[1] - 5 * lw, "#eaf1ff", Math.max(8, lfs - 1), 600, "left");
+        }
+        /* planets — glowing labeled markers */
+        if (planetsVisible) for (const pl of planets) {
+          const q = P(pl.az, pl.alt); if (!q || q[0] < -0.05 * OUT_W || q[0] > 1.05 * OUT_W || q[1] < -0.05 * OUT_H || q[1] > 1.05 * OUT_H) continue;
+          ctx.shadowColor = "rgba(255,225,150,.75)"; ctx.shadowBlur = 9 * lw; ctx.fillStyle = "#fff6d8";
+          ctx.beginPath(); ctx.arc(q[0], q[1], Math.max(3.5, 0.005 * OUT_W), 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+          text(`${pl.sym} ${pl.name}`, q[0], q[1] + 14 * lw, "#ffe9b0");
+        }
+        /* Sun & Moon at true angular size (0.53°) */
+        const bodyR = Math.max(OUT_W * Math.tan((0.53 * RAD) / 2) / (2 * tH), 5 * lw);
+        if (sun.alt > -1) { const q = P(sun.az, sun.alt); if (q) { ctx.shadowColor = "rgba(255,214,90,.85)"; ctx.shadowBlur = bodyR * 1.2; ctx.fillStyle = "#ffd76a"; ctx.beginPath(); ctx.arc(q[0], q[1], bodyR, 0, 7); ctx.fill(); ctx.shadowBlur = 0; } }
+        if (moon.alt > -1) { const q = P(moon.az, moon.alt); if (q) { ctx.shadowColor = "rgba(220,230,250,.5)"; ctx.shadowBlur = bodyR * 0.8; ctx.fillStyle = "#e6ebf5"; ctx.beginPath(); ctx.arc(q[0], q[1], bodyR, 0, 7); ctx.fill(); ctx.shadowBlur = 0; } }
+        /* satellites: dotted pass trails + diamond markers with labels */
+        for (const s of satView) {
+          poly((s.trail || []).map((q2) => q2.el > -1 ? P(q2.az, q2.el) : null), `rgba(159,220,255,${s.lit ? 0.45 : 0.18})`, 1.4 * lw, [0.1, 7 * lw]);
+          const q = P(s.az, s.el); if (!q) continue;
+          const col = s.lit ? "#9fdcff" : "rgba(159,220,255,.35)", sz = Math.max(3, 0.004 * OUT_W);
+          ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(Math.PI / 4); ctx.fillStyle = col;
+          if (s.lit) { ctx.shadowColor = "rgba(159,220,255,.5)"; ctx.shadowBlur = 5 * lw; }
+          ctx.fillRect(-sz / 2, -sz / 2, sz, sz); ctx.restore(); ctx.shadowBlur = 0;
+          text(`🛰 ${s.name}${s.lit ? "" : " · in shadow"}`, q[0], q[1] + 12 * lw, col, Math.max(8, lfs - 1));
+          text(`${Math.round(s.rangeKm)} km`, q[0], q[1] + 12 * lw + lfs, col, Math.max(8, lfs - 1), 400);
+        }
+        /* Starlink: violet dots; trails only near the view/sight-line (dome rule) */
+        let slLines = 0;
+        for (const s of slView) {
+          if (s.trail && slLines <= 14 && (near(lookD, dirFromAzEl(s.az, s.el), 30) || near(sightD, dirFromAzEl(s.az, s.el), 30))) {
+            poly(s.trail.map((q2) => q2.el > -1 ? P(q2.az, q2.el) : null), "rgba(201,182,255,.72)", 1.6 * lw, [0.1, 5 * lw]); slLines++;
+          }
+          const q = P(s.az, s.el); if (!q) continue;
+          ctx.fillStyle = "rgba(201,182,255,.9)"; ctx.beginPath(); ctx.arc(q[0], q[1], 0.32 * u, 0, 7); ctx.fill();
+        }
+        /* aircraft: sky-tracks near the view/sight-line (or selected) + heading-rotated chips */
+        for (const v2 of acView) {
+          const sel = v2.a.hex === selHex;
+          const raw = acData?.hist ? v2.a.trail : liveTrailRef.current.get(v2.a.hex);
+          if (raw && raw.length > 1 && (sel || near(lookD, v2.d, 25) || near(sightD, v2.d, 25))) {
+            const tp = [];
+            for (let i2 = 0; i2 < raw.length; i2++) {
+              if (i2 === 0) { const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { lat: raw[0][1], lon: raw[0][2], altM: raw[0][3] }); tp.push(proj(g.d)); continue; }
+              const a0 = raw[i2 - 1], a1 = raw[i2], K2 = 5;
+              for (let k2 = 1; k2 <= K2; k2++) { const f2 = k2 / K2; const g = acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { lat: a0[1] + (a1[1] - a0[1]) * f2, lon: a0[2] + (a1[2] - a0[2]) * f2, altM: a0[3] + (a1[3] - a0[3]) * f2 }); tp.push(proj(g.d)); }
+            }
+            poly(tp, sel ? "#F5A93F" : "#8FB4FF", (sel ? 2.2 : 1.6) * lw, sel ? [0.1, 6 * lw] : [0.1, 9 * lw]);
+          }
+          const q = proj(v2.d); if (!q || q[0] < -0.05 * OUT_W || q[0] > 1.05 * OUT_W || q[1] < -0.05 * OUT_H || q[1] > 1.05 * OUT_H) continue;
+          let rot = 0;
+          if (isNum(v2.a.track) && isNum(v2.a.gs) && v2.a.gs > 5) {
+            const dM = v2.a.gs * 15;
+            const p2 = proj(acAzElRange({ lat: LAT, lon: LNG, alt: 0 }, { ...v2.a, lat: +v2.a.lat + (dM * Math.cos(v2.a.track * D2R)) / 111320, lon: +v2.a.lon + (dM * Math.sin(v2.a.track * D2R)) / (111320 * Math.cos(LAT * D2R)) }).d);
+            if (p2) rot = Math.atan2(p2[1] - q[1], p2[0] - q[0]);
+          }
+          const col = sel ? "#F5A93F" : "#8FB4FF";
+          ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(rot);
+          ctx.font = `${Math.max(11, Math.round(OUT_H / 46))}px Menlo, monospace`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.shadowColor = "rgba(0,0,0,.85)"; ctx.shadowBlur = 3; ctx.fillStyle = col; ctx.fillText("✈", 0, 0);
+          ctx.restore(); ctx.shadowBlur = 0; ctx.textBaseline = "alphabetic";
+          const id = (v2.a.flight || "").trim() || v2.a.reg || v2.a.hex;
+          text(`${id}${v2.a.t ? ` ${v2.a.t}` : ""}`, q[0], q[1] + 13 * lw, col, Math.max(8, lfs - 1));
+          text(`${fmtLenShort(v2.rangeM)}${v2.a.altM != null ? ` · ${Math.round(v2.a.altM * 3.28084 / 100) / 10} kft` : ""}`, q[0], q[1] + 13 * lw + lfs, col, Math.max(8, lfs - 1), 400);
+        }
+        /* compass letters just above the horizon */
+        for (const [caz, lbl] of [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]]) {
+          const q = P(caz, 1.8);
+          if (q && q[0] > 0.02 * OUT_W && q[0] < 0.98 * OUT_W && q[1] > -0.05 * OUT_H && q[1] < 1.05 * OUT_H) text(lbl, q[0], q[1], "#fff", Math.max(11, Math.round(OUT_H / 52)), 800);
+        }
+      };
       const drawFrame = (p) => {
         if (camFollow && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
         /* az/el grid, world-locked — THE debugging reference: if stabilization
            holds, the scenery rides these lines while the frame moves. Grid
            pitch scales with the camera FOV so a tight object crop still shows
-           usable lines. */
+           usable lines. Drawn OVER the frame (like the dome) so the reference
+           is visible across the whole photo, not just past its edges. */
         const span = camFov <= 24 ? camFov : camFov * 0.75 + 15;
-        const G = camFov <= 3 ? 0.5 : camFov <= 8 ? 1 : camFov <= 24 ? 2 : camFov <= 60 ? 5 : 10;
-        const ss = Math.min(2, G / 2);
-        ctx.lineWidth = Math.max(1, OUT_W / 1400); ctx.strokeStyle = "rgba(140,165,200,0.30)";
-        for (let az = Math.floor((ce.az - span) / G) * G; az <= ce.az + span; az += G) {
-          ctx.beginPath();
-          for (let el2 = Math.max(-88, ce.el - span), first = true; el2 <= Math.min(88, ce.el + span); el2 += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
-          ctx.stroke();
-        }
-        for (let el2 = Math.max(-88, Math.floor((ce.el - span) / G) * G); el2 <= Math.min(88, ce.el + span); el2 += G) {
-          ctx.beginPath(); ctx.strokeStyle = el2 === 0 ? "rgba(200,220,255,0.55)" : "rgba(140,165,200,0.30)";
-          for (let az = ce.az - span, first = true; az <= ce.az + span; az += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
-          ctx.stroke();
-        }
+        const drawGrid = () => {
+          const G = camFov <= 3 ? 0.5 : camFov <= 8 ? 1 : camFov <= 24 ? 2 : camFov <= 60 ? 5 : 10;
+          const ss = Math.min(2, G / 2);
+          ctx.lineWidth = Math.max(1, OUT_W / 1400); ctx.strokeStyle = "rgba(140,165,200,0.30)";
+          for (let az = Math.floor((ce.az - span) / G) * G; az <= ce.az + span; az += G) {
+            ctx.beginPath();
+            for (let el2 = Math.max(-88, ce.el - span), first = true; el2 <= Math.min(88, ce.el + span); el2 += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+            ctx.stroke();
+          }
+          for (let el2 = Math.max(-88, Math.floor((ce.el - span) / G) * G); el2 <= Math.min(88, ce.el + span); el2 += G) {
+            ctx.beginPath(); ctx.strokeStyle = el2 === 0 ? "rgba(200,220,255,0.55)" : "rgba(140,165,200,0.30)";
+            for (let az = ce.az - span, first = true; az <= ce.az + span; az += ss) { const q = proj(dirFromAzEl(az, el2)); if (!q) { first = true; continue; } if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+            ctx.stroke();
+          }
+        };
         /* the frame, mesh-warped at ITS pose */
         const fb = photoBasis(p.az, p.el, p.roll);
         const fpx = (natW / 2) / Math.tan((p.fov * RAD) / 2);
@@ -4071,6 +4251,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], d00, d10, d11);
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], [sxp(c2), syp(r2 + 1)], d00, d11, d01);
         }
+        drawGrid();
+        try { drawSkyLayers(span); } catch (e) { if (!drawFrame.lw) { drawFrame.lw = 1; console.warn("export layer draw:", e); } } // an overlay layer must never kill the export
         if (wireDirs && isNum(p.t)) {
           const oT = objAt(p.t);
           const dT = dirFromAzEl(oT.az, oT.el);

@@ -614,10 +614,22 @@ terrain stay frozen and only the object moves. Build ladder:
    look-mode dome shows ONLY the wireframe (the two mark rings are a
    no-shape fallback; track dots + B circle were dropped as clutter,
    and the numbered trajectory chips render only while the ⊕
-   Trajectory tool is active). The dome wire has a LEGIBILITY FLOOR:
-   below ~2.4% of the view it is magnified about its own centre
-   (display marker only — a distant object's true projection is a
-   2 px smudge; measurements and the export burn-in keep true scale). Measure-step track markers fade away from their own
+   Trajectory tool is active). The dome wire renders at TRUE fitted
+   angular size, scaling with dome zoom through the projection — a
+   short-lived "legibility floor" that magnified small wires was
+   REMOVED on user request (the set size must be honoured; a distant
+   object really is tiny — zoom in). The world-locked EXPORT burns in
+   every dome layer that is visible, honouring the same toggles:
+   terrain skyline + ridges + named peaks, building boxes (skipped in
+   the moving-camera crop mode — the occlusion pass is too heavy per
+   frame), stars/planets/Sun/Moon, satellites + Starlink with trails,
+   aircraft chips + sky-tracks, compass letters — all drawn from
+   world az/el data through the export camera each frame
+   (drawSkyLayers, wrapped so a layer error can never kill an
+   export). The grid is drawn OVER the frame now, like the dome. The
+   schematic overlays (winds-aloft stack, cloud veil) stay dome-only:
+   their heights are made up, and burning them into a world-locked
+   exhibit would lie. Measure-step track markers fade away from their own
    frame (full ≤0.3 s, gone by 1.1 s, 0.15 floor while the Track tool
    is active; the route polyline stays faint). Verified visually: the
    wireframe sits on the ground-truth dot across an in-app world-view
