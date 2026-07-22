@@ -78,9 +78,12 @@ const blankMomentB = () => ({ t: "", az: "", el: "", pb: null, videoTime: null }
    target apparent WIDTH to a real sizeNat through the rotated shape's own
    projection — so a tumbling elongated object still hits the width set on that
    frame. Returns a shapeFit clone (or the original when nothing is keyframed). */
-const shapeAt = (shapeFit, track, t) => {
+const shapeAt = (shapeFit, track, t, markT) => {
   if (!shapeFit || !isNum(t)) return shapeFit;
-  const s = sampleShapeAt(track, shapeFit, t);
+  /* the fit's own projected width = the baseline apparent size at markT, so a
+     single adjustment ramps from the fit instead of jumping the whole track */
+  const wFit = (() => { const pr = shapeProjNat(shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
+  const s = sampleShapeAt(track, shapeFit, t, { markT, wFit });
   let sf = { ...shapeFit, rotM: s.rotM, roll: 0 };
   if (s.wpx != null) {
     const pr = shapeProjNat(sf);
@@ -1703,16 +1706,22 @@ function MediaMeasure({ src, update, wizard }) {
                        that frame's stored width — frame-local like the dots */}
                     {src.shapeFit && pts2.map((p, i) => {
                       const has = isNum(p.wpx);
-                      const isSz = active === "trk" && i === szIdx;
+                      /* the SELECTED point sprouts an adjustable model ONLY in
+                         Adjust mode — while PLACING, taps should just drop
+                         trajectory dots, not conjure a 3D object at each one */
+                      const isSz = active === "trk" && trkAdjust && i === szIdx;
                       if (!has && !isSz) return null;
                       const d = Math.abs(p.t - vidT);
                       const f = d <= 0.3 ? 1 : d >= 1.1 ? 0 : 1 - (d - 0.3) / 0.8;
                       const op = isSz ? Math.max(0.5, f) : f;
                       if (op <= 0.02) return null;
-                      const w = has ? +p.wpx : wFit;
-                      /* reflect this point's ATTITUDE too, then normalise the
-                         apparent width through the rotated projection so it hits w */
-                      const rot = (Array.isArray(p.rotM) && p.rotM.length === 9) ? p.rotM : (src.shapeFit.rotM || I3);
+                      /* size + attitude INTERPOLATED at this point's time (fit as
+                         the baseline keyframe) — so an un-adjusted point shows the
+                         value that ramps from the nearest adjustment/fit, not a
+                         flat fitted size that jumps at the next keyframe */
+                      const smp = sampleShapeAt(src.track, src.shapeFit, p.t, { markT: isNum(src.A?.videoTime) ? +src.A.videoTime : null, wFit });
+                      const w = smp.wpx != null ? smp.wpx : wFit;
+                      const rot = (smp.rotM && smp.rotM.length === 9) ? smp.rotM : (src.shapeFit.rotM || I3);
                       let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: rot, roll: 0 };
                       const pwG = (() => { const pr = shapeProjNat(sfG); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
                       sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pwG };
@@ -1888,7 +1897,7 @@ function MediaMeasure({ src, update, wizard }) {
                      outline to the object as it appears RIGHT THERE. Apparent
                      size across frames ⇒ range ratio over time (the radial
                      side of the trajectory the bearings alone can't see). */}
-                  {wizard && src.shapeFit && szIdx >= 0 && (() => {
+                  {wizard && src.shapeFit && trkAdjust && szIdx >= 0 && (() => {
                     const p = trkSorted[szIdx];
                     const w = isNum(p.wpx) ? +p.wpx : wFit;
                     const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
@@ -1899,7 +1908,7 @@ function MediaMeasure({ src, update, wizard }) {
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
-                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — {trkAdjust ? "size + attitude" : "size on THIS frame"} · bigger = closer
+                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — size + attitude · bigger = closer
                           </span>
                           <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                             {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
@@ -1928,9 +1937,9 @@ function MediaMeasure({ src, update, wizard }) {
                           <button className="btn sm" title="roll right" onClick={() => nudgeRot("z", 12)}>⟳</button>
                           {Array.isArray(trkSorted[szIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
                         </div>
-                        {!trkSorted.some((q) => isNum(q.wpx)) && !trkAdjust && (
+                        {!trkSorted.some((q) => isNum(q.wpx)) && (
                           <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
-                            Match the outline to the object at each tapped frame — the size change between frames is what recovers closer/farther motion.
+                            Scrub to a point and match the outline to the object as it appears there — the size change between frames is what recovers closer/farther motion.
                           </div>
                         )}
                       </div>
@@ -3491,7 +3500,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            static marked frame use its own time. So the model breathes and
            tumbles between keyframes instead of holding one fitted pose. */
         const wireT = playPose && isNum(playPose.t) ? +playPose.t : markT;
-        const sfNow = shapeAt(source.shapeFit, source.track, wireT);
+        const sfNow = shapeAt(source.shapeFit, source.track, wireT, markT);
         wire = shapeProjNat(sfNow).curves.map((c) => {
           const segs = []; let cur = [];
           for (const pt of c) { const q = PF(pt); if (q) cur.push(q); else if (cur.length > 1) { segs.push(cur); cur = []; } else cur = []; }
@@ -4248,7 +4257,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          marked at THIS frame's time (shapeAt), projected through the marked
          pose, then Rodrigues-rotated onto the tracked dir in drawFrame. */
       const wireDirsAt = (t) => wireBase
-        ? shapeProjNat(shapeAt(source.shapeFit, source.track, t)).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
+        ? shapeProjNat(shapeAt(source.shapeFit, source.track, t, markT)).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
         : null;
       const objD0 = wireBase ? pixToDirK(source.shapeFit.cx, source.shapeFit.cy, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
       /* --- every dome layer that is VISIBLE in the world view is burned into
