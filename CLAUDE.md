@@ -161,8 +161,18 @@ photo was adjusted.
    corrected el, ground-state aircraft filtered, search radius derived from
    the sight-line elevation (45 kft ceiling). Ranking math is asserted in
    `scripts/mathcheck.js`. CORS reality (probed 2026-07): **airplanes.live
-   sends ACAO:\*** (primary, browser-direct); **adsb.lol has NO CORS** (kept
-   as fallback; needs the Railway proxy to matter in-browser).
+   sends ACAO:\*** (browser-direct fallback); **adsb.lol has NO CORS**.
+   **MULTI-FEED MERGE: DONE** — `/api/live?lat&lon&nm` (server/index.mjs) fans
+   out to airplanes.live + adsb.lol + adsb.fi (ADSBx-v2) **and OpenSky**
+   (state-vector shape; adds MLAT / Mode-S targets pure ADS-B misses),
+   `Promise.allSettled`, unions by ICAO hex with per-field back-fill (a type
+   designator from one feed, a fresh position from another — ADSBx type/reg is
+   never lost to an OpenSky dup). Each network has different receiver coverage,
+   so the union catches craft any single feed misses; a feed that errors or
+   rate-limits (OpenSky anon ~400/day per IP) is dropped, the rest still answer.
+   `fetchAircraft` calls `/api/live` first and falls back to browser-direct
+   airplanes.live when the server is absent. Merge/normalize logic verified with
+   a synthetic harness (dedup, back-fill, m→ft / m·s⁻¹→kt, category idx→ADSBx).
    **Also done**: live traffic drawn on the SkyAimer dome (✈ chips at true
    az/el, heading-rotated, 20 s refresh, header toggle, amber staleness
    warning), snapshot persisted to `source.adsb` on aimer close/unmount

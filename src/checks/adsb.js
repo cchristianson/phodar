@@ -11,11 +11,13 @@
      { label, az, el, sepDeg, rangeM, spanM, predAngDeg, ... }
    so the report can rank ALL mundane explanations in one table.
 
-   APIs (probed 2026-07-14): api.airplanes.live/v2 sends
-   Access-Control-Allow-Origin:* — browser-direct, primary.
-   api.adsb.lol/v2 answers but WITHOUT CORS headers — kept as a
-   fallback for non-browser callers; a Railway proxy can bring it to
-   the browser later. Both speak the ADSBx v2 shape.
+   APIs: the app's own server /api/live MERGES several keyless feeds
+   (airplanes.live + adsb.lol + adsb.fi, ADSBx-v2 shape) AND OpenSky
+   (state-vector shape; adds MLAT / Mode-S targets pure ADS-B misses),
+   deduped by ICAO hex — every network has different ground-receiver
+   coverage, so the union catches craft any single feed misses. Only
+   airplanes.live is CORS-open, so the merge must run server-side; the
+   browser falls back to airplanes.live direct when the server is absent.
    ============================================================ */
 
 import { D2R, R2D, RE, sub, mag, dot, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "../math/geodesy.js";
@@ -131,9 +133,25 @@ function normAc(a) {
 }
 
 export async function fetchAircraft(lat, lon, nm = 60) {
+  const R = Math.min(250, Math.round(nm));
+  /* PRIMARY: our server's /api/live MERGES several keyless aggregators
+     (airplanes.live + adsb.lol + adsb.fi) AND OpenSky (adds MLAT / Mode-S
+     targets pure ADS-B misses), deduped by hex — strictly more aircraft than any
+     single browser-direct feed. Falls back to browser-direct when the server
+     isn't there (dev without it) or is unreachable. */
+  try {
+    const r = await fetch(`/api/live?lat=${lat}&lon=${lon}&nm=${R}`, { signal: AbortSignal.timeout(15000) });
+    if (r.ok) {
+      const j = await r.json();
+      if (Array.isArray(j.ac) && j.ac.length >= 0 && Array.isArray(j.sources)) {
+        const ac = j.ac.filter((a) => a.lat != null).map(normAc);
+        return { ac, source: "merged: " + j.sources.map((s) => s.src).join(" + "), now: j.now || Date.now(), merged: true };
+      }
+    }
+  } catch (e) { /* server absent/unreachable → browser-direct fallback below */ }
   const urls = [
-    `https://api.airplanes.live/v2/point/${lat}/${lon}/${Math.min(250, Math.round(nm))}`,
-    `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${Math.min(250, Math.round(nm))}`,
+    `https://api.airplanes.live/v2/point/${lat}/${lon}/${R}`,
+    `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${R}`,
   ];
   let lastErr = null;
   for (const url of urls) {

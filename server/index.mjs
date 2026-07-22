@@ -459,10 +459,81 @@ async function apiWinds(q, res) {
   }
   return json(res, 502, { error: `winds unreachable (${lastErr})` });
 }
+/* live aircraft — MERGE several keyless ADS-B aggregators (each has its own
+   ground-receiver coverage, so the union catches craft any single one misses)
+   PLUS OpenSky, which adds MLAT / Mode-S targets that pure ADS-B feeds lack.
+   Deduped by ICAO hex, gaps back-filled across feeds. Browser-direct only ever
+   reached ONE feed (airplanes.live; adsb.lol/adsb.fi/OpenSky send no CORS), so
+   this is a strict coverage win — hence server-side. Any feed that errors or
+   rate-limits (OpenSky anon ~400/day per IP) is just dropped; the rest still
+   answer. */
+async function fetchAdsbxFeed(url, name) {
+  const r = await fetch(url, { headers: { accept: "application/json", "user-agent": "phodar/1 (sighting correlator)" }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`${name} HTTP ${r.status}`);
+  const j = await r.json();
+  return (j.ac || []).filter((a) => a && a.hex);   // shared ADSBx-v2 record shape
+}
+const OS_CAT = ["", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "C1", "C2", "C3"]; // OpenSky category idx → ADSBx emitter cat (approx)
+async function fetchOpenSky(lat, lon, nm) {
+  const dLat = (nm * 1852) / 111320;
+  const dLon = dLat / Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+  const url = `https://opensky-network.org/api/states/all?lamin=${(lat - dLat).toFixed(4)}&lomin=${(lon - dLon).toFixed(4)}&lamax=${(lat + dLat).toFixed(4)}&lomax=${(lon + dLon).toFixed(4)}`;
+  const r = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`opensky HTTP ${r.status}`);
+  const j = await r.json();
+  const now = j.time || Math.floor(Date.now() / 1000);
+  /* state vector: [icao24,callsign,country,tPos,lastContact,lon,lat,baroAlt,
+     onGround,vel,track,vRate,sensors,geoAlt,squawk,spi,posSrc,category]. Alt in
+     METRES, vel in m/s → convert to the ADSBx ft/kt the client's normAc expects. */
+  return (j.states || []).filter((s) => s && s[0] && s[5] != null && s[6] != null).map((s) => ({
+    hex: String(s[0]).toLowerCase(),
+    flight: s[1] ? String(s[1]).trim() : undefined,
+    lat: s[6], lon: s[5],
+    alt_baro: s[8] ? "ground" : (s[7] != null ? Math.round(s[7] / FT) : (s[13] != null ? Math.round(s[13] / FT) : null)),
+    gs: s[9] != null ? +(s[9] / KT).toFixed(1) : null,
+    track: s[10] != null ? s[10] : null,
+    category: (s[17] != null && OS_CAT[s[17]]) || null,
+    seen: s[4] != null ? Math.max(0, now - s[4]) : null,
+  }));
+}
+async function apiLive(q, res) {
+  const lat = +q.get("lat"), lon = +q.get("lon");
+  const nm = Math.min(250, Math.max(5, +q.get("nm") || 60)), R = Math.round(nm);
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const feeds = [
+    ["airplanes.live", fetchAdsbxFeed(`https://api.airplanes.live/v2/point/${lat}/${lon}/${R}`, "airplanes.live")],
+    ["adsb.lol", fetchAdsbxFeed(`https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${R}`, "adsb.lol")],
+    ["adsb.fi", fetchAdsbxFeed(`https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${R}`, "adsb.fi")],
+    ["opensky", fetchOpenSky(lat, lon, nm)],
+  ];
+  const settled = await Promise.allSettled(feeds.map(([, p]) => p));
+  const ok = [], errs = [], used = [];
+  settled.forEach((s, i) => {
+    if (s.status === "fulfilled") { ok.push([feeds[i][0], s.value]); used.push({ src: feeds[i][0], n: s.value.length }); }
+    else errs.push(`${feeds[i][0]}: ${String(s.reason?.message || s.reason)}`);
+  });
+  if (!ok.length) return json(res, 502, { error: `no live feed reachable (${errs.join("; ")})` });
+  /* union by hex; when a hex repeats, back-fill any fields the kept record is
+     missing (a type designator from one feed, a fresh position from another) —
+     so OpenSky-only craft are added while ADSBx type/reg is never lost. */
+  const byHex = new Map();
+  const FILL = ["flight", "r", "t", "category", "gs", "track", "alt_baro", "alt_geom", "lat", "lon", "seen"];
+  for (const [name, list] of ok) {
+    for (const a of list) {
+      const hex = String(a.hex).toLowerCase();
+      const prev = byHex.get(hex);
+      if (!prev) { byHex.set(hex, { ...a, hex, _src: name }); continue; }
+      for (const k of FILL) if ((prev[k] == null || prev[k] === "") && a[k] != null && a[k] !== "") prev[k] = a[k];
+    }
+  }
+  const ac = [...byHex.values()];
+  return json(res, 200, { ac, sources: used, errors: errs.length ? errs : undefined, now: Date.now(), merged: ac.length });
+}
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
+    if (u.pathname === "/api/live") return await apiLive(u.searchParams, res);
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
     if (u.pathname === "/api/launches") return await apiLaunches(u.searchParams, res);
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
