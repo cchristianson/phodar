@@ -264,6 +264,132 @@ export function analyzeTracks(sources) {
   return { stereo, solo };
 }
 
+/* TWO-VIDEO (or more) STEREO from dense object tracks. Each stabilized +
+   object-tracked clip yields objPath = the object's WORLD direction every
+   frame (camera motion already removed by stabilization), so each sample is
+   directly a sight-line at a clock time — no per-frame pose conversion needed.
+   Given ≥2 observers with positions we:
+     1. put every clip on an ABSOLUTE clock (EXIF whenMs + video t, plus any
+        per-source syncOffset the user nudged),
+     2. AUTO-SYNC the clips — device clocks drift by seconds and EXIF video
+        timestamps are coarse, so we search the relative time offset that
+        MINIMISES the mean ray-miss of the per-instant intersections. The
+        object's own motion is the shared signal that pins the true offset; a
+        far/slow object makes the minimum shallow, which we report as low sync
+        confidence rather than a false-precise number,
+     3. triangulate each common instant with MEDIAN/MAD outlier rejection (a
+        blurred frame, a momentary mistrack, or a compass glitch shows up as a
+        fat ray-miss and is dropped),
+     4. run kinematics on the resulting dense 3D path.
+   Returns the fix, dense trajectory, recovered offset + confidence, and
+   residuals for honest grading. Robust by construction to the small
+   imperfections inherent in hand-held video. Pure. */
+export function stereoVideo(sources, opts = {}) {
+  const obs = (sources || [])
+    .filter((s) => isNum(s.lat) && isNum(s.lon) && Array.isArray(s.objPath) && s.objPath.length >= 3)
+    .map((s) => ({
+      s,
+      base: (isNum(s.whenMs) ? +s.whenMs / 1000 : 0) + (isNum(s.syncOffset) ? +s.syncOffset : 0),
+      samp: s.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t),
+    }))
+    .filter((o) => o.samp.length >= 3);
+  if (obs.length < 2) return null;
+  const ref = { lat: +obs[0].s.lat, lon: +obs[0].s.lon, alt: isNum(obs[0].s.alt) ? +obs[0].s.alt : 0 };
+  obs.forEach((o) => {
+    o.P = enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref);
+    o.t = o.samp.map((p) => o.base + (+p.t));   // absolute clock (pre-offset)
+    o.d = o.samp.map((p) => dirFromAzEl(+p.az, +p.el));
+    o.q = o.samp.map((p) => (p.q == null ? 1 : +p.q));
+  });
+  const dirAt = (ts, ds, t) => {
+    if (t <= ts[0]) return ds[0];
+    if (t >= ts[ts.length - 1]) return ds[ds.length - 1];
+    let i = 0; while (i < ts.length - 2 && ts[i + 1] < t) i++;
+    const a = ds[i], b = ds[i + 1], u = (t - ts[i]) / Math.max(1e-9, ts[i + 1] - ts[i]);
+    return unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
+  };
+  /* triangulate the overlap with observers[1..] shifted by `delta`. cap caps
+     the number of instants; reject enables MAD outlier rejection. */
+  const triAt = (delta, cap, reject) => {
+    const T = obs.map((o, i) => (i === 0 ? o.t : o.t.map((x) => x + delta)));
+    const t0 = Math.max(...T.map((tt) => tt[0]));
+    const t1 = Math.min(...T.map((tt) => tt[tt.length - 1]));
+    if (!(t1 > t0 + 1e-6)) return null;
+    let times = obs[0].t.filter((x) => x >= t0 && x <= t1);
+    if (times.length > cap) { const step = Math.ceil(times.length / cap); times = times.filter((_, i) => i % step === 0); }
+    if (times.length < 3) return null;
+    const rows = [];
+    for (const t of times) {
+      const lines = obs.map((o, i) => ({ P: o.P, d: dirAt(T[i], o.d, t) }));
+      const sol = intersectLines(lines);
+      if (!sol || sol.ts.some((x) => x <= 0)) continue;  // object behind an observer ⇒ reject
+      rows.push({ t, X: sol.X, miss: sol.rmsMiss });
+    }
+    if (rows.length < 3) return null;
+    let kept = rows;
+    if (reject) {
+      const ms = rows.map((r) => r.miss).slice().sort((a, b) => a - b);
+      const med = ms[ms.length >> 1];
+      const mad = ms.map((m) => Math.abs(m - med)).sort((a, b) => a - b)[ms.length >> 1] || 1e-6;
+      const thr = med + 4 * mad + 0.5;   // +0.5 m floor so a tight fix isn't over-trimmed
+      kept = rows.filter((r) => r.miss <= thr);
+      if (kept.length < 3) kept = rows;
+    }
+    const meanMiss = kept.reduce((s, r) => s + r.miss, 0) / kept.length;
+    return { rows: kept, meanMiss, dropped: rows.length - kept.length, t0, t1 };
+  };
+  /* AUTO-SYNC: coarse sweep then refine, minimising mean ray-miss. Window is
+     tight when both clips carry EXIF time (only clock drift to absorb), wide
+     when they don't (the clips could start at any relative time). */
+  const bothWhen = obs.every((o) => isNum(o.s.whenMs));
+  const durs = obs.map((o) => o.t[o.t.length - 1] - o.t[0]);
+  const W = opts.window != null ? opts.window : (bothWhen ? 6 : Math.max(...durs) + 2);
+  let best = null;
+  for (let dl = -W; dl <= W + 1e-9; dl += 0.1) {
+    const r = triAt(dl, 120, false);
+    if (r && (!best || r.meanMiss < best.meanMiss)) best = { delta: dl, meanMiss: r.meanMiss };
+  }
+  if (!best) return null;
+  for (let dl = best.delta - 0.14; dl <= best.delta + 0.14 + 1e-9; dl += 0.02) {
+    const r = triAt(dl, 160, false);
+    if (r && r.meanMiss < best.meanMiss) best = { delta: dl, meanMiss: r.meanMiss };
+  }
+  const offset = obs[0].base != null ? best.delta : best.delta;  // relative to obs[1..] clock
+  const final = triAt(best.delta, 400, true);
+  if (!final) return null;
+  const times = final.rows.map((r) => r.t), pos = final.rows.map((r) => r.X);
+  const k = kinematics(times, pos);
+  /* sync CONFIDENCE: how sharply the miss rises when we mistune the offset by
+     ±0.5 s. A deep, narrow minimum ⇒ well-constrained; a flat one (far/slow
+     object) ⇒ the sync — and thus absolute speed — is soft. */
+  const off1 = triAt(best.delta - 0.5, 120, false), off2 = triAt(best.delta + 0.5, 120, false);
+  const rise = Math.min(off1 ? off1.meanMiss : Infinity, off2 ? off2.meanMiss : Infinity) - best.meanMiss;
+  const syncConf = !isFinite(rise) ? 0 : clampN(rise / (best.meanMiss + 0.5), 0, 1);
+  /* per-observer mean range to the fixed path */
+  const perObs = obs.map((o) => {
+    let s = 0; for (const X of pos) s += mag(sub(X, o.P));
+    return { name: o.s.name, meanRange: s / pos.length, P: o.P };
+  });
+  /* baseline + convergence for grading (max pair separation; mean angle
+     between rays at the fixed points) */
+  let baseline = 0;
+  for (let i = 0; i < obs.length; i++) for (let j = i + 1; j < obs.length; j++) baseline = Math.max(baseline, mag(sub(obs[i].P, obs[j].P)));
+  let convSum = 0, convN = 0;
+  for (const X of pos) {
+    for (let i = 0; i < obs.length; i++) for (let j = i + 1; j < obs.length; j++) {
+      const di = unit(sub(X, obs[i].P)), dj = unit(sub(X, obs[j].P));
+      convSum += Math.acos(clampN(dot(di, dj), -1, 1)) * R2D; convN++;
+    }
+  }
+  const conv = convN ? convSum / convN : 0;
+  return {
+    ok: true, ref, offset, meanMiss: final.meanMiss, dropped: final.dropped,
+    n: times.length, times, pos, k, window: [final.t0, final.t1],
+    nObs: obs.length, perObs, syncConf, bothWhen, baseline, conv,
+    names: obs.map((o) => o.s.name),
+  };
+}
+
 /* DENSE per-frame object kinematics from a stabilized video's objPath
    ([{t,az,el,q}] — the tracked object's WORLD direction each sampled frame,
    camera motion already removed by stabilization). This is the ANGULAR
