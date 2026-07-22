@@ -16,7 +16,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
-import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo } from "./math/kinematics.js";
+import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
@@ -7824,6 +7824,41 @@ ${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the
 <p class="cap">Each frame's object direction comes from the stabilized, world-locked track (camera motion removed), so this is a direct per-instant intersection of two real sight-lines — no assumed distance. Accuracy is bounded by the ${fmtLenShort(vs.baseline)} baseline vs the ${fmtLenShort(vs.perObs[0]?.meanRange || 0)} range (convergence ${vs.conv.toFixed(1)}°), the ${vs.bothWhen ? "EXIF-seeded" : "manually-set"} time sync, and each clip's compass/sky alignment.</p>`;
     }
   }
+  /* --- VIDEO + STILL: a dense clip anchored to absolute scale by one photo's
+     sight-line — a full absolute trajectory from a mixed pair. Only when there
+     ISN'T already a two-video fix (that's stronger). --- */
+  let mixedHtml = "";
+  {
+    const mx = (!vstereoHtml) ? mixedStereo(origAct) : null;
+    if (mx && mx.ok && mx.n >= 3) {
+      const spd = (m) => fmtSpeedShort(m);
+      let plot = "";
+      try {
+        const mid = mx.pos[mx.pos.length >> 1];
+        const vfix = { ref: mx.ref, obs: [{ P: mx.Pv, s: { name: mx.names[0] }, dA: unit(sub(mid, mx.Pv)) }, { P: mx.Ps, s: { name: mx.names[1] }, dA: dirFromAzEl(0, 0) }], solA: { X: mx.anchor.X, ts: [mag(sub(mx.anchor.X, mx.Pv)), mag(sub(mx.anchor.X, mx.Ps))], rmsMiss: mx.anchor.rmsMiss } };
+        plot = await reportPlotSvg(vfix, mx.pos);
+      } catch (e) { plot = ""; }
+      const kh = mx.k ? `<table>` +
+        row("Frames / duration", `${mx.n} · ${(mx.times[mx.times.length - 1] - mx.times[0]).toFixed(1)} s`) +
+        row("Path length", fmtLenShort(mx.k.path)) +
+        row("Avg / peak speed", `${spd(mx.k.avgSpeed)} / ${spd(mx.k.peakSpeed)} peak`) +
+        (mx.k.peakA != null ? row("Peak acceleration", mx.k.peakA.toFixed(1) + " m/s²") : "") +
+        (mx.k.peakLoad != null ? row("Peak felt load", mx.k.peakLoad.toFixed(2) + " g") : "") +
+        `</table>` + reportTrajSvg(mx.k) : "";
+      mixedHtml = `<h2>Video + photo trajectory</h2>
+<p class="lead"><b>${e2(mx.names[0] || "the clip")}</b> (a stabilized, object-tracked video) anchored to absolute scale by <b>${e2(mx.names[1] || "the photo")}</b>'s sight-line. The two rays meet best ${mx.anchor.vt.toFixed(2)} s into the clip — the object's true position at that instant — fixing its range at <b>${fmtLenShort(mx.anchor.dist)}</b>${mx.anchor.sizeM != null ? ` and true size at <b>${fmtLenShort(mx.anchor.sizeM)}</b>` : ""}; the clip's own ${mx.sized ? "size profile" : "constant range"} then scales that across every frame into a full 3D path.</p>
+<table><tr><th>Anchor fix</th><th></th></tr>
+${row("Baseline (video↔photo)", fmtLenShort(mx.baseline))}
+${row("Convergence at the anchor", `${mx.conv.toFixed(1)}°${mx.conv < 6 ? " — shallow; range less certain" : ""}`)}
+${row("Ray miss at the anchor", fmtLenShort(mx.anchor.rmsMiss))}
+${row("Range at the anchor", fmtLenShort(mx.anchor.dist))}
+${mx.sizeMin != null ? row("True size (min–max)", `${fmtLenShort(mx.sizeMin)} – ${fmtLenShort(mx.sizeMax)}`) : ""}
+</table>
+${kh}
+${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the video's sight-line fan and the photo's single ray, the anchor fix, and the scaled 3D path (blue).</p>` : ""}
+<p class="cap">${mx.sized ? "The object was sized across the clip, so its range (and true size) vary frame-to-frame; the photo pins the absolute scale." : "The object wasn't sized frame-to-frame, so range is held at the anchor value — absolute distance and tangential speed are recovered, but toward/away motion isn't. Size the object on a few frames (measure step) to capture it."} A second full video, or a photo taken closer to the object's mid-flight, tightens this further.</p>`;
+    }
+  }
   /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
      at the primary observer's time & place. Flags glare, a bright Moon as
      the light source, and pins the local-time / twilight state. --- */
@@ -8109,6 +8144,7 @@ ${(() => { const ws = origAct.filter((s) => s.statement && String(s.statement).t
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(vstereoHtml, true)}
+${collapsible(mixedHtml, true)}
 ${collapsible(videoHtml, false)}
 ${collapsible(alignHtml, true)}
 ${collapsible(adsbHtml, false)}
