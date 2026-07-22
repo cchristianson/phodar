@@ -800,6 +800,21 @@ export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
     const sameSpot = Math.hypot(near.px - wide.px, near.py - wide.py) < 2;
     best = (!sameSpot && wide.ncc > near.ncc + 0.12) ? wide : near;
   } else best = near && near.ok ? near : wide && wide.ok ? wide : (wide || near);
+  /* DRIFT ANCHOR — the pixel template above comes from the PREVIOUS frame, so
+     each frame's small localization error seeds the next frame's template and
+     the track slowly walks off the object (field-observed: good at the start,
+     then squirrelly and drifting). Also match the PRISTINE seed template (the
+     object patch from the marked frame, which can never drift) near the same
+     prediction, and PREFER it whenever it still correlates competitively.
+     Only a real appearance change (zoom/rotation dropping the seed's ncc well
+     below the adaptive match) lets the frame-to-frame match win — so a
+     stable-looking object is locked to its original appearance throughout. */
+  if (opts.seed && opts.seed.data) {
+    const anchor = trackFeatures(opts.seed.data, nextData, w, h,
+      [{ tx: opts.seed.tx, ty: opts.seed.ty, px: bx, py: by }],
+      { patch, search: Math.max(26, opts.search || 0), minNcc, centerW: true })[0];
+    if (anchor && anchor.ok && (!best || !best.ok || anchor.ncc >= best.ncc - 0.06)) best = anchor;
+  }
   if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: best ? best.ncc : -1 }; // hold rides the velocity (or the guide), not the stale spot
   const tr = [best];
   const g2 = pixToDirK(tr[0].px * sc, tr[0].py * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
