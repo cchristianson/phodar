@@ -1791,7 +1791,10 @@ function MediaMeasure({ src, update, wizard }) {
                 )}
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
-              {(!wizard || media.kind === "video") && (active === "trk" || (src.track || []).length > 0) && (
+              {/* Track tools follow the mode toggle in the wizard — hidden in
+                 3D-object mode even when points already exist (they reappear on
+                 ⊕ Track points). Non-wizard keeps the "show if any points" rule. */}
+              {(!wizard || media.kind === "video") && (active === "trk" || (!wizard && (src.track || []).length > 0)) && (
                 <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)" }}>
                   {/* one compact row: count · auto-step · Undo · Clear (was two
                      rows that wrapped on a phone) */}
