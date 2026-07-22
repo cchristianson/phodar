@@ -770,6 +770,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [vidDur, setVidDur] = useState(0);
   const [trkAdv, setTrkAdv] = useState(15); // frames to auto-advance after dropping a track point (½ s at 30 fps)
   const [trkAdjust, setTrkAdjust] = useState(false); // Track sub-mode: place points (false) vs adjust size/shape at the nearest point (true)
+  const [colorOpen, setColorOpen] = useState(null);  // which colour slider is open in the Track panel: null | "obj" | "pts"
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
   const ptsRef = useRef(new Map());
@@ -1438,6 +1439,8 @@ function MediaMeasure({ src, update, wizard }) {
      current fovH; re-derived from the solved per-frame FOV after
      stabilization, so a camera zoom can't masquerade as approach). --- */
   const trkSorted = [...(src.track || [])].filter((p) => p.x != null && isNum(p.t)).sort((a, b) => a.t - b.t);
+  const trackHue = isNum(src.trackHue) ? +src.trackHue : 210;       // track-point colour (recolourable in the Track panel)
+  const trkCol = (a = 1) => `hsla(${trackHue},90%,68%,${a})`;
   /* which placed point the size/attitude controls target. Normally the point
      owning the frame you're on (within 0.55 s); in ADJUST mode the NEAREST
      placed point regardless of distance — scrub anywhere and the model snaps
@@ -1686,13 +1689,13 @@ function MediaMeasure({ src, update, wizard }) {
                 return (
                   <svg style={{ position: "absolute", inset: 0, pointerEvents: "none" }} width="100%" height="100%">
                     <polyline points={tp.map((q) => q.join(",")).join(" ")}
-                      fill="none" stroke="var(--track)" strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
+                      fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
                     {tp.map((q, i) => {
                       const op = fadeT(pts2[i]);
                       if (op <= 0.01) return null;
                       return (
                         <circle key={i} cx={q[0]} cy={q[1]} r={i === tp.length - 1 ? 4 : 2.5}
-                          fill={i === tp.length - 1 ? "var(--track)" : "rgba(143,180,255,.75)"} opacity={op} />
+                          fill={trkCol(i === tp.length - 1 ? 1 : 0.75)} opacity={op} />
                       );
                     })}
                     {/* wireframe GHOSTS at sized points (and the point being
@@ -1863,6 +1866,24 @@ function MediaMeasure({ src, update, wizard }) {
                       {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>scrub to a point · taps won't add</span>}
                     </div>
                   )}
+                  {/* COLOUR — recolour the object and/or the track points so they
+                     stand out against the video (each swatch opens its hue slider) */}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+                    <span className="microlabel" style={{ marginBottom: 0 }}>colour</span>
+                    {src.shapeFit && (
+                      <button title="object colour" onClick={() => setColorOpen((o) => (o === "obj" ? null : "obj"))}
+                        style={{ width: 18, height: 18, borderRadius: 9, padding: 0, flex: "0 0 auto", cursor: "pointer", background: `hsl(${src.shapeFit.hue ?? 36},88%,60%)`, border: colorOpen === "obj" ? "2px solid #fff" : "1px solid rgba(255,255,255,.35)" }} />
+                    )}
+                    <button title="track-point colour" onClick={() => setColorOpen((o) => (o === "pts" ? null : "pts"))}
+                      style={{ width: 18, height: 18, borderRadius: 9, padding: 0, flex: "0 0 auto", cursor: "pointer", background: trkCol(1), border: colorOpen === "pts" ? "2px solid #fff" : "1px solid rgba(255,255,255,.35)" }} />
+                    {colorOpen === "obj" && src.shapeFit ? (
+                      <input type="range" min={0} max={360} step={2} value={src.shapeFit.hue ?? 36} onChange={(e) => updShape({ hue: +e.target.value })} style={{ flex: 1 }} />
+                    ) : colorOpen === "pts" ? (
+                      <input type="range" min={0} max={360} step={2} value={trackHue} onChange={(e) => update({ trackHue: +e.target.value })} style={{ flex: 1 }} />
+                    ) : (
+                      <span style={{ fontSize: 10, color: "var(--dim)" }}>{src.shapeFit ? "tap a swatch: object · points" : "tap the swatch to recolour points"}</span>
+                    )}
+                  </div>
                   {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
                      outline to the object as it appears RIGHT THERE. Apparent
                      size across frames ⇒ range ratio over time (the radial
@@ -5614,6 +5635,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {(() => {
                     /* apparent SIZE at this point → captures radial (closer/farther) motion.
                        Anchored on the measured object size; range shown relative to point 1. */
+                    /* VIDEO: size + attitude are set on the MEASURE step (Track →
+                       ✎ Adjust size/shape), scrubbing to each point — not here. */
+                    if (source?.mediaKind === "video") return (
+                      <div style={{ fontSize: 10.5, color: "var(--dim)", margin: "2px 0", lineHeight: 1.5 }}>
+                        Set this object's <b style={{ color: "var(--track)" }}>size &amp; attitude</b> on the measure step — <b>Track → ✎ Adjust size/shape</b>, scrub to the point. It carries through here automatically.
+                      </div>
+                    );
                     const angRef0 = isNum(sortedTrack[0]?.ang) ? +sortedTrack[0].ang : (objAngW != null ? +objAngW : null);
                     const pAng = isNum(sortedTrack[selPt].ang) ? +sortedTrack[selPt].ang : (objAngW != null ? +objAngW : null);
                     if (angRef0 == null || pAng == null) return (
@@ -5653,7 +5681,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       </div>
                     );
                   })()}
-                  {source?.shapeFit && (
+                  {source?.shapeFit && source?.mediaKind !== "video" && (
                     <div style={{ marginTop: 8 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <button className={"btn sm" + (rotMode ? " amber" : "")} onClick={() => setRotMode((v) => !v)}>🔄 Rotate</button>
