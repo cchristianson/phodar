@@ -263,3 +263,80 @@ export function analyzeTracks(sources) {
   }
   return { stereo, solo };
 }
+
+/* DENSE per-frame object kinematics from a stabilized video's objPath
+   ([{t,az,el,q}] — the tracked object's WORLD direction each sampled frame,
+   camera motion already removed by stabilization). This is the ANGULAR
+   trajectory, measured with NO distance assumption:
+     • ω(t) = dθ/dt, the angular rate in deg/s between samples (itself a strong
+       discriminator — a satellite tracks at a near-constant rate, an aircraft's
+       varies, a hovering object ≈ 0),
+     • the total angular sweep and duration.
+   If the measure-step track carries per-frame angular SIZES, they are
+   interpolated onto the objPath times, giving the size profile (min/max +
+   range-ratio) — so linear size and speed at ANY assumed distance follow via
+   the returned helpers. `q` (match confidence) rides along so the report can
+   flag stretches held on the guide rather than pixel-locked. Pure. */
+export function videoKinematics(source) {
+  const op = (source?.objPath || []).filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
+  if (op.length < 3) return null;
+  const dirs = op.map((p) => dirFromAzEl(+p.az, +p.el));
+  const t = op.map((p) => +p.t);
+  const rate = []; let sweep = 0;
+  for (let i = 0; i < op.length - 1; i++) {
+    const dt = t[i + 1] - t[i]; if (!(dt > 1e-6)) continue;
+    const dth = Math.acos(clampN(dot(dirs[i], dirs[i + 1]), -1, 1)) * R2D;
+    sweep += dth;
+    rate.push({ t: (t[i] + t[i + 1]) / 2, omega: dth / dt });
+  }
+  if (!rate.length) return null;
+  const dur = t[t.length - 1] - t[0];
+  const peakOmega = Math.max(...rate.map((r) => r.omega));
+  const avgOmega = dur > 0 ? sweep / dur : 0;
+  /* per-frame angular SIZE: interpolate the sized measure-step points onto the
+     objPath times (nearest-held at the ends). `ang` is degrees of full width. */
+  const sized = (source?.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0)
+    .map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
+  let ang = null;
+  if (sized.length) {
+    ang = t.map((tt) => {
+      if (tt <= sized[0].t) return sized[0].ang;
+      if (tt >= sized[sized.length - 1].t) return sized[sized.length - 1].ang;
+      let i = 0; while (i < sized.length - 1 && sized[i + 1].t < tt) i++;
+      const a = sized[i], b = sized[i + 1], u = (tt - a.t) / Math.max(1e-9, b.t - a.t);
+      return a.ang + (b.ang - a.ang) * u;
+    });
+  }
+  const angMin = ang ? Math.min(...ang) : null;
+  const angMax = ang ? Math.max(...ang) : null;
+  /* range ∝ 1/tan(½·angularSize): the range ratio (how much closer/farther the
+     object got) is measurable from size alone, distance-free. */
+  const rangeRatio = (angMin && angMax) ? Math.tan((angMax * D2R) / 2) / Math.tan((angMin * D2R) / 2) : null;
+  return {
+    n: op.length, dur, sweep, peakOmega, avgOmega,
+    samples: op.map((p, i) => ({ t: t[i], az: +p.az, el: +p.el, q: p.q, ang: ang ? ang[i] : null })),
+    rate, ang, angMin, angMax, rangeRatio,
+    /* at an assumed reference distance D (metres) at the reference time, return
+       the object's true size (m) and its mean TANGENTIAL speed (m/s). If sizes
+       vary, range tracks size so the reported speed includes radial motion. */
+    atDistance(D) {
+      if (!(D > 0)) return null;
+      // reference: the first sized frame (or the first frame if unsized)
+      const iRef = ang ? 0 : 0;
+      const angRef = ang ? ang[iRef] : null;
+      const range = ang ? t.map((_, i) => D * Math.tan((angRef * D2R) / 2) / Math.tan((ang[i] * D2R) / 2)) : t.map(() => D);
+      // 3D positions in metres, then finite-difference speed
+      let pathLen = 0, peakSp = 0;
+      for (let i = 0; i < op.length - 1; i++) {
+        const dt = t[i + 1] - t[i]; if (!(dt > 1e-6)) continue;
+        const p0 = scl(dirs[i], range[i]), p1 = scl(dirs[i + 1], range[i + 1]);
+        const seg = mag(sub(p1, p0));
+        pathLen += seg;
+        peakSp = Math.max(peakSp, seg / dt);
+      }
+      const avgSp = dur > 0 ? pathLen / dur : 0;
+      const sizeRef = ang ? 2 * D * Math.tan((angRef * D2R) / 2) : null;
+      return { range0: D, sizeM: sizeRef, avgSpeed: avgSp, peakSpeed: peakSp, path: pathLen };
+    },
+  };
+}
