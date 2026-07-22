@@ -429,16 +429,23 @@ const css = `
    report crops) match CSS-filtered <img> surfaces (measure step, place mode). */
 const imgAdjNeutral = (a) => !a || ((a.bri == null || a.bri === 100) && (a.con == null || a.con === 100));
 const imgAdjFilter = (a) => imgAdjNeutral(a) ? "none" : `brightness(${(a.bri ?? 100) / 100}) contrast(${(a.con ?? 100) / 100})`;
+/* 256-entry brightness→contrast lookup — the transform depends only on the
+   input byte, so precompute it once and the per-pixel work is a table read
+   instead of two multiplies + a clamp × 3 channels. This is what keeps a
+   per-frame bake (world-locked video playback) from bogging: the loop over a
+   ~1600 px texture used to do ~13 float ops/pixel every frame. Uint8ClampedArray
+   rounds+clamps on assignment, so the [0,255] clamp is free. */
+function imgAdjLut(a) {
+  const b = (a.bri ?? 100) / 100, c = (a.con ?? 100) / 100;
+  const lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) lut[v] = (v * b - 127.5) * c + 127.5; // brightness then contrast, matching CSS filter order
+  return lut;
+}
 function applyImgAdj(ctx, w, h, a) {
   if (imgAdjNeutral(a)) return;
-  const b = (a.bri ?? 100) / 100, c = (a.con ?? 100) / 100;
+  const lut = imgAdjLut(a);
   const id = ctx.getImageData(0, 0, w, h), d = id.data;
-  for (let i = 0; i < d.length; i += 4) {
-    for (let k = 0; k < 3; k++) {
-      let v = (d[i + k] * b - 127.5) * c + 127.5; // brightness then contrast, matching CSS filter order
-      d[i + k] = v < 0 ? 0 : v > 255 ? 255 : v;
-    }
-  }
+  for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
   ctx.putImageData(id, 0, 0);
 }
 
@@ -2432,6 +2439,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const twistRef = useRef(null);
   const warpRef = useRef(null);   // canvas that draws the Look-mode warp ourselves
   const texRef = useRef(null);
+  const bakeCvRef = useRef(null);   // reused bake canvas — allocating one per playback frame was GC-thrashing the world view
   const [, setTexReady] = useState(0);
 
   /* decode the still texture for the canvas warp ONCE. Image: the EXIF-
@@ -2450,11 +2458,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     try {
       if (w > MAXT || h > MAXT || needAdj) {   // draw to a canvas to downscale and/or bake the B/C adjustment in
         const sc = Math.min(1, MAXT / Math.max(w, h));
-        const cv = document.createElement("canvas");
-        cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+        const tw = Math.round(w * sc), th = Math.round(h * sc);
+        /* reuse one canvas across frames — a fresh 1600 px canvas per playback
+           frame allocated ~5 MB each time and thrashed GC. Bake is synchronous
+           (getImageData→loop→putImageData) so the mesh warp, which reads this
+           canvas, can never catch a half-written frame. willReadFrequently only
+           when we actually read it back (the B/C pass). */
+        let cv = bakeCvRef.current;
+        /* getContext caches its options — a canvas made without the read hint
+           keeps a GPU backing even when we later need fast getImageData, so
+           re-create it if the hint requirement flips (toggling B/C on/off) */
+        if (!cv || cv._wrf !== needAdj) { cv = bakeCvRef.current = document.createElement("canvas"); cv._wrf = needAdj; }
+        if (cv.width !== tw) cv.width = tw;
+        if (cv.height !== th) cv.height = th;
         const cx = cv.getContext("2d", { willReadFrequently: needAdj });
-        cx.drawImage(drawable, 0, 0, cv.width, cv.height);
-        if (needAdj) applyImgAdj(cx, cv.width, cv.height, adj);
+        cx.drawImage(drawable, 0, 0, tw, th);
+        if (needAdj) applyImgAdj(cx, tw, th, adj);
         tex = cv;
       }
     } catch (e) { /* keep full-res */ }
