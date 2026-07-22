@@ -19,7 +19,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -1067,6 +1067,30 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxDev(weak) < 0.1 ? 1 : 0, 1, 0, "smooth: weak-frame wiggle nearly killed (<0.1°)");
     const ramp = Array.from({ length: 9 }, (_, i) => mk(i * 0.25, 250 + i * 0.5, 20)); smoothPath(ramp);
     approx(Math.max(...ramp.map((q, i) => Math.abs(q.az - (250 + i * 0.5)))) < 1e-6 ? 1 : 0, 1, 0, "smooth: a real linear pan is untouched");
+  }
+
+  // 4h-d. smoothObjPath: the OBJECT track (t,az,el,q) — a background-lookalike
+  // LATCH (a lone big jump on a low-q frame) is despiked back onto the path,
+  // per-frame jitter is damped, and a real smooth object sweep passes through.
+  {
+    const mko = (t, az, el, q) => ({ t, az, el, q });
+    // a clean diagonal sweep + one latch spike at i=4 (low q) + small jitter
+    const truthAz = (i) => 100 + i * 2, truthEl = (i) => 20 + i * 1;
+    const op = Array.from({ length: 9 }, (_, i) => {
+      if (i === 4) return mko(i * 0.25, 130, 40, 0.1);           // LATCH: ~22° az / ~16° el off, low confidence
+      const j = i % 2 ? 0.3 : -0.3;                              // sub-degree matcher jitter
+      return mko(i * 0.25, truthAz(i) + j, truthEl(i) + j, 0.9); // strong pixel locks
+    });
+    const spiked = smoothObjPath(op);
+    approx(spiked >= 1 ? 1 : 0, 1, 0, "smoothObj: the background latch was caught");
+    approx(Math.abs(op[4].az - truthAz(4)) < 3 ? 1 : 0, 1, 0, "smoothObj: latch az pulled back onto the sweep");
+    approx(Math.abs(op[4].el - truthEl(4)) < 3 ? 1 : 0, 1, 0, "smoothObj: latch el pulled back onto the sweep");
+    const jit = Math.max(...op.slice(1, -1).filter((_, i) => i + 1 !== 4).map((p, i0) => { const i = op.indexOf(p); return Math.abs(p.az - truthAz(i)); }));
+    approx(jit < 0.3 ? 1 : 0, 1, 0, "smoothObj: per-frame jitter damped (<0.3°)");
+    // a perfectly smooth sweep (all strong) barely moves — real motion survives
+    const clean = Array.from({ length: 9 }, (_, i) => mko(i * 0.25, truthAz(i), truthEl(i), 0.9));
+    smoothObjPath(clean);
+    approx(Math.max(...clean.map((p, i) => Math.abs(p.az - truthAz(i)))) < 1e-6 ? 1 : 0, 1, 0, "smoothObj: a clean linear sweep is untouched");
   }
 
   // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —

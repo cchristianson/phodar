@@ -896,6 +896,55 @@ export function smoothPath(path, opts = {}) {
   return path;
 }
 
+/* SMOOTH an object track ([{t,az,el,q}], q = the per-frame match confidence:
+   an ncc for a real pixel lock, ~0.25 for a guided hold, 0 for an unguided
+   miss). The frame-by-frame pixel matcher jitters — a template settles a
+   pixel or two off between frames, and a background lookalike causes an
+   outright latch/jump — so the world-locked object outline reads as jerky.
+   Two stages, both EVIDENCE-WEIGHTED by q (strong pixel locks barely move;
+   low-confidence points lean on their neighbours):
+     1. despike — a point far from its neighbours' time-interpolation is a
+        latch or miss; snap it back to the interpolation (weak points yield
+        at a lower threshold).
+     2. smooth — a light time-aware 3-tap pull toward the neighbour
+        interpolation; two passes ≈ a binomial kernel. Real object motion is
+        low-frequency across samples and passes through; per-frame jitter is
+        damped. Endpoints are held (no neighbour on one side).
+   Az is wrap-aware. Mutates in place, returns the count of despiked points. */
+export function smoothObjPath(op, opts = {}) {
+  if (!Array.isArray(op) || op.length < 3) return 0;
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  let spiked = 0;
+  for (let pass = 0; pass < (opts.despikePasses == null ? 2 : opts.despikePasses); pass++) {
+    for (let i = 1; i < op.length - 1; i++) {
+      const a = op[i - 1], b = op[i], c = op[i + 1];
+      const span = c.t - a.t; if (!(span > 1e-6)) continue;
+      const u = (b.t - a.t) / span;
+      const iAz = a.az + angD(c.az, a.az) * u, iEl = a.el + (c.el - a.el) * u;
+      const nAz = Math.abs(angD(c.az, a.az)), nEl = Math.abs(c.el - a.el);
+      const k = (b.q == null ? 0.5 : b.q) < 0.3 ? 0.5 : 1;      // a weak match yields at half the threshold
+      let did = false;
+      if (Math.abs(angD(b.az, iAz)) > Math.max(0.7 * k, 1.6 * nAz)) { b.az = +(((iAz % 360) + 360) % 360).toFixed(3); did = true; }
+      if (Math.abs(b.el - iEl) > Math.max(0.7 * k, 1.6 * nEl)) { b.el = +iEl.toFixed(3); did = true; }
+      if (did) spiked++;
+    }
+  }
+  for (let pass = 0; pass < (opts.passes == null ? 2 : opts.passes); pass++) {
+    const src = op.map((p) => ({ t: p.t, az: p.az, el: p.el }));
+    for (let i = 1; i < op.length - 1; i++) {
+      const a = src[i - 1], b = src[i], c = src[i + 1];
+      const span = c.t - a.t; if (!(span > 1e-6)) continue;
+      const q = op[i].q == null ? 0.5 : op[i].q;
+      const al = q >= 0.7 ? 0.2 : q >= 0.3 ? 0.42 : 0.6;        // strong lock barely moves, miss leans hard
+      const u = (b.t - a.t) / span;
+      const mAz = a.az + angD(c.az, a.az) * u;
+      op[i].az = +(((b.az + al * angD(mAz, b.az)) % 360 + 360) % 360).toFixed(3);
+      op[i].el = +(b.el + al * (a.el + (c.el - a.el) * u - b.el)).toFixed(3);
+    }
+  }
+  return spiked;
+}
+
 /* Distribute a re-anchor's drift correction back across the un-anchored span
    ("meet in the middle"): entries between the last anchor (at time ancT) and
    the anchored entry at kIdx get the correction scaled by their time fraction,
