@@ -3880,7 +3880,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             const bufO = grabO();
             const ps = posePathAt(path, tt);
             const gd = guideAt(tt);
-            const o = stepObject(prevO, bufO, OW, OH, st2, ps, { natW: source.natW, natH: source.natH, objPx: objPxO, guide: gd });
+            const o = stepObject(prevO, bufO, OW, OH, st2, ps, { natW: source.natW, natH: source.natH, objPx: objPxO, guide: gd, seed: { data: seedO, tx: objSeed.tx, ty: objSeed.ty } });
             prevO = bufO;
             st2 = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
             const ae = dirToAzEl(o.g);

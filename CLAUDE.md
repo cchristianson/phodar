@@ -584,6 +584,19 @@ terrain stay frozen and only the object moves. Build ladder:
      time (video), so marks and marked-frame can never disagree (the old
      "✓ Use this frame"-only flow let the object template seed off the
      wrong frame entirely).
+   - SEED DRIFT ANCHOR (stepObject opts.seed): the pixel template comes
+     from the PREVIOUS frame, so each frame's small localization error
+     seeds the next frame's template and the track slowly walks off the
+     object (field report: "beginning tracks then gets squirrelly and
+     drifts off"). Every step ALSO matches the PRISTINE seed template
+     (the object patch from the marked frame, which can never drift)
+     near the same prediction, and PREFERS it whenever it still
+     correlates within 0.06 ncc of the frame-to-frame match — so a
+     stable-looking object stays locked to its original appearance, and
+     only a real appearance change (zoom/rotation dropping the seed's
+     ncc well below the adaptive match) lets the frame-to-frame match
+     win. Asserted in mathcheck (a distinct bright object swept past a
+     dimmer background grid stays <0.35° over 14 frames).
    Misses hold the velocity prediction and count honestly; the track is
    kept only if ≥30% matched (else "object lost", outline stays put).
    The finished objPath is run through `smoothObjPath` (postrack, pure,
