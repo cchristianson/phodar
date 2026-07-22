@@ -679,8 +679,18 @@ terrain stay frozen and only the object moves. Build ladder:
    look-mode dome shows ONLY the wireframe (the two mark rings are a
    no-shape fallback; track dots + B circle were dropped as clutter,
    and the numbered trajectory chips render only while the ⊕
-   Trajectory tool is active). The dome wire renders at TRUE fitted
-   angular size, scaling with dome zoom through the projection — a
+   Trajectory tool is active). **KEYFRAMED size + attitude**: the
+   displayed model (dome playback + world-view export) interpolates the
+   SIZE (`wpx` marks, measure step) and ROTATION (`rotM` marks, sky-view
+   trajectory rotMode) the user set along the track — `sampleShapeAt`
+   (shapes.js, pure, mathcheck-asserted) linearly ramps apparent width
+   and quaternion-SLERPs attitude between keyframes (clamped past the
+   ends, fitted shape where none), and `shapeAt` normalises the target
+   apparent width to a real sizeNat through the rotated shape's own
+   projection. Two size marks ⇒ a smooth grow/shrink between them; N
+   marks ⇒ piecewise; same for attitude via SLERP. The dome wire renders
+   at TRUE fitted angular size, scaling with dome zoom through the
+   projection — a
    short-lived "legibility floor" that magnified small wires was
    REMOVED on user request (the set size must be honoured; a distant
    object really is tiny — zoom in). The world-locked EXPORT burns in
