@@ -793,6 +793,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [touching, setTouching] = useState(false); // any finger down on the canvas
   const wrapRef = useRef(null), mediaRef = useRef(null), loupeRef = useRef(null);
   const trkDragRef = useRef(null);   // live position of a loupe-assisted Track drag (committed on lift)
+  const trkMoveRef = useRef(null);   // ADJUST mode: index (in trkSorted) of the point being dragged to a new spot
   const trkHistRef = useRef([]);     // Track-point undo stack (snapshots before each place/delete/clear)
 
   const natW = src.natW, natH = src.natH;
@@ -1273,10 +1274,18 @@ function MediaMeasure({ src, update, wizard }) {
       shapeCenter = Math.hypot((e.clientX - r.left) - scx, (e.clientY - r.top) - scy) < 22;
     }
     const hit = active === "trk" || shapeMode ? null : nearest(p);
+    /* ADJUST mode: was the press ON an existing track point? If so, dragging
+       MOVES that point (grabbed index remembered here, acted on in onMove). */
+    let trkGrab = -1;
+    if (active === "trk" && trkAdjust && trkSorted.length) {
+      let bd = 44 / (scale * (view.z || 1));
+      trkSorted.forEach((pt, i) => { const dd = Math.hypot(pt.x - p.x, pt.y - p.y); if (dd < bd) { bd = dd; trkGrab = i; } });
+    }
     pendingRef.current = {
       id: e.pointerId,
       mode: active === "trk" ? "trk" : shapeMode ? (shapeCenter ? "shapeMove" : "shape") : "mark",
       key: active === "trk" || shapeMode ? null : (hit || active),
+      grab: trkGrab,
       nat: p, sx: e.clientX, sy: e.clientY,
       fx: e.clientX - r.left, fy: e.clientY - r.top,
     };
@@ -1312,7 +1321,24 @@ function MediaMeasure({ src, update, wizard }) {
     if (pd && pd.id === e.pointerId) {
       if (Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) > 7) {
         if (pd.mode === "trk") {
-          if (trkAdjust) { killPending(); return; }   // adjust mode: dragging never places a point
+          if (trkAdjust) {
+            /* adjust mode: a drag never PLACES a point, but grabbing an existing
+               one MOVES it (loupe-assisted), live, until you lift. */
+            if (pd.grab >= 0) {
+              killPending();
+              pushTrkHist();                    // one undo for the whole drag
+              trkMoveRef.current = pd.grab;
+              setSelTrk(pd.grab);               // keep the moved point selected for the panel
+              const np = toNat(e.clientX, e.clientY);
+              trkDragRef.current = np;
+              setDrag(true);
+              setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+              moveTrkTo(pd.grab, np.x, np.y);
+              requestAnimationFrame(() => requestAnimationFrame(() => { if (trkDragRef.current) drawLoupe(trkDragRef.current); }));
+              return;
+            }
+            killPending(); return;              // empty space: dragging does nothing
+          }
           /* Track DRAG = loupe-assisted placement (the object is almost
              always small): magnifier follows the finger, the point commits
              where you LIFT. A clean tap still places instantly. */
@@ -1333,6 +1359,7 @@ function MediaMeasure({ src, update, wizard }) {
       if (!trkDragRef.current) return;
       trkDragRef.current = p;
       setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+      if (trkMoveRef.current != null) moveTrkTo(trkMoveRef.current, p.x, p.y);   // adjust: drag the point live
       drawLoupe(p);
       return;
     }
@@ -1394,6 +1421,7 @@ function MediaMeasure({ src, update, wizard }) {
           }
         }
         trkDragRef.current = null;
+        trkMoveRef.current = null;
         if (active === "p1" && !src.A.p2) setActive("p2");
       }
     }
@@ -1402,7 +1430,7 @@ function MediaMeasure({ src, update, wizard }) {
   /* safety valve: app-switch or system gesture mid-touch must release the lock */
   useEffect(() => {
     const hardReset = () => {
-      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null;
+      ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null; trkMoveRef.current = null;
       killPending(); setTouching(false); setDrag(false); setFinger(null);
     };
     window.addEventListener("blur", hardReset);
@@ -1503,6 +1531,14 @@ function MediaMeasure({ src, update, wizard }) {
     if (!src.shapeFit) return { x, y };
     const cx = src.shapeFit.cx, cy = src.shapeFit.cy, rad = Math.max(28 / (scale * (view.z || 1)), wFit * 0.6);
     return Math.hypot(x - cx, y - cy) <= rad ? { x: cx, y: cy, anchor: true } : { x, y };
+  };
+  /* ADJUST mode: drag a placed point to a new spot on the photo. Only its pixel
+     position (x/y) changes — timing, size, attitude, turn and the anchor flag
+     ride along. Dragging the anchor re-references the whole recalled path (it's
+     the point pinned to the measured object direction), which is the point. */
+  const moveTrkTo = (i, x, y) => {
+    if (i < 0 || i >= trkSorted.length) return;
+    update({ track: trkSorted.map((p, k) => (k === i ? { ...p, x, y } : p)) });
   };
   const selectNearestTrk = (nat) => {
     if (!trkSorted.length) { setSelTrk(-1); return; }
@@ -2074,7 +2110,7 @@ function MediaMeasure({ src, update, wizard }) {
                             }}>{label}</button>
                         ))}
                       </div>
-                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · taps won't add" : "tap a point · taps won't add"}</span>}
+                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · drag a point to move it · taps won't add" : "tap a point · drag to move it · taps won't add"}</span>}
                     </div>
                   )}
                   {/* COLOUR — recolour the object and/or the track points so they
