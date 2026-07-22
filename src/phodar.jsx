@@ -524,7 +524,7 @@ const HELP_SECTIONS = [
       { h: "The four tools (one at a time)", items: [
         { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
         { t: "⊕ Trajectory", d: "Trace the object's path: the photo warps into the sky and you ⊕ drop world-anchored points where it was at each moment, with Δt timing." },
-        { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
+        { t: "📏 Size / ⚖ Compare", d: "Gauge distance from either end of the size⇄distance lock: slide an assumed range, resize the object to an assumed true size, or tap a reference object (drone, hawk, 737…) — the matching distance and altitude follow, since the measured angular width ties them together. ⚖ instead drops a reference ghost in the sky to compare apparent sizes — including by placing it on a map." },
       ]},
       { h: "Get the pointing exact (Place tools)", items: [
         { t: "✦ Auto star align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
@@ -5529,17 +5529,39 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   /* cloud-base cap: below a real deck, range < base/sin(el) */
                   const deck = wxSky && wxSky.baseAGL != null && ((wxSky.low != null ? wxSky.low : wxSky.cloud) || 0) >= 40;
                   const cb = (deck && isNum(objEl) && objEl > 0.5) ? cloudRangeBound(wxSky.baseAGL, objEl, objAngW) : null;
+                  /* the SAME lever from both ends: the measured angular size locks
+                     size·distance together, so a distance slider and a TRUE-SIZE
+                     slider (plus reference-object chips) all drive one state —
+                     resize the object and the distance follows, and vice versa */
+                  const distFromSize = (S) => S / (2 * Math.tan(objAngW * D2R / 2));
+                  const ts = clampN(Math.log(size / 0.1) / Math.log(300 / 0.1), 0, 1); // 0.1 m → 300 m, log
+                  const nearestRef = REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b);
                   return (
                     <>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide{isNum(objEl) ? ` · ${objEl.toFixed(0)}° up` : ""}</div>
+                      <div className="microlabel" style={{ marginTop: 4, marginBottom: 0 }}>if it was this far away…</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
                         onChange={(e) => setObjD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
-                        style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
+                        style={{ width: "100%", touchAction: "auto", pointerEvents: "auto" }} />
+                      <div className="microlabel" style={{ marginTop: 2, marginBottom: 0 }}>…or if it was this big</div>
+                      <input type="range" min={0} max={1} step={0.004} value={ts}
+                        onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                        onChange={(e) => setObjD(Math.max(1, Math.round(distFromSize(0.1 * Math.pow(300 / 0.1, +e.target.value)))))}
+                        style={{ width: "100%", touchAction: "auto", pointerEvents: "auto" }} />
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
-                        if it was <b>{fmtLenShort(objD)}</b> away → <b>{fmtLenShort(size)}</b> across
+                        <b>{fmtLenShort(size)}</b> across ⇄ <b>{fmtLenShort(objD)}</b> away
                         {alt != null && <> · <b>{fmtLenShort(Math.abs(alt))}</b> {alt >= 0 ? "above" : "below"} you</>}
-                        <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
+                      </div>
+                      {/* one-tap hypotheses: assume a known object's size → the distance follows */}
+                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                        {REF_OBJECTS.map((o) => (
+                          <button key={o.name} className="btn sm"
+                            style={{ fontSize: 9.5, padding: "4px 7px", ...(o === nearestRef ? { borderColor: "var(--amber)", color: "var(--amber)" } : {}) }}
+                            onClick={() => setObjD(Math.max(1, Math.round(distFromSize(o.size))))}>
+                            {o.name} · {fmtLenShort(o.size)}
+                          </button>
+                        ))}
                       </div>
                       {cb && (
                         <div style={{ fontFamily: "var(--mono)", fontSize: 11, marginTop: 3, color: objD > cb.maxRange ? "var(--red)" : "var(--teal)" }}>
@@ -5571,7 +5593,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   : trajOn
                     ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
                     : sizeOn
-                      ? "Slide an assumed distance — or 📍 set it on a map — to read the object's true size and altitude at that range."
+                      ? "Work the size⇄distance lock from either end: slide an assumed distance, RESIZE the object with the size slider, or tap a reference object — the matching distance, true size and altitude update live. 📍 sets the distance on a map."
                       : cmpOn
                         ? "Aim the crosshair, ⌖ drop the reference ghost there, then slide its distance — or set it on a map — to compare its apparent size to your object's."
                         : "Drag to look around · pinch to zoom. Pick a tool below: ✥ Place to align the photo, ⊕ Trajectory to trace its path, 📏 Size or ⚖ Compare to gauge distance.")
