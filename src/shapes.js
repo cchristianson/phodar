@@ -7,6 +7,7 @@
    ============================================================ */
 
 import { D2R } from "./math/geodesy.js";
+import { isNum } from "./math/format.js";
 
 /* --- 3D wireframe fits: pick a solid, drag to rotate it in 3D, slider for
        size. The PROJECTED silhouette writes A.p1/p2, while the stored pose
@@ -30,6 +31,67 @@ export const rotY3 = (d) => { const a = d * D2R, c = Math.cos(a), s = Math.sin(a
 export const rotZ3 = (d) => { const a = d * D2R, c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
 export const mul3 = (A, B) => { const R = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { let v = 0; for (let k = 0; k < 3; k++) v += A[i * 3 + k] * B[k * 3 + j]; R[i * 3 + j] = v; } return R; };
 export const app3 = (M, p) => [M[0] * p[0] + M[1] * p[1] + M[2] * p[2], M[3] * p[0] + M[4] * p[1] + M[5] * p[2], M[6] * p[0] + M[7] * p[1] + M[8] * p[2]];
+
+/* --- ROTATION INTERPOLATION (quaternion SLERP) — a 3D orientation can't be
+   lerped as a matrix (that shears and shrinks it); convert to a quaternion,
+   spherically interpolate, convert back. Used to smoothly tumble the fitted
+   model between the attitudes the user keyframed along the track. --- */
+export function quatFromMat3(m) { // m row-major, orthonormal
+  const t = m[0] + m[4] + m[8];
+  let w, x, y, z;
+  if (t > 0) { const s = Math.sqrt(t + 1) * 2; w = 0.25 * s; x = (m[7] - m[5]) / s; y = (m[2] - m[6]) / s; z = (m[3] - m[1]) / s; }
+  else if (m[0] > m[4] && m[0] > m[8]) { const s = Math.sqrt(1 + m[0] - m[4] - m[8]) * 2; w = (m[7] - m[5]) / s; x = 0.25 * s; y = (m[1] + m[3]) / s; z = (m[2] + m[6]) / s; }
+  else if (m[4] > m[8]) { const s = Math.sqrt(1 + m[4] - m[0] - m[8]) * 2; w = (m[2] - m[6]) / s; x = (m[1] + m[3]) / s; y = 0.25 * s; z = (m[5] + m[7]) / s; }
+  else { const s = Math.sqrt(1 + m[8] - m[0] - m[4]) * 2; w = (m[3] - m[1]) / s; x = (m[2] + m[6]) / s; y = (m[5] + m[7]) / s; z = 0.25 * s; }
+  const n = Math.hypot(w, x, y, z) || 1; return [w / n, x / n, y / n, z / n];
+}
+export function mat3FromQuat(q) {
+  const [w, x, y, z] = q;
+  return [
+    1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+    2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+    2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y),
+  ];
+}
+export function slerp3(mA, mB, u) {
+  let a = quatFromMat3(mA), b = quatFromMat3(mB);
+  let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  if (d < 0) { b = b.map((v) => -v); d = -d; }            // shortest arc
+  if (d > 0.9995) {                                        // near-parallel → nlerp
+    const r = a.map((v, i) => v + (b[i] - v) * u), n = Math.hypot(r[0], r[1], r[2], r[3]) || 1;
+    return mat3FromQuat(r.map((v) => v / n));
+  }
+  const th0 = Math.acos(Math.min(1, d)), th = th0 * u, s0 = Math.sin(th0);
+  const sa = Math.sin(th0 - th) / s0, sb = Math.sin(th) / s0;
+  return mat3FromQuat(a.map((v, i) => sa * v + sb * b[i]));
+}
+function interp1(kf, t) { // kf sorted [{t, v}] → linear, clamped at the ends
+  if (t <= kf[0].t) return kf[0].v;
+  if (t >= kf[kf.length - 1].t) return kf[kf.length - 1].v;
+  let i = 0; while (i < kf.length - 1 && kf[i + 1].t < t) i++;
+  const a = kf[i], b = kf[i + 1];
+  return a.v + (b.v - a.v) * ((t - a.t) / Math.max(1e-9, b.t - a.t));
+}
+/* Sample the fitted model's SIZE + ORIENTATION at time t, interpolating the
+   keyframes the user set along the track: `wpx` (apparent width, px) points and
+   `rotM` (attitude) points are independent — each interpolated over its own
+   set, clamped past the ends, and falling back to the fitted shape where the
+   user set none. Two size marks ⇒ a smooth ramp between them; N marks ⇒
+   piecewise; same for attitude via SLERP. Pure. The caller normalises the
+   returned `wpx` to a real sizeNat through shapeProjNat (projection-aware). */
+export function sampleShapeAt(track, shapeFit, t) {
+  const tk = Array.isArray(track) ? track : [];
+  const sk = tk.filter((p) => isNum(p.t) && isNum(p.wpx) && +p.wpx > 0).map((p) => ({ t: +p.t, v: +p.wpx })).sort((a, b) => a.t - b.t);
+  const rk = tk.filter((p) => isNum(p.t) && Array.isArray(p.rotM) && p.rotM.length === 9).map((p) => ({ t: +p.t, m: p.rotM })).sort((a, b) => a.t - b.t);
+  let rotM = (shapeFit?.rotM && shapeFit.rotM.length === 9) ? shapeFit.rotM : I3;
+  if (rk.length === 1) rotM = rk[0].m;
+  else if (rk.length >= 2) {
+    if (t <= rk[0].t) rotM = rk[0].m;
+    else if (t >= rk[rk.length - 1].t) rotM = rk[rk.length - 1].m;
+    else { let i = 0; while (i < rk.length - 1 && rk[i + 1].t < t) i++; const a = rk[i], b = rk[i + 1]; rotM = slerp3(a.m, b.m, (t - a.t) / Math.max(1e-9, b.t - a.t)); }
+  }
+  return { rotM, wpx: sk.length ? interp1(sk, t) : null };
+}
 
 export function shapeWire(kind, aspect, opts) { // unit major dimension, centered at origin
   const C = [];

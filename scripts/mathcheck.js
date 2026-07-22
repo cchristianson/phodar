@@ -20,6 +20,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -1202,6 +1203,35 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxPosErr < 20 ? 1 : 0, 1, 0, "stereoVideo: dense 3D trajectory within 20 m of truth (noisy rays)");
     approx(r.syncConf > 0.05 ? 1 : 0, 1, 0, "stereoVideo: a moving object gives a usable sync confidence");
     approx(r.k && r.k.peakSpeed > 0 ? 1 : 0, 1, 0, "stereoVideo: kinematics (speed) recovered from the fixed path");
+  }
+
+  // 4h-g. sampleShapeAt: keyframed SIZE + ROTATION interpolate smoothly along
+  // the track. Quaternion SLERP (not matrix lerp) tumbles the attitude; size
+  // ramps linearly; both clamp past the ends and fall back to the fitted shape.
+  {
+    // quaternion round-trip + SLERP midpoint
+    const rz30 = rotZ3(30), rt = mat3FromQuat(quatFromMat3(rz30));
+    approx(Math.max(...rz30.map((v, i) => Math.abs(v - rt[i]))) < 1e-9 ? 1 : 0, 1, 0, "quat: mat3→quat→mat3 round-trips");
+    const mid = slerp3(rotZ3(0), rotZ3(60), 0.5), r30 = rotZ3(30);
+    approx(Math.max(...r30.map((v, i) => Math.abs(v - mid[i]))) < 1e-6 ? 1 : 0, 1, 0, "slerp3: halfway rotZ 0→60 = rotZ 30");
+    // a matrix LERP would shrink the rotation — confirm SLERP stays orthonormal
+    const det = (m) => m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    approx(Math.abs(det(slerp3(rotZ3(0), mul3(rotY3(80), rotZ3(70)), 0.37)) - 1) < 1e-9 ? 1 : 0, 1, 0, "slerp3: interpolated rotation stays a proper rotation (det=1)");
+    // sampleShapeAt: 2 size marks ramp; rotation marks slerp; fallbacks
+    const sf = { sizeNat: 100, rotM: I3 };
+    const track = [
+      { t: 0.0, wpx: 100, rotM: rotZ3(0) },
+      { t: 2.0, wpx: 300, rotM: rotZ3(60) },
+    ];
+    const s1 = sampleShapeAt(track, sf, 1.0);
+    approx(s1.wpx, 200, 1e-6, "sampleShapeAt: size ramps between two marks (midpoint 200 px)");
+    approx(Math.max(...rotZ3(30).map((v, i) => Math.abs(v - s1.rotM[i]))) < 1e-6 ? 1 : 0, 1, 0, "sampleShapeAt: attitude slerps between two marks (midpoint = 30°)");
+    const s0 = sampleShapeAt(track, sf, -5), sE = sampleShapeAt(track, sf, 99);
+    approx(s0.wpx, 100, 1e-6, "sampleShapeAt: clamps size before the first mark");
+    approx(sE.wpx, 300, 1e-6, "sampleShapeAt: clamps size after the last mark");
+    const none = sampleShapeAt([{ t: 0, x: 1, y: 1 }], sf, 1);
+    approx(none.wpx == null ? 1 : 0, 1, 0, "sampleShapeAt: no size marks ⇒ wpx null (caller uses fitted size)");
+    approx(Math.max(...I3.map((v, i) => Math.abs(v - none.rotM[i]))) < 1e-9 ? 1 : 0, 1, 0, "sampleShapeAt: no attitude marks ⇒ fitted rotM");
   }
 
   // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —

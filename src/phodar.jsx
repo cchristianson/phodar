@@ -35,7 +35,7 @@ import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./che
 import { DEEP_STARS } from "./math/starcatDeep.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
-import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire } from "./shapes.js";
+import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
@@ -72,6 +72,23 @@ const FOV_PRESETS = [
 
 const blankMomentA = () => ({ t: "", az: "", el: "", p1: null, p2: null, angManual: "", videoTime: null });
 const blankMomentB = () => ({ t: "", az: "", el: "", pb: null, videoTime: null });
+
+/* The fitted model KEYFRAMED at time t: interpolate the attitude + apparent
+   size the user marked along the track (sampleShapeAt), then normalise the
+   target apparent WIDTH to a real sizeNat through the rotated shape's own
+   projection — so a tumbling elongated object still hits the width set on that
+   frame. Returns a shapeFit clone (or the original when nothing is keyframed). */
+const shapeAt = (shapeFit, track, t) => {
+  if (!shapeFit || !isNum(t)) return shapeFit;
+  const s = sampleShapeAt(track, shapeFit, t);
+  let sf = { ...shapeFit, rotM: s.rotM, roll: 0 };
+  if (s.wpx != null) {
+    const pr = shapeProjNat(sf);
+    const pw = Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1;
+    sf = { ...sf, sizeNat: (shapeFit.sizeNat || 1) * s.wpx / pw };
+  }
+  return sf;
+};
 const makeSource = (i) => ({
   id: Math.random().toString(36).slice(2, 9),
   name: `Observer ${i}`,
@@ -3396,7 +3413,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          placement pose → rotated onto the tracked dir during playback */
       let wire = null;
       if (objOn && source.shapeFit) {
-        wire = shapeProjNat(source.shapeFit).curves.map((c) => {
+        /* KEYFRAMED size + attitude: during playback interpolate the size/
+           rotation the user marked along the track at the playing time; on the
+           static marked frame use its own time. So the model breathes and
+           tumbles between keyframes instead of holding one fitted pose. */
+        const wireT = playPose && isNum(playPose.t) ? +playPose.t : markT;
+        const sfNow = shapeAt(source.shapeFit, source.track, wireT);
+        wire = shapeProjNat(sfNow).curves.map((c) => {
           const segs = []; let cur = [];
           for (const pt of c) { const q = PF(pt); if (q) cur.push(q); else if (cur.length > 1) { segs.push(cur); cur = []; } else cur = []; }
           if (cur.length > 1) segs.push(cur);
@@ -4147,10 +4170,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          dirs under that frame's SOLVED pose (align frame may differ), rotated
          onto the tracked dir per frame */
       const mkP = posePathAt(path, markT) || { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
-      const wireDirs = objOn && objAll && source?.shapeFit && source?.A?.p1 && source?.A?.p2
-        ? shapeProjNat(source.shapeFit).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
+      const wireBase = objOn && objAll && source?.shapeFit && source?.A?.p1 && source?.A?.p2;
+      /* KEYFRAMED per frame: rebuild the wireframe at the size/attitude the user
+         marked at THIS frame's time (shapeAt), projected through the marked
+         pose, then Rodrigues-rotated onto the tracked dir in drawFrame. */
+      const wireDirsAt = (t) => wireBase
+        ? shapeProjNat(shapeAt(source.shapeFit, source.track, t)).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
         : null;
-      const objD0 = wireDirs ? pixToDirK((source.A.p1.x + source.A.p2.x) / 2, (source.A.p1.y + source.A.p2.y) / 2, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
+      const objD0 = wireBase ? pixToDirK(source.shapeFit.cx, source.shapeFit.cy, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
       /* --- every dome layer that is VISIBLE in the world view is burned into
          the export, honouring the same toggles: terrain skyline + ridges +
          named peaks, building boxes, stars/planets/Sun/Moon, satellites +
@@ -4403,7 +4430,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           drawGrid();
           try { drawSkyLayers(span); } catch (e) { if (!drawFrame.lw) { drawFrame.lw = 1; console.warn("export layer draw:", e); } } // an overlay layer must never kill the export
         }
-        if (mode === "view" && wireDirs && isNum(p.t)) {
+        const wireDirs = mode === "view" && wireBase && isNum(p.t) ? wireDirsAt(p.t) : null;
+        if (wireDirs && isNum(p.t)) {
           const oT = objAt(p.t);
           const dT = dirFromAzEl(oT.az, oT.el);
           const ax = [objD0[1] * dT[2] - objD0[2] * dT[1], objD0[2] * dT[0] - objD0[0] * dT[2], objD0[0] * dT[1] - objD0[1] * dT[0]];
