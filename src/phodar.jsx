@@ -5688,20 +5688,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--track)" }}>t₀</span>
-                {sortedTrack.slice(1).map((p, i) => {
-                  const dt = +(p.t - sortedTrack[i].t).toFixed(1);
-                  const on = selSeg === i + 1;
-                  return (
-                    <button key={i} className="btn sm" style={{ fontFamily: "var(--mono)", ...(on ? { borderColor: "var(--track)", color: "var(--track)" } : {}) }}
-                      onClick={() => { setSelSeg((s) => (s === i + 1 ? null : i + 1)); setSelPt(null); }}>+{dt}s</button>
-                  );
-                })}
+                {/* VIDEO: every point carries its real frame time, so per-segment
+                   Δt is fixed by the clip — editing it would corrupt the known
+                   timing, and one chip per frame-point floods the screen. Show a
+                   note + the total only; the +Δt chips are for MANUAL (photo)
+                   trajectories where you set each leg's duration yourself. */}
+                {source?.mediaKind === "video" ? (
+                  <span style={{ fontSize: 10, color: "var(--dim)", fontStyle: "italic" }}>timing set by the video frames</span>
+                ) : (
+                  sortedTrack.slice(1).map((p, i) => {
+                    const dt = +(p.t - sortedTrack[i].t).toFixed(1);
+                    const on = selSeg === i + 1;
+                    return (
+                      <button key={i} className="btn sm" style={{ fontFamily: "var(--mono)", ...(on ? { borderColor: "var(--track)", color: "var(--track)" } : {}) }}
+                        onClick={() => { setSelSeg((s) => (s === i + 1 ? null : i + 1)); setSelPt(null); }}>+{dt}s</button>
+                    );
+                  })
+                )}
                 <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                   total {trajTotal.toFixed(1)} s · {sortedTrack.length} pt{sortedTrack.length > 1 ? "s" : ""}
                 </span>
               </div>
             )}
-            {selSeg != null && sortedTrack[selSeg] && (() => {
+            {selSeg != null && sortedTrack[selSeg] && source?.mediaKind !== "video" && (() => {
               const dt = sortedTrack[selSeg].t - sortedTrack[selSeg - 1].t;
               return (
                 <div style={{ marginTop: 6, background: "rgba(15,23,42,.55)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
