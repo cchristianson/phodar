@@ -390,6 +390,84 @@ export function stereoVideo(sources, opts = {}) {
   };
 }
 
+/* MIXED VIDEO + STILL — pull the MOST out of a dense video clip paired with a
+   single still photo of the same object. The still gives ONE sight-line at ONE
+   instant; the video gives a dense WORLD-frame angular track (objPath) plus,
+   where the object was sized across frames, a range-ratio profile. We:
+     1. ANCHOR: find the instant in the clip where the video's object direction
+        ray comes CLOSEST to the still's sight-line ray (min ray-miss over the
+        span) — this is when the object was where the still saw it, and it
+        auto-corrects a wrong clip clock (a still is one sample, so a motion
+        cross-correlation isn't possible, but the geometry pins it),
+     2. triangulate those two rays → the object's absolute 3D position and
+        RANGE at that instant,
+     3. propagate that absolute range across every frame with the video's own
+        size profile (range ∝ 1/tan(½·apparent size); constant range if the
+        object was never sized) → a full absolute 3D trajectory,
+     4. kinematics on that path → real speed / acceleration / g-load, and true
+        size = angular size × range at every frame.
+   One still + one video therefore yields an absolute trajectory a lone video
+   can't. Returns the anchor fix + dense path + residuals. Pure. */
+export function mixedStereo(sources) {
+  const hasTrack = (s) => Array.isArray(s.objPath) && s.objPath.length >= 3;
+  const vids = (sources || []).filter((s) => isNum(s.lat) && isNum(s.lon) && hasTrack(s));
+  const stills = (sources || []).filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el) && !hasTrack(s));
+  if (!vids.length || !stills.length) return null;
+  const vid = vids[0], still = stills[0];
+  const ref = { lat: +vid.lat, lon: +vid.lon, alt: isNum(vid.alt) ? +vid.alt : 0 };
+  const Pv = enuFromGeo(+vid.lat, +vid.lon, isNum(vid.alt) ? +vid.alt : 0, ref);
+  const Ps = enuFromGeo(+still.lat, +still.lon, isNum(still.alt) ? +still.alt : 0, ref);
+  const op = vid.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
+  const vt = op.map((p) => +p.t);
+  const dirs = op.map((p) => dirFromAzEl(+p.az, +p.el));
+  const dirAtV = (t) => {
+    if (t <= vt[0]) return dirs[0];
+    if (t >= vt[vt.length - 1]) return dirs[dirs.length - 1];
+    let i = 0; while (i < vt.length - 2 && vt[i + 1] < t) i++;
+    const a = dirs[i], b = dirs[i + 1], u = (t - vt[i]) / Math.max(1e-9, vt[i + 1] - vt[i]);
+    return unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
+  };
+  const ds = dirFromAzEl(+still.A.az, +still.A.el);
+  /* ANCHOR SEARCH: the clip time whose object ray best meets the still ray */
+  let best = null;
+  const scan = (lo, hi, step) => {
+    for (let t = lo; t <= hi + 1e-9; t += step) {
+      const sol = intersectLines([{ P: Pv, d: dirAtV(t) }, { P: Ps, d: ds }]);
+      if (!sol || sol.ts.some((x) => x <= 0)) continue;   // object behind an observer
+      if (!best || sol.rmsMiss < best.miss) best = { t, miss: sol.rmsMiss, X: sol.X };
+    }
+  };
+  const span = vt[vt.length - 1] - vt[0];
+  scan(vt[0], vt[vt.length - 1], Math.max(span / 200, 0.02));
+  if (!best) return null;
+  scan(best.t - span / 100, best.t + span / 100, Math.max(span / 2000, 0.005));
+  const distAnchor = mag(sub(best.X, Pv));
+  if (!(distAnchor > 0)) return null;
+  /* size profile → absolute range at every frame */
+  const sized = (vid.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0).map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
+  const angAt = sized.length ? (t) => {
+    if (t <= sized[0].t) return sized[0].ang;
+    if (t >= sized[sized.length - 1].t) return sized[sized.length - 1].ang;
+    let i = 0; while (i < sized.length - 1 && sized[i + 1].t < t) i++;
+    const a = sized[i], b = sized[i + 1]; return a.ang + (b.ang - a.ang) * ((t - a.t) / Math.max(1e-9, b.t - a.t));
+  } : null;
+  const angAnchor = angAt ? angAt(best.t) : null;
+  const rangeAt = (t) => (angAt && angAnchor > 0) ? distAnchor * Math.tan((angAnchor * D2R) / 2) / Math.tan((angAt(t) * D2R) / 2) : distAnchor;
+  const pos = op.map((p, i) => add(Pv, scl(dirs[i], rangeAt(+p.t))));
+  const k = kinematics(vt, pos);
+  const sizeSeries = angAt ? op.map((p) => 2 * rangeAt(+p.t) * Math.tan((angAt(+p.t) * D2R) / 2)) : null;
+  const baseline = mag(sub(Pv, Ps));
+  const dvA = dirAtV(best.t), conv = Math.acos(clampN(dot(dvA, ds), -1, 1)) * R2D;
+  return {
+    ok: true, ref, Pv, Ps, baseline, conv,
+    anchor: { X: best.X, dist: distAnchor, rmsMiss: best.miss, vt: best.t, ang: angAnchor, sizeM: angAnchor != null ? 2 * distAnchor * Math.tan((angAnchor * D2R) / 2) : null },
+    n: pos.length, times: vt, pos, k, sized: !!angAt,
+    sizeMin: sizeSeries ? Math.min(...sizeSeries) : null,
+    sizeMax: sizeSeries ? Math.max(...sizeSeries) : null,
+    names: [vid.name, still.name],
+  };
+}
+
 /* DENSE per-frame object kinematics from a stabilized video's objPath
    ([{t,az,el,q}] — the tracked object's WORLD direction each sampled frame,
    camera motion already removed by stabilization). This is the ANGULAR

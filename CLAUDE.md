@@ -31,7 +31,9 @@ imported by both `phodar.jsx` and the test scripts):
   `arbitrateBearings`, `aspectSpan`.
 - `kinematics.js` — `trackDirections`, `kinematics`, `analyzeTracks`,
   `videoKinematics` (dense objPath angular kinematics), `stereoVideo`
-  (two-video dense triangulation with auto time-sync).
+  (two-video dense triangulation with auto time-sync), `mixedStereo`
+  (video + still: anchor the dense clip to absolute scale via one photo's
+  sight-line).
 - `astro.js` — `sunPos`/`moonPos`/`moonFrac` (SunCalc-derived).
 
 Everything else still lives in `src/phodar.jsx` (~3,750 lines) **on purpose** —

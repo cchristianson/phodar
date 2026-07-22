@@ -5,7 +5,7 @@ import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack, videoKinematics, stereoVideo } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -1203,6 +1203,31 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(maxPosErr < 20 ? 1 : 0, 1, 0, "stereoVideo: dense 3D trajectory within 20 m of truth (noisy rays)");
     approx(r.syncConf > 0.05 ? 1 : 0, 1, 0, "stereoVideo: a moving object gives a usable sync confidence");
     approx(r.k && r.k.peakSpeed > 0 ? 1 : 0, 1, 0, "stereoVideo: kinematics (speed) recovered from the fixed path");
+
+    // 4h-f2. mixedStereo: one VIDEO (dense track) + one STILL (single sight-line)
+    // → absolute trajectory. The still saw the object mid-clip from a second
+    // spot; the anchor search must find that instant, triangulate the true
+    // distance, and (with a size profile) recover the whole path + true size.
+    {
+      const Tmid = 1.7;                                   // the still's capture time (s into the clip)
+      const oMid = objAt(Tmid);                           // ENU truth at that instant
+      const aeS = dirToAzEl(unit(sub(oMid, P1)));         // still observer B's sight-line
+      const stillSrc = { name: "Photo", lat: o1.lat, lon: o1.lon, alt: o1.alt, whenMs: (T0 + Tmid) * 1000,
+        A: { az: aeS.az, el: aeS.el }, fovH: 60 };
+      // size the video object at two frames so range varies (and true size resolves)
+      const angOf = (t) => { const P = P0, X = objAt(t); const rng = mag(sub(X, P)); return 2 * Math.atan((6 / 2) / (rng)) * R2D; }; // 6 m object
+      const vidSized = { ...sA, track: [{ t: 0.2, ang: angOf(0.2) }, { t: 3.0, ang: angOf(3.0) }] };
+      const mx = mixedStereo([vidSized, stillSrc]);
+      approx(mx && mx.ok ? 1 : 0, 1, 0, "mixedStereo: returns a fix from a video + a still");
+      approx(Math.abs(mx.anchor.vt - Tmid) < 0.25 ? 1 : 0, 1, 0, "mixedStereo: anchor search lands on the still's instant");
+      const truthDist = mag(sub(oMid, P0));
+      approx(Math.abs(mx.anchor.dist - truthDist) / truthDist < 0.05 ? 1 : 0, 1, 0, "mixedStereo: anchor range ≈ truth (<5%)");
+      approx(mx.anchor.sizeM != null && Math.abs(mx.anchor.sizeM - 6) < 1.5 ? 1 : 0, 1, 0, "mixedStereo: true size ≈ 6 m (angular size × triangulated range)");
+      // the propagated absolute path tracks truth at the sampled frames
+      let mErr = 0; for (let i = 0; i < mx.times.length; i++) mErr = Math.max(mErr, mag(sub(mx.pos[i], objAt(mx.times[i]))));
+      approx(mErr < 60 ? 1 : 0, 1, 0, "mixedStereo: absolute trajectory tracks truth across the clip");
+      approx(mx.k && mx.k.peakSpeed > 0 ? 1 : 0, 1, 0, "mixedStereo: absolute kinematics recovered");
+    }
   }
 
   // 4h-g. sampleShapeAt: keyframed SIZE + ROTATION interpolate smoothly along
