@@ -2715,14 +2715,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* Opening into Look left the warped photo tiny against the wide default sky.
      Fit the view FOV so the photo fills the frame — the same "fit to extents"
      Place mode does — once the viewport + photo dimensions are known. */
-  const didFitRef = useRef(false);
-  useEffect(() => {
-    if (!open || didFitRef.current || pMode !== "look") return;
-    if (!(source?.natW > 0 && source?.natH > 0) || !(vp.w > 0 && vp.h > 0)) return;
+  /* the FOV that makes the photo fill the frame — i.e. the world view shown at
+     the SAME scale as the flat photo on the measure step. Returns null until the
+     dimensions are known. */
+  const fitFovToPhoto = () => {
+    if (!(source?.natW > 0 && source?.natH > 0) || !(vp.w > 0 && vp.h > 0)) return null;
     const fovMm = isNum(source?.fovH) ? +source.fovH : 68;
     const aspect = source.natH / source.natW;
     const fitT = (Math.tan((fovMm * RAD) / 2) / 0.92) * Math.max(1, aspect * (vp.w / vp.h));
-    setFov(clampN(+(2 * Math.atan(fitT) * R2D).toFixed(1), 2, 90));
+    return clampN(+(2 * Math.atan(fitT) * R2D).toFixed(1), 2, 90);
+  };
+  const didFitRef = useRef(false);
+  useEffect(() => {
+    if (!open || didFitRef.current || pMode !== "look") return;
+    const f = fitFovToPhoto();
+    if (f == null) return;
+    setFov(f);
     didFitRef.current = true;
   }, [open, pMode, vp.w, vp.h, source?.natW, source?.natH]); // eslint-disable-line
 
@@ -3689,7 +3697,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
     if (pMode === "place") donePlace();                  // leaving place for a look-mode tool
     exitCalib();
-    if (m === "traj") { setTrajOn((v) => !v); setSizeOn(false); setCmpOn(false); }
+    if (m === "traj") {
+      /* opening the trajectory view snaps the dome back to the photo's FOV so
+         the objects show at the SAME scale as the measure step — no leftover
+         zoom making them look bigger here than where you set them */
+      if (!trajOn) { const f = fitFovToPhoto(); if (f != null) setFov(f); }
+      setTrajOn((v) => !v); setSizeOn(false); setCmpOn(false);
+    }
     else if (m === "size") { setSizeOn((v) => !v); setTrajOn(false); setCmpOn(false); }
     else if (m === "compare") {
       setCmpOn((v) => { if (!v) setCmpPos({ az: viewAz, el: clampN(viewAlt, -10, 85) }); return !v; });
