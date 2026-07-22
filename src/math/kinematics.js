@@ -87,10 +87,21 @@ function roundCorners(pts) {
     if (dtP <= 0 || dtN <= 0) { out.push(pts[i]); continue; }
     const P0 = slerp(v.d, prev.d, f), P1 = slerp(v.d, next.d, f);
     const te = v.ct - f * dtP, tx = v.ct + f * dtN;
+    /* control point of the quadratic arc. A plain drawn vertex is a GUESS where
+       two legs met — the object flies INSIDE it, so the vertex is the control and
+       the curve cuts the corner. The ANCHOR is a MEASURED direction (snapped to
+       the placed object), so the path must pass THROUGH it: reflect the control
+       outward (C = 2v − (P0+P1)/2) and the arc's apex lands exactly on v. */
+    const C = v.anchor
+      ? unit([2 * v.d[0] - (P0[0] + P1[0]) / 2, 2 * v.d[1] - (P0[1] + P1[1]) / 2, 2 * v.d[2] - (P0[2] + P1[2]) / 2])
+      : v.d;
     const N = 6;
     for (let k = 0; k <= N; k++) {
       const t = k / N;
-      const d = unit(slerp(slerp(P0, v.d, t), slerp(v.d, P1, t), t));
+      /* the reflected control makes the arc bulge out to the anchor; pin the
+         apex sample exactly on v.d so the path literally contains the measured
+         direction (slerp curvature otherwise leaves a ~0.1° residual). */
+      const d = (v.anchor && k * 2 === N) ? v.d : unit(slerp(slerp(P0, C, t), slerp(C, P1, t), t));
       const ae = dirToAzEl(d);
       out.push({ ct: te + (tx - te) * t, d, az: ae.az, el: ae.el, virt: k !== 0 || undefined });
     }
@@ -132,7 +143,7 @@ export function trackDirections(s) {
     } else continue;
     const ct = (isNum(s.A?.t) && s.A?.videoTime != null) ? (+s.A.t + (p.t - s.A.videoTime)) : p.t;
     const ae = dirToAzEl(d);
-    out.push({ ct, d, az: ae.az, el: ae.el, r: p.r });
+    out.push({ ct, d, az: ae.az, el: ae.el, r: p.r, anchor: p.anchor });
   }
   return out.length >= 2 ? roundCorners(out) : null;
 }

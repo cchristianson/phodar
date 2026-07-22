@@ -1832,7 +1832,13 @@ function MediaMeasure({ src, update, wizard }) {
                         const rr = clampN(+pts2[i]?.r || 0, 0, 0.49);
                         if (i < tp.length - 1 && rr > 0) {
                           const cs = lerp(tp[i], tp[i - 1], rr), ce = lerp(tp[i], tp[i + 1], rr);
-                          d += ` L ${cs[0]} ${cs[1]} Q ${tp[i][0]} ${tp[i][1]} ${ce[0]} ${ce[1]}`;
+                          /* the anchor is the MEASURED object position — the arc must
+                             pass THROUGH it (reflect the control out), not cut inside
+                             it like a plain drawn corner. Matches roundCorners. */
+                          const ctrl = pts2[i]?.anchor
+                            ? [2 * tp[i][0] - (cs[0] + ce[0]) / 2, 2 * tp[i][1] - (cs[1] + ce[1]) / 2]
+                            : tp[i];
+                          d += ` L ${cs[0]} ${cs[1]} Q ${ctrl[0]} ${ctrl[1]} ${ce[0]} ${ce[1]}`;
                         } else d += ` L ${tp[i][0]} ${tp[i][1]}`;
                       }
                       return <path d={d} fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />;

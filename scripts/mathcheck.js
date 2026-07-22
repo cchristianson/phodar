@@ -390,6 +390,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else { fails++; console.error("  FAIL anchor neighbours:", d1 && d1.map((p) => +p.az.toFixed(2))); }
 }
 
+// --- TURN RADIUS AT THE ANCHOR: rounding a corner whose vertex is the measured
+//     object (anchor) must keep the arc ON that direction — a plain corner cuts
+//     inside, the anchor must not (else the object "falls off" its placed spot) ---
+{
+  const vDir = dirFromAzEl(45, 40);                       // the corner vertex direction
+  const minGap = (dirs) => {                              // closest arc approach to the vertex, deg
+    let m = Infinity;
+    for (const p of dirs) m = Math.min(m, Math.acos(Math.min(1, Math.max(-1, dot(unit(p.d), vDir)))) * R2D);
+    return m;
+  };
+  const trk = (anchor) => trackDirections({ A: {}, fovH: null,
+    track: [{ t: 0, az: 0, el: 40 }, { t: 5, az: 45, el: 40, r: 0.4, anchor }, { t: 10, az: 45, el: 5 }] });
+  const gapPlain = minGap(trk(undefined)), gapAnchor = minGap(trk(true));
+  if (gapPlain > 1) console.log(`  ok   plain corner cuts inside the vertex (${gapPlain.toFixed(2)}° gap)`);
+  else { fails++; console.error("  FAIL plain corner didn't cut:", gapPlain); }
+  if (gapAnchor < 0.05) console.log(`  ok   anchored corner: wide-turn arc still passes THROUGH the object (${gapAnchor.toFixed(3)}° gap)`);
+  else { fails++; console.error("  FAIL anchored turn falls off the object:", gapAnchor); }
+}
+
 // --- multi-moment track: placed primary + moments become a time-ordered
 //     angular trajectory; a single placed shot falls back to the manual track ---
 {
