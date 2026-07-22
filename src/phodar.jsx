@@ -1531,28 +1531,31 @@ function MediaMeasure({ src, update, wizard }) {
     const pr = shapeProjNat(sfG); const pw = Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1;
     return { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pw };
   };
+  /* size/attitude target the SELECTED point (video = scrub position szIdx;
+     still = tap-selected selTrk) — so a still can also record the object
+     shrinking (moving away) / growing (coming closer) and its attitude at
+     each recalled point, exactly like video. */
   const setPtW = (w) => {
-    if (szIdx < 0) return;
+    if (selIdx < 0) return;
     const w2 = clampN(w, 2, natW * 0.6);
     const a2 = angOfW(w2);
-    update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
-    const sfG = ptGhostSf(trkSorted[szIdx], w2, ptRotOf(szIdx)); if (sfG) shapeLoupeFor(sfG);
+    update({ track: trkSorted.map((p, i) => (i === selIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
+    const sfG = ptGhostSf(trkSorted[selIdx], w2, ptRotOf(selIdx)); if (sfG) shapeLoupeFor(sfG);
   };
-  /* rotate the targeted point's model (per-frame attitude keyframe). Left-
+  /* rotate the targeted point's model (per-point attitude keyframe). Left-
      multiply so the nudge is in the VIEW frame (drag-right yaws right etc.). */
   const ptRotOf = (i) => (Array.isArray(trkSorted[i]?.rotM) && trkSorted[i].rotM.length === 9) ? trkSorted[i].rotM : (src.shapeFit?.rotM || I3);
   const setPtRotM = (m) => {
-    if (szIdx < 0) return;
-    update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, rotM: m } : p)) });
-    const p = trkSorted[szIdx]; const sfG = ptGhostSf(p, isNum(p?.wpx) ? +p.wpx : wFit, m); if (sfG) shapeLoupeFor(sfG);
+    if (selIdx < 0) return;
+    update({ track: trkSorted.map((p, i) => (i === selIdx ? { ...p, rotM: m } : p)) });
+    const p = trkSorted[selIdx]; const sfG = ptGhostSf(p, isNum(p?.wpx) ? +p.wpx : wFit, m); if (sfG) shapeLoupeFor(sfG);
   };
-  const nudgeRot = (which, deg) => { const R = which === "x" ? rotX3(deg) : which === "y" ? rotY3(deg) : rotZ3(deg); setPtRotM(mul3(R, ptRotOf(szIdx))); };
-  const resetPtRotM = () => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? (({ rotM, ...rest }) => rest)(p) : p)) }); };
-  /* STILL per-point editing (no per-frame size/attitude — the object appears in
-     the photo only once): the leg's DURATION (Δt from the previous point) and
-     the TURN tightness (r) that the sky view used to own. Setting Δt shifts this
-     point and every later point by the same delta so downstream legs keep
-     their timing. */
+  const nudgeRot = (which, deg) => { const R = which === "x" ? rotX3(deg) : which === "y" ? rotY3(deg) : rotZ3(deg); setPtRotM(mul3(R, ptRotOf(selIdx))); };
+  const resetPtRotM = () => { if (selIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === selIdx ? (({ rotM, ...rest }) => rest)(p) : p)) }); };
+  /* STILL per-point timing/shape: the leg's DURATION (Δt from the previous
+     point) and the TURN tightness (r) — on top of the size + attitude controls
+     (shared with video). Setting Δt shifts this point and every later point by
+     the same delta so downstream legs keep their timing. */
   const setPtDt = (i, dt) => {
     if (i <= 0 || i >= trkSorted.length) return;      // the first point has no "previous" leg
     const newT = +trkSorted[i - 1].t + Math.max(0.05, +dt || 0);
@@ -1811,10 +1814,11 @@ function MediaMeasure({ src, update, wizard }) {
                       /* the SELECTED point sprouts an adjustable model ONLY in
                          Adjust mode — while PLACING, taps should just drop
                          trajectory dots, not conjure a 3D object at each one */
-                      const isSz = active === "trk" && trkAdjust && i === szIdx;
+                      const isSz = active === "trk" && trkAdjust && i === selIdx;
                       if (!has && !isSz) return null;
-                      const d = Math.abs(p.t - vidT);
-                      const f = d <= 0.3 ? 1 : d >= 1.1 ? 0 : 1 - (d - 0.3) / 0.8;
+                      /* video fades ghosts by scrub distance; a still has no
+                         scrubber, so all its sized ghosts stay fully visible */
+                      const f = isVid ? (() => { const d = Math.abs(p.t - vidT); return d <= 0.3 ? 1 : d >= 1.1 ? 0 : 1 - (d - 0.3) / 0.8; })() : 1;
                       const op = isSz ? Math.max(0.5, f) : f;
                       if (op <= 0.02) return null;
                       /* size + attitude INTERPOLATED at this point's time (fit as
@@ -2027,8 +2031,8 @@ function MediaMeasure({ src, update, wizard }) {
                      outline to the object as it appears RIGHT THERE. Apparent
                      size across frames ⇒ range ratio over time (the radial
                      side of the trajectory the bearings alone can't see). */}
-                  {wizard && src.shapeFit && trkAdjust && szIdx >= 0 && (() => {
-                    const p = trkSorted[szIdx];
+                  {wizard && src.shapeFit && trkAdjust && selIdx >= 0 && (() => {
+                    const p = trkSorted[selIdx];
                     const w = isNum(p.wpx) ? +p.wpx : wFit;
                     const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
                     const sv = clampN(Math.log(w / lo) / Math.log(hi / lo), 0, 1);
@@ -2038,7 +2042,7 @@ function MediaMeasure({ src, update, wizard }) {
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
-                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — size + attitude · bigger = closer
+                            point {selIdx + 1} @ {(+p.t).toFixed(2)}s — size + attitude · bigger = closer
                           </span>
                           <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                             {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
@@ -2051,8 +2055,8 @@ function MediaMeasure({ src, update, wizard }) {
                             onChange={(e) => setPtW(lo * Math.pow(hi / lo, +e.target.value))} style={{ flex: 1 }} />
                           <button className="btn sm" onClick={() => setPtW(w * 1.08)}>+</button>
                           {isNum(p.wpx) && (
-                            <button className="btn sm" title="forget this frame's size (back to the fitted size)"
-                              onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== szIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
+                            <button className="btn sm" title="forget this point's size (back to the fitted size)"
+                              onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== selIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
                           )}
                         </div>
                         {/* per-point ATTITUDE — tumble/roll this point's model; it
@@ -2065,11 +2069,13 @@ function MediaMeasure({ src, update, wizard }) {
                           <button className="btn sm" title="yaw right" onClick={() => nudgeRot("y", 12)}>→</button>
                           <button className="btn sm" title="roll left" onClick={() => nudgeRot("z", -12)}>⟲</button>
                           <button className="btn sm" title="roll right" onClick={() => nudgeRot("z", 12)}>⟳</button>
-                          {Array.isArray(trkSorted[szIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
+                          {Array.isArray(trkSorted[selIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
                         </div>
                         {!trkSorted.some((q) => isNum(q.wpx)) && (
                           <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
-                            Scrub to a point and match the outline to the object as it appears there — the size change between frames is what recovers closer/farther motion.
+                            {isVid
+                              ? "Scrub to a point and match the outline to the object as it appears there — the size change between frames is what recovers closer/farther motion."
+                              : "Set the object smaller where it looked FARTHER, bigger where it looked CLOSER, and tilt it to match its attitude — this records the object's distance + orientation along the recalled path."}
                           </div>
                         )}
                       </div>
