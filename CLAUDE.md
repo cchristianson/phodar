@@ -497,14 +497,20 @@ terrain stay frozen and only the object moves. Build ladder:
    one renderer: "view" (fixed virtual camera fit from the union of all
    frames' corners, ≤1920 px), "full" (same framing, output sized by the
    tan-space ratio camFov/minPathFov so the most-zoomed frames keep native
-   pixel density — ≤3840, but ≤2560 on iOS: a 3840 canvas + 4K
-   MediaRecorder encode crashed Safari on an iPhone 14), and "crop"
+   pixel density — ≤4096 with a WebCodecs step-down ladder
+   3840/2560/1920; the MediaRecorder fallback keeps ≤2560 on iOS: a 3840
+   canvas + 4K realtime encode crashed Safari on an iPhone 14), and "crop"
    (camera centered on the marked object's world dir + the B sight-line,
    FOV = max(12× object size, 1.9× A–B separation) with a 1.6° floor —
    PROPORTIONAL zoom, so a far/small object crops much tighter than a
-   near/big one; finer 16-col mesh with off-canvas cell culling, grid
-   pitch scales with FOV down to 0.5°). Mesh warp + burned az/el grid +
-   readout per frame. **Encoder: WebCodecs VideoEncoder is the PRIMARY
+   near/big one — ≤3840; finer 16-col mesh with off-canvas cell culling,
+   grid pitch scales with FOV down to 0.5°). OVERLAYS ONLY ON "view"
+   (grid + readout + all visible sky layers + wireframe): "full" and
+   "crop" are CLEAN evidence renders, nothing burned in (user decision).
+   The warp texture is NATIVE for full/crop, guarded only by the iOS
+   canvas ceiling (4600 px side / 16 Mpx) — the old 2048 texture cap
+   silently halved 4K sources before the warp ever saw them; "view"
+   keeps the 1600 px playback texture. **Encoder: WebCodecs VideoEncoder is the PRIMARY
    path** — offline frame-by-frame encode with explicit timestamps and
    queue backpressure, muxed by the hand-rolled single-track H.264 muxer
    `src/video/mp4mux.js` (validated by full ffmpeg decode of a muxed real
