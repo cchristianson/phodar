@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
+import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, mag, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
 import { isNum, n1, fmtLen, fmtLenShort, fmtSpeed, fmtDeg, compass8, setImperialUnits, isImperialUnits } from "./math/format.js";
 /* storeys for a height in metres — a friendly cross-check beside the length */
 const storeys = (m) => Math.max(1, Math.round(m / 3.3));
@@ -16,7 +16,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
-import { trackDirections, kinematics, analyzeTracks, videoKinematics } from "./math/kinematics.js";
+import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
@@ -7689,6 +7689,61 @@ ${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tra
       if (blocks.length) videoHtml = `<h2>Video analysis</h2>${blocks.join('<hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>')}`;
     }
   }
+  /* --- TWO-VIDEO TRAJECTORY: ≥2 stabilized+tracked clips of the same object,
+     time-synced and triangulated per frame into a dense absolute 3D path. This
+     is the accurate answer — true distance, size, speed, g-load over the whole
+     clip — that a single video can only give conditionally. --- */
+  let vstereoHtml = "";
+  {
+    const vs = stereoVideo(origAct);
+    if (vs && vs.ok && vs.n >= 3) {
+      const spd = (m) => fmtSpeedShort(m);
+      const syncTxt = vs.syncConf > 0.4 ? "well-constrained" : vs.syncConf > 0.12 ? "moderate" : "soft (a far/slow object barely pins the clocks — treat absolute speed as approximate)";
+      const offEach = origAct.filter((s) => s.mediaKind === "video" && Array.isArray(s.objPath));
+      /* true SIZE over the path when an observer sized the object across frames:
+         angular size (interpolated to each instant) × that observer's range */
+      let sizeHtml = "";
+      {
+        const sizer = offEach.find((s) => (s.track || []).some((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0));
+        const pm = sizer ? vs.perObs.find((o) => o.name === sizer.name) : null;
+        if (sizer && pm) {
+          const sized = (sizer.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0).map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
+          const base = (isNum(sizer.whenMs) ? +sizer.whenMs / 1000 : 0) + (isNum(sizer.syncOffset) ? +sizer.syncOffset : 0);
+          const angAt = (tv) => { if (tv <= sized[0].t) return sized[0].ang; if (tv >= sized[sized.length - 1].t) return sized[sized.length - 1].ang; let i = 0; while (i < sized.length - 1 && sized[i + 1].t < tv) i++; const a = sized[i], b = sized[i + 1]; return a.ang + (b.ang - a.ang) * ((tv - a.t) / Math.max(1e-9, b.t - a.t)); };
+          const sizes = vs.times.map((t, i) => { const vt = t - base; const range = mag(sub(vs.pos[i], pm.P)); return 2 * range * Math.tan((angAt(vt) * D2R) / 2); });
+          const smin = Math.min(...sizes), smax = Math.max(...sizes), savg = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+          sizeHtml = `<p class="lead" style="margin-top:8px"><b>True size (triangulated):</b> ${fmtLenShort(savg)} across on average${smax - smin > savg * 0.1 ? ` (ranging ${fmtLenShort(smin)}–${fmtLenShort(smax)} as attitude/aspect changed)` : ""} — angular size measured on ${e2(sizer.name || "one clip")} × its triangulated range.</p>`;
+        }
+      }
+      // top-down plot (reuse the satellite-basemap plotter with a synthetic fix)
+      let plot = "";
+      try {
+        const mid = vs.pos[vs.pos.length >> 1];
+        const vfix = { ref: vs.ref, obs: vs.perObs.map((o) => ({ P: o.P, s: { name: o.name }, dA: unit(sub(mid, o.P)) })), solA: { X: mid, ts: vs.perObs.map((o) => mag(sub(mid, o.P))), rmsMiss: vs.meanMiss } };
+        plot = await reportPlotSvg(vfix, vs.pos);
+      } catch (e) { plot = ""; }
+      const kh = vs.k ? `<table>` +
+        row("Common instants / duration", `${vs.n} frames · ${(vs.window[1] - vs.window[0]).toFixed(1)} s`) +
+        row("Path length", fmtLenShort(vs.k.path)) +
+        row("Avg / peak speed", `${spd(vs.k.avgSpeed)} / ${spd(vs.k.peakSpeed)} peak`) +
+        (vs.k.peakA != null ? row("Peak acceleration", vs.k.peakA.toFixed(1) + " m/s²") : "") +
+        (vs.k.peakLoad != null ? row("Peak felt load", vs.k.peakLoad.toFixed(2) + " g") : "") +
+        (vs.k.peakTurn != null ? row("Peak turn rate", vs.k.peakTurn.toFixed(1) + " °/s") : "") +
+        `</table>` + reportTrajSvg(vs.k) : "";
+      vstereoHtml = `<h2>Two-video trajectory (dense stereo)</h2>
+<p class="lead"><b>Triangulated from ${vs.nObs} clips</b> frame-by-frame: ${vs.n} common instants over ${(vs.window[1] - vs.window[0]).toFixed(1)} s. The clips were auto-synchronised (${vs.offset >= 0 ? "+" : ""}${vs.offset.toFixed(2)} s relative offset, ${syncTxt})${vs.dropped ? `, and ${vs.dropped} mistracked frame${vs.dropped > 1 ? "s were" : " was"} rejected` : ""}.</p>
+<table><tr><th>Fix geometry</th><th></th></tr>
+${row("Baseline (observer spacing)", fmtLenShort(vs.baseline))}
+${row("Mean convergence angle", `${vs.conv.toFixed(1)}°${vs.conv < 6 ? " — shallow; depth (range/speed) less certain" : ""}`)}
+${row("Mean ray miss", fmtLenShort(vs.meanMiss))}
+${vs.perObs.map((o) => row(`Range from ${e2(o.name || "observer")}`, fmtLenShort(o.meanRange))).join("")}
+</table>
+${sizeHtml}
+${kh}
+${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the two sight-line fans and the triangulated 3D path (blue), over satellite imagery.</p>` : ""}
+<p class="cap">Each frame's object direction comes from the stabilized, world-locked track (camera motion removed), so this is a direct per-instant intersection of two real sight-lines — no assumed distance. Accuracy is bounded by the ${fmtLenShort(vs.baseline)} baseline vs the ${fmtLenShort(vs.perObs[0]?.meanRange || 0)} range (convergence ${vs.conv.toFixed(1)}°), the ${vs.bothWhen ? "EXIF-seeded" : "manually-set"} time sync, and each clip's compass/sky alignment.</p>`;
+    }
+  }
   /* --- sighting conditions: exact Sun/Moon geometry + magnetic declination
      at the primary observer's time & place. Flags glare, a bright Moon as
      the light source, and pins the local-time / twilight state. --- */
@@ -7973,6 +8028,7 @@ details.sec>*:last-child{margin-bottom:14px}
 ${(() => { const ws = origAct.filter((s) => s.statement && String(s.statement).trim()); return ws.length ? `<h2>Witness accounts</h2>` + ws.map((s, i) => `<div style="margin:0 0 12px"><b>${e2(s.name || "Observer " + (i + 1))}</b>${s.whenMs ? ` <span class="cap">· ${new Date(+s.whenMs).toLocaleString()}</span>` : ""}<blockquote class="stmt">${e2(String(s.statement).trim())}</blockquote></div>`).join("") : ""; })()}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
+${collapsible(vstereoHtml, true)}
 ${collapsible(videoHtml, false)}
 ${collapsible(alignHtml, true)}
 ${collapsible(adsbHtml, false)}

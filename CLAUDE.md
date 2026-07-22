@@ -29,7 +29,9 @@ imported by both `phodar.jsx` and the test scripts):
   fns take a `pose` sample (not a per-source constant) — a video provision.
 - `triangulate.js` — `solve3`, `intersectLines`, `analyze`,
   `arbitrateBearings`, `aspectSpan`.
-- `kinematics.js` — `trackDirections`, `kinematics`, `analyzeTracks`.
+- `kinematics.js` — `trackDirections`, `kinematics`, `analyzeTracks`,
+  `videoKinematics` (dense objPath angular kinematics), `stereoVideo`
+  (two-video dense triangulation with auto time-sync).
 - `astro.js` — `sunPos`/`moonPos`/`moonFrac` (SunCalc-derived).
 
 Everything else still lives in `src/phodar.jsx` (~3,750 lines) **on purpose** —
@@ -251,6 +253,25 @@ photo was adjusted.
 7. Multi-witness 3D **pose reconciliation** from `shapeFit.rotM` — two
    observers' capsule poses should agree on one world axis; a falsifiable
    consistency test.
+   **TWO-VIDEO STEREO: DONE** — `stereoVideo` (math/kinematics.js, pure,
+   mathcheck-asserted) triangulates ≥2 stabilized+object-tracked clips of
+   the same object. Each clip's dense objPath is already WORLD az/el per
+   frame (camera motion removed), so every sample is a sight-line — no
+   pose conversion. It (1) puts each clip on an absolute clock
+   (whenMs + video t + optional syncOffset), (2) AUTO-SYNCS by searching
+   the relative time offset that MINIMISES mean ray-miss (device clocks
+   drift; the object's own motion is the shared signal — a far/slow object
+   gives a shallow minimum, reported as low sync confidence), (3)
+   triangulates each common instant with median/MAD outlier rejection (a
+   blurred/mistracked frame is a fat miss, dropped), (4) runs kinematics on
+   the dense 3D path. Returns fix + trajectory + recovered offset +
+   confidence + residuals. Report "Two-video trajectory (dense stereo)"
+   section: sync offset + confidence, fix geometry (baseline, convergence,
+   ray-miss, per-observer range), true size when sized, kinematics
+   (reportTrajSvg) + top-down plot (reportPlotSvg). Verified e2e (injected
+   two synthetic clips: recovered a 0.6 s clock error, 351 km/h truth
+   speed, rejected outlier frames). Still open: a manual sync-offset nudge
+   for when EXIF clocks are missing AND the object is too slow to auto-lock.
 8. **Report charts: DONE** — reportPlotSvg (top-down observers/rays/fix/
    trajectory, scale bar) + reportTrajSvg (speed + felt-load strip) as
    self-contained SVG; plus the single-witness distance⇄size chart. The

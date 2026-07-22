@@ -5,7 +5,7 @@ import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack, videoKinematics } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack, videoKinematics, stereoVideo } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -1158,6 +1158,50 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(vk2.rangeRatio, 2, 0.06, "videoKin: range ratio from a halving angular size ≈ 2×");
     const d2 = vk2.atDistance(1000);
     approx(d2.sizeM > 0 && d2.peakSpeed > flat.peakSpeed ? 1 : 0, 1, 0, "videoKin: receding object's speed exceeds the pure-tangential case");
+  }
+
+  // 4h-f. stereoVideo: two observers' DENSE object tracks triangulate into a 3D
+  // trajectory, auto-syncing a wrong clock and shrugging off angular noise + a
+  // few mistracked outlier frames. Two clips shot simultaneously; observer B's
+  // EXIF clock is 0.7 s fast, so the solver must recover offset ≈ −0.7 s.
+  {
+    const o0 = { lat: 42.30, lon: -122.90, alt: 400 };
+    const o1 = { lat: 42.3016, lon: -122.8972, alt: 402 };  // ~250 m NE, small alt diff
+    const refL = { lat: o0.lat, lon: o0.lon, alt: o0.alt };
+    const P0 = enuFromGeo(o0.lat, o0.lon, o0.alt, refL);
+    const P1 = enuFromGeo(o1.lat, o1.lon, o1.alt, refL);
+    const objAt = (t) => [-150 + 90 * t, 650 + 30 * t, 480 + 22 * t]; // ENU metres, a moving craft ~800 m off
+    const azelTo = (P, X) => dirToAzEl(unit(sub(X, P)));
+    const fps = 0.1, N = 34;
+    // deterministic ±0.012° angular noise (device/track jitter)
+    const noise = (i, s) => (((Math.sin(i * 12.9898 + s * 78.233) * 43758.5453) % 1 + 1) % 1 - 0.5) * 0.024;
+    const mkObj = (P, s) => Array.from({ length: N }, (_, i) => {
+      const t = +(i * fps).toFixed(3), ae = azelTo(P, objAt(t));
+      return { t, az: ae.az + noise(i, s), el: ae.el + noise(i, s + 5), q: 0.9 };
+    });
+    const objA = mkObj(P0, 1), objB = mkObj(P1, 2);
+    // inject 2 outlier mistracked frames in B (a blurred-frame garbage direction)
+    objB[10] = { ...objB[10], az: objB[10].az + 6, el: objB[10].el - 4 };
+    objB[22] = { ...objB[22], az: objB[22].az - 5, el: objB[22].el + 5 };
+    const T0 = 1_700_000_000; // arbitrary base epoch (s)
+    const OFF = 0.7;          // B's clock runs 0.7 s fast
+    const sA = { name: "A", lat: o0.lat, lon: o0.lon, alt: o0.alt, whenMs: T0 * 1000, objPath: objA };
+    const sB = { name: "B", lat: o1.lat, lon: o1.lon, alt: o1.alt, whenMs: (T0 + OFF) * 1000, objPath: objB };
+    const r = stereoVideo([sA, sB]);
+    approx(r && r.ok ? 1 : 0, 1, 0, "stereoVideo: returns a fix from two dense tracks");
+    approx(Math.abs(r.offset - (-OFF)) < 0.15 ? 1 : 0, 1, 0, "stereoVideo: recovers the wrong-clock offset (≈ −0.7 s)");
+    approx(r.dropped >= 2 ? 1 : 0, 1, 0, "stereoVideo: the 2 mistracked frames are rejected as outliers");
+    // trajectory accuracy at the recovered instants (compare to truth at each t
+    // relative to A's clock, since A's base = T0 and samples are t = frameTime)
+    let maxPosErr = 0;
+    for (let i = 0; i < r.times.length; i++) {
+      const tt = r.times[i] - T0;               // seconds into the clip
+      const tru = objAt(tt);
+      maxPosErr = Math.max(maxPosErr, mag(sub(r.pos[i], tru)));
+    }
+    approx(maxPosErr < 20 ? 1 : 0, 1, 0, "stereoVideo: dense 3D trajectory within 20 m of truth (noisy rays)");
+    approx(r.syncConf > 0.05 ? 1 : 0, 1, 0, "stereoVideo: a moving object gives a usable sync confidence");
+    approx(r.k && r.k.peakSpeed > 0 ? 1 : 0, 1, 0, "stereoVideo: kinematics (speed) recovered from the fixed path");
   }
 
   // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —
