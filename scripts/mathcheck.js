@@ -400,13 +400,30 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     for (const p of dirs) m = Math.min(m, Math.acos(Math.min(1, Math.max(-1, dot(unit(p.d), vDir)))) * R2D);
     return m;
   };
+  const bend = (dirs) => {                                // max single-step bend along the path, deg
+    let m = 0;
+    for (let i = 1; i < dirs.length - 1; i++) {
+      const u = sub(dirs[i].d, dirs[i - 1].d), w = sub(dirs[i + 1].d, dirs[i].d);
+      const du = Math.hypot(...u), dw = Math.hypot(...w);
+      if (du < 1e-9 || dw < 1e-9) continue;
+      m = Math.max(m, Math.acos(Math.min(1, Math.max(-1, (u[0] * w[0] + u[1] * w[1] + u[2] * w[2]) / (du * dw)))) * R2D);
+    }
+    return m;
+  };
   const trk = (anchor) => trackDirections({ A: {}, fovH: null,
     track: [{ t: 0, az: 0, el: 40 }, { t: 5, az: 45, el: 40, r: 0.4, anchor }, { t: 10, az: 45, el: 5 }] });
-  const gapPlain = minGap(trk(undefined)), gapAnchor = minGap(trk(true));
+  const dPlain = trk(undefined), dAnchor = trk(true);
+  const gapPlain = minGap(dPlain), gapAnchor = minGap(dAnchor);
   if (gapPlain > 1) console.log(`  ok   plain corner cuts inside the vertex (${gapPlain.toFixed(2)}° gap)`);
   else { fails++; console.error("  FAIL plain corner didn't cut:", gapPlain); }
   if (gapAnchor < 0.05) console.log(`  ok   anchored corner: wide-turn arc still passes THROUGH the object (${gapAnchor.toFixed(3)}° gap)`);
   else { fails++; console.error("  FAIL anchored turn falls off the object:", gapAnchor); }
+  // ...AND smoothly: no kink at the leg joins or the anchor. The earlier
+  // reflected-control quad passed through the object but bent ~20° at the joins;
+  // the two-cubic path must be no less smooth than the plain rounded corner.
+  const bAnchor = bend(dAnchor), bPlain = bend(dPlain);
+  if (bAnchor <= bPlain + 1) console.log(`  ok   anchored corner stays smooth through the object (max bend ${bAnchor.toFixed(1)}° ≤ plain ${bPlain.toFixed(1)}°)`);
+  else { fails++; console.error(`  FAIL anchored corner kinks: ${bAnchor.toFixed(1)}° vs plain ${bPlain.toFixed(1)}°`); }
 }
 
 // --- multi-moment track: placed primary + moments become a time-ordered

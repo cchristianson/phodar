@@ -1831,14 +1831,23 @@ function MediaMeasure({ src, update, wizard }) {
                       for (let i = 1; i < tp.length; i++) {
                         const rr = clampN(+pts2[i]?.r || 0, 0, 0.49);
                         if (i < tp.length - 1 && rr > 0) {
-                          const cs = lerp(tp[i], tp[i - 1], rr), ce = lerp(tp[i], tp[i + 1], rr);
-                          /* the anchor is the MEASURED object position — the arc must
-                             pass THROUGH it (reflect the control out), not cut inside
-                             it like a plain drawn corner. Matches roundCorners. */
-                          const ctrl = pts2[i]?.anchor
-                            ? [2 * tp[i][0] - (cs[0] + ce[0]) / 2, 2 * tp[i][1] - (cs[1] + ce[1]) / 2]
-                            : tp[i];
-                          d += ` L ${cs[0]} ${cs[1]} Q ${ctrl[0]} ${ctrl[1]} ${ce[0]} ${ce[1]}`;
+                          const V = tp[i], cs = lerp(V, tp[i - 1], rr), ce = lerp(V, tp[i + 1], rr);
+                          const nrm = (a) => { const m = Math.hypot(a[0], a[1]) || 1; return [a[0] / m, a[1] / m]; };
+                          const uin = nrm([V[0] - cs[0], V[1] - cs[1]]), wout = nrm([ce[0] - V[0], ce[1] - V[1]]);
+                          const ma = [uin[0] + wout[0], uin[1] + wout[1]], mm = Math.hypot(ma[0], ma[1]);
+                          if (pts2[i]?.anchor && mm > 1e-3) {
+                            /* the anchor is the MEASURED object position — the arc must
+                               pass THROUGH it AND stay smooth: two cubic-Hermite halves
+                               (cs→V, V→ce) sharing an averaged tangent at V, tangent to
+                               the legs at cs/ce. Matches roundCorners. */
+                            const m = [ma[0] / mm, ma[1] / mm];
+                            const l1 = Math.hypot(V[0] - cs[0], V[1] - cs[1]) / 3, l2 = Math.hypot(ce[0] - V[0], ce[1] - V[1]) / 3;
+                            const c1 = [cs[0] + uin[0] * l1, cs[1] + uin[1] * l1], c2 = [V[0] - m[0] * l1, V[1] - m[1] * l1];
+                            const c3 = [V[0] + m[0] * l2, V[1] + m[1] * l2], c4 = [ce[0] - wout[0] * l2, ce[1] - wout[1] * l2];
+                            d += ` L ${cs[0]} ${cs[1]} C ${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${V[0]} ${V[1]} C ${c3[0]} ${c3[1]} ${c4[0]} ${c4[1]} ${ce[0]} ${ce[1]}`;
+                          } else {
+                            d += ` L ${cs[0]} ${cs[1]} Q ${V[0]} ${V[1]} ${ce[0]} ${ce[1]}`;
+                          }
                         } else d += ` L ${tp[i][0]} ${tp[i][1]}`;
                       }
                       return <path d={d} fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />;
