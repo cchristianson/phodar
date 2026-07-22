@@ -535,7 +535,7 @@ const HELP_SECTIONS = [
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
-        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera, with the az/el grid and a pose readout burned in — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback), Max resolution (same framing, output sized so zoomed-in frames keep native detail), and Object close-up (a full-resolution crop centered on the marked object with room around it). The render runs in real time (a 20 s clip takes ~20 s); tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Trace the object's path (Trajectory tool)", items: [
         { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
@@ -3968,9 +3968,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
       let OUT_W = Math.min(1920, natW);
       if (mode !== "view") {
+        /* `ideal` IS native density: output sized so the most-zoomed frame's
+           source pixels map 1:1 through the warp. Cap at 4096 (H.264 level
+           5.1/5.2 hardware ceiling) — the runtime ladder steps down through
+           3840/2560/1920 if the encoder refuses, so asking high is safe. */
         const ideal = natW * Math.tan((camFov * RAD) / 2) / Math.tan((minFov * RAD) / 2);
-        OUT_W = mode === "full" ? Math.min(3840, Math.max(OUT_W, Math.round(ideal / 2) * 2))
-          : Math.min(1920, Math.max(1280, Math.round(ideal / 2) * 2));
+        OUT_W = mode === "full" ? Math.min(4096, Math.max(OUT_W, Math.round(ideal / 2) * 2))
+          : Math.min(3840, Math.max(1280, Math.round(ideal / 2) * 2));
       }
       const bpsFor = (w2, h2) => clampN(Math.round(8e6 * (w2 * h2) / (1920 * 1080)), 6e6, isIOS ? 16e6 : 25e6);
       const desiredW = OUT_W;
@@ -3990,11 +3994,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       };
       const proj = (d) => { const z = dot(d, B.f); if (z <= 0.001) return null; return [(0.5 + (dot(d, B.r) / z) / (2 * tH)) * OUT_W, (0.5 - (dot(d, B.u) / z) / (2 * tV)) * OUT_H]; };
       const tex = document.createElement("canvas");
-      /* warp-texture cap: 1600 px matches live playback; the resolution modes
-         keep the full source frame (their whole point is native detail) */
-      const texCap = mode === "view" ? 1600 : 2048;
-      const tsc = Math.min(1, texCap / Math.max(v.videoWidth || natW, v.videoHeight || natH));
-      tex.width = Math.max(2, Math.round((v.videoWidth || natW) * tsc)); tex.height = Math.max(2, Math.round((v.videoHeight || natH) * tsc));
+      /* warp-texture cap: 1600 px matches live playback for "view"; the
+         resolution modes keep the source frame NATIVE (their whole point is
+         native detail — the old 2048 cap silently halved 4K sources before
+         the warp ever saw them), guarded only by the iOS canvas ceiling
+         (4600 px side / 16 Mpx area, the media-normalize doctrine). */
+      const vw = v.videoWidth || natW, vh = v.videoHeight || natH;
+      let tsc = mode === "view" ? Math.min(1, 1600 / Math.max(vw, vh)) : Math.min(1, 4600 / Math.max(vw, vh));
+      if (vw * vh * tsc * tsc > 16e6) tsc *= Math.sqrt(16e6 / (vw * vh * tsc * tsc));
+      tex.width = Math.max(2, Math.round(vw * tsc)); tex.height = Math.max(2, Math.round(vh * tsc));
       const tctx = tex.getContext("2d");
       const gpath = (pts) => { let s2 = "", started = false; for (const q of pts) { if (!q) { started = false; continue; } s2 += (started ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); started = true; } return s2; };
       /* the fitted 3D WIREFRAME rides the object track in every framing while
@@ -4251,9 +4259,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], d00, d10, d11);
           tri([sxp(c2), syp(r2)], [sxp(c2 + 1), syp(r2 + 1)], [sxp(c2), syp(r2 + 1)], d00, d11, d01);
         }
-        drawGrid();
-        try { drawSkyLayers(span); } catch (e) { if (!drawFrame.lw) { drawFrame.lw = 1; console.warn("export layer draw:", e); } } // an overlay layer must never kill the export
-        if (wireDirs && isNum(p.t)) {
+        /* OVERLAYS ONLY ON THE WORLD VIEW: max-res and object close-up are
+           CLEAN evidence renders — no grid, no layers, no wireframe, no
+           readout (user decision: those two downloads are the footage). */
+        if (mode === "view") {
+          drawGrid();
+          try { drawSkyLayers(span); } catch (e) { if (!drawFrame.lw) { drawFrame.lw = 1; console.warn("export layer draw:", e); } } // an overlay layer must never kill the export
+        }
+        if (mode === "view" && wireDirs && isNum(p.t)) {
           const oT = objAt(p.t);
           const dT = dirFromAzEl(oT.az, oT.el);
           const ax = [objD0[1] * dT[2] - objD0[2] * dT[1], objD0[2] * dT[0] - objD0[0] * dT[2], objD0[0] * dT[1] - objD0[1] * dT[0]];
@@ -4274,10 +4287,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           }
           ctx.globalAlpha = 1;
         }
-        const fs = Math.max(12, Math.round(OUT_H / 42));
-        ctx.font = fs + "px Menlo, monospace"; ctx.fillStyle = "rgba(235,243,255,0.92)";
-        ctx.fillText(`PHODAR · world-locked${mode === "crop" ? " · object close-up" : mode === "full" ? " · max-res" : ""}`, 12, fs + 8);
-        ctx.fillText(`t ${p.t.toFixed(2)}s · az ${p.az.toFixed(1)}° · el ${p.el.toFixed(1)}° · FOV ${p.fov.toFixed(1)}° · refs ${p.n == null ? "—" : p.n}`, 12, OUT_H - 12);
+        if (mode === "view") {
+          const fs = Math.max(12, Math.round(OUT_H / 42));
+          ctx.font = fs + "px Menlo, monospace"; ctx.fillStyle = "rgba(235,243,255,0.92)";
+          ctx.fillText(`PHODAR · world-locked`, 12, fs + 8);
+          ctx.fillText(`t ${p.t.toFixed(2)}s · az ${p.az.toFixed(1)}° · el ${p.el.toFixed(1)}° · FOV ${p.fov.toFixed(1)}° · refs ${p.n == null ? "—" : p.n}`, 12, OUT_H - 12);
+        }
         void gpath; // (kept for future vector overlays)
       };
       /* seeks are CLAMPED below the media duration (the stabilize walk always
@@ -4343,7 +4358,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         /* runtime step-down ladder: isConfigSupported can accept a size the
            hardware then refuses at encode time — try smaller before giving
            up on the offline path entirely */
-        for (const w2 of [...new Set([desiredW, Math.min(desiredW, 2560), Math.min(desiredW, 1920)])]) {
+        for (const w2 of [...new Set([desiredW, Math.min(desiredW, 3840), Math.min(desiredW, 2560), Math.min(desiredW, 1920)])]) {
           if (exportAbortRef.current !== run) break;
           const cfg = await probeWC(w2);
           if (!cfg) continue;
@@ -5267,9 +5282,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {exportMenu && !exporting && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
               <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
                 {[
-                  ["view", "▣ World view", "the dome framing shown in playback, az/el grid burned in"],
-                  ["full", "⛶ Max resolution", "same framing, output sized so zoomed-in frames keep native detail"],
-                  ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "full-resolution crop around the marked object, with room to move"]] : []),
+                  ["view", "▣ World view", "the dome framing shown in playback — grid + all visible sky layers burned in"],
+                  ["full", "⛶ Max resolution", "clean footage, no overlays — native source detail, sized so zoomed frames keep every pixel"],
+                  ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "clean full-resolution crop around the marked object, no overlays"]] : []),
                 ].map(([m, t2, d2]) => (
                   <button key={m} className="btn sm" style={{ textAlign: "left", padding: "8px 10px" }}
                     onClick={() => { setExportMenu(false); exportStabilized(m); }}>
