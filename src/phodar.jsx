@@ -14,6 +14,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
+import { solveManualPoses } from "./video/manualpose.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -784,6 +785,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [selTrk, setSelTrk] = useState(-1); // STILL: tap-selected track point (video selects by scrub position instead)
   const [trkAdjust, setTrkAdjust] = useState(false); // Track sub-mode: place points (false) vs adjust size/shape at the nearest point (true)
   const [colorOpen, setColorOpen] = useState(null);  // which colour slider is open in the Track panel: null | "obj" | "pts"
+  const [selCref, setSelCref] = useState(0);         // CAM REFS: which reference feature the taps mark (index into source.camRefs)
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
   const ptsRef = useRef(new Map());
@@ -1184,6 +1186,7 @@ function MediaMeasure({ src, update, wizard }) {
     const pd = pendingRef.current;
     if (!pd) return;
     killPending();
+    if (pd.mode === "cref") { markCref(pd.nat.x, pd.nat.y); return; }  // tap = mark the selected reference on this frame
     if (pd.mode === "trk") {
       if (trkAdjust) { if (!isVid) selectNearestTrk(pd.nat); return; }   // adjust: video scrubs to select, still taps to select
       if (isVid) {
@@ -1278,6 +1281,7 @@ function MediaMeasure({ src, update, wizard }) {
       return;
     }
     if (active === "trk" && !media) return;   // trk works on a still OR a video (lay the recalled path on the photo)
+    if (active === "cref" && media?.kind !== "video") return;   // camera refs are a video-only stabilization aid
     if (active === "shape" && !src.shapeFit) return; // pick a shape first — no stray marks
     const p = toNat(e.clientX, e.clientY);
     const shapeMode = active === "shape" && !!src.shapeFit;
@@ -1296,7 +1300,7 @@ function MediaMeasure({ src, update, wizard }) {
     }
     pendingRef.current = {
       id: e.pointerId,
-      mode: active === "trk" ? "trk" : shapeMode ? (shapeCenter ? "shapeMove" : "shape") : "mark",
+      mode: active === "trk" ? "trk" : active === "cref" ? "cref" : shapeMode ? (shapeCenter ? "shapeMove" : "shape") : "mark",
       key: active === "trk" || shapeMode ? null : (hit || active),
       grab: trkGrab,
       nat: p, sx: e.clientX, sy: e.clientY,
@@ -1334,6 +1338,7 @@ function MediaMeasure({ src, update, wizard }) {
     const pd = pendingRef.current;
     if (pd && pd.id === e.pointerId) {
       if (Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) > 7) {
+        if (pd.mode === "cref") { killPending(); return; }   // cam refs are tap-only; a one-finger drag does nothing (pinch still zooms)
         if (pd.mode === "trk") {
           if (trkAdjust) {
             /* adjust mode: a drag never PLACES a point, but grabbing an existing
@@ -1586,6 +1591,29 @@ function MediaMeasure({ src, update, wizard }) {
       return p;
     }) });
   };
+  /* ── CAMERA REFERENCE FEATURES (manual stabilization fallback) ──────────
+     For clips the auto stabilizer can't solve (dark, soft clouds, near-black
+     stretches), the user hand-marks a few WORLD-FIXED features across frames;
+     the sky view then solves each frame's pose from them (solveManualPoses).
+     source.camRefs = [{ marks: [{t,x,y}] }, …]; one feature, tracked frame to
+     frame. Marking is tap-only + pinch-zoom for precision — no drag, so it
+     can't fight the object-track gestures. Self-contained: delete this block +
+     the cref render/panel + the module to remove the feature entirely. */
+  const camRefs = src.camRefs || [];
+  const FRAME_EPS = 0.05;   // "this frame" tolerance in seconds (~1 frame)
+  const crefAtFrame = (r) => (r?.marks || []).find((m) => Math.abs(+m.t - vidT) < FRAME_EPS);
+  const addCref = () => { const next = [...camRefs, { marks: [] }]; update({ camRefs: next }); setSelCref(next.length - 1); };
+  const markCref = (x, y) => {
+    let refs = camRefs.map((r) => ({ ...r, marks: [...(r.marks || [])] }));
+    let i = selCref;
+    if (i < 0 || i >= refs.length) { refs = [...refs, { marks: [] }]; i = refs.length - 1; setSelCref(i); }
+    const marks = refs[i].marks.filter((m) => Math.abs(+m.t - vidT) >= FRAME_EPS); // replace this frame's mark
+    marks.push({ t: +vidT.toFixed(3), x, y });
+    marks.sort((a, b) => a.t - b.t);
+    refs[i] = { ...refs[i], marks };
+    update({ camRefs: refs });
+  };
+  const delCref = (i) => { const next = camRefs.filter((_, k) => k !== i); update({ camRefs: next }); setSelCref(Math.max(0, Math.min(i, next.length - 1))); };
   const selectNearestTrk = (nat) => {
     if (!trkSorted.length) { setSelTrk(-1); return; }
     let bi = -1, bd = 40 / (scale * (view.z || 1));   // ~40 screen px tap radius
@@ -1700,9 +1728,10 @@ function MediaMeasure({ src, update, wizard }) {
              VIDEO (tap across frames) and a STILL (tap the recalled path on the
              one photo) lay the trajectory HERE — the sky view just shows it. */
           <div style={{ display: "inline-flex", borderRadius: 9, overflow: "hidden", border: "1px solid var(--line)" }}>
-            {[["shape", "◆ 3D object", "var(--amber)", "rgba(245,169,63,.18)"], ["trk", "⊕ Track points", "var(--track)", "rgba(143,180,255,.18)"]].map(([k, label, col, bg]) => (
+            {[["shape", "◆ 3D object", "var(--amber)", "rgba(245,169,63,.18)"], ["trk", "⊕ Track points", "var(--track)", "rgba(143,180,255,.18)"],
+              ...(isVid ? [["cref", "🎥 Cam refs", "var(--green)", "rgba(90,200,140,.18)"]] : [])].map(([k, label, col, bg]) => (
               <button key={k} className="btn sm"
-                title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : (isVid ? "Tap the object across frames to lay down its trajectory" : "Tap the object's path across the photo — where it was at each moment")}
+                title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : k === "cref" ? "Hand-mark fixed background features (a cloud edge, star, light) across frames to stabilize a clip the auto pass can't" : (isVid ? "Tap the object across frames to lay down its trajectory" : "Tap the object's path across the photo — where it was at each moment")}
                 onClick={() => setActive(k)}
                 style={{ borderRadius: 0, border: "none", padding: "6px 10px", fontWeight: active === k ? 700 : 500, background: active === k ? bg : "transparent", color: active === k ? col : "var(--dim)" }}>
                 {label}
@@ -2038,6 +2067,38 @@ function MediaMeasure({ src, update, wizard }) {
                   </svg>
                 );
               })()}
+              {/* CAMERA REFERENCE marks — numbered dots for features marked on
+                 THIS frame (bright) + faint ghosts of the nearest mark for refs
+                 not yet placed here, so you can re-mark them. Only while the Cam
+                 refs tool is active. */}
+              {scale > 0 && active === "cref" && camRefs.length > 0 && (
+                <svg style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }} width="100%" height="100%">
+                  {camRefs.map((r, i) => {
+                    const here = crefAtFrame(r);
+                    const hue = (i * 47) % 360;
+                    const col = `hsl(${hue},85%,62%)`;
+                    if (here) {
+                      const [x, y] = TT(here.x, here.y);
+                      return (
+                        <g key={i}>
+                          {i === selCref && <circle cx={x} cy={y} r={9} fill="none" stroke={col} strokeWidth="1.4" opacity="0.9" />}
+                          <circle cx={x} cy={y} r={4} fill={col} />
+                          <text x={x} y={y - 9} textAnchor="middle" fontSize="10" fontWeight="700" fill={col}>{i + 1}</text>
+                        </g>
+                      );
+                    }
+                    const g = (r.marks || []).filter((m) => isNum(m.x)).reduce((a, m) => (a && Math.abs(a.t - vidT) < Math.abs(m.t - vidT) ? a : m), null);
+                    if (!g) return null;
+                    const [x, y] = TT(g.x, g.y);
+                    return (
+                      <g key={i} opacity="0.35">
+                        <circle cx={x} cy={y} r={4} fill="none" stroke={col} strokeWidth="1.2" strokeDasharray="2 2" />
+                        <text x={x} y={y - 8} textAnchor="middle" fontSize="9" fill={col}>{i + 1}</text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              )}
               {view.z > 1.01 && (
                 <button className="btn sm" onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => setView({ z: 1, ox: 0, oy: 0 })}
@@ -2110,6 +2171,37 @@ function MediaMeasure({ src, update, wizard }) {
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
               </>)}
+              {/* CAM REFS panel — manual stabilization fallback. Pick a reference
+                 slot, then tap the same fixed background feature on each frame
+                 (scrub between). The sky view solves the pose from these marks. */}
+              {active === "cref" && isVid && (() => {
+                const kf = new Set();
+                camRefs.forEach((r) => (r.marks || []).forEach((m) => { if (isNum(m.x)) kf.add(+(+m.t).toFixed(2)); }));
+                const hereCount = camRefs.filter((r) => crefAtFrame(r)).length;
+                return (
+                  <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--green)", borderRadius: 10, background: "rgba(90,200,140,.06)" }}>
+                    <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
+                      For a clip the auto stabilizer can't do: tap the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Mark 3–5 features, spread across the frame, on the align frame and a handful of others. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
+                    </div>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                      {camRefs.map((r, i) => {
+                        const on = i === selCref, marked = !!crefAtFrame(r), hue = (i * 47) % 360;
+                        return (
+                          <button key={i} className="btn sm" onClick={() => setSelCref(i)}
+                            style={{ padding: "4px 9px", fontWeight: on ? 700 : 500, borderColor: `hsl(${hue},70%,50%)`, color: `hsl(${hue},85%,65%)`, background: on ? `hsla(${hue},70%,45%,.22)` : "transparent" }}>
+                            {i + 1}{marked ? " ●" : " ○"}<span style={{ fontSize: 9, color: "var(--dim)" }}> {(r.marks || []).filter((m) => isNum(m.x)).length}</span>
+                          </button>
+                        );
+                      })}
+                      <button className="btn sm green" onClick={addCref} style={{ padding: "4px 9px" }}>+ Ref</button>
+                      {camRefs.length > 0 && <button className="btn sm" onClick={() => delCref(selCref)} style={{ padding: "4px 9px" }} title="Delete the selected reference">🗑</button>}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 6 }}>
+                      {camRefs.length} ref{camRefs.length === 1 ? "" : "s"} · {kf.size} frame{kf.size === 1 ? "" : "s"} marked · {hereCount} on this frame{isNum(src.alignT) ? "" : " · set an align frame (⛰) first"}
+                    </div>
+                  </div>
+                );
+              })()}
               {/* Track tools follow the mode toggle in the wizard — hidden in
                  3D-object mode even when points already exist (they reappear on
                  ⊕ Track points). Non-wizard keeps the "show if any points" rule. */}
@@ -4166,6 +4258,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the pose path on the source. Walks OUTWARD from the marked frame (forward
      then backward) so every step is between adjacent frames. All seeks happen
      on an offscreen <video>, off the render path. */
+  /* MANUAL stabilization: solve the pose path from the hand-marked camera
+     references (source.camRefs) instead of the automatic feature walk — the
+     fallback for clips too dark/soft/empty for the auto pass. Pure + instant
+     (no video seeking); writes the same posePath everything downstream reads. */
+  const solveFromMarks = () => {
+    if (source?.mediaKind !== "video" || !source?.natW) { setFlash("🎯 solve from marks needs a video"); return; }
+    const refs = source?.camRefs || [];
+    const nMarks = refs.reduce((a, r) => a + (r.marks || []).filter((m) => isNum(m.x)).length, 0);
+    if (nMarks < 2) { setFlash("🎯 mark a fixed feature on ≥2 frames first (Cam refs, on the measure step)"); return; }
+    const refPose = { t: alignT, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
+    const path = solveManualPoses(refs, refPose, { natW: source.natW, natH: source.natH });
+    if (!path || !path.length) { setFlash("🎯 couldn't solve — mark more features / more frames"); return; }
+    if (update) update({ posePath: path });
+    setFlash(`🎯 solved ${path.length} keyframe${path.length === 1 ? "" : "s"} from your marks — ▶ play to check the lock`);
+  };
   const stabilize = async () => {
     if (source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize needs a video with a marked frame"); return; }
     const run = ++stabAbortRef.current;
@@ -5903,6 +6010,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1, flex: "0 0 auto" }}
                       title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
                       onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                  )}
+                  {/* MANUAL solve: only when the clip has hand-marked camera refs
+                      (the auto pass couldn't do it) — solves instantly from marks */}
+                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && (source?.camRefs || []).some((r) => (r.marks || []).filter((m) => isNum(m.x)).length) && (
+                    <button className="btn sm green" style={{ flex: "0 0 auto" }}
+                      title="Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"
+                      onClick={solveFromMarks}>🎯 Solve from marks</button>
                   )}
                   <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
                     🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
