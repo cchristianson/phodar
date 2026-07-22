@@ -13,6 +13,7 @@ import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
+import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1631,6 +1632,50 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(aps.length, 2, 0, "airports: non-aerodrome dropped");
   approx(aps[0].name === "Near Field" ? 1 : 0, 1, 0, "airports: nearest first");
   approx(aps[0].bearing >= 0 && aps[0].bearing < 360 ? 1 : 0, 1, 0, "airports: bearing in range");
+}
+
+// --- MANUAL POSE FROM HAND-MARKED REFERENCES: recover a pan+roll+zoom
+//     sequence from synthetic marks of world-fixed features (the fallback for
+//     clips the auto stabilizer can't solve). ---
+{
+  const natW = 1920, natH = 1080;
+  const refPose = { t: 1.0, az: 100, el: 20, roll: 2, fov: 60, k: 0 };
+  // 4 world-fixed features, defined by their pixels in the ALIGN frame → g
+  const alignPix = [{ x: 400, y: 300 }, { x: 1500, y: 350 }, { x: 500, y: 800 }, { x: 1400, y: 750 }];
+  const G = alignPix.map((p) => pixToDirK(p.x, p.y, natW, natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k));
+  // a truth pose per keyframe: the camera pans, rolls, and zooms
+  const truth = [
+    { t: 0.5, az: 95, el: 18, roll: 0, fov: 62 },
+    { t: 1.0, az: 100, el: 20, roll: 2, fov: 60 },
+    { t: 1.5, az: 106, el: 23, roll: 4, fov: 56 },
+    { t: 2.0, az: 111, el: 25, roll: 5, fov: 52 },
+  ];
+  // build camRefs: each feature marked on every keyframe (project g → pixel)
+  const camRefs = G.map((g) => ({
+    marks: truth.map((T) => { const p = dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0); return { t: T.t, x: p.px, y: p.py }; }),
+  }));
+  const path = solveManualPoses(camRefs, refPose, { natW, natH });
+  approx(path && path.length === 4 ? 1 : 0, 1, 0, "manualPose: a keyframe solved for every marked frame");
+  if (path) {
+    let maxAz = 0, maxEl = 0, maxRoll = 0, maxFov = 0;
+    for (const T of truth) {
+      const s = path.find((p) => Math.abs(p.t - T.t) < 1e-3);
+      maxAz = Math.max(maxAz, Math.abs(((s.az - T.az + 540) % 360) - 180));
+      maxEl = Math.max(maxEl, Math.abs(s.el - T.el));
+      maxRoll = Math.max(maxRoll, Math.abs(s.roll - T.roll));
+      maxFov = Math.max(maxFov, Math.abs(s.fov - T.fov));
+    }
+    approx(maxAz < 0.3 ? 1 : 0, 1, 0, `manualPose: az recovered across the pan (max err ${maxAz.toFixed(2)}°)`);
+    approx(maxEl < 0.3 ? 1 : 0, 1, 0, `manualPose: el recovered (max err ${maxEl.toFixed(2)}°)`);
+    approx(maxRoll < 0.4 ? 1 : 0, 1, 0, `manualPose: roll recovered (max err ${maxRoll.toFixed(2)}°)`);
+    approx(maxFov < 1.0 ? 1 : 0, 1, 0, `manualPose: FOV/zoom recovered (max err ${maxFov.toFixed(2)}°)`);
+  }
+  // a SINGLE mark still fixes az/el (roll+fov held from the seed) — the common
+  // "only the Moon is visible" case.
+  const oneRef = [{ marks: [{ t: 1.0, x: alignPix[0].x, y: alignPix[0].y }, (() => { const p = dirToPixK(G[0], natW, natH, 108, 24, 2, 60, 0); return { t: 2.0, x: p.px, y: p.py }; })()] }];
+  const p1 = solveManualPoses(oneRef, refPose, { natW, natH }, { lockFov: true });
+  const s2 = p1 && p1.find((p) => Math.abs(p.t - 2.0) < 1e-3);
+  approx(s2 && Math.abs(((s2.az - 108 + 540) % 360) - 180) < 0.5 && Math.abs(s2.el - 24) < 0.5 ? 1 : 0, 1, 0, "manualPose: a lone reference still fixes az/el");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
