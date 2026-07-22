@@ -78,11 +78,29 @@ function interp1(kf, t) { // kf sorted [{t, v}] → linear, clamped at the ends
    set, clamped past the ends, and falling back to the fitted shape where the
    user set none. Two size marks ⇒ a smooth ramp between them; N marks ⇒
    piecewise; same for attitude via SLERP. Pure. The caller normalises the
-   returned `wpx` to a real sizeNat through shapeProjNat (projection-aware). */
-export function sampleShapeAt(track, shapeFit, t) {
+   returned `wpx` to a real sizeNat through shapeProjNat (projection-aware).
+
+   `opts = { markT, wFit }` (optional): the FITTED shape is the implicit
+   BASELINE keyframe at the frame it was fit on (markT) — apparent width wFit
+   and attitude shapeFit.rotM. Injecting it makes a SINGLE user adjustment ramp
+   from the fit (or from whichever earlier point WAS adjusted) instead of
+   snapping the whole track: "changes transition from changes, not from
+   un-adjusted points". It's injected only when the caller passes the baseline
+   AND the user set ≥1 keyframe of that kind (so the un-keyframed case still
+   returns the fit unchanged), and skipped if a real keyframe already sits on
+   markT. Without opts the behaviour is exactly the old 3-arg one. */
+export function sampleShapeAt(track, shapeFit, t, opts) {
   const tk = Array.isArray(track) ? track : [];
-  const sk = tk.filter((p) => isNum(p.t) && isNum(p.wpx) && +p.wpx > 0).map((p) => ({ t: +p.t, v: +p.wpx })).sort((a, b) => a.t - b.t);
-  const rk = tk.filter((p) => isNum(p.t) && Array.isArray(p.rotM) && p.rotM.length === 9).map((p) => ({ t: +p.t, m: p.rotM })).sort((a, b) => a.t - b.t);
+  const markT = opts && isNum(opts.markT) ? +opts.markT : null;
+  const wFit = opts && isNum(opts.wFit) ? +opts.wFit : null;
+  let sk = tk.filter((p) => isNum(p.t) && isNum(p.wpx) && +p.wpx > 0).map((p) => ({ t: +p.t, v: +p.wpx })).sort((a, b) => a.t - b.t);
+  let rk = tk.filter((p) => isNum(p.t) && Array.isArray(p.rotM) && p.rotM.length === 9).map((p) => ({ t: +p.t, m: p.rotM })).sort((a, b) => a.t - b.t);
+  if (markT != null) {
+    if (wFit != null && sk.length && !sk.some((k) => Math.abs(k.t - markT) < 1e-4))
+      sk = [...sk, { t: markT, v: wFit }].sort((a, b) => a.t - b.t);
+    if (shapeFit?.rotM && shapeFit.rotM.length === 9 && rk.length && !rk.some((k) => Math.abs(k.t - markT) < 1e-4))
+      rk = [...rk, { t: markT, m: shapeFit.rotM }].sort((a, b) => a.t - b.t);
+  }
   let rotM = (shapeFit?.rotM && shapeFit.rotM.length === 9) ? shapeFit.rotM : I3;
   if (rk.length === 1) rotM = rk[0].m;
   else if (rk.length >= 2) {

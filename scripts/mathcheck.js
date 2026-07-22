@@ -1257,6 +1257,29 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const none = sampleShapeAt([{ t: 0, x: 1, y: 1 }], sf, 1);
     approx(none.wpx == null ? 1 : 0, 1, 0, "sampleShapeAt: no size marks ⇒ wpx null (caller uses fitted size)");
     approx(Math.max(...I3.map((v, i) => Math.abs(v - none.rotM[i]))) < 1e-9 ? 1 : 0, 1, 0, "sampleShapeAt: no attitude marks ⇒ fitted rotM");
+    // baseline injection: the FIT is an implicit keyframe at markT (wFit,
+    // shapeFit.rotM) so a SINGLE adjustment RAMPS from the fit instead of
+    // going constant — "changes transition from changes, not from un-adjusted
+    // points". Fit width 50 px @ markT=0; the only sized point is 100 px @ t=4.
+    {
+      const one = [{ t: 4.0, wpx: 100 }];
+      const optB = { markT: 0, wFit: 50 };
+      // WITHOUT the baseline it would be constant 100 everywhere:
+      approx(sampleShapeAt(one, sf, 2.0).wpx, 100, 1e-6, "sampleShapeAt: single size mark alone ⇒ constant (no baseline)");
+      // WITH the baseline it ramps 50→100 over t∈[0,4]:
+      approx(sampleShapeAt(one, sf, 0.0, optB).wpx, 50, 1e-6, "sampleShapeAt: baseline anchors the fit width at markT");
+      approx(sampleShapeAt(one, sf, 2.0, optB).wpx, 75, 1e-6, "sampleShapeAt: single adjustment RAMPS from the fit baseline (midpoint 75 px)");
+      approx(sampleShapeAt(one, sf, 4.0, optB).wpx, 100, 1e-6, "sampleShapeAt: reaches the adjusted value at its keyframe");
+      approx(sampleShapeAt(one, sf, 9.0, optB).wpx, 100, 1e-6, "sampleShapeAt: clamps past the adjusted keyframe");
+      // a real keyframe ON markT is NOT duplicated (baseline skipped):
+      approx(sampleShapeAt([{ t: 0, wpx: 120 }, { t: 4, wpx: 100 }], sf, 0.0, optB).wpx, 120, 1e-6, "sampleShapeAt: real keyframe on markT wins over the baseline");
+      // no baseline supplied ⇒ un-adjusted case still returns fit (wpx null):
+      approx(sampleShapeAt([{ t: 0, x: 1, y: 1 }], sf, 1, optB).wpx == null ? 1 : 0, 1, 0, "sampleShapeAt: baseline needs ≥1 real mark (no marks ⇒ still null)");
+      // rotation baseline: one attitude mark @ t=4 (rotZ 60) ramps from fit (I3) at markT=0
+      const oneR = [{ t: 4.0, rotM: rotZ3(60) }];
+      const rMid = sampleShapeAt(oneR, sf, 2.0, { markT: 0, wFit: 50 }).rotM;
+      approx(Math.max(...rotZ3(30).map((v, i) => Math.abs(v - rMid[i]))) < 1e-6 ? 1 : 0, 1, 0, "sampleShapeAt: single attitude mark slerps from the fit baseline (midpoint 30°)");
+    }
   }
 
   // 4h-c. mp4 muxer (WebCodecs export container): structural integrity —
