@@ -783,6 +783,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [touching, setTouching] = useState(false); // any finger down on the canvas
   const wrapRef = useRef(null), mediaRef = useRef(null), loupeRef = useRef(null);
   const trkDragRef = useRef(null);   // live position of a loupe-assisted Track drag (committed on lift)
+  const trkHistRef = useRef([]);     // Track-point undo stack (snapshots before each place/delete/clear)
 
   const natW = src.natW, natH = src.natH;
   const scale = natW && dispW ? dispW / natW : 0;
@@ -866,6 +867,9 @@ function MediaMeasure({ src, update, wizard }) {
       hue: sf.hue ?? 36,
     });
   }, [src.id, src.shapeFit]); // eslint-disable-line
+  /* the Track undo stack is per-observer — clear it when the source changes
+     (the component instance is reused, so refs would otherwise leak across) */
+  useEffect(() => { trkHistRef.current = []; }, [src.id]);
 
   const measureWrap = useCallback(() => {
     if (wrapRef.current) setDispW(wrapRef.current.clientWidth);
@@ -949,6 +953,7 @@ function MediaMeasure({ src, update, wizard }) {
       }
     }
     fileRef.current = f; setTriedData(url.startsWith("data:"));
+    trkHistRef.current = []; // new media is a fresh start — don't let Undo reach back into the old clip's track
     update({
       mediaUrl: url, mediaKind: kind, mediaNorm: false,
       natW: null, natH: null, meta: null,
@@ -1171,7 +1176,7 @@ function MediaMeasure({ src, update, wizard }) {
       if (trkAdjust) return;   // adjust mode: taps don't add points — scrub + tune the nearest one
       const el = mediaRef.current;
       const tv = el ? el.currentTime : vidT;
-      update({ track: [...(src.track || []), { t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y }] });
+      addTrkPt({ t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y });
       if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
       return;
     }
@@ -1292,6 +1297,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (pd && pd.id === e.pointerId) {
       if (Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) > 7) {
         if (pd.mode === "trk") {
+          if (trkAdjust) { killPending(); return; }   // adjust mode: dragging never places a point
           /* Track DRAG = loupe-assisted placement (the object is almost
              always small): magnifier follows the finger, the point commits
              where you LIFT. A clean tap still places instantly. */
@@ -1359,12 +1365,12 @@ function MediaMeasure({ src, update, wizard }) {
       hDragRef.current = null;
       if (drag) {
         setDrag(false);
-        if (active === "trk" && trkDragRef.current && e.type !== "pointercancel") {
+        if (active === "trk" && !trkAdjust && trkDragRef.current && e.type !== "pointercancel") {
           /* commit the loupe-assisted Track drag where the finger lifted */
           const p2 = trkDragRef.current;
           const el2 = mediaRef.current;
           const tv = el2 && media?.kind === "video" ? el2.currentTime : vidT;
-          update({ track: [...(src.track || []), { t: +tv.toFixed(3), x: p2.x, y: p2.y }] });
+          addTrkPt({ t: +tv.toFixed(3), x: p2.x, y: p2.y });
           if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
         }
         trkDragRef.current = null;
@@ -1444,6 +1450,18 @@ function MediaMeasure({ src, update, wizard }) {
   const trkSorted = [...(src.track || [])].filter((p) => p.x != null && isNum(p.t)).sort((a, b) => a.t - b.t);
   const trackHue = isNum(src.trackHue) ? +src.trackHue : 210;       // track-point colour (recolourable in the Track panel)
   const trkCol = (a = 1) => `hsla(${trackHue},90%,68%,${a})`;
+  /* Track-point UNDO: snapshot the current list BEFORE any place/delete/clear,
+     so Undo steps back through ALL of them (not just the last placement). The
+     stack is session-local (a ref) and reset when the observer changes. */
+  const pushTrkHist = () => {
+    trkHistRef.current.push(JSON.stringify(src.track || []));
+    if (trkHistRef.current.length > 40) trkHistRef.current.shift();
+  };
+  const undoTrack = () => {
+    if (trkHistRef.current.length) { update({ track: JSON.parse(trkHistRef.current.pop()) }); return; }
+    update({ track: (src.track || []).slice(0, -1) }); // no history (e.g. after reload) → drop the last point
+  };
+  const addTrkPt = (pt) => { pushTrkHist(); update({ track: [...(src.track || []), pt] }); };
   /* which placed point the size/attitude controls target. Normally the point
      owning the frame you're on (within 0.55 s); in ADJUST mode the NEAREST
      placed point regardless of distance — scrub anywhere and the model snaps
@@ -1855,10 +1873,19 @@ function MediaMeasure({ src, update, wizard }) {
                       <option value={3}>3 fr</option><option value={6}>6 fr</option><option value={15}>15 fr</option>
                       <option value={30}>30 fr</option><option value={45}>45 fr</option><option value={60}>60 fr</option><option value={90}>90 fr</option>
                     </select>
-                    <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length}
-                      onClick={() => update({ track: (src.track || []).slice(0, -1) })}>Undo</button>
-                    <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length} title="remove all track points"
-                      onClick={() => update({ track: [] })}>🗑</button>
+                    <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length && !trkHistRef.current.length}
+                      title="undo the last place or delete" onClick={undoTrack}>Undo</button>
+                    {/* Adjust mode with a point selected → the trash deletes JUST
+                       that point (undoable); otherwise it clears the whole track */}
+                    <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length}
+                      title={trkAdjust && szIdx >= 0 ? `delete point ${szIdx + 1}` : "remove all track points"}
+                      onClick={() => {
+                        if (trkAdjust && szIdx >= 0) {
+                          const target = trkSorted[szIdx];
+                          pushTrkHist();
+                          update({ track: (src.track || []).filter((p) => p !== target) });
+                        } else { pushTrkHist(); update({ track: [] }); }
+                      }}>{trkAdjust && szIdx >= 0 ? "🗑 pt" : "🗑"}</button>
                   </div>
                   {/* PLACE vs ADJUST — lay all the points down first (taps add),
                      then flip to Adjust: scrub to any point and tune its size +
