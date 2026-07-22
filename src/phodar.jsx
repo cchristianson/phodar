@@ -524,7 +524,7 @@ const HELP_SECTIONS = [
       { h: "The four tools (one at a time)", items: [
         { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
         { t: "⊕ Trajectory", d: "Trace the object's path: the photo warps into the sky and you ⊕ drop world-anchored points where it was at each moment, with Δt timing." },
-        { t: "📏 Size / ⚖ Compare", d: "Gauge distance from either end of the size⇄distance lock: slide an assumed range, resize the object to an assumed true size, or tap a reference object (drone, hawk, 737…) — the matching distance and altitude follow, since the measured angular width ties them together. ⚖ instead drops a reference ghost in the sky to compare apparent sizes — including by placing it on a map." },
+        { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
       ]},
       { h: "Get the pointing exact (Place tools)", items: [
         { t: "✦ Auto star align", d: "On a night photo, detects your stars and plate-solves the exact az/el/roll/FOV/lens automatically — no manual lining-up. The most accurate calibration when stars are visible." },
@@ -1402,6 +1402,27 @@ function MediaMeasure({ src, update, wizard }) {
   };
 
   const ang = angSizeFromPoints(src.A.p1, src.A.p2, natW, natH, +src.fovH);
+  /* --- per-frame apparent size: resize the fitted shape ON a track point's
+     own video frame. The size CHANGE across frames is what recovers the
+     radial (closer/farther) side of the trajectory — track points store
+     `wpx` (native px width at their frame) plus `ang` (degrees via the
+     current fovH; re-derived from the solved per-frame FOV after
+     stabilization, so a camera zoom can't masquerade as approach). --- */
+  const trkSorted = [...(src.track || [])].filter((p) => p.x != null && isNum(p.t)).sort((a, b) => a.t - b.t);
+  const szIdx = (media?.kind === "video" && src.shapeFit && trkSorted.length) ? (() => {
+    let bi = -1, bd = 0.55; // the point owning the frame you're on (nearest tap within 0.55 s)
+    trkSorted.forEach((p, i) => { const d = Math.abs(+p.t - vidT); if (d < bd) { bd = d; bi = i; } });
+    return bi;
+  })() : -1;
+  const wFit = src.shapeFit ? (() => { const pr = shapeProjNat(src.shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })() : 1;
+  const fpxM = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
+  const angOfW = (w) => (fpxM ? 2 * Math.atan((w / 2) / fpxM) * R2D : null);
+  const setPtW = (w) => {
+    if (szIdx < 0) return;
+    const w2 = clampN(w, 2, natW * 0.6);
+    const a2 = angOfW(w2);
+    update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
+  };
   const markStyle = {
     p1: { borderColor: "var(--amber)", color: "var(--amber)" },
     p2: { borderColor: "var(--amber)", color: "var(--amber)" },
@@ -1615,6 +1636,25 @@ function MediaMeasure({ src, update, wizard }) {
                           fill={i === tp.length - 1 ? "var(--track)" : "rgba(143,180,255,.75)"} opacity={op} />
                       );
                     })}
+                    {/* wireframe GHOSTS at sized points (and the point being
+                       sized): the fitted shape re-centred on the tap, scaled to
+                       that frame's stored width — frame-local like the dots */}
+                    {src.shapeFit && pts2.map((p, i) => {
+                      const has = isNum(p.wpx);
+                      const isSz = active === "trk" && i === szIdx;
+                      if (!has && !isSz) return null;
+                      const d = Math.abs(p.t - vidT);
+                      const f = d <= 0.3 ? 1 : d >= 1.1 ? 0 : 1 - (d - 0.3) / 0.8;
+                      const op = isSz ? Math.max(0.5, f) : f;
+                      if (op <= 0.02) return null;
+                      const w = has ? +p.wpx : wFit;
+                      const prG = shapeProjNat({ ...src.shapeFit, cx: p.x, cy: p.y, sizeNat: src.shapeFit.sizeNat * (w / wFit) });
+                      const colG = `hsl(${src.shapeFit.hue ?? 36},88%,60%)`;
+                      return prG.curves.map((c, j) => (
+                        <polyline key={`g${i}-${j}`} points={c.map((pt2) => TT(pt2.x, pt2.y).join(",")).join(" ")}
+                          fill="none" stroke={colG} strokeWidth={isSz ? 1.4 : 1} opacity={op * 0.8} />
+                      ));
+                    })}
                   </svg>
                 );
               })()}
@@ -1737,6 +1777,43 @@ function MediaMeasure({ src, update, wizard }) {
                     <button className="btn sm" disabled={!(src.track || []).length} style={{ color: "var(--red)" }}
                       onClick={() => update({ track: [] })}>Clear</button>
                   </div>
+                  {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
+                     outline to the object as it appears RIGHT THERE. Apparent
+                     size across frames ⇒ range ratio over time (the radial
+                     side of the trajectory the bearings alone can't see). */}
+                  {wizard && src.shapeFit && szIdx >= 0 && (() => {
+                    const p = trkSorted[szIdx];
+                    const w = isNum(p.wpx) ? +p.wpx : wFit;
+                    const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
+                    const sv = clampN(Math.log(w / lo) / Math.log(hi / lo), 0, 1);
+                    const aP = angOfW(w), aF = angOfW(wFit);
+                    const rho = aP != null && aF != null ? Math.tan(aF * D2R / 2) / Math.tan(aP * D2R / 2) : null;
+                    return (
+                      <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
+                            point {szIdx + 1} @ {(+p.t).toFixed(2)}s — size on THIS frame · bigger = closer
+                          </span>
+                          <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
+                            {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                          <button className="btn sm" onClick={() => setPtW(w / 1.08)}>−</button>
+                          <input type="range" min={0} max={1} step={0.004} value={sv}
+                            onChange={(e) => setPtW(lo * Math.pow(hi / lo, +e.target.value))} style={{ flex: 1 }} />
+                          <button className="btn sm" onClick={() => setPtW(w * 1.08)}>+</button>
+                          {isNum(p.wpx) && (
+                            <button className="btn sm" title="forget this frame's size (back to the fitted size)"
+                              onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== szIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
+                          )}
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
+                          Match the outline to the object at each tapped frame — the size change between frames is what recovers closer/farther motion.{isNum(p.wpx) ? "" : " This point currently assumes the fitted size."}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     if (wizard) return (
                       <div style={{ marginTop: 6, fontSize: 11, color: "var(--dim)" }}>
@@ -3780,7 +3857,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          with a manual guide the human's path stands even where pixels failed */
       objPath.sort((a, b) => a.t - b.t);
       const objGood = objMid && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
-      if (update) update({ posePath: path, objPath: objGood ? objPath : null });
+      /* per-frame SIZED track points (wpx from the measure step) get their
+         angular size re-derived from each frame's SOLVED FOV — sized under a
+         zoom, the constant-fovH conversion would read lens zoom as approach */
+      let resized = 0;
+      const track2 = Array.isArray(source?.track) && source.track.some((p) => isNum(p.wpx) && isNum(p.t))
+        ? source.track.map((p) => {
+          if (!isNum(p.wpx) || !isNum(p.t)) return p;
+          const pp = posePathAt(path, +p.t);
+          if (!pp || !isNum(pp.fov)) return p;
+          const fpxT = (source.natW / 2) / Math.tan((pp.fov * D2R) / 2);
+          resized++;
+          return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
+        })
+        : null;
+      if (update) update({ posePath: path, objPath: objGood ? objPath : null, ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -3788,11 +3879,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
+      const sizeNote = resized ? ` · ${resized} sized point${resized > 1 ? "s" : ""} re-scaled to the solved zoom` : "";
       const guideNote = guideN >= 2 ? `, guided by your ${guideN} track points` : "";
       const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
@@ -5165,7 +5257,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {!single && !calibOn && (
               <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
                 {[["place", "✥ Place", pMode === "place"], ["traj", "⊕ Trajectory", trajOn], ["size", "📏 Size", sizeOn], ["compare", "⚖ Compare", cmpOn]].map(([k, label, on]) => (
-                  <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 3px" }}
+                  <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 2px", fontSize: 11, overflow: "hidden" }}
                     onClick={() => selectMode(k)}>{label}</button>
                 ))}
                 <button title="Overlay color — recolors the crosshair, object outline and terrain ridges so they stand out against your photo. Tap to open the hue slider."
@@ -5411,7 +5503,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     const fpxSmax = (vp.w || window.innerWidth || 400) / (2 * Math.tan(1 * D2R));
                     const angMin = 1 / (D2R * fpxSmax);
                     const angMax = clampN(anchor * 40, angMin * 8, 60);
-                    const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, ang: +clampN(a, angMin, 60).toFixed(5) } : p)) });
+                    /* a manual sky-view size overrides any measure-step pixel size —
+                       drop wpx so the post-stabilize FOV re-derivation can't undo this */
+                    const setAng = (a) => update({ track: sortedTrack.map((p, i) => (i === selPt ? (({ wpx, ...rest }) => ({ ...rest, ang: +clampN(a, angMin, 60).toFixed(5) }))(p) : p)) });
                     const sv = clampN(Math.log(pAng / angMin) / Math.log(angMax / angMin), 0, 1);
                     const rho = Math.tan(angRef0 * D2R / 2) / Math.tan(pAng * D2R / 2);
                     return (
@@ -5529,39 +5623,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   /* cloud-base cap: below a real deck, range < base/sin(el) */
                   const deck = wxSky && wxSky.baseAGL != null && ((wxSky.low != null ? wxSky.low : wxSky.cloud) || 0) >= 40;
                   const cb = (deck && isNum(objEl) && objEl > 0.5) ? cloudRangeBound(wxSky.baseAGL, objEl, objAngW) : null;
-                  /* the SAME lever from both ends: the measured angular size locks
-                     size·distance together, so a distance slider and a TRUE-SIZE
-                     slider (plus reference-object chips) all drive one state —
-                     resize the object and the distance follows, and vice versa */
-                  const distFromSize = (S) => S / (2 * Math.tan(objAngW * D2R / 2));
-                  const ts = clampN(Math.log(size / 0.1) / Math.log(300 / 0.1), 0, 1); // 0.1 m → 300 m, log
-                  const nearestRef = REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b);
                   return (
                     <>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide{isNum(objEl) ? ` · ${objEl.toFixed(0)}° up` : ""}</div>
-                      <div className="microlabel" style={{ marginTop: 4, marginBottom: 0 }}>if it was this far away…</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
                         onChange={(e) => setObjD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
-                        style={{ width: "100%", touchAction: "auto", pointerEvents: "auto" }} />
-                      <div className="microlabel" style={{ marginTop: 2, marginBottom: 0 }}>…or if it was this big</div>
-                      <input type="range" min={0} max={1} step={0.004} value={ts}
-                        onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                        onChange={(e) => setObjD(Math.max(1, Math.round(distFromSize(0.1 * Math.pow(300 / 0.1, +e.target.value)))))}
-                        style={{ width: "100%", touchAction: "auto", pointerEvents: "auto" }} />
+                        style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
-                        <b>{fmtLenShort(size)}</b> across ⇄ <b>{fmtLenShort(objD)}</b> away
+                        if it was <b>{fmtLenShort(objD)}</b> away → <b>{fmtLenShort(size)}</b> across
                         {alt != null && <> · <b>{fmtLenShort(Math.abs(alt))}</b> {alt >= 0 ? "above" : "below"} you</>}
-                      </div>
-                      {/* one-tap hypotheses: assume a known object's size → the distance follows */}
-                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
-                        {REF_OBJECTS.map((o) => (
-                          <button key={o.name} className="btn sm"
-                            style={{ fontSize: 9.5, padding: "4px 7px", ...(o === nearestRef ? { borderColor: "var(--amber)", color: "var(--amber)" } : {}) }}
-                            onClick={() => setObjD(Math.max(1, Math.round(distFromSize(o.size))))}>
-                            {o.name} · {fmtLenShort(o.size)}
-                          </button>
-                        ))}
+                        <span style={{ color: "var(--dim)" }}> · nearest: {REF_OBJECTS.reduce((b, o) => Math.abs(Math.log(o.size / size)) < Math.abs(Math.log(b.size / size)) ? o : b).name}</span>
                       </div>
                       {cb && (
                         <div style={{ fontFamily: "var(--mono)", fontSize: 11, marginTop: 3, color: objD > cb.maxRange ? "var(--red)" : "var(--teal)" }}>
@@ -5593,7 +5665,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   : trajOn
                     ? "Aim the crosshair where the object was at each moment and ⊕ drop points — the path can run right past the photo's edges. Tap a +Δt chip to adjust timing, or tap a numbered point to set how tight its turn was (hard corner ↔ wide arc)."
                     : sizeOn
-                      ? "Work the size⇄distance lock from either end: slide an assumed distance, RESIZE the object with the size slider, or tap a reference object — the matching distance, true size and altitude update live. 📍 sets the distance on a map."
+                      ? "Slide an assumed distance — or 📍 set it on a map — to read the object's true size and altitude at that range."
                       : cmpOn
                         ? "Aim the crosshair, ⌖ drop the reference ghost there, then slide its distance — or set it on a map — to compare its apparent size to your object's."
                         : "Drag to look around · pinch to zoom. Pick a tool below: ✥ Place to align the photo, ⊕ Trajectory to trace its path, 📏 Size or ⚖ Compare to gauge distance.")
