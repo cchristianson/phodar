@@ -87,26 +87,50 @@ function roundCorners(pts) {
     if (dtP <= 0 || dtN <= 0) { out.push(pts[i]); continue; }
     const P0 = slerp(v.d, prev.d, f), P1 = slerp(v.d, next.d, f);
     const te = v.ct - f * dtP, tx = v.ct + f * dtN;
-    /* control point of the quadratic arc. A plain drawn vertex is a GUESS where
-       two legs met — the object flies INSIDE it, so the vertex is the control and
-       the curve cuts the corner. The ANCHOR is a MEASURED direction (snapped to
-       the placed object), so the path must pass THROUGH it: reflect the control
-       outward (C = 2v − (P0+P1)/2) and the arc's apex lands exactly on v. */
-    const C = v.anchor
-      ? unit([2 * v.d[0] - (P0[0] + P1[0]) / 2, 2 * v.d[1] - (P0[1] + P1[1]) / 2, 2 * v.d[2] - (P0[2] + P1[2]) / 2])
-      : v.d;
-    const N = 6;
-    for (let k = 0; k <= N; k++) {
-      const t = k / N;
-      /* the reflected control makes the arc bulge out to the anchor; pin the
-         apex sample exactly on v.d so the path literally contains the measured
-         direction (slerp curvature otherwise leaves a ~0.1° residual). */
-      const d = (v.anchor && k * 2 === N) ? v.d : unit(slerp(slerp(P0, C, t), slerp(C, P1, t), t));
-      const ae = dirToAzEl(d);
-      out.push({ ct: te + (tx - te) * t, d, az: ae.az, el: ae.el, virt: k !== 0 || undefined });
+    const uin = unit(sub(v.d, P0)), wout = unit(sub(P1, v.d));
+    let mAvg = add(uin, wout); const mm = mag(mAvg);
+    if (v.anchor && mm > 1e-6) {
+      /* the ANCHOR is a MEASURED direction (snapped to the placed object): the
+         arc must pass exactly THROUGH it AND stay smooth. A plain drawn vertex
+         cuts inside (below) — but cutting the anchor would leave the object off
+         its measured spot, and the earlier reflected-control quad passed through
+         it but KINKED at the leg joins. So build TWO cubic-Hermite halves,
+         P0→v and v→P1, sharing an averaged tangent at v: each is tangent to its
+         leg at P0/P1 (smooth join to the straight legs) and meets its sibling at
+         v with the same tangent (smooth through the object). */
+      mAvg = scl(mAvg, 1 / mm);
+      const l1 = mag(sub(v.d, P0)) / 3, l2 = mag(sub(P1, v.d)) / 3;
+      const c1 = add(P0, scl(uin, l1)), c2 = sub(v.d, scl(mAvg, l1));
+      const c3 = add(v.d, scl(mAvg, l2)), c4 = sub(P1, scl(wout, l2));
+      const cub = (a, b, c, e, t) => { const s = 1 - t; return add(add(scl(a, s * s * s), scl(b, 3 * s * s * t)), add(scl(c, 3 * s * t * t), scl(e, t * t * t))); };
+      /* sample finely: the curvature is highest right at v (the arc bulges out to
+         reach it), so a coarse step there reads as a false kink in the sampled
+         path even though the curve is C1-smooth (12 → the dome path is smoother
+         than the plain quadratic corner). */
+      const M = 12;
+      for (let half = 0; half < 2; half++) {
+        const t0 = half === 0 ? te : v.ct, t1 = half === 0 ? v.ct : tx;
+        for (let k = half === 0 ? 0 : 1; k <= M; k++) {
+          const t = k / M;
+          const d = unit(half === 0 ? cub(P0, c1, c2, v.d, t) : cub(v.d, c3, c4, P1, t));
+          const ae = dirToAzEl(d);
+          out.push({ ct: t0 + (t1 - t0) * t, d, az: ae.az, el: ae.el, virt: (half === 0 && k === 0) ? undefined : true });
+        }
+      }
+      out[out.length - 1 - 2 * M].virt = undefined; out[out.length - 1 - 2 * M].orig = i;
+    } else {
+      /* plain drawn vertex: a GUESS where two legs met — the object flies INSIDE
+         it, so the vertex is the quadratic control and the curve cuts the corner. */
+      const N = 6;
+      for (let k = 0; k <= N; k++) {
+        const t = k / N;
+        const d = unit(slerp(slerp(P0, v.d, t), slerp(v.d, P1, t), t));
+        const ae = dirToAzEl(d);
+        out.push({ ct: te + (tx - te) * t, d, az: ae.az, el: ae.el, virt: k !== 0 || undefined });
+      }
+      /* mark the arc's start as the display anchor for point i */
+      out[out.length - 1 - N].virt = undefined; out[out.length - 1 - N].orig = i;
     }
-    /* mark the arc's start as the display anchor for point i */
-    out[out.length - 1 - N].virt = undefined; out[out.length - 1 - N].orig = i;
   }
   out.push(pts[pts.length - 1]);
   return out;
