@@ -1190,7 +1190,8 @@ function MediaMeasure({ src, update, wizard }) {
         addTrkPt({ t: +tv.toFixed(3), x: pd.nat.x, y: pd.nat.y });
         if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
       } else {
-        addTrkPt({ t: +stillNextT().toFixed(3), x: pd.nat.x, y: pd.nat.y });   // still: sequential time from the gap selector
+        const sp = snapPlace(pd.nat.x, pd.nat.y);   // tapping the object pins the path to it
+        addTrkPt({ t: +stillNextT().toFixed(3), ...sp });   // still: sequential time from the gap selector
       }
       return;
     }
@@ -1388,7 +1389,8 @@ function MediaMeasure({ src, update, wizard }) {
             addTrkPt({ t: +tv.toFixed(3), x: p2.x, y: p2.y });
             if (trkAdv > 0) seek(Math.min(vidDur, tv + trkAdv * 0.03337));
           } else {
-            addTrkPt({ t: +stillNextT().toFixed(3), x: p2.x, y: p2.y });
+            const sp = snapPlace(p2.x, p2.y);
+            addTrkPt({ t: +stillNextT().toFixed(3), ...sp });
           }
         }
         trkDragRef.current = null;
@@ -1479,13 +1481,28 @@ function MediaMeasure({ src, update, wizard }) {
     if (trkHistRef.current.length) { update({ track: JSON.parse(trkHistRef.current.pop()) }); return; }
     update({ track: (src.track || []).slice(0, -1) }); // no history (e.g. after reload) → drop the last point
   };
-  const addTrkPt = (pt) => { pushTrkHist(); update({ track: [...(src.track || []), pt] }); };
+  const addTrkPt = (pt) => {
+    pushTrkHist();
+    /* a new ANCHOR point (snapped onto the object) is the ONLY anchor — drop the
+       flag from any earlier point */
+    const base = pt.anchor ? (src.track || []).map((p) => { if (!p.anchor) return p; const { anchor, ...rest } = p; return rest; }) : (src.track || []);
+    update({ track: [...base, pt] });
+  };
   /* STILL trajectory helpers — a photo has no frame clock, so each tapped point
      is stamped `t` = (latest so far) + the chosen gap, and selection is by TAP
      (find the nearest dot) instead of the video path's scrub position. */
   const stillNextT = () => {
     const ts = (src.track || []).map((p) => +p.t).filter(isNum);
     return ts.length ? Math.max(...ts) + Math.max(0.05, +trkGap || 1) : 0;
+  };
+  /* placing a point ONTO the fitted object snaps it to the object's centre and
+     makes it the trajectory anchor — so tapping the object where it actually
+     appears in the photo pins the whole recalled path to its measured direction,
+     with no separate step. Radius scales with the object's on-screen size. */
+  const snapPlace = (x, y) => {
+    if (!src.shapeFit) return { x, y };
+    const cx = src.shapeFit.cx, cy = src.shapeFit.cy, rad = Math.max(28 / (scale * (view.z || 1)), wFit * 0.6);
+    return Math.hypot(x - cx, y - cy) <= rad ? { x: cx, y: cy, anchor: true } : { x, y };
   };
   const selectNearestTrk = (nat) => {
     if (!trkSorted.length) { setSelTrk(-1); return; }
@@ -2029,10 +2046,17 @@ function MediaMeasure({ src, update, wizard }) {
                   {wizard && (src.shapeFit || !isVid) && (src.track || []).length > 0 && (
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
                       <div style={{ display: "inline-flex", borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)" }}>
-                        {[["＋ Place points", false], [isVid ? "✎ Adjust size/shape" : "✎ Adjust timing", true]].map(([label, v]) => (
+                        {[["＋ Place points", false], [isVid ? "✎ Adjust size/shape" : "✎ Adjust", true]].map(([label, v]) => (
                           <button key={String(v)} className="btn sm"
                             style={{ borderRadius: 0, border: "none", padding: "5px 9px", fontSize: 11, fontWeight: trkAdjust === v ? 700 : 500, background: trkAdjust === v ? "rgba(143,180,255,.18)" : "transparent", color: trkAdjust === v ? "var(--track)" : "var(--dim)" }}
-                            onClick={() => { setTrkAdjust(v); if (!v) setSelTrk(-1); }}>{label}</button>
+                            onClick={() => {
+                              setTrkAdjust(v);
+                              /* entering Adjust with nothing selected? auto-pick the
+                                 last point so the controls show immediately (a still
+                                 has no scrubber to select one for you) */
+                              if (!v) setSelTrk(-1);
+                              else if (!isVid && selTrk < 0 && trkSorted.length) setSelTrk(trkSorted.length - 1);
+                            }}>{label}</button>
                         ))}
                       </div>
                       {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · taps won't add" : "tap a point · taps won't add"}</span>}
