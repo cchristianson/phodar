@@ -1471,6 +1471,15 @@ function MediaMeasure({ src, update, wizard }) {
     trkSorted.forEach((p, i) => { const d = Math.abs(+p.t - vidT); if (d < bd) { bd = d; bi = i; } });
     return bi;
   })() : -1;
+  /* the DELETE target is the dot you're parked ON — the one nearest the
+     current frame AND within ~2 frames of it (the same dot the trash removes
+     and that renders highlighted). Deliberately tighter than szIdx's snap so
+     you can't accidentally delete a distant point while scrubbing. */
+  const delIdx = (media?.kind === "video" && trkSorted.length) ? (() => {
+    let bi = -1, bd = 2.2 * 0.03337; // ~2 frames at 30 fps
+    trkSorted.forEach((p, i) => { const d = Math.abs(+p.t - vidT); if (d < bd) { bd = d; bi = i; } });
+    return bi;
+  })() : -1;
   const wFit = src.shapeFit ? (() => { const pr = shapeProjNat(src.shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })() : 1;
   const fpxM = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
   const angOfW = (w) => (fpxM ? 2 * Math.atan((w / 2) / fpxM) * R2D : null);
@@ -1727,11 +1736,17 @@ function MediaMeasure({ src, update, wizard }) {
                     <polyline points={tp.map((q) => q.join(",")).join(" ")}
                       fill="none" stroke={trkCol(1)} strokeWidth="1.5" strokeDasharray="2 3" opacity={isVid ? 0.22 : 1} />
                     {tp.map((q, i) => {
-                      const op = fadeT(pts2[i]);
+                      /* the DELETE target (dot you're parked on, within ~2 frames)
+                         gets a bright ring so it's unmistakable which one 🗑 removes */
+                      const isDel = delIdx >= 0 && pts2[i] === trkSorted[delIdx];
+                      const op = isDel ? 1 : fadeT(pts2[i]);
                       if (op <= 0.01) return null;
                       return (
-                        <circle key={i} cx={q[0]} cy={q[1]} r={i === tp.length - 1 ? 4 : 2.5}
-                          fill={trkCol(i === tp.length - 1 ? 1 : 0.75)} opacity={op} />
+                        <g key={i}>
+                          {isDel && <circle cx={q[0]} cy={q[1]} r={7} fill="none" stroke={trkCol(1)} strokeWidth="1.6" />}
+                          <circle cx={q[0]} cy={q[1]} r={isDel ? 3.5 : (i === tp.length - 1 ? 4 : 2.5)}
+                            fill={trkCol(isDel || i === tp.length - 1 ? 1 : 0.75)} opacity={op} />
+                        </g>
                       );
                     })}
                     {/* wireframe GHOSTS at sized points (and the point being
@@ -1890,17 +1905,18 @@ function MediaMeasure({ src, update, wizard }) {
                     </select>
                     <button className="btn sm" style={{ marginLeft: "auto", padding: "6px 8px" }} disabled={!(src.track || []).length && !trkHistRef.current.length}
                       title="undo the last place or delete" onClick={undoTrack}>Undo</button>
-                    {/* Adjust mode with a point selected → the trash deletes JUST
-                       that point (undoable); otherwise it clears the whole track */}
+                    {/* Parked on a dot (within ~2 frames) → the trash deletes JUST
+                       that highlighted point (undoable); otherwise it clears the
+                       whole track. Scrub onto the dot you want gone. */}
                     <button className="btn sm" style={{ padding: "6px 8px" }} disabled={!(src.track || []).length}
-                      title={trkAdjust && szIdx >= 0 ? `delete point ${szIdx + 1}` : "remove all track points"}
+                      title={delIdx >= 0 ? `delete point ${delIdx + 1} (the highlighted dot)` : "remove all track points"}
                       onClick={() => {
-                        if (trkAdjust && szIdx >= 0) {
-                          const target = trkSorted[szIdx];
+                        if (delIdx >= 0) {
+                          const target = trkSorted[delIdx];
                           pushTrkHist();
                           update({ track: (src.track || []).filter((p) => p !== target) });
                         } else { pushTrkHist(); update({ track: [] }); }
-                      }}>{trkAdjust && szIdx >= 0 ? "🗑 pt" : "🗑"}</button>
+                      }}>{delIdx >= 0 ? `🗑 pt ${delIdx + 1}` : "🗑 all"}</button>
                   </div>
                   {/* END-OF-CLIP notice: once auto-advance clamps at the last
                      frame, more taps just stack points on the SAME frame. Warn
