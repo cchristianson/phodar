@@ -1474,16 +1474,31 @@ function MediaMeasure({ src, update, wizard }) {
   const wFit = src.shapeFit ? (() => { const pr = shapeProjNat(src.shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })() : 1;
   const fpxM = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
   const angOfW = (w) => (fpxM ? 2 * Math.atan((w / 2) / fpxM) * R2D : null);
+  /* the selected point's ghost model as a loupe-ready shapeFit (centred on the
+     point, width normalised through the rotated projection to hit `w`) — so
+     tuning a SMALL object at a point pops the same magnifier as the initial
+     3D-object placement instead of leaving you squinting at a few pixels */
+  const ptGhostSf = (p, w, rotM) => {
+    if (!src.shapeFit || !p) return null;
+    let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: (rotM && rotM.length === 9) ? rotM : (src.shapeFit.rotM || I3), roll: 0 };
+    const pr = shapeProjNat(sfG); const pw = Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1;
+    return { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pw };
+  };
   const setPtW = (w) => {
     if (szIdx < 0) return;
     const w2 = clampN(w, 2, natW * 0.6);
     const a2 = angOfW(w2);
     update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
+    const sfG = ptGhostSf(trkSorted[szIdx], w2, ptRotOf(szIdx)); if (sfG) shapeLoupeFor(sfG);
   };
   /* rotate the targeted point's model (per-frame attitude keyframe). Left-
      multiply so the nudge is in the VIEW frame (drag-right yaws right etc.). */
   const ptRotOf = (i) => (Array.isArray(trkSorted[i]?.rotM) && trkSorted[i].rotM.length === 9) ? trkSorted[i].rotM : (src.shapeFit?.rotM || I3);
-  const setPtRotM = (m) => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, rotM: m } : p)) }); };
+  const setPtRotM = (m) => {
+    if (szIdx < 0) return;
+    update({ track: trkSorted.map((p, i) => (i === szIdx ? { ...p, rotM: m } : p)) });
+    const p = trkSorted[szIdx]; const sfG = ptGhostSf(p, isNum(p?.wpx) ? +p.wpx : wFit, m); if (sfG) shapeLoupeFor(sfG);
+  };
   const nudgeRot = (which, deg) => { const R = which === "x" ? rotX3(deg) : which === "y" ? rotY3(deg) : rotZ3(deg); setPtRotM(mul3(R, ptRotOf(szIdx))); };
   const resetPtRotM = () => { if (szIdx < 0) return; update({ track: trkSorted.map((p, i) => (i === szIdx ? (({ rotM, ...rest }) => rest)(p) : p)) }); };
   const markStyle = {
@@ -1887,6 +1902,14 @@ function MediaMeasure({ src, update, wizard }) {
                         } else { pushTrkHist(); update({ track: [] }); }
                       }}>{trkAdjust && szIdx >= 0 ? "🗑 pt" : "🗑"}</button>
                   </div>
+                  {/* END-OF-CLIP notice: once auto-advance clamps at the last
+                     frame, more taps just stack points on the SAME frame. Warn
+                     (and hint at scrubbing back / removing the pile-up). */}
+                  {media.kind === "video" && !trkAdjust && vidDur > 0 && vidT >= vidDur - 0.034 && (
+                    <div style={{ marginTop: 6, padding: "6px 8px", border: "1px solid var(--amber)", borderRadius: 8, background: "rgba(245,169,63,.08)", fontSize: 11, color: "var(--amber)", lineHeight: 1.4 }}>
+                      ⛔ Last frame of the clip{trkAdv > 0 ? " — auto-advance has stopped" : ""}. More taps stack on this same frame; scrub back to place earlier points.
+                    </div>
+                  )}
                   {/* PLACE vs ADJUST — lay all the points down first (taps add),
                      then flip to Adjust: scrub to any point and tune its size +
                      attitude; taps no longer add. */}
