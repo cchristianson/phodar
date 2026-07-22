@@ -4257,6 +4257,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       let camFov;
       const aspect = natH / natW;
       const minFov = Math.min(...path.map((p) => p.fov));
+      const maxFov = Math.max(...path.map((p) => p.fov));
       if (mode === "crop") {
         const g1 = pixToDirK(source.A.p1.x, source.A.p1.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
         const g2 = pixToDirK(source.A.p2.x, source.A.p2.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
@@ -4269,11 +4270,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           cd = unit([cd[0] + gB[0], cd[1] + gB[1], cd[2] + gB[2]]);
         }
         ce = dirToAzEl(cd);
-        /* zoom PROPORTIONAL to the object: the crop FOV scales with the
-           object's angular size (object ≈ 1/12 of the frame width), widened
-           only as needed to keep both sight-lines in frame — a far/small
-           object gets a much tighter crop than a near/big one. */
-        camFov = clampN(Math.max(objAng * 12, sep * 1.9), 1.6, 70);
+        /* crop to the AVERAGE WINDOW of the clip's own zoom range: the mean of
+           the most zoomed-OUT frame (maxFov) and the most zoomed-IN frame
+           (minFov). This tracks how the footage was actually framed and is
+           tighter than the old object-proportional formula. Floored so the
+           object (≈⅓ of the frame) and both sight-lines still fit, and never
+           tighter than the most-zoomed frame itself. */
+        camFov = clampN((minFov + maxFov) / 2, Math.max(minFov, objAng * 3, sep * 1.2, 1.6), 70);
       }
       let B = photoBasis(ce.az, ce.el, 0);
       let mx = 0.05, my = 0.05;
@@ -4570,13 +4573,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const fb = photoBasis(p.az, p.el, p.roll);
         const fpx = (natW / 2) / Math.tan((p.fov * RAD) / 2);
         const pixD = (px, py) => { const x = (px - natW / 2) / fpx, y = (natH / 2 - py) / fpx; const s2 = 1 + (p.k || 0) * (x * x + y * y); return unit([fb.f[0] + (fb.r[0] * x + fb.u[0] * y) * s2, fb.f[1] + (fb.r[1] * x + fb.u[1] * y) * s2, fb.f[2] + (fb.r[2] * x + fb.u[2] * y) * s2]); };
-        const NC = mode === "crop" ? 16 : 8, NR = Math.max(4, Math.round(NC * natH / natW));
+        /* mesh density: 8 cols is fine for the small on-screen "view" render,
+           but the clean full/crop exports are up to 4096 px — 8 cols there makes
+           the piecewise-linear warp visibly FACET (the "mesh shapes" showing
+           through). 16 cols smooths it; the export is offline so the extra
+           triangles cost nothing. */
+        const NC = mode === "view" ? 8 : 16, NR = Math.max(4, Math.round(NC * natH / natW));
         const dst = [];
         for (let r2 = 0; r2 <= NR; r2++) { const row = []; for (let c2 = 0; c2 <= NC; c2++) row.push(proj(pixD((c2 / NC) * natW, (r2 / NR) * natH))); dst.push(row); }
         const sxp = (c2) => (c2 / NC) * tex.width, syp = (r2) => (r2 / NR) * tex.height;
+        /* clip-mesh SEAM cover: each clipped triangle's edge is anti-aliased to
+           transparent, so adjacent triangles leave a thin see-through seam. We
+           overlap them by expanding each triangle radially — but the AA seam is
+           ~1 device px REGARDLESS of resolution, so a fixed 0.6 px (tuned for the
+           ~800 px dome) is far too small at 4096 px and the seams show. Scale the
+           overlap with the output size. */
+        const EXP = clampN(OUT_W / 1400, 0.6, 3);
         const tri = (s0, s1, s2, d0, d1, d2) => {
           const cx2 = (d0[0] + d1[0] + d2[0]) / 3, cy2 = (d0[1] + d1[1] + d2[1]) / 3;
-          const ex = (q) => { const dx = q[0] - cx2, dy = q[1] - cy2, L = Math.hypot(dx, dy) || 1; return [q[0] + (dx / L) * 0.6, q[1] + (dy / L) * 0.6]; };
+          const ex = (q) => { const dx = q[0] - cx2, dy = q[1] - cy2, L = Math.hypot(dx, dy) || 1; return [q[0] + (dx / L) * EXP, q[1] + (dy / L) * EXP]; };
           const e0 = ex(d0), e1 = ex(d1), e2 = ex(d2);
           ctx.save();
           ctx.beginPath(); ctx.moveTo(e0[0], e0[1]); ctx.lineTo(e1[0], e1[1]); ctx.lineTo(e2[0], e2[1]); ctx.closePath(); ctx.clip();
@@ -5222,7 +5237,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   n++;
                   if (!p) return null;
                   const idx = n, sel = selPt === idx;
-                  const tappable = wizard;
+                  /* VIDEO: the trajectory comes from the measure-step Track tool
+                     + auto-tracking, so it's READ-ONLY here — shown for reference,
+                     not editable. Only manual (photo) trajectories are tappable. */
+                  const tappable = wizard && source?.mediaKind !== "video";
                   const col = sel ? "var(--amber)" : "var(--track)";
                   /* TRUE apparent size: angular size → screen px via the LIVE FOV,
                      so the shape scales with the sky as you zoom in/out (a distant
@@ -5678,13 +5696,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ↳ This observer has placed photo-moments. Points you drop here are timed from this photo and <b>interleave with the moments</b> on one trajectory — fill in the gaps between shots.
               </div>
             )}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
-                <button className="btn sm amber" onClick={point1FromMarks}>⌖ Start at marked object</button>
-              )}
-              <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
-              {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
-            </div>
+            {/* VIDEO: no drop/undo here — the path comes from the measure-step
+               Track tool + auto-tracking and is shown read-only. MANUAL (photo)
+               trajectories keep the drop/undo editing controls. */}
+            {source?.mediaKind === "video" ? (
+              <div style={{ fontSize: 10.5, color: "var(--dim)", lineHeight: 1.45, fontStyle: "italic" }}>
+                Shown for reference. Edit this object's trajectory on the <b style={{ color: "var(--track)" }}>measure step</b> — <b>Track</b> tool (place points, then <b>✎ Adjust size/shape</b>).
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {sortedTrack.length === 0 && source?.A?.p1 && source?.A?.p2 && (
+                  <button className="btn sm amber" onClick={point1FromMarks}>⌖ Start at marked object</button>
+                )}
+                <button className="btn sm amber" onClick={() => dropPoint(viewAz, viewAlt)}>⊕ Drop point {sortedTrack.length + 1}</button>
+                {sortedTrack.length > 0 && <button className="btn sm" onClick={undoPoint}>↩</button>}
+              </div>
+            )}
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--track)" }}>t₀</span>
@@ -5732,7 +5759,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               );
             })()}
-            {selPt != null && sortedTrack[selPt] && (() => {
+            {selPt != null && sortedTrack[selPt] && source?.mediaKind !== "video" && (() => {
               const interior = selPt > 0 && selPt < sortedTrack.length - 1;
               const r = +(sortedTrack[selPt].r ?? 0);
               const setR = (v) => update({ track: sortedTrack.map((p, i) => (i === selPt ? { ...p, r: v } : p)) });
