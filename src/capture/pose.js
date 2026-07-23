@@ -18,6 +18,13 @@
    capture UI exposes a one-tap "flip" that persists the choice per device, so
    it's self-correcting on-device without a code change. Everything else is
    unambiguous geometry, asserted in mathcheck.
+
+   ONE more empirical fact, field-measured: `webkitCompassHeading` is reported
+   in a frame that FLIPS 180° when the interface rotates to landscape (portrait
+   reads dead-on; the same scene held landscape reads exactly 180° off — a clean
+   flip, not a ±90° edge confusion, so it's symmetric across both landscape
+   holds). `opts.orient` (the screen angle: 0 portrait, ±90 landscape) applies
+   the +180° in landscape. Asserted in mathcheck.
    ============================================================ */
 
 import { R2D } from "../math/geodesy.js";
@@ -82,6 +89,16 @@ export function poseFromGravity(gravity, headingDeg, opts = {}) {
       const deltaCW = -Math.atan2(crUp, dotTC) * R2D;
       az = ((az + deltaCW) % 360 + 360) % 360;
     }
+  }
+  /* LANDSCAPE 180° flip (field-measured, see header). iOS reports the compass
+     heading in a frame that reverses when the UI is landscape; the geometry
+     above is otherwise exact, so the whole output is a clean 180° off. `orient`
+     is the screen angle from the capture UI (window.orientation /
+     screen.orientation.angle): 45–135° or 225–315° ⇒ landscape. */
+  if (isNum(headingDeg) && isNum(opts.orient)) {
+    const o = ((+opts.orient % 360) + 360) % 360;
+    const landscape = (o >= 45 && o < 135) || (o >= 225 && o < 315);
+    if (landscape) az = (az + 180) % 360;
   }
   return { az: +az.toFixed(1), el: +el.toFixed(1), roll: +roll.toFixed(1) };
 }

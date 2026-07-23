@@ -7203,6 +7203,13 @@ function SensorCapture({ onCapture, onClose }) {
      snapshot — a steadier readout and a more reliable seed. */
   const gEmaRef = useRef(null), hEmaRef = useRef(null);
   const smoothedHeading = () => { const h = hEmaRef.current; return h && (Math.abs(h.c) + Math.abs(h.s)) > 1e-3 ? ((Math.atan2(h.s, h.c) * R2D) % 360 + 360) % 360 : headRef.current; };
+  /* interface orientation (screen angle) — iOS reports webkitCompassHeading in a
+     frame that flips 180° in landscape, so the pose math needs to know the hold.
+     screen.orientation.angle is the modern API; window.orientation the iOS one. */
+  const screenAngle = () => {
+    try { const a = window.screen && window.screen.orientation && window.screen.orientation.angle; if (isNum(a)) return a; } catch (e) { }
+    return isNum(window.orientation) ? window.orientation : 0;
+  };
   useEffect(() => {
     let raf;
     const A = 0.18;
@@ -7216,7 +7223,7 @@ function SensorCapture({ onCapture, onClose }) {
           const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
           hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
         }
-        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current }));
+        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current, orient: screenAngle() }));
       }
       raf = requestAnimationFrame(tick);
     };
@@ -7236,7 +7243,7 @@ function SensorCapture({ onCapture, onClose }) {
   }, []);
   const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
-  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, whenMs: Date.now() }; };
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, orient, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {

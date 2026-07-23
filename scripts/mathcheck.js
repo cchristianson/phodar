@@ -1820,6 +1820,16 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // landscape-right (top→East, up=−X): gravity along +X, top-heading 90 → az 0
   p = poseFromGravity({ x: g, y: 0, z: 0 }, 90);
   approx(p.az, 0, 0.1, "capture pose: landscape-right → camera azimuth (not top edge)");
+  // FIELD-MEASURED: iOS reports webkitCompassHeading in a frame that flips 180°
+  // once the UI is landscape (portrait dead-on, same scene landscape exactly 180°
+  // off — clean flip, symmetric across both landscape holds). opts.orient (the
+  // screen angle) applies +180 in landscape; portrait (orient 0) is untouched.
+  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
+  approx(p.az, 180, 0.1, "capture pose: landscape + orient 90 → +180° iOS-frame flip");
+  p = poseFromGravity({ x: g, y: 0, z: 0 }, 90, { orient: -90 });
+  approx(p.az, 180, 0.1, "capture pose: other landscape (orient −90) → same +180° flip");
+  p = poseFromGravity({ x: 0, y: -g, z: 0 }, 137, { orient: 0 });
+  approx(p.az, 137, 0.1, "capture pose: portrait (orient 0) → no flip");
   // portrait aimed at the horizon (top near-vertical) → degenerate, keep heading
   p = poseFromGravity({ x: 0, y: -g, z: 0 }, 200);
   approx(p.az, 200, 0.1, "capture pose: portrait horizon → falls back to heading");
