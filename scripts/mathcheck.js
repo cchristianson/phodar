@@ -1809,11 +1809,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // rolled 30° (up leans toward +X ⇒ accel toward −X): roll ≈ 30
   p = poseFromGravity({ x: -Math.sin(30 / R2D) * g, y: -Math.cos(30 / R2D) * g, z: 0 }, 0);
   approx(p.roll, 30, 0.02, "capture pose: 30° tilt → roll 30°");
-  // held LANDSCAPE (rolled ~90°): folds to a residual near 0 (EXIF makes the
-  // photo upright), and elevation still reads the horizon
-  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 0);
+  // held LANDSCAPE aiming at the horizon — the azimuth fix. webkitCompassHeading
+  // reports the phone's TOP edge, 90° off the camera in landscape; the fix must
+  // recover the true CAMERA heading (here: camera North = 0°).
+  // landscape-left (top→West, up=+X): gravity along −X, top-heading 270 → az 0
+  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270);
+  approx(p.az, 0, 0.1, "capture pose: landscape-left → camera azimuth (not top edge)");
   approx(p.el, 0, 0.01, "capture pose: landscape horizon → elevation 0°");
   approx(p.roll, 0, 0.01, "capture pose: landscape hold → roll folds to ~0°");
+  // landscape-right (top→East, up=−X): gravity along +X, top-heading 90 → az 0
+  p = poseFromGravity({ x: g, y: 0, z: 0 }, 90);
+  approx(p.az, 0, 0.1, "capture pose: landscape-right → camera azimuth (not top edge)");
+  // portrait aimed at the horizon (top near-vertical) → degenerate, keep heading
+  p = poseFromGravity({ x: 0, y: -g, z: 0 }, 200);
+  approx(p.az, 200, 0.1, "capture pose: portrait horizon → falls back to heading");
   // ⇅ flip (gSign=+1) inverts the tilt sense
   const pUp = poseFromGravity({ x: 0, y: 0, z: g }, 0, { gSign: 1 });
   approx(pUp.el, -90, 0.01, "capture pose: ⇅ flip inverts elevation");
