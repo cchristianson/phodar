@@ -15,6 +15,7 @@ import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
 import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
 import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo, groundHomography, pixelToGroundH, groundSpanH } from "../src/math/geolocate.js";
+import { poseFromGravity } from "../src/capture/pose.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1786,6 +1787,30 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const sH = groundSpanH(p1, p2, geo), sM = groundSpanM(p1, p2, camG, platform, 0);
     approx(Math.abs(sH - sM) < 1 ? 1 : 0, 1, 0, `georef: object size matches the ray-cast (${sH.toFixed(1)} vs ${sM.toFixed(1)} m)`);
   }
+}
+
+/* ── capture pose from phone gravity (web sensor capture) ──────────────────
+   Device frame X=right, Y=top, Z=out-of-screen; back camera looks along −Z.
+   up_device = gSign·ĝ. Assert the unambiguous orientations (gSign=+1). */
+{
+  const g = 9.81;
+  // phone upright portrait, camera at the horizon: up ≈ +Y  → el 0, roll 0
+  let p = poseFromGravity({ x: 0, y: g, z: 0 }, 137);
+  approx(p.el, 0, 0.01, "capture pose: horizon shot → elevation 0°");
+  approx(p.roll, 0, 0.01, "capture pose: level shot → roll 0°");
+  approx(p.az, 137, 0.01, "capture pose: azimuth = compass heading");
+  // camera straight up (screen toward the ground): up ≈ −Z → el +90
+  p = poseFromGravity({ x: 0, y: 0, z: -g }, 0);
+  approx(p.el, 90, 0.01, "capture pose: straight-up shot → elevation +90°");
+  // camera straight down: up ≈ +Z → el −90
+  p = poseFromGravity({ x: 0, y: 0, z: g }, 0);
+  approx(p.el, -90, 0.01, "capture pose: straight-down shot → elevation −90°");
+  // rolled 30° clockwise (world-up leans toward +X): roll ≈ +30
+  p = poseFromGravity({ x: Math.sin(30 / R2D) * g, y: Math.cos(30 / R2D) * g, z: 0 }, 0);
+  approx(p.roll, 30, 0.02, "capture pose: 30° tilt → roll 30°");
+  // gSign flip inverts the tilt sense (the on-device 'flip' toggle)
+  const pUp = poseFromGravity({ x: 0, y: 0, z: -g }, 0, { gSign: -1 });
+  approx(pUp.el, -90, 0.01, "capture pose: gSign flip inverts elevation");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

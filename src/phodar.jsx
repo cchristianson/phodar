@@ -16,6 +16,7 @@ import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
+import { poseFromGravity, poseQuality } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -780,6 +781,7 @@ function MediaMeasure({ src, update, wizard }) {
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [active, setActive] = useState("shape");
+  const [capOpen, setCapOpen] = useState(false);
   const [drag, setDrag] = useState(false);
   const [dispW, setDispW] = useState(0);
   const [winH, setWinH] = useState(() => (typeof window !== "undefined" ? window.innerHeight : 800)); // stable portrait-cap reference
@@ -1010,6 +1012,28 @@ function MediaMeasure({ src, update, wizard }) {
       }
       update(patch);
     }).catch(() => { });
+  };
+
+  /* an in-app SENSOR capture (ENABLE_CAPTURE): the frame arrives with its pose
+     already measured — write the same fields the EXIF path fills, but from the
+     phone's motion sensors, so the sky view opens already aimed. mediaAim is a
+     SEED (snap-to-ridges / star-align refine it); the raw sensor block is kept
+     for the report. */
+  const applyCapture = (cap) => {
+    trkHistRef.current = [];
+    const patch = {
+      mediaUrl: cap.dataUrl, mediaKind: "image", mediaNorm: true,
+      natW: cap.w, natH: cap.h,
+      A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [],
+      whenMs: cap.whenMs || Date.now(),
+      meta: { sensor: true, ...(isNum(cap.heading) ? { azTrue: +(((cap.heading % 360) + 360) % 360).toFixed(1) } : {}), ...(cap.gps && isNum(cap.gps.lat) ? { lat: +cap.gps.lat.toFixed(6), lon: +cap.gps.lon.toFixed(6), ...(isNum(cap.gps.alt) ? { alt: +cap.gps.alt.toFixed(0) } : {}) } : {}) },
+      capture: { heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, pose: cap.pose, whenMs: cap.whenMs },
+    };
+    if (cap.pose) patch.mediaAim = { az: cap.pose.az, el: cap.pose.el, roll: cap.pose.roll };
+    if (cap.gps && isNum(cap.gps.lat)) { patch.lat = cap.gps.lat.toFixed(6); patch.lon = cap.gps.lon.toFixed(6); if (isNum(cap.gps.alt)) patch.alt = cap.gps.alt.toFixed(0); }
+    update(patch);
+    mediaPut(src.id, { kind: "image", data: cap.dataUrl });
+    setCapOpen(false);
   };
 
   /* Sandboxed browsers sometimes refuse blob: URLs — retry as a data URL */
@@ -1740,12 +1764,16 @@ function MediaMeasure({ src, update, wizard }) {
 
   return (
     <div>
+      {capOpen && <SensorCapture onCapture={applyCapture} onClose={() => setCapOpen(false)} />}
       <ML>Photo / video (optional — used to measure angular size)</ML>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <label className="btn sm amber" style={{ display: "inline-block" }}>
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
+        {ENABLE_CAPTURE && (
+          <button className="btn sm" title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷 Capture{media ? "" : " with sensors"}</button>
+        )}
         {media && wizard ? (
           /* explicit MODE TOGGLE — tapping the photo either places/rotates the
              3D object (measures size) or drops trajectory track points. A
@@ -2627,6 +2655,7 @@ function SunDiscA({ width }) {
 const ENABLE_SENSORS = false; // 🧭 point-with-phone + 📷 camera AR — parked for now, flip to bring back
 const ENABLE_GPS_BUTTON = false; // 📍 use-my-GPS — parked (unreliable in the field), flip to bring back
 const AERIAL_ENABLED = false; // 🛰 looking-DOWN aerial mode (platform/GCP geolocation) — hidden while the sky app is refined; flip to bring back. All aerial code (AerialMeasure/AerialGroundMap/geolocate.js) stays intact.
+const ENABLE_CAPTURE = true; // 📷 in-app sensor camera (getUserMedia + DeviceMotion) — records az/el/roll at the shutter that EXIF omits. Separate from ENABLE_SENSORS (the older SkyAimer AR buttons). Real-device feature; the on-screen readout is self-calibrating.
 
 /* reference silhouettes for the in-sky Compare tool (from Sky Sense) */
 const GHOSTW = [
@@ -7069,6 +7098,133 @@ function PositionEditor({ src, update, others }) {
               </div>
             )}
     </>
+  );
+}
+
+/* ============================================================
+   SENSOR CAPTURE — the in-app camera that records what EXIF drops (ENABLE_CAPTURE)
+
+   getUserMedia live view + DeviceMotion/DeviceOrientation. At the shutter it
+   samples the phone's gravity vector and compass and turns them into the SAME
+   {az, el, roll} the placement uses — so a Phodar-captured shot arrives with its
+   up/down angle and roll already solved (the exact things standard photo EXIF
+   omits), plus GPS with real accuracy. The pose is a SEED: the sky view's
+   snap-to-ridges / star-align still refine it, and the report keeps the raw
+   sensor block. No App Store — a hosted PWA reaches all of this on iOS Safari.
+   ============================================================ */
+function SensorCapture({ onCapture, onClose }) {
+  const videoRef = useRef(null), streamRef = useRef(null);
+  const gRef = useRef(null), headRef = useRef(null);
+  const [started, setStarted] = useState(false);
+  const [camErr, setCamErr] = useState("");
+  const [pose, setPose] = useState(null);
+  const [compassAcc, setCompassAcc] = useState(null);
+  const [gps, setGps] = useState(null);
+  const [gSign, setGSign] = useState(() => { try { return localStorage.getItem("phodar-gsign") === "-1" ? -1 : 1; } catch (e) { return 1; } });
+  const gSignRef = useRef(gSign); gSignRef.current = gSign;
+  const onOrient = useCallback((e) => {
+    if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
+    else if (isNum(e.alpha)) headRef.current = ((360 - e.alpha) % 360 + 360) % 360;   // non-iOS fallback (magnetic)
+  }, []);
+  const onMotion = useCallback((e) => {
+    const g = e.accelerationIncludingGravity;
+    if (g && isNum(g.x) && isNum(g.y) && isNum(g.z)) gRef.current = { x: g.x, y: g.y, z: g.z };
+  }, []);
+  /* iOS requires getUserMedia AND requestPermission to run inside a user gesture,
+     so everything kicks off from the ▶ Start tap (not on mount). */
+  const start = async () => {
+    setCamErr("");
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      streamRef.current = s;
+      if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play().catch(() => { }); }
+    } catch (e) { setCamErr("Camera blocked — allow camera access for this site (and use https). " + (e?.message || "")); }
+    try {
+      if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+        const r = await DeviceOrientationEvent.requestPermission(); if (r !== "granted") setCamErr((c) => c || "Motion access denied — Settings › Safari › Motion & Orientation Access.");
+      }
+      if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) await DeviceMotionEvent.requestPermission().catch(() => { });
+    } catch (e) { /* older browsers grant without a prompt */ }
+    window.addEventListener("deviceorientation", onOrient, true);
+    window.addEventListener("devicemotion", onMotion, true);
+    if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
+      (p) => setGps({ lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }),
+      () => { }, { enableHighAccuracy: true, timeout: 8000 });
+    setStarted(true);
+  };
+  useEffect(() => {
+    let raf;
+    const tick = () => { if (gRef.current) setPose(poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current })); raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  useEffect(() => () => {
+    window.removeEventListener("deviceorientation", onOrient, true);
+    window.removeEventListener("devicemotion", onMotion, true);
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+  }, [onOrient, onMotion]);
+  const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
+  const shoot = () => {
+    const v = videoRef.current; if (!v || !v.videoWidth) return;
+    const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
+    cv.getContext("2d").drawImage(v, 0, 0, cv.width, cv.height);
+    const dataUrl = cv.toDataURL("image/jpeg", 0.95);
+    const ps = gRef.current ? poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current }) : null;
+    onCapture({ dataUrl, w: cv.width, h: cv.height, pose: ps, heading: headRef.current, compassAcc, gps, gravity: gRef.current, gSign: gSignRef.current, whenMs: Date.now() });
+  };
+  const q = poseQuality(compassAcc, true);
+  const readVal = (v, suf) => isNum(v) ? Math.round(v) + (suf || "") : "—";
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 4000, background: "#000", display: "flex", flexDirection: "column" }}>
+      <video ref={videoRef} muted playsInline autoPlay style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", background: "#000" }} />
+      {/* crosshair */}
+      {started && (
+        <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", color: "rgba(64,199,178,.9)" }}>
+          <div style={{ width: 34, height: 1, background: "currentColor", position: "absolute", left: -17, top: 0 }} />
+          <div style={{ width: 1, height: 34, background: "currentColor", position: "absolute", left: 0, top: -17 }} />
+        </div>
+      )}
+      {/* header */}
+      <div style={{ position: "relative", zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(8px + env(safe-area-inset-top)) 12px 8px" }}>
+        <span style={{ color: "#fff", fontFamily: "var(--mono)", fontSize: 12, background: "rgba(0,0,0,.4)", padding: "3px 8px", borderRadius: 8 }}>📷 Sensor capture <b style={{ color: "var(--amber)" }}>beta</b></span>
+        <button onClick={onClose} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 18, width: 36, height: 36, fontSize: 18 }}>✕</button>
+      </div>
+      <div style={{ flex: 1 }} />
+      {/* start gate OR live readout + shutter */}
+      {!started ? (
+        <div style={{ position: "relative", zIndex: 2, padding: "0 20px calc(40px + env(safe-area-inset-bottom))", textAlign: "center", color: "#fff" }}>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 16, background: "rgba(0,0,0,.5)", padding: 14, borderRadius: 12 }}>
+            Shoot the sighting <b>in Phodar</b> and it records the camera's up/down angle, roll and heading at the shutter — the pose EXIF leaves out — so the sky view opens already pointed. Tap Start to allow the camera and motion sensors.
+          </div>
+          <button className="btn amber" style={{ padding: "14px 26px", fontSize: 15 }} onClick={start}>▶ Start camera &amp; sensors</button>
+          {camErr && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 10 }}>{camErr}</div>}
+        </div>
+      ) : (
+        <div style={{ position: "relative", zIndex: 2, padding: "0 14px calc(20px + env(safe-area-inset-bottom))" }}>
+          {camErr && <div style={{ color: "var(--amber)", fontSize: 11.5, marginBottom: 8, background: "rgba(0,0,0,.55)", padding: "6px 10px", borderRadius: 8 }}>{camErr}</div>}
+          {/* live pose readout */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, fontFamily: "var(--mono)" }}>
+            {[["tilt", pose ? readVal(pose.el, "°") : "—", "up/down"], ["roll", pose ? readVal(pose.roll, "°") : "—", "level"], ["bearing", pose && isNum(headRef.current) ? readVal(pose.az, "° " + compass8(pose.az)) : "—", "compass"]].map(([k, v, sub]) => (
+              <div key={k} style={{ flex: 1, background: "rgba(0,0,0,.55)", borderRadius: 10, padding: "7px 6px", textAlign: "center" }}>
+                <div style={{ fontSize: 10, color: "var(--dim)", textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "var(--teal)" }}>{v}</div>
+                <div style={{ fontSize: 9, color: "var(--dim)" }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "rgba(0,0,0,.5)", borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: 10.5, color: "#cfe" }}>
+            <span>{gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}` : "GPS…"}</span>
+            <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
+          </div>
+          <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 8, textShadow: "0 1px 3px #000" }}>{q.note}</div>
+          <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
+          {/* shutter */}
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button onClick={shoot} aria-label="Capture" style={{ width: 72, height: 72, borderRadius: 40, background: "#fff", border: "5px solid rgba(255,255,255,.5)", boxShadow: "0 0 0 2px #000" }} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
