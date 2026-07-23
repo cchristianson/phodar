@@ -1676,6 +1676,28 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const p1 = solveManualPoses(oneRef, refPose, { natW, natH }, { lockFov: true });
   const s2 = p1 && p1.find((p) => Math.abs(p.t - 2.0) < 1e-3);
   approx(s2 && Math.abs(((s2.az - 108 + 540) % 360) - 180) < 0.5 && Math.abs(s2.el - 24) < 0.5 ? 1 : 0, 1, 0, "manualPose: a lone reference still fixes az/el");
+
+  // HAND-OFF: feature A (on the align frame) leaves; fresh features B,C that
+  // OVERLAP A for a frame carry the pose after A is gone — a mid-clip point
+  // going off-frame must not break the solve.
+  {
+    const truthH = [
+      { t: 1.0, az: 100, el: 20, roll: 2, fov: 60 },   // align
+      { t: 1.4, az: 104, el: 21, roll: 2, fov: 60 },   // A + B + C
+      { t: 1.8, az: 108, el: 22, roll: 3, fov: 60 },   // B + C (A gone)
+      { t: 2.2, az: 112, el: 23, roll: 4, fov: 60 },   // B + C
+    ];
+    const gA = pixToDirK(500, 400, natW, natH, 100, 20, 2, 60, 0); // A anchored on align only
+    // B,C directions chosen so they land in-frame across 1.4–2.2 (offset from center at t=1.8)
+    const gB = pixToDirK(900, 500, natW, natH, 108, 22, 3, 60, 0);
+    const gC = pixToDirK(700, 800, natW, natH, 108, 22, 3, 60, 0);
+    const pxAt = (g, T) => dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0);
+    const A = { marks: [1.0, 1.4].map((t) => { const T = truthH.find((x) => x.t === t); const p = pxAt(gA, T); return { t, x: p.px, y: p.py }; }) };
+    const mk = (g) => ({ marks: [1.4, 1.8, 2.2].map((t) => { const T = truthH.find((x) => x.t === t); const p = pxAt(g, T); return { t, x: p.px, y: p.py }; }) });
+    const pH = solveManualPoses([A, mk(gB), mk(gC)], { t: 1.0, az: 100, el: 20, roll: 2, fov: 60, k: 0 }, { natW, natH });
+    const gone = pH && pH.find((p) => Math.abs(p.t - 2.2) < 1e-3);   // solved only from B,C (A long gone)
+    approx(gone && Math.abs(((gone.az - 112 + 540) % 360) - 180) < 0.4 && Math.abs(gone.el - 23) < 0.4 ? 1 : 0, 1, 0, "manualPose: pose handed off to fresh references after the first left frame");
+  }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

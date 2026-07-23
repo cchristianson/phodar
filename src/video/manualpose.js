@@ -95,44 +95,45 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
   const rp = { az: +refPose.az, el: +refPose.el, roll: +refPose.roll || 0, fov: +refPose.fov, k: +refPose.k || 0 };
   const refT = isNum(refPose.t) ? +refPose.t : 0;
 
-  // fixed world direction of each feature
-  const G = refs.map((r) => {
-    if (r.celestial && isNum(r.celestial.az) && isNum(r.celestial.el)) {
-      // absolute: tagged Moon/star — direction straight from the ephemeris
-      return dirFromAzEl(+r.celestial.az, +r.celestial.el);
-    }
-    const near = r.marks.filter((m) => isNum(m.x)).reduce((a, m) => (Math.abs(m.t - refT) < Math.abs(a.t - refT) ? m : a));
-    return pixToDirK(near.x, near.y, natW, natH, rp.az, rp.el, rp.roll, rp.fov, rp.k);
+  /* world direction of each feature. A feature is anchored when its g is known:
+       • a celestial tag (Moon/star) → known upfront from the ephemeris;
+       • a mark on the ALIGN frame → g from the known placement pose;
+       • otherwise g is learned LAZILY (bootstrapping): once a nearby keyframe is
+         solved, a feature first appearing there gets its g from THAT solved pose.
+     This is what makes references HAND OFF — as the camera pans and one point
+     leaves the frame, a fresh one that overlapped it on ≥1 frame carries the
+     pose onward, so no single feature has to stay in view the whole clip. */
+  const G = new Array(refs.length).fill(null);
+  const ALIGN_TOL = 0.06;
+  const markAt = (r, t) => r.marks.find((m) => isNum(m.x) && Math.abs(m.t - t) < 1e-3);
+  refs.forEach((r, i) => {
+    if (r.celestial && isNum(r.celestial.az) && isNum(r.celestial.el)) { G[i] = dirFromAzEl(+r.celestial.az, +r.celestial.el); return; }
+    const m = r.marks.find((mm) => isNum(mm.x) && Math.abs(mm.t - refT) < ALIGN_TOL);   // marked on the align frame
+    if (m) G[i] = pixToDirK(m.x, m.y, natW, natH, rp.az, rp.el, rp.roll, rp.fov, rp.k);
   });
+  if (!G.some(Boolean)) return null;   // nothing anchored — need ≥1 reference on the align frame (or a celestial tag)
 
-  // union of marked keyframe times
   const times = [...new Set(refs.flatMap((r) => r.marks.filter((m) => isNum(m.x)).map((m) => +(+m.t).toFixed(3))))].sort((a, b) => a - b);
   if (!times.length) return null;
 
-  const gather = (t) => {
-    const out = [];
-    refs.forEach((r, i) => {
-      const m = r.marks.find((mm) => isNum(mm.x) && Math.abs(mm.t - t) < 1e-3);
-      if (m) out.push({ px: m.x, py: m.y, g: G[i] });
-    });
-    return out;
-  };
+  const byT = {};
   const chain = (ts, startSeed) => {
     let seed = { ...startSeed, lockFov: opts.lockFov };
-    const out = [];
     for (const t of ts) {
-      const anchors = gather(t);
-      if (!anchors.length) continue;
+      const anchors = [];
+      refs.forEach((r, i) => { if (G[i]) { const m = markAt(r, t); if (m) anchors.push({ px: m.x, py: m.y, g: G[i] }); } });
+      if (!anchors.length) continue;   // no anchored feature here yet — hold (posePathAt bridges/interpolates)
       const sol = solvePose(anchors, natW, natH, seed);
-      out.push({ t, az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k, n: sol.n, rms: sol.rms });
+      byT[t] = { t, az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k, n: sol.n, rms: sol.rms };
       seed = { az: sol.az, el: sol.el, roll: sol.roll, fov: sol.fov, k: sol.k, lockFov: opts.lockFov };
+      // anchor any NEW feature marked on this now-solved frame → carries the pose forward
+      refs.forEach((r, i) => { if (!G[i]) { const m = markAt(r, t); if (m) G[i] = pixToDirK(m.x, m.y, natW, natH, sol.az, sol.el, sol.roll, sol.fov, sol.k); } });
     }
-    return out;
   };
 
   const start = { az: rp.az, el: rp.el, roll: rp.roll, fov: rp.fov, k: rp.k };
-  const after = times.filter((t) => t >= refT);
-  const before = times.filter((t) => t < refT).reverse();
-  const path = [...chain(before, start), ...chain(after, start)].sort((a, b) => a.t - b.t);
+  chain(times.filter((t) => t >= refT), start);            // forward from the align frame
+  chain(times.filter((t) => t < refT).reverse(), start);   // then backward
+  const path = Object.values(byT).sort((a, b) => a.t - b.t);
   return path.length ? path : null;
 }
