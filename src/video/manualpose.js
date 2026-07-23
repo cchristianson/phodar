@@ -147,5 +147,19 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
     despikePath(path, { passes: 1 });
     smoothPath(path, { passes: 2, al: clampN(0.12 + amt * 0.55, 0.05, 0.75) });
   }
+  /* DENSIFY to a fine, regular time grid. The keyframes are sparse (only where
+     you marked), but in-app playback steps ONE posePath sample at a time — so a
+     sparse path plays as a slideshow with 1–2 s jumps. Resampling the smoothed
+     keyframes to a fixed dt makes playback glide (each step is a small pose
+     change); export/tracking sample posePathAt anyway, so they're unchanged. */
+  if (path.length >= 2 && opts.densify !== false) {
+    const DT = 0.2, t0 = path[0].t, tN = path[path.length - 1].t;
+    if (tN - t0 > DT * 1.5) {
+      const dense = [];
+      for (let t = t0; t < tN - 1e-3; t += DT) dense.push({ ...posePathAt(path, t), t: +t.toFixed(3) });
+      dense.push({ ...posePathAt(path, tN), t: +tN.toFixed(3) });
+      return dense;
+    }
+  }
   return path.length ? path : null;
 }

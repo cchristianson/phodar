@@ -1654,7 +1654,7 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const camRefs = G.map((g) => ({
     marks: truth.map((T) => { const p = dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0); return { t: T.t, x: p.px, y: p.py }; }),
   }));
-  const path = solveManualPoses(camRefs, refPose, { natW, natH });
+  const path = solveManualPoses(camRefs, refPose, { natW, natH }, { densify: false });
   approx(path && path.length === 4 ? 1 : 0, 1, 0, "manualPose: a keyframe solved for every marked frame");
   if (path) {
     let maxAz = 0, maxEl = 0, maxRoll = 0, maxFov = 0;
@@ -1673,7 +1673,7 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // a SINGLE mark still fixes az/el (roll+fov held from the seed) — the common
   // "only the Moon is visible" case.
   const oneRef = [{ marks: [{ t: 1.0, x: alignPix[0].x, y: alignPix[0].y }, (() => { const p = dirToPixK(G[0], natW, natH, 108, 24, 2, 60, 0); return { t: 2.0, x: p.px, y: p.py }; })()] }];
-  const p1 = solveManualPoses(oneRef, refPose, { natW, natH }, { lockFov: true });
+  const p1 = solveManualPoses(oneRef, refPose, { natW, natH }, { lockFov: true, densify: false });
   const s2 = p1 && p1.find((p) => Math.abs(p.t - 2.0) < 1e-3);
   approx(s2 && Math.abs(((s2.az - 108 + 540) % 360) - 180) < 0.5 && Math.abs(s2.el - 24) < 0.5 ? 1 : 0, 1, 0, "manualPose: a lone reference still fixes az/el");
 
@@ -1694,7 +1694,7 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const pxAt = (g, T) => dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0);
     const A = { marks: [1.0, 1.4].map((t) => { const T = truthH.find((x) => x.t === t); const p = pxAt(gA, T); return { t, x: p.px, y: p.py }; }) };
     const mk = (g) => ({ marks: [1.4, 1.8, 2.2].map((t) => { const T = truthH.find((x) => x.t === t); const p = pxAt(g, T); return { t, x: p.px, y: p.py }; }) });
-    const pH = solveManualPoses([A, mk(gB), mk(gC)], { t: 1.0, az: 100, el: 20, roll: 2, fov: 60, k: 0 }, { natW, natH });
+    const pH = solveManualPoses([A, mk(gB), mk(gC)], { t: 1.0, az: 100, el: 20, roll: 2, fov: 60, k: 0 }, { natW, natH }, { densify: false });
     const gone = pH && pH.find((p) => Math.abs(p.t - 2.2) < 1e-3);   // solved only from B,C (A long gone)
     approx(gone && Math.abs(((gone.az - 112 + 540) % 360) - 180) < 0.4 && Math.abs(gone.el - 23) < 0.4 ? 1 : 0, 1, 0, "manualPose: pose handed off to fresh references after the first left frame");
   }
@@ -1708,17 +1708,23 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const lin = [0.6, 0.8, 1.0, 1.2, 1.4].map((t) => ({ t, az: 100 + (t - 1.0) * 10, el: 20, roll: 0, fov: 60 })); // smooth pan
     const jitter = (t) => (Math.abs(t - 1.2) < 1e-3 ? 14 : 0);   // ONE non-align keyframe's marks pushed ~14px off
     const camRefsS = Gs.map((g) => ({ marks: lin.map((T) => { const p = dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0); return { t: T.t, x: p.px + jitter(T.t), y: p.py }; }) }));
-    const raw = solveManualPoses(camRefsS, rp, { natW, natH }, { smooth: false });
-    const sm = solveManualPoses(camRefsS, rp, { natW, natH });   // smoothed (default)
+    const raw = solveManualPoses(camRefsS, rp, { natW, natH }, { smooth: false, densify: false });
+    const sm = solveManualPoses(camRefsS, rp, { natW, natH }, { densify: false });   // smoothed (default amt)
     const mid = (path) => path.find((p) => Math.abs(p.t - 1.2) < 1e-3);
     const truthMid = 102; // linear pan → az at t=1.2 is exactly 102
     const devRaw = Math.abs(mid(raw).az - truthMid), devSm = Math.abs(mid(sm).az - truthMid);
     approx(devRaw > 0.3 ? 1 : 0, 1, 0, `manualPose: the jittered keyframe is off before smoothing (${devRaw.toFixed(2)}°)`);
     approx(devSm < devRaw * 0.7 ? 1 : 0, 1, 0, `manualPose: smoothing pulls it back toward the pan (${devSm.toFixed(2)}° < ${devRaw.toFixed(2)}°)`);
     // the smoothing-amount slider: more smoothing → closer to the neighbours' pan
-    const devLo = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.15 })).az - truthMid);
-    const devHi = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.85 })).az - truthMid);
+    const devLo = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.15, densify: false })).az - truthMid);
+    const devHi = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.85, densify: false })).az - truthMid);
     approx(devHi < devLo ? 1 : 0, 1, 0, `manualPose: more smoothing = smoother (${devHi.toFixed(2)}° < ${devLo.toFixed(2)}°)`);
+    // DENSIFY (default): SPARSE marks (1 s apart) become a fine grid so in-app
+    // playback glides instead of jumping keyframe-to-keyframe.
+    const sparseRefs = Gs.map((g) => ({ marks: [0.6, 1.6, 2.6].map((t) => { const p = dirToPixK(g, natW, natH, 100 + (t - 0.6) * 5, 20, 0, 60, 0); return { t, x: p.px, y: p.py }; }) }));
+    const dense = solveManualPoses(sparseRefs, { t: 0.6, az: 100, el: 20, roll: 0, fov: 60, k: 0 }, { natW, natH });
+    let maxGap = 0; for (let i = 1; i < dense.length; i++) maxGap = Math.max(maxGap, dense[i].t - dense[i - 1].t);
+    approx(dense.length > 6 && maxGap <= 0.21 ? 1 : 0, 1, 0, `manualPose: sparse marks densified for smooth playback (${dense.length} samples, max gap ${maxGap.toFixed(2)}s)`);
   }
 
 }
