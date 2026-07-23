@@ -957,10 +957,10 @@ function MediaMeasure({ src, update, wizard }) {
       r.readAsDataURL(f);
     });
 
-  const onFile = async (e) => {
-    const f = e.target.files && e.target.files[0];
-    e.target.value = ""; // allow re-picking the same file
-    if (!f) return;
+  /* Load a File into the source: mine its EXIF, normalize on display, reset marks.
+     `opts.sensorPose` (from the in-app sensor capture) overlays the up/down angle
+     and roll the photo's EXIF can't carry — see the SENSOR OVERLAY note below. */
+  const ingestFile = async (f, opts = {}) => {
     setLoadErr(""); setLoading(true);
     const kind = f.type.startsWith("video") ? "video" : "image";
     let url = null;
@@ -977,42 +977,62 @@ function MediaMeasure({ src, update, wizard }) {
     trkHistRef.current = []; // new media is a fresh start — don't let Undo reach back into the old clip's track
     update({
       mediaUrl: url, mediaKind: kind, mediaNorm: false,
-      natW: null, natH: null, meta: null,
+      natW: null, natH: null, meta: null, capture: null,
       A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [],
     });
     if (kind === "video") mediaPut(src.id, { kind: "video", data: f }); // survives reload via IndexedDB
+    const sp = opts.sensorPose || null;
     /* mine the file for EXIF / QuickTime metadata and AUTO-APPLY it —
        the photo is the authority on its own capture conditions */
     f.arrayBuffer().then((buf) => {
       const m = parseMediaMeta(buf, kind === "video");
+      const patch = {};
+      let meta;
       if (!m) {
-        if (/hei[cf]/i.test(f.type) || /\.hei[cf]$/i.test(f.name || "")) update({ meta: { heic: true } });
-        /* valid pixels but no GPS/time/bearing: the file was re-encoded and
-           stripped in sharing (messaging apps, "All Photos Data" off). Say so
-           instead of failing silently — otherwise it reads as a load bug. */
-        else update({ meta: { stripped: true } });
-        return;
-      }
-      const patch = { meta: m };
-      if (isNum(m.lat)) { patch.lat = String(m.lat); patch.lon = String(m.lon); }
-      if (isNum(m.alt)) patch.alt = String(m.alt);
-      if (m.timeMs) patch.whenMs = m.timeMs;
-      if (isNum(m.fovH)) patch.fovH = m.fovH;
-      if (isNum(m.az)) {
-        /* MAGNETIC bearings become TRUE via WMM before anything uses them —
-           declination runs to ±25° and would otherwise pass through silently */
-        let azUse = +m.az;
-        if (m.azRef === "magnetic" && isNum(m.lat) && isNum(m.lon)) {
-          const dec = declination(+m.lat, +m.lon, isNum(m.alt) ? +m.alt : 0, new Date(m.timeMs || Date.now()));
-          azUse = ((azUse + dec) % 360 + 360) % 360;
-          patch.meta = { ...m, decl: +dec.toFixed(2), azTrue: +azUse.toFixed(1) };
+        /* valid pixels but no GPS/time/bearing: HEIC can't expose it in-browser,
+           or the file was re-encoded and stripped in sharing. Say so instead of
+           failing silently — otherwise it reads as a load bug. */
+        meta = (/hei[cf]/i.test(f.type) || /\.hei[cf]$/i.test(f.name || "")) ? { heic: true } : { stripped: true };
+      } else {
+        meta = m;
+        if (isNum(m.lat)) { patch.lat = String(m.lat); patch.lon = String(m.lon); }
+        if (isNum(m.alt)) patch.alt = String(m.alt);
+        if (m.timeMs) patch.whenMs = m.timeMs;
+        if (isNum(m.fovH)) patch.fovH = m.fovH;
+        if (isNum(m.az)) {
+          /* MAGNETIC bearings become TRUE via WMM before anything uses them —
+             declination runs to ±25° and would otherwise pass through silently */
+          let azUse = +m.az;
+          if (m.azRef === "magnetic" && isNum(m.lat) && isNum(m.lon)) {
+            const dec = declination(+m.lat, +m.lon, isNum(m.alt) ? +m.alt : 0, new Date(m.timeMs || Date.now()));
+            azUse = ((azUse + dec) % 360 + 360) % 360;
+            meta = { ...m, decl: +dec.toFixed(2), azTrue: +azUse.toFixed(1) };
+          }
+          patch.mediaAim = { az: azUse, el: 15, roll: 0 }; // pre-aims the sky placement
+          if (!isNum(src.A?.az)) patch.A = { ...src.A, p1: null, p2: null, az: azUse.toFixed(1) };
         }
-        patch.mediaAim = { az: azUse, el: 15, roll: 0 }; // pre-aims the sky placement
-        if (!isNum(src.A?.az)) patch.A = { ...src.A, p1: null, p2: null, az: azUse.toFixed(1) };
       }
+      /* SENSOR OVERLAY (in-app capture): the phone measured the pose the shutter
+         couldn't record. el/roll come from the sensors (EXIF never carries them);
+         azimuth prefers the photo's OWN EXIF compass (read at the true shutter),
+         falling back to the sensor heading (sampled when you tapped). GPS/time
+         fill any gaps. The full-res native photo keeps its megapixels + real FOV;
+         the sensors add only what EXIF drops. */
+      if (sp) {
+        const exifAz = isNum(patch.mediaAim?.az) ? patch.mediaAim.az
+          : (isNum(meta?.azTrue) ? meta.azTrue : (isNum(meta?.az) ? meta.az : null));
+        const az = isNum(exifAz) ? exifAz : (isNum(sp.pose?.az) ? sp.pose.az : (isNum(sp.heading) ? ((sp.heading % 360) + 360) % 360 : 0));
+        patch.mediaAim = { az: +(+az).toFixed(1), el: isNum(sp.pose?.el) ? sp.pose.el : 15, roll: isNum(sp.pose?.roll) ? sp.pose.roll : 0 };
+        meta = { ...(meta || {}), sensor: true, ...(isNum(sp.heading) ? { sensorAz: +(((sp.heading % 360) + 360) % 360).toFixed(1) } : {}) };
+        patch.capture = { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs };
+        if (!isNum(patch.lat) && sp.gps && isNum(sp.gps.lat)) { patch.lat = sp.gps.lat.toFixed(6); patch.lon = sp.gps.lon.toFixed(6); if (isNum(sp.gps.alt)) patch.alt = sp.gps.alt.toFixed(0); }
+        if (!isNum(patch.whenMs) && sp.whenMs) patch.whenMs = sp.whenMs;
+      }
+      patch.meta = meta;
       update(patch);
-    }).catch(() => { });
+    }).catch(() => { if (sp && sp.pose) update({ meta: { sensor: true }, mediaAim: { az: sp.pose.az, el: sp.pose.el, roll: sp.pose.roll }, capture: { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs } }); });
   };
+  const onFile = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) ingestFile(f); };
 
   /* an in-app SENSOR capture (ENABLE_CAPTURE): the frame arrives with its pose
      already measured — write the same fields the EXIF path fills, but from the
@@ -1020,6 +1040,15 @@ function MediaMeasure({ src, update, wizard }) {
      SEED (snap-to-ridges / star-align refine it); the raw sensor block is kept
      for the report. */
   const applyCapture = (cap) => {
+    /* FULL-RES path: the shot came from the native camera (`<input capture>`) at
+       full megapixels with its own EXIF. Route it through ingestFile so it keeps
+       resolution + real FOV/GPS, and overlay the sensor pose EXIF can't carry. */
+    if (cap.file) {
+      ingestFile(cap.file, { sensorPose: { pose: cap.pose, heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, whenMs: cap.whenMs } });
+      setCapOpen(false);
+      return;
+    }
+    /* QUICK path: an instant getUserMedia frame (lower-res, pose exactly synced) */
     trkHistRef.current = [];
     const patch = {
       mediaUrl: cap.dataUrl, mediaKind: "image", mediaNorm: true,
@@ -7164,14 +7193,22 @@ function SensorCapture({ onCapture, onClose }) {
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
   }, [onOrient, onMotion]);
   const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
+  /* snapshot the current sensor reading — az/el/roll + provenance */
+  const snapPose = () => ({ pose: gRef.current ? poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current }) : null, heading: headRef.current, compassAcc, gps, gravity: gRef.current, gSign: gSignRef.current, whenMs: Date.now() });
+  /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
+     synced to the pixels. Good for a near/large object. */
   const shoot = () => {
     const v = videoRef.current; if (!v || !v.videoWidth) return;
     const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
     cv.getContext("2d").drawImage(v, 0, 0, cv.width, cv.height);
-    const dataUrl = cv.toDataURL("image/jpeg", 0.95);
-    const ps = gRef.current ? poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current }) : null;
-    onCapture({ dataUrl, w: cv.width, h: cv.height, pose: ps, heading: headRef.current, compassAcc, gps, gravity: gRef.current, gSign: gSignRef.current, whenMs: Date.now() });
+    onCapture({ dataUrl: cv.toDataURL("image/jpeg", 0.95), w: cv.width, h: cv.height, ...snapPose() });
   };
+  /* FULL-RES: freeze the pose, then hand off to the NATIVE camera for a true
+     full-megapixel still (getUserMedia only yields a ~1080p video frame). The
+     photo maps to the frozen pose — hold the aim while the camera opens. */
+  const nativeRef = useRef(null), shotPoseRef = useRef(null);
+  const takeFullRes = () => { shotPoseRef.current = snapPose(); if (nativeRef.current) nativeRef.current.click(); };
+  const onNativeFile = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) onCapture({ file: f, ...(shotPoseRef.current || snapPose()) }); };
   const q = poseQuality(compassAcc, true);
   const readVal = (v, suf) => isNum(v) ? Math.round(v) + (suf || "") : "—";
   return (
@@ -7194,7 +7231,7 @@ function SensorCapture({ onCapture, onClose }) {
       {!started ? (
         <div style={{ position: "relative", zIndex: 2, padding: "0 20px calc(40px + env(safe-area-inset-bottom))", textAlign: "center", color: "#fff" }}>
           <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 16, background: "rgba(0,0,0,.5)", padding: 14, borderRadius: 12 }}>
-            Shoot the sighting <b>in Phodar</b> and it records the camera's up/down angle, roll and heading at the shutter — the pose EXIF leaves out — so the sky view opens already pointed. Tap Start to allow the camera and motion sensors.
+            Shoot the sighting <b>in Phodar</b> and it records the camera's up/down angle, roll and heading — the pose EXIF leaves out — so the sky view opens already pointed. The photo itself is taken at <b>full resolution</b> by the phone camera (crucial for distant objects); the sensors only add what the metadata drops. Tap Start to allow the camera and motion sensors.
           </div>
           <button className="btn amber" style={{ padding: "14px 26px", fontSize: 15 }} onClick={start}>▶ Start camera &amp; sensors</button>
           {camErr && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 10 }}>{camErr}</div>}
@@ -7216,11 +7253,16 @@ function SensorCapture({ onCapture, onClose }) {
             <span>{gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}` : "GPS…"}</span>
             <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
           </div>
-          <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 8, textShadow: "0 1px 3px #000" }}>{q.note}</div>
+          <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>
           <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
-          {/* shutter */}
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <button onClick={shoot} aria-label="Capture" style={{ width: 72, height: 72, borderRadius: 40, background: "#fff", border: "5px solid rgba(255,255,255,.5)", boxShadow: "0 0 0 2px #000" }} />
+          {/* hidden native camera for the full-resolution still */}
+          <input ref={nativeRef} type="file" accept="image/*" capture="environment" onChange={onNativeFile} style={{ display: "none" }} />
+          {/* PRIMARY: full-resolution native photo (far objects need every pixel).
+              SECONDARY: instant lower-res frame with an exactly-synced pose. */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            <button onClick={takeFullRes} className="btn amber" style={{ padding: "13px 22px", fontSize: 15, borderRadius: 30 }}>📸 Full-resolution photo</button>
+            <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
+            <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
           </div>
         </div>
       )}
