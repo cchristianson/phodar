@@ -70,7 +70,12 @@ export function poseFromGravity(gravity, headingDeg, opts = {}) {
     const camH = projH([0, 0, -1]);                           // −Z camera axis, horizontal part
     const tn = Math.hypot(topH[0], topH[1], topH[2]), cn = Math.hypot(camH[0], camH[1], camH[2]);
     if (tn > 0.3 && cn > 1e-3) {
-      // signed angle top→cam, clockwise viewed from above (+u): compass grows CW
+      // Rotate the compass heading from the top edge (+Y) to the camera axis
+      // (−Z) about world-up. `atan2(crUp, dotTC)` is the MATH-positive angle
+      // from top→cam about +u; compass heading runs CLOCKWISE from north (the
+      // negative sense viewed from above), so heading(cam) = heading(top) −
+      // that angle. Hence the leading minus — verified against both landscape
+      // orientations in mathcheck (camera-north maps to az 0 either way).
       const crx = topH[1] * camH[2] - topH[2] * camH[1], cry = topH[2] * camH[0] - topH[0] * camH[2], crz = topH[0] * camH[1] - topH[1] * camH[0];
       const crUp = crx * u[0] + cry * u[1] + crz * u[2];
       const dotTC = topH[0] * camH[0] + topH[1] * camH[1] + topH[2] * camH[2];
