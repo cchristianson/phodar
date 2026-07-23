@@ -15,7 +15,7 @@ const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `$
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
-import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH } from "./math/geolocate.js";
+import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -7090,6 +7090,7 @@ function AerialMeasure({ src, update, unitsImp }) {
   const [demBusy, setDemBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const natW = isNum(src.natW) ? +src.natW : 0, natH = isNum(src.natH) ? +src.natH : 0;
+  const isVideo = src.mediaKind === "video";
 
   /* platform (sensor) position + MSL altitude — kept in src.plat so it never
      collides with the sky-mode observer fields (src.lat/lon/alt). */
@@ -7128,6 +7129,12 @@ function AerialMeasure({ src, update, unitsImp }) {
 
   const target = src.aTarget && isNum(src.aTarget.x) ? src.aTarget : null;
   const span = Array.isArray(src.aSpan) ? src.aSpan.filter((p) => p && isNum(p.x)) : [];
+  /* moving-target track: the SAME target marked at several video timestamps.
+     Each geolocates through the (assumed constant) pose/homography; the ground
+     path drives groundKinematics for real speed + heading. */
+  const track = Array.isArray(src.aTrack) ? src.aTrack.filter((p) => p && isNum(p.x) && isNum(p.t)) : [];
+  const [vt, setVt] = useState(0);   // current video mark time (s)
+  const [dur, setDur] = useState(0);
 
   /* fit the GCP homography (least squares; rms = ground reprojection error, m) */
   const geoH = method === "gcp" ? groundHomography(gcpsReady) : null;
@@ -7153,6 +7160,14 @@ function AerialMeasure({ src, update, unitsImp }) {
     ? [[0, 0], [natW, 0], [natW, natH], [0, natH]].map(([x, y]) => locate(x, y))
     : [];
 
+  /* moving-target ground kinematics (fixed-pose assumption — the platform is
+     hovering / the GCPs hold across the marked frames). Each track mark
+     geolocates, then groundKinematics gives distance-true speed + heading. */
+  const trackGeo = solveOk && track.length >= 2
+    ? track.map((p) => { const g = locate(p.x, p.y); return g && isNum(g.lat) ? { t: p.t, lat: g.lat, lon: g.lon } : null; }).filter(Boolean)
+    : [];
+  const kin = trackGeo.length >= 2 ? groundKinematics(trackGeo) : null;
+
   /* map a pointer event on the media to natural pixel coords (rect read LIVE —
      iOS layout shifts make any cached rect stale within a gesture). */
   const evToNat = (e) => {
@@ -7173,10 +7188,17 @@ function AerialMeasure({ src, update, unitsImp }) {
     } else if (mode === "size") {
       const next = span.length >= 2 ? [p] : [...span, p];   // 3rd tap restarts the pair
       update({ aSpan: next });
+    } else if (mode === "track") {
+      /* one mark per timestamp: replace any existing point within 1/60 s of the
+         current time, else add — then keep the track time-sorted. */
+      const t = +vt.toFixed(3);
+      const rest = track.filter((q) => Math.abs(q.t - t) > 0.016);
+      update({ aTrack: [...rest, { t, x: p.x, y: p.y }].sort((a, b) => a.t - b.t) });
     } else update({ aTarget: p });       // default (incl. a stale 'gcp' mode in telemetry)
   };
   const setGcp = (i, patch) => update({ gcps: gcps.map((g, j) => (j === i ? { ...g, ...patch } : g)) });
   const delGcp = (i) => { update({ gcps: gcps.filter((_, j) => j !== i) }); setGsel((s) => clampN(s > i ? s - 1 : s, 0, Math.max(0, gcps.length - 2))); };
+  const seekVideo = (t) => { setVt(t); const v = mediaRef.current; if (v && isVideo) { try { v.currentTime = t; } catch (e) { } } };
 
   /* seed the target ground elevation from terrain under the platform (a decent
      flat-ground proxy; the target's own DEM refinement is a later step). */
@@ -7201,12 +7223,11 @@ function AerialMeasure({ src, update, unitsImp }) {
     );
   };
 
-  const isVideo = src.mediaKind === "video";
   useEffect(() => {
-    if (isVideo && mediaRef.current && isNum(src.A?.videoTime)) {
+    if (isVideo && mediaRef.current) {
       const v = mediaRef.current;
-      const seek = () => { try { v.currentTime = +src.A.videoTime; } catch (e) { } };
-      if (v.readyState >= 1) seek(); else v.addEventListener("loadedmetadata", seek, { once: true });
+      const onMeta = () => { if (v.duration && isFinite(v.duration)) setDur(v.duration); if (isNum(src.A?.videoTime)) { try { v.currentTime = +src.A.videoTime; setVt(+src.A.videoTime); } catch (e) { } } };
+      if (v.readyState >= 1) onMeta(); else v.addEventListener("loadedmetadata", onMeta, { once: true });
     }
   }, [isVideo, src.mediaUrl, src.A?.videoTime]);
 
@@ -7245,12 +7266,26 @@ function AerialMeasure({ src, update, unitsImp }) {
             ? <video ref={mediaRef} src={src.mediaUrl} muted playsInline preload="auto" style={{ display: "block", width: "100%" }} />
             : <img ref={mediaRef} src={src.mediaUrl} alt="frame" draggable={false} style={{ display: "block", width: "100%" }} />}
           {method === "gcp" && gcps.map((g, i) => gcpDot(g, i))}
+          {track.length > 1 && (
+            <svg viewBox={`0 0 ${natW} ${natH}`} preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+              <polyline points={track.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#8FB4FF" strokeWidth={Math.max(1, natW / 500)} opacity="0.8" />
+            </svg>
+          )}
+          {track.map((p, i) => dot(p, Math.abs(p.t - vt) < 0.05 ? "#c9d8ff" : "#8FB4FF", "trk" + i, String(i + 1)))}
           {dot(target, "var(--teal)", "t", "target")}
           {span.map((p, i) => dot(p, "var(--amber)", "s" + i, i === 0 ? "size ①" : "size ②"))}
         </div>
       ) : (
         <div style={{ padding: 20, textAlign: "center", color: "var(--dim)", border: "1px dashed var(--line)", borderRadius: 10 }}>
           Add the aerial frame on the previous step first.
+        </div>
+      )}
+
+      {/* video scrubber — seek to a frame, then mark the target there (Track mode) */}
+      {src.mediaUrl && isVideo && dur > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)", minWidth: 78 }}>t {vt.toFixed(2)}s</span>
+          <input type="range" min={0} max={dur} step={Math.max(0.01, dur / 600)} value={vt} onChange={(e) => seekVideo(+e.target.value)} style={{ flex: 1 }} />
         </div>
       )}
 
@@ -7264,8 +7299,39 @@ function AerialMeasure({ src, update, unitsImp }) {
           <button key={m} className="btn sm" onClick={() => setMode(m)}
             style={{ flex: 1, background: mode === m ? "var(--teal)" : "", color: mode === m ? "var(--bg)" : "" }}>{lbl}</button>
         ))}
+        {isVideo && (
+          <button className="btn sm" onClick={() => setMode("track")}
+            style={{ flex: 1, background: mode === "track" ? "var(--teal)" : "", color: mode === "track" ? "var(--bg)" : "" }}>🛰 Track motion</button>
+        )}
         {(target || span.length) ? <button className="btn sm ghost" style={{ color: "var(--red)" }} onClick={() => update({ aTarget: null, aSpan: [] })}>Clear marks</button> : null}
       </div>
+
+      {/* ── moving-target track (video) ── */}
+      {isVideo && (mode === "track" || track.length > 0) && (
+        <div style={{ marginTop: 12 }}>
+          <ML>Motion track — scrub, then tap the target on each frame (🛰 mode)</ML>
+          {track.length === 0 && <div style={{ fontSize: 12, color: "var(--amber)", padding: "2px 2px" }}>Pick 🛰 Track motion, scrub to a moment, and tap the target. Repeat at ≥2 times to get speed + heading.</div>}
+          {track.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 4 }}>
+              {track.map((p, i) => (
+                <span key={i} onClick={() => seekVideo(p.t)}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--mono)", fontSize: 11, padding: "3px 7px", borderRadius: 12, cursor: "pointer", border: `1px solid ${Math.abs(p.t - vt) < 0.05 ? "var(--teal)" : "var(--line)"}`, color: "#8FB4FF" }}>
+                  {i + 1}·{p.t.toFixed(2)}s
+                  <b style={{ color: "var(--red)", cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); update({ aTrack: track.filter((_, j) => j !== i) }); }}>✕</b>
+                </span>
+              ))}
+            </div>
+          )}
+          {kin && (
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7, marginTop: 6, color: "var(--dim)" }}>
+              speed avg <b style={{ color: "var(--teal)" }}>{fmtSpeed(kin.avgSpeedMS)}</b> · peak <b style={{ color: "var(--teal)" }}>{fmtSpeed(kin.peakSpeedMS)}</b><br />
+              heading <b style={{ color: "var(--ink)" }}>{Math.round(kin.headingDeg)}° {compass8(kin.headingDeg)}</b> · path <b style={{ color: "var(--ink)" }}>{fmtLenShort(kin.distM)}</b> over <b style={{ color: "var(--ink)" }}>{kin.durationS.toFixed(1)}s</b>
+            </div>
+          )}
+          {track.length >= 2 && !kin && <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 4 }}>Solve the pose/GCPs above so the track points geolocate.</div>}
+          {track.length > 0 && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 4 }}>Assumes the sensor pose is fixed across these frames (hovering platform / stationary ground points). A slewing/moving platform needs per-frame telemetry — on the roadmap.</div>}
+        </div>
+      )}
 
       {/* ── GCP list + placement map (gcp method) ── */}
       {method === "gcp" && (
@@ -7401,7 +7467,7 @@ function AerialMeasure({ src, update, unitsImp }) {
             {(() => {
               const spanGeo = span.length === 2 && solveOk ? span.map((p) => locate(p.x, p.y)) : null;
               return (<>
-                <AerialGroundMap footprint={footprint} target={tGround} span={spanGeo} platform={method === "telemetry" ? { lat: platLat, lon: platLon } : null} />
+                <AerialGroundMap footprint={footprint} target={tGround} span={spanGeo} track={trackGeo} platform={method === "telemetry" ? { lat: platLat, lon: platLon } : null} />
                 <AerialFootprint footprint={footprint} target={tGround} span={spanGeo} showNadir={method === "telemetry"} />
               </>);
             })()}
@@ -7478,10 +7544,11 @@ function AerialFootprint({ footprint, target, span, showNadir }) {
    any size bracket drawn on real satellite imagery (Esri World Imagery, same
    base as PlotBoard/PinMap). Everything is passed as {lat,lon} — the geo the
    two geolocation methods already produce — so this is method-agnostic. */
-function AerialGroundMap({ footprint, target, span, platform }) {
+function AerialGroundMap({ footprint, target, span, track, platform }) {
   const boxRef = useRef(null), mapRef = useRef(null), layerRef = useRef(null);
   const foot = (footprint || []).filter((g) => g && isNum(g.lat));
-  const key = JSON.stringify({ f: foot.map((g) => [g.lat, g.lon]), t: target && [target.lat, target.lon], s: (span || []).map((g) => g && [g.lat, g.lon]), p: platform && [platform.lat, platform.lon] });
+  const trk = (track || []).filter((g) => g && isNum(g.lat));
+  const key = JSON.stringify({ f: foot.map((g) => [g.lat, g.lon]), t: target && [target.lat, target.lon], s: (span || []).map((g) => g && [g.lat, g.lon]), k: trk.map((g) => [g.lat, g.lon]), p: platform && [platform.lat, platform.lon] });
   useEffect(() => {
     const el = boxRef.current; if (!el || mapRef.current) return;
     const map = L.map(el, { attributionControl: true, zoomControl: false });
@@ -7513,6 +7580,11 @@ function AerialGroundMap({ footprint, target, span, platform }) {
       L.polyline(sl, { color: "#ffb24a", weight: 3, opacity: 0.95, interactive: false }).addTo(g);
       sl.forEach((p) => bounds.push(p));
     }
+    if (trk.length >= 2) {
+      const tl = trk.map((p) => [p.lat, p.lon]);
+      L.polyline(tl, { color: "#8FB4FF", weight: 2.5, opacity: 0.95, interactive: false }).addTo(g);
+      tl.forEach((p, i) => { bounds.push(p); L.circleMarker(p, { radius: 3, color: "#8FB4FF", fillColor: "#8FB4FF", fillOpacity: 1, weight: 1, interactive: false }).addTo(g); });
+    }
     if (target && isNum(target.lat)) {
       const tn = [target.lat, target.lon];
       L.marker(tn, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-fix">⊕<span>target</span></div>` }) }).addTo(g);
@@ -7521,7 +7593,7 @@ function AerialGroundMap({ footprint, target, span, platform }) {
     g.addTo(map); layerRef.current = g;
     if (bounds.length) { try { map.fitBounds(L.latLngBounds(bounds).pad(0.35), { maxZoom: 18, animate: false }); } catch (e) { } }
   }, [key]);
-  if (!foot.length && !(target && isNum(target.lat))) return null;
+  if (!foot.length && !(target && isNum(target.lat)) && trk.length < 2) return null;
   return <div className="plotwrap" style={{ marginTop: 10 }}><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /><div className="map-north">N ↑</div></div>;
 }
 
