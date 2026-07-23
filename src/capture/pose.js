@@ -35,25 +35,32 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /* Camera elevation + roll from the gravity vector, azimuth from the compass.
      gravity   : {x,y,z}  device-frame accelerationIncludingGravity
      headingDeg: webkitCompassHeading (° from true north), or null
-     opts.gSign: +1 if the reading points "up" (reaction), −1 if it points
-                 "down" (the pull). Default +1.
+     opts.gSign: sign of the gravity reading for the UP VECTOR (az + roll). −1
+                 (iOS points along the pull) is field-correct and fixed.
+     opts.elSign: elevation sense (the ⇅ flip). −1 by default — field-measured
+                 iOS reads aim-up as inverted with +1. Kept SEPARATE from gSign
+                 so flipping tilt never disturbs the bearing.
    Returns { az, el, roll } in degrees (el positive = camera tilted UP).
 
    Geometry: up_device = gSign·ĝ. The camera axis is a = (0,0,−1).
-     elevation = asin(dot(a, up)) = asin(−up.z)
-       → horizon: up≈(0,1,0)  → 0°;  straight up: up≈(0,0,−1) → +90°;
-         straight down: up≈(0,0,1) → −90°.
+     elevation = elSign · asin(dot(a, up)) = elSign · asin(−up.z).
      roll = angle of world-up projected into the screen (XY) plane, measured
             from screen-up (+Y): atan2(up.x, up.y) → 0° when the phone is level. */
 export function poseFromGravity(gravity, headingDeg, opts = {}) {
-  /* DEFAULT −1: iOS `accelerationIncludingGravity` points ALONG gravity (down)
-     — screen-up on a table reads z ≈ −9.8 — so up_device = −ĝ. gSill=+1 is the
-     opposite convention (some non-iOS builds); the UI's ⇅ flip switches it. */
+  /* `gSign` sets the gravity sign for the UP VECTOR used by azimuth + roll; −1
+     (iOS accelerationIncludingGravity points along the pull) is field-correct
+     for the bearing, so it's FIXED here — the ⇅ flip no longer touches it, so
+     it can't disturb the (working) landscape bearing. */
   const gSign = opts.gSign === 1 ? 1 : -1;
+  /* `elSign` is the ELEVATION sense, DECOUPLED from gSign and owned by the ⇅
+     "flip tilt" button. DEFAULT −1: field-measured — with +1 the horizon rose
+     when the camera aimed UP (inverted). Independent so flipping tilt can never
+     move the bearing. */
+  const elSign = opts.elSign === 1 ? 1 : -1;
   const gx = +gravity.x, gy = +gravity.y, gz = +gravity.z;
   const m = Math.hypot(gx, gy, gz) || 1;
   const ux = (gSign * gx) / m, uy = (gSign * gy) / m, uz = (gSign * gz) / m;  // up in device frame
-  const el = Math.asin(clamp(-uz, -1, 1)) * R2D;
+  const el = elSign * Math.asin(clamp(-uz, -1, 1)) * R2D;
   let roll = Math.atan2(ux, uy) * R2D;
   /* Fold roll to the nearest quadrant: the phone can be held portrait OR
      landscape, but the photo's OWN EXIF orientation already bakes it upright, so
