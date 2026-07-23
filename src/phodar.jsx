@@ -8826,7 +8826,7 @@ function MomentTimeCtl({ m, onChange }) {
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits }) {
+function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -8839,12 +8839,29 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
         <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(460px, 94%)", margin: "0 auto", borderRadius: 12 }} />
         <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>
         <div style={{ color: "var(--dim)", fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
-          Turn a sighting photo into real numbers — direction, size, altitude, speed.
-          Two witnesses make it true triangulation.
+          {appMode === "aerial"
+            ? <>Geolocate a target from a <b style={{ color: "var(--teal)" }}>downward-looking</b> sensor — a plane, drone, or mast of known position. One frame is enough: the ground is a known surface.</>
+            : <>Turn a sighting photo into real numbers — direction, size, altitude, speed. Two witnesses make it true triangulation.</>}
         </div>
-        <button className="chip" style={{ marginTop: 8 }} onClick={onToggleUnits}>
-          units: <b style={{ color: "var(--amber)" }}>{unitsImp ? "ft · mi · mph" : "m · km · m/s"}</b> — tap to switch
-        </button>
+        {/* SKY vs AERIAL — the same measurement pipeline pointed up (triangulate an
+            unknown-range object from ≥2 observers) or down (geolocate a target off
+            one platform of known position). Persisted; the whole app branches on it. */}
+        <div style={{ display: "inline-flex", marginTop: 12, border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
+          {[["sky", "🔭 Sky (looking up)"], ["aerial", "🛰 Aerial (looking down)"]].map(([m, lbl]) => (
+            <button key={m} onClick={() => onSetMode(m)}
+              style={{
+                border: "none", padding: "8px 14px", fontSize: 12.5, cursor: "pointer",
+                background: appMode === m ? "var(--teal)" : "transparent",
+                color: appMode === m ? "var(--bg)" : "var(--dim)",
+                fontWeight: appMode === m ? 700 : 400,
+              }}>{lbl}</button>
+          ))}
+        </div>
+        <div>
+          <button className="chip" style={{ marginTop: 10 }} onClick={onToggleUnits}>
+            units: <b style={{ color: "var(--amber)" }}>{unitsImp ? "ft · mi · mph" : "m · km · m/s"}</b> — tap to switch
+          </button>
+        </div>
       </div>
       <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
@@ -9158,6 +9175,18 @@ export default function App() {
       return !v;
     });
   };
+  /* SKY (looking up) vs AERIAL (looking down) mode. Sky triangulates an unknown-
+     range object from ≥2 ground observers; aerial geolocates a target off a
+     downward sensor of known position/altitude (single frame is enough — the
+     ground is a known surface). Persisted like units so a reload keeps the mode.
+     The whole app branches on this: measure/place UI, results, and reports. */
+  const [appMode, setAppMode] = useState(() => {
+    try { return localStorage.getItem("phodar-mode") === "aerial" ? "aerial" : "sky"; } catch (e) { return "sky"; }
+  });
+  const setMode = (m) => {
+    setAppMode(m);
+    try { localStorage.setItem("phodar-mode", m); } catch (e) { }
+  };
 
   /* device-orientation class for the portrait lock — screen.orientation is
      the physical sensor and ignores keyboard-squished viewports */
@@ -9375,7 +9404,7 @@ export default function App() {
     }
     if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")}
       onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
-      unitsImp={unitsImp} onToggleUnits={toggleUnits} />;
+      unitsImp={unitsImp} onToggleUnits={toggleUnits} appMode={appMode} onSetMode={setMode} />;
     return (
       <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}>
         <style>{css}</style>
