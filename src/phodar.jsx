@@ -1338,7 +1338,17 @@ function MediaMeasure({ src, update, wizard }) {
     const pd = pendingRef.current;
     if (pd && pd.id === e.pointerId) {
       if (Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) > 7) {
-        if (pd.mode === "cref") { killPending(); return; }   // cam refs are tap-only; a one-finger drag does nothing (pinch still zooms)
+        if (pd.mode === "cref") {
+          /* cam refs: a drag is loupe-assisted placement (the features are
+             faint/small) — magnifier follows the finger, the mark commits where
+             you LIFT. A clean tap still places instantly. */
+          killPending();
+          trkDragRef.current = toNat(e.clientX, e.clientY);
+          setDrag(true);
+          setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+          requestAnimationFrame(() => requestAnimationFrame(() => { if (trkDragRef.current) drawLoupe(trkDragRef.current); }));
+          return;
+        }
         if (pd.mode === "trk") {
           if (trkAdjust) {
             /* adjust mode: a drag never PLACES a point, but grabbing an existing
@@ -1384,6 +1394,13 @@ function MediaMeasure({ src, update, wizard }) {
     }
     if (!drag) return;
     const p = toNat(e.clientX, e.clientY);
+    if (active === "cref") {
+      if (!trkDragRef.current) return;
+      trkDragRef.current = p;
+      setFinger({ x: e.clientX - r.left, y: e.clientY - r.top, cx: e.clientX, cy: e.clientY });
+      drawLoupe(p);
+      return;
+    }
     if (active === "trk") {
       if (trkRotRef.current) {
         /* adjust: rotate the selected point's model — same mapping as the shape
@@ -1460,6 +1477,9 @@ function MediaMeasure({ src, update, wizard }) {
             const sp = snapPlace(p2.x, p2.y);
             addTrkPt({ t: +stillNextT().toFixed(3), ...sp });
           }
+        }
+        if (active === "cref" && trkDragRef.current && e.type !== "pointercancel") {
+          markCref(trkDragRef.current.x, trkDragRef.current.y);   // commit the loupe-assisted cam-ref where the finger lifted
         }
         trkDragRef.current = null;
         trkMoveRef.current = null;
@@ -2181,7 +2201,7 @@ function MediaMeasure({ src, update, wizard }) {
                 return (
                   <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--green)", borderRadius: 10, background: "rgba(90,200,140,.06)" }}>
                     <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
-                      For a clip the auto stabilizer can't do: tap the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Mark 3–5 features, spread across the frame, on the align frame and a handful of others. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
+                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
                     </div>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                       {camRefs.map((r, i) => {
