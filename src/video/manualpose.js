@@ -27,7 +27,7 @@
 import { R2D, dot, clampN, dirFromAzEl } from "../math/geodesy.js";
 import { isNum } from "../math/format.js";
 import { pixToDirK } from "../math/projection.js";
-import { despikePath, smoothPath } from "./postrack.js";
+import { despikePath, smoothPath, posePathAt } from "./postrack.js";
 
 /* Solve one frame's pose from anchors [{px,py,g}] by coordinate descent with
    step-halving on summed squared angular error. UNLIKE solvePoseAnchors (which
@@ -146,4 +146,54 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
     smoothPath(path, { passes: opts.smoothPasses == null ? 1 : opts.smoothPasses });
   }
   return path.length ? path : null;
+}
+
+/* HYBRID: fuse the automatic stabilization with the hand-marked pose. The
+   automatic walk gives dense, smooth motion but can be CONFIDENTLY WRONG
+   (cloud-locked, or frozen on a held frame); the manual keyframes are ground
+   truth but sparse. So decide span-by-span between consecutive manual
+   keyframes:
+     • auto AGREES with the marks at both ends (center within `gate`, roll too,
+       and the frame wasn't held) → keep auto's dense shape, but smear a linear
+       correction across the span so it passes exactly through both marks (the
+       same drift-correction the auto walk does at re-anchors);
+     • auto DISAGREES at either end (garbage / held) → drop auto there and use
+       the manual interpolation.
+   Ground truth is pinned at every manual keyframe either way. If auto is all
+   bad it degrades to (dense) manual; if auto is all good it's auto with tiny
+   corrections. Returns a dense posePath tagged per-sample with `src`. */
+export function hybridPath(autoPath, manualPath, opts = {}) {
+  if (!Array.isArray(autoPath) || !autoPath.length) return manualPath || null;
+  if (!Array.isArray(manualPath) || !manualPath.length) return autoPath;
+  const gate = opts.gate == null ? 4 : opts.gate;          // deg of auto-vs-mark disagreement tolerated
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  const sep = (p, q) => Math.acos(clampN(dot(dirFromAzEl(p.az, p.el), dirFromAzEl(q.az, q.el)), -1, 1)) * R2D;
+  const nAt = (t) => { let bd = Infinity, bn = 99; for (const p of autoPath) { const d = Math.abs(p.t - t); if (d < bd) { bd = d; bn = p.n == null ? 99 : p.n; } } return bn; };
+
+  // residual (mark − auto) and reliability at each manual keyframe
+  const anch = manualPath.map((m) => {
+    const a = posePathAt(autoPath, m.t);
+    const res = { dAz: angD(m.az, a.az), dEl: m.el - (a.el || 0), dRoll: (m.roll || 0) - (a.roll || 0), dFov: m.fov - a.fov };
+    const reliable = nAt(m.t) >= 6 && sep(m, a) <= gate && Math.abs(res.dRoll) <= gate * 1.5;
+    return { t: m.t, res, reliable };
+  });
+
+  const times = [...new Set([...autoPath.map((p) => +p.t), ...manualPath.map((p) => +p.t)])].sort((a, b) => a - b);
+  const out = [];
+  for (const t of times) {
+    let lo = null, hi = null;
+    for (const an of anch) { if (an.t <= t + 1e-9) lo = an; if (an.t >= t - 1e-9 && !hi) hi = an; }
+    const rLo = lo || hi, rHi = hi || lo;
+    const useAuto = !!(rLo && rHi && rLo.reliable && rHi.reliable);
+    if (useAuto) {
+      const a = posePathAt(autoPath, t);
+      const u = rHi.t > rLo.t ? clampN((t - rLo.t) / (rHi.t - rLo.t), 0, 1) : 0;
+      const lin = (k) => rLo.res[k] + (rHi.res[k] - rLo.res[k]) * u;
+      out.push({ t, az: (((a.az + lin("dAz")) % 360) + 360) % 360, el: a.el + lin("dEl"), roll: (a.roll || 0) + lin("dRoll"), fov: a.fov + lin("dFov"), k: a.k || 0, n: a.n, src: "auto" });
+    } else {
+      const m = posePathAt(manualPath, t);
+      out.push({ t, az: m.az, el: m.el, roll: m.roll || 0, fov: m.fov, k: m.k || 0, n: m.n, src: "manual" });
+    }
+  }
+  return out;
 }
