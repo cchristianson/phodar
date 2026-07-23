@@ -7398,7 +7398,13 @@ function AerialMeasure({ src, update, unitsImp }) {
               {span.length === 2 && <div style={{ color: "var(--amber)", marginTop: 2 }}>bracketed size <b style={{ color: "var(--ink)" }}>{spanM != null ? fmtLenShort(spanM) : "—"}</b></div>}
               {span.length === 1 && <div style={{ color: "var(--dim)", marginTop: 2 }}>size: tap the second edge…</div>}
             </div>
-            <AerialFootprint footprint={footprint} target={tGround} span={span.length === 2 && solveOk ? span.map((p) => locate(p.x, p.y)) : null} showNadir={method === "telemetry"} />
+            {(() => {
+              const spanGeo = span.length === 2 && solveOk ? span.map((p) => locate(p.x, p.y)) : null;
+              return (<>
+                <AerialGroundMap footprint={footprint} target={tGround} span={spanGeo} platform={method === "telemetry" ? { lat: platLat, lon: platLon } : null} />
+                <AerialFootprint footprint={footprint} target={tGround} span={spanGeo} showNadir={method === "telemetry"} />
+              </>);
+            })()}
           </>
         )}
       </div>
@@ -7466,6 +7472,57 @@ function AerialFootprint({ footprint, target, span, showNadir }) {
     ctx.fillText("N", W - 18, 40);
   });
   return <canvas ref={ref} style={{ width: "100%", height: 180, marginTop: 10, display: "block" }} />;
+}
+
+/* the aerial ground view: the geolocated target, the sensor footprint quad and
+   any size bracket drawn on real satellite imagery (Esri World Imagery, same
+   base as PlotBoard/PinMap). Everything is passed as {lat,lon} — the geo the
+   two geolocation methods already produce — so this is method-agnostic. */
+function AerialGroundMap({ footprint, target, span, platform }) {
+  const boxRef = useRef(null), mapRef = useRef(null), layerRef = useRef(null);
+  const foot = (footprint || []).filter((g) => g && isNum(g.lat));
+  const key = JSON.stringify({ f: foot.map((g) => [g.lat, g.lon]), t: target && [target.lat, target.lon], s: (span || []).map((g) => g && [g.lat, g.lon]), p: platform && [platform.lat, platform.lon] });
+  useEffect(() => {
+    const el = boxRef.current; if (!el || mapRef.current) return;
+    const map = L.map(el, { attributionControl: true, zoomControl: false });
+    map.attributionControl.setPrefix(false);
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics",
+    }).addTo(map);
+    L.control.scale({ imperial: true }).addTo(map);
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+  useEffect(() => {
+    const map = mapRef.current; if (!map) return;
+    if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+    const g = L.layerGroup();
+    const bounds = [];
+    if (foot.length >= 3) {
+      const ring = foot.map((p) => [p.lat, p.lon]);
+      L.polygon(ring, { color: "#3ce0c0", weight: 1.4, opacity: 0.75, fillColor: "#3ce0c0", fillOpacity: 0.08, interactive: false }).addTo(g);
+      ring.forEach((p) => bounds.push(p));
+    }
+    if (platform && isNum(platform.lat)) {
+      const pn = [platform.lat, platform.lon];
+      L.marker(pn, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-tri">◇<span>nadir</span></div>` }) }).addTo(g);
+      bounds.push(pn);
+    }
+    if (span && span[0] && span[1] && isNum(span[0].lat)) {
+      const sl = [[span[0].lat, span[0].lon], [span[1].lat, span[1].lon]];
+      L.polyline(sl, { color: "#ffb24a", weight: 3, opacity: 0.95, interactive: false }).addTo(g);
+      sl.forEach((p) => bounds.push(p));
+    }
+    if (target && isNum(target.lat)) {
+      const tn = [target.lat, target.lon];
+      L.marker(tn, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-fix">⊕<span>target</span></div>` }) }).addTo(g);
+      bounds.push(tn);
+    }
+    g.addTo(map); layerRef.current = g;
+    if (bounds.length) { try { map.fitBounds(L.latLngBounds(bounds).pad(0.35), { maxZoom: 18, animate: false }); } catch (e) { } }
+  }, [key]);
+  if (!foot.length && !(target && isNum(target.lat))) return null;
+  return <div className="plotwrap" style={{ marginTop: 10 }}><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /><div className="map-north">N ↑</div></div>;
 }
 
 /* ============================================================
