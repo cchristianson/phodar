@@ -39,12 +39,20 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
      roll = angle of world-up projected into the screen (XY) plane, measured
             from screen-up (+Y): atan2(up.x, up.y) → 0° when the phone is level. */
 export function poseFromGravity(gravity, headingDeg, opts = {}) {
-  const gSign = opts.gSign === -1 ? -1 : 1;
+  /* DEFAULT −1: iOS `accelerationIncludingGravity` points ALONG gravity (down)
+     — screen-up on a table reads z ≈ −9.8 — so up_device = −ĝ. gSill=+1 is the
+     opposite convention (some non-iOS builds); the UI's ⇅ flip switches it. */
+  const gSign = opts.gSign === 1 ? 1 : -1;
   const gx = +gravity.x, gy = +gravity.y, gz = +gravity.z;
   const m = Math.hypot(gx, gy, gz) || 1;
   const ux = (gSign * gx) / m, uy = (gSign * gy) / m, uz = (gSign * gz) / m;  // up in device frame
   const el = Math.asin(clamp(-uz, -1, 1)) * R2D;
-  const roll = Math.atan2(ux, uy) * R2D;
+  let roll = Math.atan2(ux, uy) * R2D;
+  /* Fold roll to the nearest quadrant: the phone can be held portrait OR
+     landscape, but the photo's OWN EXIF orientation already bakes it upright, so
+     only the RESIDUAL tilt beyond 0/90/180/270° is a real roll for the placement
+     (a level landscape shot → ~0, not 90). */
+  roll = roll - 90 * Math.round(roll / 90);
   const az = ((((isNum(headingDeg) ? +headingDeg : 0) % 360) + 360) % 360);
   return { az: +az.toFixed(1), el: +el.toFixed(1), roll: +roll.toFixed(1) };
 }

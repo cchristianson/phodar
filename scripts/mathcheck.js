@@ -1791,26 +1791,32 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
 
 /* ── capture pose from phone gravity (web sensor capture) ──────────────────
    Device frame X=right, Y=top, Z=out-of-screen; back camera looks along −Z.
-   up_device = gSign·ĝ. Assert the unambiguous orientations (gSign=+1). */
+   Inputs are iOS accelerationIncludingGravity, which points ALONG gravity
+   (down) → default gSign=−1, up_device = −accel. */
 {
   const g = 9.81;
-  // phone upright portrait, camera at the horizon: up ≈ +Y  → el 0, roll 0
-  let p = poseFromGravity({ x: 0, y: g, z: 0 }, 137);
+  // upright portrait, camera at the horizon: gravity down = −Y  → el 0, roll 0
+  let p = poseFromGravity({ x: 0, y: -g, z: 0 }, 137);
   approx(p.el, 0, 0.01, "capture pose: horizon shot → elevation 0°");
   approx(p.roll, 0, 0.01, "capture pose: level shot → roll 0°");
   approx(p.az, 137, 0.01, "capture pose: azimuth = compass heading");
-  // camera straight up (screen toward the ground): up ≈ −Z → el +90
-  p = poseFromGravity({ x: 0, y: 0, z: -g }, 0);
-  approx(p.el, 90, 0.01, "capture pose: straight-up shot → elevation +90°");
-  // camera straight down: up ≈ +Z → el −90
+  // camera straight up (screen faces the ground): gravity down = +Z → el +90
   p = poseFromGravity({ x: 0, y: 0, z: g }, 0);
+  approx(p.el, 90, 0.01, "capture pose: straight-up shot → elevation +90°");
+  // camera straight down: gravity = −Z → el −90
+  p = poseFromGravity({ x: 0, y: 0, z: -g }, 0);
   approx(p.el, -90, 0.01, "capture pose: straight-down shot → elevation −90°");
-  // rolled 30° clockwise (world-up leans toward +X): roll ≈ +30
-  p = poseFromGravity({ x: Math.sin(30 / R2D) * g, y: Math.cos(30 / R2D) * g, z: 0 }, 0);
+  // rolled 30° (up leans toward +X ⇒ accel toward −X): roll ≈ 30
+  p = poseFromGravity({ x: -Math.sin(30 / R2D) * g, y: -Math.cos(30 / R2D) * g, z: 0 }, 0);
   approx(p.roll, 30, 0.02, "capture pose: 30° tilt → roll 30°");
-  // gSign flip inverts the tilt sense (the on-device 'flip' toggle)
-  const pUp = poseFromGravity({ x: 0, y: 0, z: -g }, 0, { gSign: -1 });
-  approx(pUp.el, -90, 0.01, "capture pose: gSign flip inverts elevation");
+  // held LANDSCAPE (rolled ~90°): folds to a residual near 0 (EXIF makes the
+  // photo upright), and elevation still reads the horizon
+  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 0);
+  approx(p.el, 0, 0.01, "capture pose: landscape horizon → elevation 0°");
+  approx(p.roll, 0, 0.01, "capture pose: landscape hold → roll folds to ~0°");
+  // ⇅ flip (gSign=+1) inverts the tilt sense
+  const pUp = poseFromGravity({ x: 0, y: 0, z: g }, 0, { gSign: 1 });
+  approx(pUp.el, -90, 0.01, "capture pose: ⇅ flip inverts elevation");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
