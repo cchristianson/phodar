@@ -482,7 +482,7 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "One viewpoint is still useful — it pins direction and angular size honestly. It just can't give absolute distance until a second viewpoint is added.",
-      "Trajectory has two paths: multiple timestamped photos (moments) placed in the sky, OR — with a single photo/video — draw the path by hand in the sky view. Moments win when you have two or more placed.",
+      "Trajectory has two paths: multiple timestamped photos (moments) placed in the sky, OR — with a single photo/video — tap the path on step 1 with the ⊕ Track points tool. The two interleave; the sky view shows the result.",
     ],
   },
   {
@@ -503,14 +503,20 @@ const HELP_SECTIONS = [
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
       ]},
+      { h: "Lay down the path & references (the tool row)", items: [
+        { t: "◆ 3D object", d: "The default tool — place, size and rotate the wireframe (the angular-size measurement above)." },
+        { t: "⊕ Track points", d: "Trace the object's PATH — this is the only place the trajectory is laid (the sky view just shows it, read-only). On a video: scrub the frame slider and tap the object every second or so. On a still: tap where the object was at each moment across the one photo. Two or more points build the trajectory — and on video they become the GUIDE the auto-tracker locks onto during Stabilize." },
+        { t: "✎ Adjust", d: "Re-open any dropped point to set that leg's Δt timing, how tight its turn was (hard corner ↔ wide arc), its apparent size (closer/farther), and its rotation (to remove foreshortening). Drag a point to move it; it snaps to the placed object." },
+        { t: "🎥 Cam refs (video)", d: "Hand-mark fixed background features (a cloud edge, a star, a ground light) across a few frames to stabilize a clip the automatic pass can't hold — a manual fallback for low-contrast or near-black footage." },
+      ]},
       { h: "See it clearly", items: [
         { t: "Pinch-zoom / two-finger pan", d: "Magnify a small object; two-finger drag pans; a second finger never places a point. ×N · reset returns to fit." },
         { t: "Loupe", d: "A magnifier pops up above your fingertip during any drag, showing a sharp, brightness-matched close-up with crosshair for precise placement." },
         { t: "☀ Brightness / ◐ Contrast", d: "Display-only sliders that lift a dark night shot so you can see the object — carries into the sky view and report; measurements still use the original. ↺ reset restores neutral." },
       ]},
       { h: "Video", items: [
-        { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time." },
-        { t: "✓ Use this frame", d: "Lock the current frame as the moment you analyse (the sky view is single-frame — this is the frame it uses)." },
+        { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time. The object's marks stamp whichever frame you fit them on — no separate 'use this frame' step." },
+        { t: "⛰ Align on this frame", d: "Scrub to the moment with the clearest horizon or stars and lock it as the ALIGNMENT frame — the sky-view calibration is done there. It's independent of the frame the object was marked on (which may be zoomed in or horizon-free). Leave it unset and the object's own frame is used." },
       ]},
       { h: "Field of view (FOV)", items: [
         { t: "FOV … from the lens metadata ✓", d: "When EXIF carries the lens, FOV is set for you." },
@@ -552,7 +558,7 @@ const HELP_SECTIONS = [
     groups: [
       { h: "The four tools (one at a time)", items: [
         { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
-        { t: "⊕ Trajectory", d: "Trace the object's path: the photo warps into the sky and you ⊕ drop world-anchored points where it was at each moment, with Δt timing." },
+        { t: "⊕ Trajectory", d: "Shows the object's path over the dome — read-only. You lay it down and edit it back on step 1 (⊕ Track points / ✎ Adjust); here it's drawn for reference so you can see it against the real sky." },
         { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
       ]},
       { h: "Get the pointing exact (Place tools)", items: [
@@ -566,14 +572,12 @@ const HELP_SECTIONS = [
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
-      { h: "Trace the object's path (Trajectory tool)", items: [
-        { t: "⌖ Start at marked object / ⊕ Drop point N", d: "Drop world-anchored points where the object was at each moment — the path can run right off the photo's edges. ↩ undoes the last point." },
-        { t: "+Δt time chips", d: "One chip per segment — tap it to set how long that leg took (presets 0.5–10 s, or ±0.1 s). Timing is what turns the path into speed and g-load." },
-        { t: "Tap a numbered point", d: "Set how tight its turn was (Hard corner ↔ Wide arc), nudge its apparent size (closer/farther), or rotate its shape to remove foreshortening." },
+      { h: "Distance, size & the path", items: [
+        { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair." },
         { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that)." },
         { t: "📍 Set distance on a map", d: "In the size or compare tool, opens a satellite map centred near where the photo was taken, with your camera's field-of-view wedge and the object's sight-line drawn on it. Tap (or drag the ✦) where the object was overhead; the straight-line distance from the camera — carried up the sight-line to a true line-of-sight range — sets the assumed distance. Often easier than guessing on the slider: you place it over the ridge/field/town it was above." },
         { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's — or set that distance on the map." },
-        { t: "Drawing vs moments (hybrid)", d: "If this observer has placed photo-moments, points you drop here are timed from THIS photo and interleave with the moments on one trajectory — so you can fill in where the object was between shots. With two or more placed photos and no hand-drawn points, the trajectory is built from the photos alone." },
+        { t: "Path vs moments", d: "The trajectory can come from the points you tap on step 1, OR from two or more timestamped photos (moments) placed in the sky — and the two interleave on one path when you have both. Timing comes from the video's frames, the moments' capture times, or the Δt chips you set." },
       ]},
       { h: "Aim readout & navigation", items: [
         { t: "Top-right readout", d: "Live azimuth + compass + up-angle, and FOV. Re-opening an already-placed photo auto-fits it to the frame; use +/− to re-zoom or ✥ Place to re-adjust." },
@@ -2622,6 +2626,7 @@ function SunDiscA({ width }) {
 
 const ENABLE_SENSORS = false; // 🧭 point-with-phone + 📷 camera AR — parked for now, flip to bring back
 const ENABLE_GPS_BUTTON = false; // 📍 use-my-GPS — parked (unreliable in the field), flip to bring back
+const AERIAL_ENABLED = false; // 🛰 looking-DOWN aerial mode (platform/GCP geolocation) — hidden while the sky app is refined; flip to bring back. All aerial code (AerialMeasure/AerialGroundMap/geolocate.js) stays intact.
 
 /* reference silhouettes for the in-sky Compare tool (from Sky Sense) */
 const GHOSTW = [
@@ -9421,18 +9426,21 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
         </div>
         {/* SKY vs AERIAL — the same measurement pipeline pointed up (triangulate an
             unknown-range object from ≥2 observers) or down (geolocate a target off
-            one platform of known position). Persisted; the whole app branches on it. */}
-        <div style={{ display: "inline-flex", marginTop: 12, border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
-          {[["sky", "🔭 Sky (looking up)"], ["aerial", "🛰 Aerial (looking down)"]].map(([m, lbl]) => (
-            <button key={m} onClick={() => onSetMode(m)}
-              style={{
-                border: "none", padding: "8px 14px", fontSize: 12.5, cursor: "pointer",
-                background: appMode === m ? "var(--teal)" : "transparent",
-                color: appMode === m ? "var(--bg)" : "var(--dim)",
-                fontWeight: appMode === m ? 700 : 400,
-              }}>{lbl}</button>
-          ))}
-        </div>
+            one platform of known position). Hidden behind AERIAL_ENABLED while the
+            sky app is refined; the aerial code stays intact for when it's flipped. */}
+        {AERIAL_ENABLED && (
+          <div style={{ display: "inline-flex", marginTop: 12, border: "1px solid var(--line)", borderRadius: 9, overflow: "hidden" }}>
+            {[["sky", "🔭 Sky (looking up)"], ["aerial", "🛰 Aerial (looking down)"]].map(([m, lbl]) => (
+              <button key={m} onClick={() => onSetMode(m)}
+                style={{
+                  border: "none", padding: "8px 14px", fontSize: 12.5, cursor: "pointer",
+                  background: appMode === m ? "var(--teal)" : "transparent",
+                  color: appMode === m ? "var(--bg)" : "var(--dim)",
+                  fontWeight: appMode === m ? 700 : 400,
+                }}>{lbl}</button>
+            ))}
+          </div>
+        )}
         <div>
           <button className="chip" style={{ marginTop: 10 }} onClick={onToggleUnits}>
             units: <b style={{ color: "var(--amber)" }}>{unitsImp ? "ft · mi · mph" : "m · km · m/s"}</b> — tap to switch
@@ -9756,9 +9764,12 @@ export default function App() {
      downward sensor of known position/altitude (single frame is enough — the
      ground is a known surface). Persisted like units so a reload keeps the mode.
      The whole app branches on this: measure/place UI, results, and reports. */
-  const [appMode, setAppMode] = useState(() => {
+  const [appModeRaw, setAppMode] = useState(() => {
     try { return localStorage.getItem("phodar-mode") === "aerial" ? "aerial" : "sky"; } catch (e) { return "sky"; }
   });
+  /* aerial is behind AERIAL_ENABLED — while it's off, force sky everywhere so a
+     persisted "aerial" (from earlier testing) can never route into hidden UI. */
+  const appMode = AERIAL_ENABLED ? appModeRaw : "sky";
   const setMode = (m) => {
     setAppMode(m);
     try { localStorage.setItem("phodar-mode", m); } catch (e) { }
