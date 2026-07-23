@@ -7159,23 +7159,35 @@ function SensorCapture({ onCapture, onClose }) {
     const g = e.accelerationIncludingGravity;
     if (g && isNum(g.x) && isNum(g.y) && isNum(g.z)) gRef.current = { x: g.x, y: g.y, z: g.z };
   }, []);
-  /* iOS requires getUserMedia AND requestPermission to run inside a user gesture,
-     so everything kicks off from the ▶ Start tap (not on mount). */
+  /* Everything kicks off from the ▶ Start tap (iOS gates getUserMedia AND
+     requestPermission behind a user gesture). ORDER MATTERS: request the
+     motion/orientation permission FIRST, before awaiting getUserMedia — awaiting
+     the camera first consumes the gesture, so the permission request silently
+     fails and NO deviceorientation/devicemotion events ever arrive (field bug:
+     GPS filled but tilt/roll/bearing stuck on "—"). */
   const start = async () => {
     setCamErr("");
+    let motionGranted = true;
+    try {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        motionGranted = (await DeviceMotionEvent.requestPermission()) === "granted";
+      }
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        const r = await DeviceOrientationEvent.requestPermission();
+        motionGranted = motionGranted && r === "granted";
+      }
+    } catch (e) { motionGranted = false; }
+    if (motionGranted) {
+      window.addEventListener("deviceorientation", onOrient, true);
+      window.addEventListener("devicemotion", onMotion, true);
+    } else {
+      setCamErr("Motion access denied — turn ON Settings › Safari › Motion & Orientation Access, then reopen this capture.");
+    }
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
       streamRef.current = s;
       if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play().catch(() => { }); }
-    } catch (e) { setCamErr("Camera blocked — allow camera access for this site (and use https). " + (e?.message || "")); }
-    try {
-      if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
-        const r = await DeviceOrientationEvent.requestPermission(); if (r !== "granted") setCamErr((c) => c || "Motion access denied — Settings › Safari › Motion & Orientation Access.");
-      }
-      if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) await DeviceMotionEvent.requestPermission().catch(() => { });
-    } catch (e) { /* older browsers grant without a prompt */ }
-    window.addEventListener("deviceorientation", onOrient, true);
-    window.addEventListener("devicemotion", onMotion, true);
+    } catch (e) { setCamErr((c) => c || ("Camera blocked — allow camera access for this site (and use https). " + (e?.message || ""))); }
     if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
       (p) => setGps({ lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }),
       () => { }, { enableHighAccuracy: true, timeout: 8000 });
@@ -7253,7 +7265,9 @@ function SensorCapture({ onCapture, onClose }) {
             <span>{gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}` : "GPS…"}</span>
             <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
           </div>
-          <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>
+          {!pose
+            ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank, turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b> and reopen.</div>
+            : <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>}
           <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
           {/* hidden native camera for the full-resolution still */}
           <input ref={nativeRef} type="file" accept="image/*" capture="environment" onChange={onNativeFile} style={{ display: "none" }} />
