@@ -14,6 +14,7 @@ import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
 import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
+import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo } from "../src/math/geolocate.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1727,6 +1728,45 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(dense.length > 6 && maxGap <= 0.21 ? 1 : 0, 1, 0, `manualPose: sparse marks densified for smooth playback (${dense.length} samples, max gap ${maxGap.toFixed(2)}s)`);
   }
 
+}
+
+// --- AERIAL GEOLOCATION (looking DOWN): a downward sensor's pixel sight-line
+//     intersected with the ground geolocates + sizes a target from ONE platform.
+{
+  const platform = { lat: 40, lon: -100, alt: 1000 };  // 1000 m above the ground plane (groundAlt 0)
+  const cam = { natW: 1920, natH: 1080, fov: 30, k: 0, roll: 0 };
+  const centre = (el, az) => pixelToGround(cam.natW / 2, cam.natH / 2, { ...cam, az, el }, platform, 0);
+
+  // NADIR (straight down): centre pixel lands directly under the platform, slant = height
+  const nad = centre(-90, 0);
+  approx(nad && haversineM(nad, { lat: 40, lon: -100 }) < 1 ? 1 : 0, 1, 0, "geolocate: nadir look lands under the platform");
+  approx(nad ? nad.slant : 0, 1000, 1, "geolocate: nadir slant range = height (1000 m)");
+
+  // OBLIQUE 30° depression, looking East: horizontal = H/tan30 = 1732 m, slant = H/sin30 = 2000 m
+  const ob = centre(-30, 90);
+  approx(ob ? ob.slant : 0, 2000, 5, "geolocate: 30° depression slant = 2000 m");
+  approx(ob ? haversineM(ob, { lat: 40, lon: -100 }) : 0, 1732, 5, "geolocate: 30° depression ground offset = 1732 m");
+  approx(ob ? bearingDegGeo({ lat: 40, lon: -100 }, ob) : 0, 90, 0.5, "geolocate: looking East puts the target due East");
+
+  // a ray pointing UP (or level) can't hit the ground → null
+  approx(rayToGround(platform, [0, 0.5, 0.866], 0) == null ? 1 : 0, 1, 0, "geolocate: an up-looking ray hits no ground");
+  approx(rayToGround({ ...platform, alt: -5 }, [0, 0, -1], 0) == null ? 1 : 0, 1, 0, "geolocate: a platform below ground returns null");
+
+  // SIZE: ground span between two pixels scales linearly with their separation
+  const camO = { ...cam, az: 0, el: -60 };
+  const span1 = groundSpanM({ x: cam.natW / 2 - 100, y: cam.natH / 2 }, { x: cam.natW / 2 + 100, y: cam.natH / 2 }, camO, platform, 0);
+  const span2 = groundSpanM({ x: cam.natW / 2 - 200, y: cam.natH / 2 }, { x: cam.natW / 2 + 200, y: cam.natH / 2 }, camO, platform, 0);
+  approx(span1 > 0 && Math.abs(span2 / span1 - 2) < 0.05 ? 1 : 0, 1, 0, `geolocate: object size (2× pixels ⇒ 2× ground span, ${span1.toFixed(0)}→${span2.toFixed(0)} m)`);
+
+  // SPEED/HEADING: a target geolocated across frames → ground kinematics
+  const N_PER_DEG = 111320; // ~m per degree latitude
+  const trk = [
+    { t: 0, lat: 40, lon: -100 },
+    { t: 5, lat: 40 + 1000 / N_PER_DEG, lon: -100 },   // 1000 m North in 5 s
+  ];
+  const gk = groundKinematics(trk);
+  approx(gk ? gk.avgSpeedMS : 0, 200, 2, "geolocate: ground speed = 200 m/s (1000 m in 5 s)");
+  approx(gk ? gk.headingDeg : -1, 0, 0.5, "geolocate: heading due North (0°)");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
