@@ -1792,7 +1792,9 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
 /* ── capture pose from phone gravity (web sensor capture) ──────────────────
    Device frame X=right, Y=top, Z=out-of-screen; back camera looks along −Z.
    Inputs are iOS accelerationIncludingGravity, which points ALONG gravity
-   (down) → default gSign=−1, up_device = −accel. */
+   (down) → default gSign=−1, up_device = −accel. The elevation sense is a
+   SEPARATE default elSign=−1 (field-measured: iOS reads aim-up inverted with
+   +1), owned by the ⇅ flip; gSign/az are untouched by it. */
 {
   const g = 9.81;
   // upright portrait, camera at the horizon: gravity down = −Y  → el 0, roll 0
@@ -1800,12 +1802,12 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(p.el, 0, 0.01, "capture pose: horizon shot → elevation 0°");
   approx(p.roll, 0, 0.01, "capture pose: level shot → roll 0°");
   approx(p.az, 137, 0.01, "capture pose: azimuth = compass heading");
-  // camera straight up (screen faces the ground): gravity down = +Z → el +90
+  // elevation sense with the field-corrected default (elSign −1): the raw
+  // asin(−up.z) is negated, so gravity +Z reads −90 and gravity −Z reads +90.
   p = poseFromGravity({ x: 0, y: 0, z: g }, 0);
-  approx(p.el, 90, 0.01, "capture pose: straight-up shot → elevation +90°");
-  // camera straight down: gravity = −Z → el −90
+  approx(p.el, -90, 0.01, "capture pose: gravity +Z → elevation −90° (elSign −1 default)");
   p = poseFromGravity({ x: 0, y: 0, z: -g }, 0);
-  approx(p.el, -90, 0.01, "capture pose: straight-down shot → elevation −90°");
+  approx(p.el, 90, 0.01, "capture pose: gravity −Z → elevation +90° (elSign −1 default)");
   // rolled 30° (up leans toward +X ⇒ accel toward −X): roll ≈ 30
   p = poseFromGravity({ x: -Math.sin(30 / R2D) * g, y: -Math.cos(30 / R2D) * g, z: 0 }, 0);
   approx(p.roll, 30, 0.02, "capture pose: 30° tilt → roll 30°");
@@ -1833,9 +1835,13 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // portrait aimed at the horizon (top near-vertical) → degenerate, keep heading
   p = poseFromGravity({ x: 0, y: -g, z: 0 }, 200);
   approx(p.az, 200, 0.1, "capture pose: portrait horizon → falls back to heading");
-  // ⇅ flip (gSign=+1) inverts the tilt sense
-  const pUp = poseFromGravity({ x: 0, y: 0, z: g }, 0, { gSign: 1 });
-  approx(pUp.el, -90, 0.01, "capture pose: ⇅ flip inverts elevation");
+  // ⇅ flip (elSign=+1) inverts ONLY the tilt sense — gravity +Z flips −90 → +90
+  const pFlip = poseFromGravity({ x: 0, y: 0, z: g }, 0, { elSign: 1 });
+  approx(pFlip.el, 90, 0.01, "capture pose: ⇅ flip tilt inverts elevation (elSign +1)");
+  // …and the bearing is UNTOUCHED by the tilt flip (still uses gSign −1)
+  const pAz1 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
+  const pAz2 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90, elSign: 1 });
+  approx(pAz2.az, pAz1.az, 0.01, "capture pose: flipping tilt does not move the bearing");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

@@ -1026,13 +1026,13 @@ function MediaMeasure({ src, update, wizard }) {
         const az = isNum(exifAz) ? exifAz : (isNum(sp.pose?.az) ? sp.pose.az : (isNum(sp.heading) ? ((sp.heading % 360) + 360) % 360 : 0));
         patch.mediaAim = { az: +(+az).toFixed(1), el: isNum(sp.pose?.el) ? sp.pose.el : 15, roll: isNum(sp.pose?.roll) ? sp.pose.roll : 0 };
         meta = { ...(meta || {}), sensor: true, ...(isNum(sp.heading) ? { sensorAz: +(((sp.heading % 360) + 360) % 360).toFixed(1) } : {}) };
-        patch.capture = { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, orient: sp.orient, raw: sp.raw, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs };
+        patch.capture = { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, elSign: sp.elSign, orient: sp.orient, raw: sp.raw, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs };
         if (!isNum(patch.lat) && sp.gps && isNum(sp.gps.lat)) { patch.lat = sp.gps.lat.toFixed(6); patch.lon = sp.gps.lon.toFixed(6); if (isNum(sp.gps.alt)) patch.alt = sp.gps.alt.toFixed(0); }
         if (!isNum(patch.whenMs) && sp.whenMs) patch.whenMs = sp.whenMs;
       }
       patch.meta = meta;
       update(patch);
-    }).catch(() => { if (sp && sp.pose) update({ meta: { sensor: true }, mediaAim: { az: sp.pose.az, el: sp.pose.el, roll: sp.pose.roll }, capture: { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs } }); });
+    }).catch(() => { if (sp && sp.pose) update({ meta: { sensor: true }, mediaAim: { az: sp.pose.az, el: sp.pose.el, roll: sp.pose.roll }, capture: { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, elSign: sp.elSign, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs } }); });
   };
   const onFile = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) ingestFile(f); };
 
@@ -7151,8 +7151,10 @@ function SensorCapture({ onCapture, onClose }) {
   const [pose, setPose] = useState(null);
   const [compassAcc, setCompassAcc] = useState(null);
   const [gps, setGps] = useState(null);
-  const [gSign, setGSign] = useState(() => { try { return localStorage.getItem("phodar-gsign") === "1" ? 1 : -1; } catch (e) { return -1; } });  // −1 = iOS accel-points-down (default); ⇅ flip → +1
-  const gSignRef = useRef(gSign); gSignRef.current = gSign;
+  /* ⇅ flip now controls the ELEVATION sense only (decoupled from bearing/roll).
+     −1 default = field-correct on iOS (aim up → horizon drops); +1 inverts. */
+  const [elSign, setElSign] = useState(() => { try { return localStorage.getItem("phodar-elsign") === "1" ? 1 : -1; } catch (e) { return -1; } });
+  const elSignRef = useRef(elSign); elSignRef.current = elSign;
   const onOrient = useCallback((e) => {
     if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
     else if (isNum(e.alpha)) headRef.current = ((360 - e.alpha) % 360 + 360) % 360;   // non-iOS fallback (magnetic)
@@ -7227,7 +7229,7 @@ function SensorCapture({ onCapture, onClose }) {
           const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
           hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
         }
-        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current, orient: screenAngle() }));
+        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { elSign: elSignRef.current, orient: screenAngle() }));
       }
       raf = requestAnimationFrame(tick);
     };
@@ -7245,9 +7247,9 @@ function SensorCapture({ onCapture, onClose }) {
     document.documentElement.classList.add("capturing");
     return () => document.documentElement.classList.remove("capturing");
   }, []);
-  const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
+  const flip = () => setElSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-elsign", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
-  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {
