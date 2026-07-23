@@ -15,6 +15,7 @@ const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `$
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
+import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH } from "./math/geolocate.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -7067,6 +7068,316 @@ function PositionEditor({ src, update, others }) {
 }
 
 /* ============================================================
+   AERIAL MEASURE — the looking-DOWN workflow (appMode === "aerial")
+
+   A downward-looking sensor of KNOWN position + altitude geolocates a ground
+   target from a single frame (the ground is a known surface — the dual of sky
+   triangulation, which needs two observers because the target's range is
+   unknown). The user gives the platform's lat/lon (pin), MSL altitude, and the
+   sensor pose (look azimuth + depression angle + FOV); tapping the target in the
+   image casts its pixel sight-line to the ground plane via geolocate.js and
+   reads back real lat/lon, slant range, and ground-sample distance. Two marks
+   bracket a true ground size. Everything is stored on `src.plat` / `src.sensor`
+   / `src.aTarget` / `src.aSpan`, kept out of the sky-mode fields.
+
+   Telemetry-free (redacted-footage) GCP-homography geolocation is the next
+   step; this is the ray-cast (known-pose) path.
+   ============================================================ */
+const M_PER_FT = 0.3048;
+function AerialMeasure({ src, update, unitsImp }) {
+  const mediaRef = useRef(null);
+  const [mode, setMode] = useState("target");     // 'target' | 'size'
+  const [demBusy, setDemBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const natW = isNum(src.natW) ? +src.natW : 0, natH = isNum(src.natH) ? +src.natH : 0;
+
+  /* platform (sensor) position + MSL altitude — kept in src.plat so it never
+     collides with the sky-mode observer fields (src.lat/lon/alt). */
+  /* seed the platform from the frame's own GPS metadata when present — drone /
+     military FMV often embeds the sensor's lat/lon/altitude. Honest: it's the
+     file's telemetry, not a fabricated value. Falls back to unset (user pins). */
+  const plat = src.plat || {};
+  const platLat = isNum(plat.lat) ? +plat.lat : (isNum(src.meta?.lat) ? +src.meta.lat : null);
+  const platLon = isNum(plat.lon) ? +plat.lon : (isNum(src.meta?.lon) ? +src.meta.lon : null);
+  const platAlt = isNum(plat.alt) ? +plat.alt : (isNum(src.meta?.alt) ? +src.meta.alt : 1000);    // metres MSL
+  const groundAlt = isNum(src.groundAlt) ? +src.groundAlt : 0;
+  const setPlat = (p) => update({ plat: { ...plat, ...p } });
+
+  /* sensor pose: look azimuth (true°), depression (el is NEGATIVE), FOV (°).
+     az seeds from the EXIF platform heading when present; el defaults to a
+     typical oblique −30°; fov reuses the measure-step src.fovH (EXIF lens). */
+  const sensor = src.sensor || {};
+  const az = isNum(sensor.az) ? +sensor.az : (isNum(src.meta?.azTrue) ? +src.meta.azTrue : (isNum(src.meta?.az) ? +src.meta.az : 0));
+  const el = isNum(sensor.el) ? +sensor.el : -30;
+  const fov = isNum(src.fovH) ? +src.fovH : (isNum(src.meta?.fovH) ? +src.meta.fovH : 68);
+  const setSensor = (p) => update({ sensor: { ...sensor, az, el, ...p } });
+
+  const cam = { natW, natH, az, el, roll: 0, fov, k: 0 };
+  const platform = { lat: platLat, lon: platLon, alt: platAlt };
+  const telemetryOk = isNum(platLat) && isNum(platLon) && platAlt > groundAlt && natW > 0 && el < 0;
+
+  const target = src.aTarget && isNum(src.aTarget.x) ? src.aTarget : null;
+  const span = Array.isArray(src.aSpan) ? src.aSpan.filter((p) => p && isNum(p.x)) : [];
+
+  /* geolocation results (live) */
+  const tGround = telemetryOk && target ? pixelToGround(target.x, target.y, cam, platform, groundAlt) : null;
+  const gsd = telemetryOk ? centerGSD(cam, platform, groundAlt) : null;
+  const spanM = telemetryOk && span.length === 2 ? groundSpanM(span[0], span[1], cam, platform, groundAlt) : null;
+  const tRange = tGround && isNum(platLat) ? haversineM(platform, tGround) : null;   // ground distance platform→target
+  const tBearing = tGround && isNum(platLat) ? bearingDegGround(platform, tGround) : null;
+
+  /* ground footprint: the four image corners cast to the ground plane (null for
+     any corner whose ray misses — a horizon-crossing oblique frame). */
+  const footprint = telemetryOk
+    ? [[0, 0], [natW, 0], [natW, natH], [0, natH]].map(([x, y]) => pixelToGround(x, y, cam, platform, groundAlt))
+    : [];
+
+  /* map a pointer event on the media to natural pixel coords (rect read LIVE —
+     iOS layout shifts make any cached rect stale within a gesture). */
+  const evToNat = (e) => {
+    const el2 = mediaRef.current; if (!el2 || !(natW > 0)) return null;
+    const r = el2.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * natW;
+    const y = ((e.clientY - r.top) / r.height) * natH;
+    if (x < 0 || y < 0 || x > natW || y > natH) return null;
+    return { x: +x.toFixed(1), y: +y.toFixed(1) };
+  };
+  const onTap = (e) => {
+    const p = evToNat(e); if (!p) return;
+    if (mode === "target") update({ aTarget: p });
+    else {
+      const next = span.length >= 2 ? [p] : [...span, p];   // 3rd tap restarts the pair
+      update({ aSpan: next });
+    }
+  };
+
+  /* seed the target ground elevation from terrain under the platform (a decent
+     flat-ground proxy; the target's own DEM refinement is a later step). */
+  const grabGroundDem = async () => {
+    if (!isNum(platLat) || !isNum(platLon)) return;
+    setDemBusy(true);
+    try { const h = await demElevation(platLat, platLon); update({ groundAlt: +h.toFixed(0) }); } catch (e) { }
+    setDemBusy(false);
+  };
+
+  const toDisp = (m) => (unitsImp ? m / M_PER_FT : m);
+  const fromDisp = (v) => (unitsImp ? v * M_PER_FT : v);
+  const altUnit = unitsImp ? "ft" : "m";
+
+  const dot = (p, col, key, lbl) => {
+    if (!p || !(natW > 0)) return null;
+    return (
+      <div key={key} style={{ position: "absolute", left: `${(p.x / natW) * 100}%`, top: `${(p.y / natH) * 100}%`, transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
+        <div style={{ width: 14, height: 14, borderRadius: 8, border: `2px solid ${col}`, boxShadow: "0 0 0 1px rgba(0,0,0,.6)" }} />
+        {lbl && <div style={{ position: "absolute", left: 16, top: -2, color: col, fontFamily: "var(--mono)", fontSize: 10, textShadow: "0 0 3px #000" }}>{lbl}</div>}
+      </div>
+    );
+  };
+
+  const isVideo = src.mediaKind === "video";
+  useEffect(() => {
+    if (isVideo && mediaRef.current && isNum(src.A?.videoTime)) {
+      const v = mediaRef.current;
+      const seek = () => { try { v.currentTime = +src.A.videoTime; } catch (e) { } };
+      if (v.readyState >= 1) seek(); else v.addEventListener("loadedmetadata", seek, { once: true });
+    }
+  }, [isVideo, src.mediaUrl, src.A?.videoTime]);
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: "var(--dim)", padding: "0 2px 8px", lineHeight: 1.5 }}>
+        A <b style={{ color: "var(--teal)" }}>downward-looking</b> sensor of known position geolocates the ground under it — no second observer needed. Give the platform's spot, height, and where the sensor pointed, then tap the target in the frame.
+      </div>
+
+      {/* ── the frame, with tap-to-mark ── */}
+      {src.mediaUrl ? (
+        <div style={{ position: "relative", width: "100%", borderRadius: 10, overflow: "hidden", border: "1px solid var(--line)", background: "#000" }}
+          onPointerDown={onTap}>
+          {isVideo
+            ? <video ref={mediaRef} src={src.mediaUrl} muted playsInline preload="auto" style={{ display: "block", width: "100%" }} />
+            : <img ref={mediaRef} src={src.mediaUrl} alt="frame" draggable={false} style={{ display: "block", width: "100%" }} />}
+          {dot(target, "var(--teal)", "t", "target")}
+          {span.map((p, i) => dot(p, "var(--amber)", "s" + i, i === 0 ? "size ①" : "size ②"))}
+        </div>
+      ) : (
+        <div style={{ padding: 20, textAlign: "center", color: "var(--dim)", border: "1px dashed var(--line)", borderRadius: 10 }}>
+          Add the aerial frame on the previous step first.
+        </div>
+      )}
+
+      {/* mark-mode toggle */}
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        {[["target", "🎯 Mark target"], ["size", "📏 Bracket size"]].map(([m, lbl]) => (
+          <button key={m} className="btn sm" onClick={() => setMode(m)}
+            style={{ flex: 1, background: mode === m ? "var(--teal)" : "", color: mode === m ? "var(--bg)" : "" }}>{lbl}</button>
+        ))}
+        {(target || span.length) ? <button className="btn sm ghost" style={{ color: "var(--red)" }} onClick={() => update({ aTarget: null, aSpan: [] })}>Clear</button> : null}
+      </div>
+
+      {/* ── platform position (pin) + sensor cone ── */}
+      <ML style={{ marginTop: 14 }}>Platform position — where the sensor is</ML>
+      <PinMap lat={platLat} lon={platLon} onChange={(la, lo) => setPlat({ lat: +la.toFixed(6), lon: +lo.toFixed(6) })} bearing={az} />
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        <input value={isNum(platLat) ? platLat : ""} placeholder="lat" inputMode="decimal"
+          onChange={(e) => setPlat({ lat: e.target.value === "" ? "" : +e.target.value })}
+          style={{ flex: 1, minWidth: 0 }} />
+        <input value={isNum(platLon) ? platLon : ""} placeholder="lon" inputMode="decimal"
+          onChange={(e) => setPlat({ lon: e.target.value === "" ? "" : +e.target.value })}
+          style={{ flex: 1, minWidth: 0 }} />
+      </div>
+
+      {/* platform altitude */}
+      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <div style={{ flex: 1 }}>
+          <ML>Platform altitude (MSL)</ML>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input value={+toDisp(platAlt).toFixed(0)} inputMode="numeric"
+              onChange={(e) => setPlat({ alt: +fromDisp(+e.target.value).toFixed(1) })} style={{ width: 90 }} />
+            <span style={{ color: "var(--dim)", fontSize: 12 }}>{altUnit}</span>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <ML>Ground elevation (MSL)</ML>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input value={+toDisp(groundAlt).toFixed(0)} inputMode="numeric"
+              onChange={(e) => update({ groundAlt: +fromDisp(+e.target.value).toFixed(1) })} style={{ width: 78 }} />
+            <span style={{ color: "var(--dim)", fontSize: 12 }}>{altUnit}</span>
+            <button className="btn sm ghost" disabled={demBusy || !isNum(platLat)} onClick={grabGroundDem}>{demBusy ? "…" : "⛰ terrain"}</button>
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize: 10.5, color: "var(--teal)", fontFamily: "var(--mono)", marginTop: 3 }}>
+        height above ground: {isNum(platLat) ? fmtLenShort(platAlt - groundAlt) : "—"}
+      </div>
+
+      {/* sensor look azimuth */}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <ML style={{ marginBottom: 1 }}>Look azimuth (compass bearing)</ML>
+          <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{Math.round(((az % 360) + 360) % 360)}° {compass8(az)}</span>
+        </div>
+        <input type="range" min={0} max={359} step={1} value={((az % 360) + 360) % 360} onChange={(e) => setSensor({ az: +e.target.value })} />
+      </div>
+
+      {/* sensor depression */}
+      <div style={{ marginTop: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <ML style={{ marginBottom: 1 }}>Depression below horizontal</ML>
+          <span style={{ color: "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{Math.round(-el)}° {(-el) >= 80 ? "≈ straight down" : (-el) <= 10 ? "shallow / oblique" : "down"}</span>
+        </div>
+        <input type="range" min={1} max={90} step={1} value={-el} onChange={(e) => setSensor({ el: -(+e.target.value) })} />
+      </div>
+
+      {/* FOV */}
+      <div style={{ marginTop: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <ML style={{ marginBottom: 1 }}>Field of view</ML>
+          <span style={{ color: isNum(src.meta?.fovH) ? "var(--teal)" : "var(--amber)", fontFamily: "var(--mono)", fontSize: 11 }}>{Math.round(fov)}°{isNum(src.meta?.fovH) ? " · from lens ✓" : " · estimate"}</span>
+        </div>
+        {isNum(src.meta?.fovH)
+          ? <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Sensor FOV comes from the frame's lens metadata.</div>
+          : <input type="range" min={2} max={130} step={0.5} value={fov} onChange={(e) => update({ fovH: +(+e.target.value).toFixed(1) })} />}
+      </div>
+
+      {/* ── results ── */}
+      <div className="card" style={{ marginTop: 14 }}>
+        <ML>Geolocation</ML>
+        {!telemetryOk ? (
+          <div style={{ fontSize: 12, color: "var(--amber)", lineHeight: 1.5 }}>
+            {!(isNum(platLat) && isNum(platLon)) ? "Pin the platform position to solve."
+              : !(platAlt > groundAlt) ? "Platform altitude must be above the ground elevation."
+                : !(natW > 0) ? "Load the frame on the previous step."
+                  : "Set a downward depression angle."}
+          </div>
+        ) : (
+          <>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7 }}>
+              {tGround ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: "var(--teal)" }}>target&nbsp;</span>
+                    <b>{tGround.lat.toFixed(6)}, {tGround.lon.toFixed(6)}</b>
+                    <button className="btn sm ghost" style={{ padding: "2px 7px", fontSize: 10 }}
+                      onClick={() => { try { navigator.clipboard.writeText(`${tGround.lat.toFixed(6)}, ${tGround.lon.toFixed(6)}`); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch (e) { } }}>{copied ? "✓" : "copy"}</button>
+                  </div>
+                  <div style={{ color: "var(--dim)" }}>slant range <b style={{ color: "var(--ink)" }}>{fmtLenShort(tGround.slant)}</b> · ground dist <b style={{ color: "var(--ink)" }}>{fmtLenShort(tRange)}</b> · bearing <b style={{ color: "var(--ink)" }}>{Math.round(tBearing)}° {compass8(tBearing)}</b></div>
+                </>
+              ) : <div style={{ color: "var(--amber)" }}>Tap the target — its sight-line clears the ground plane at this pose.</div>}
+              <div style={{ color: "var(--dim)", marginTop: 2 }}>resolution ≈ <b style={{ color: "var(--ink)" }}>{gsd ? (unitsImp ? (gsd / M_PER_FT).toFixed(2) + " ft/px" : gsd.toFixed(2) + " m/px") : "—"}</b> at frame centre</div>
+              {span.length === 2 && <div style={{ color: "var(--amber)", marginTop: 2 }}>bracketed size <b style={{ color: "var(--ink)" }}>{spanM != null ? fmtLenShort(spanM) : "—"}</b></div>}
+              {span.length === 1 && <div style={{ color: "var(--dim)", marginTop: 2 }}>size: tap the second edge…</div>}
+            </div>
+            <AerialFootprint footprint={footprint} platform={platform} target={tGround} span={telemetryOk && span.length === 2 ? span.map((p) => pixelToGround(p.x, p.y, cam, platform, groundAlt)) : null} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* compact top-down schematic: the sensor footprint quad, the platform nadir, and
+   the geolocated target — a quick sanity read of the geometry before the full
+   satellite ground view. Pure canvas, auto-scaled to the points' bounds. */
+function AerialFootprint({ footprint, platform, target, span }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = 180;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    /* footprint e/n are ENU offsets from the platform nadir, so the nadir sits
+       at the origin (0,0); the target is placed relative to it in metres. */
+    const pts = [[0, 0]];
+    const foot = (footprint || []).filter(Boolean);
+    foot.forEach((g) => pts.push([g.e, g.n]));
+    let tEN = null;
+    if (target && isNum(platform.lat)) {
+      const dN = (target.lat - platform.lat) * 111320;
+      const dE = (target.lon - platform.lon) * 111320 * Math.cos(platform.lat * D2R);
+      tEN = [dE, dN]; pts.push(tEN);
+    }
+    let sEN = null;
+    if (span && span[0] && span[1]) { sEN = span.map((g) => [g.e, g.n]); sEN.forEach((p) => pts.push(p)); }
+    if (pts.length < 2) return;
+    let minX = Math.min(...pts.map((p) => p[0])), maxX = Math.max(...pts.map((p) => p[0]));
+    let minY = Math.min(...pts.map((p) => p[1])), maxY = Math.max(...pts.map((p) => p[1]));
+    const pad = 18, spanX = Math.max(1, maxX - minX), spanY = Math.max(1, maxY - minY);
+    const sc = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+    const X = (e) => pad + (e - minX) * sc, Y = (n) => H - pad - (n - minY) * sc;  // north up
+    // footprint quad
+    if (foot.length >= 3) {
+      ctx.beginPath();
+      foot.forEach((g, i) => { const x = X(g.e), y = Y(g.n); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(60,200,180,.10)"; ctx.fill();
+      ctx.strokeStyle = "rgba(60,200,180,.55)"; ctx.lineWidth = 1.4; ctx.stroke();
+    }
+    // platform nadir
+    ctx.fillStyle = "#dfe8ff";
+    ctx.beginPath(); ctx.arc(X(0), Y(0), 4, 0, 7); ctx.fill();
+    ctx.font = "10px monospace"; ctx.fillStyle = "#8ea3bf"; ctx.fillText("nadir", X(0) + 6, Y(0) - 4);
+    // size bracket
+    if (sEN) {
+      ctx.strokeStyle = "#ffb24a"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(X(sEN[0][0]), Y(sEN[0][1])); ctx.lineTo(X(sEN[1][0]), Y(sEN[1][1])); ctx.stroke();
+    }
+    // target
+    if (tEN) {
+      ctx.fillStyle = "#3ce0c0";
+      ctx.beginPath(); ctx.arc(X(tEN[0]), Y(tEN[1]), 5, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#0a0f1c"; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    // north arrow
+    ctx.strokeStyle = "#5a6b82"; ctx.fillStyle = "#5a6b82"; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(W - 14, 30); ctx.lineTo(W - 14, 12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W - 14, 10); ctx.lineTo(W - 17, 16); ctx.lineTo(W - 11, 16); ctx.closePath(); ctx.fill();
+    ctx.fillText("N", W - 18, 40);
+  });
+  return <canvas ref={ref} style={{ width: "100%", height: 180, marginTop: 10, display: "block" }} />;
+}
+
+/* ============================================================
    PLOT BOARD — top-down view of observers, rays, fix and trajectory
    on real satellite imagery (Leaflet + Esri World Imagery, same base
    as PinMap). ENU solution points convert back to geo through the
@@ -9348,9 +9659,18 @@ export default function App() {
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
-          <WizStep n={1} title="THE PHOTO" help="photo" onBack={() => goView("home")} onNext={() => goView("s2")}
-            nextLabel={wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →"}>
+          <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE PHOTO"} help="photo" onBack={() => goView("home")} onNext={() => goView("s2")}
+            nextLabel={appMode === "aerial" ? "Next · platform & geolocate →" : (wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →")}>
             <MediaMeasure wizard src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
+          </WizStep>
+        );
+      } else if (ui.view === "s2" && appMode === "aerial") {
+        /* AERIAL (looking down): platform pose + single-frame ground geolocation.
+           Results are inline; no sky triangulation step, so Next returns home. */
+        page = (
+          <WizStep n={2} title="PLATFORM & TARGET" help="photo" onBack={() => goView("s1")} onNext={() => goView("home")}
+            nextLabel="Done · back to sightings →">
+            <AerialMeasure src={wsrc} update={(p) => updateSource(wsrc.id, p)} unitsImp={unitsImp} />
           </WizStep>
         );
       } else if (ui.view === "s2") {
