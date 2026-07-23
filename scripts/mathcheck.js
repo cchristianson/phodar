@@ -1698,6 +1698,24 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const gone = pH && pH.find((p) => Math.abs(p.t - 2.2) < 1e-3);   // solved only from B,C (A long gone)
     approx(gone && Math.abs(((gone.az - 112 + 540) % 360) - 180) < 0.4 && Math.abs(gone.el - 23) < 0.4 ? 1 : 0, 1, 0, "manualPose: pose handed off to fresh references after the first left frame");
   }
+
+  // SMOOTHING: on a linear pan, one keyframe whose marks are jittered off should
+  // be pulled back toward its neighbours' interpolation (imperfect placement).
+  {
+    const alignPix = [{ x: 400, y: 300 }, { x: 1500, y: 350 }, { x: 500, y: 800 }, { x: 1400, y: 750 }];
+    const Gs = alignPix.map((p) => pixToDirK(p.x, p.y, natW, natH, 100, 20, 0, 60, 0));
+    const rp = { t: 1.0, az: 100, el: 20, roll: 0, fov: 60, k: 0 };
+    const lin = [0.6, 0.8, 1.0, 1.2, 1.4].map((t) => ({ t, az: 100 + (t - 1.0) * 10, el: 20, roll: 0, fov: 60 })); // smooth pan
+    const jitter = (t) => (Math.abs(t - 1.2) < 1e-3 ? 14 : 0);   // ONE non-align keyframe's marks pushed ~14px off
+    const camRefsS = Gs.map((g) => ({ marks: lin.map((T) => { const p = dirToPixK(g, natW, natH, T.az, T.el, T.roll, T.fov, 0); return { t: T.t, x: p.px + jitter(T.t), y: p.py }; }) }));
+    const raw = solveManualPoses(camRefsS, rp, { natW, natH }, { smooth: false });
+    const sm = solveManualPoses(camRefsS, rp, { natW, natH });   // smoothed (default)
+    const mid = (path) => path.find((p) => Math.abs(p.t - 1.2) < 1e-3);
+    const truthMid = 102; // linear pan → az at t=1.2 is exactly 102
+    const devRaw = Math.abs(mid(raw).az - truthMid), devSm = Math.abs(mid(sm).az - truthMid);
+    approx(devRaw > 0.3 ? 1 : 0, 1, 0, `manualPose: the jittered keyframe is off before smoothing (${devRaw.toFixed(2)}°)`);
+    approx(devSm < devRaw * 0.7 ? 1 : 0, 1, 0, `manualPose: smoothing pulls it back toward the pan (${devSm.toFixed(2)}° < ${devRaw.toFixed(2)}°)`);
+  }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
