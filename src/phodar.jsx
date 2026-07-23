@@ -7195,9 +7195,31 @@ function SensorCapture({ onCapture, onClose }) {
       () => { }, { enableHighAccuracy: true, timeout: 8000 });
     setStarted(true);
   };
+  /* SMOOTHING — the raw magnetometer/accelerometer jitters frame to frame,
+     worst in portrait aimed at the horizon (the compass reference, the phone's
+     top edge, points near-vertical there — its noisiest pose). Exponentially
+     average the gravity vector and the heading (as a unit vector, so it wraps
+     cleanly) before deriving the pose, for both the live readout and the shutter
+     snapshot — a steadier readout and a more reliable seed. */
+  const gEmaRef = useRef(null), hEmaRef = useRef(null);
+  const smoothedHeading = () => { const h = hEmaRef.current; return h && (Math.abs(h.c) + Math.abs(h.s)) > 1e-3 ? ((Math.atan2(h.s, h.c) * R2D) % 360 + 360) % 360 : headRef.current; };
   useEffect(() => {
     let raf;
-    const tick = () => { if (gRef.current) setPose(poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current })); raf = requestAnimationFrame(tick); };
+    const A = 0.18;
+    const tick = () => {
+      const g = gRef.current;
+      if (g) {
+        const e = gEmaRef.current;
+        gEmaRef.current = e ? { x: e.x + (g.x - e.x) * A, y: e.y + (g.y - e.y) * A, z: e.z + (g.z - e.z) * A } : { x: g.x, y: g.y, z: g.z };
+        const h = headRef.current;
+        if (isNum(h)) {
+          const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
+          hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
+        }
+        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current }));
+      }
+      raf = requestAnimationFrame(tick);
+    };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, []);
@@ -7213,8 +7235,8 @@ function SensorCapture({ onCapture, onClose }) {
     return () => document.documentElement.classList.remove("capturing");
   }, []);
   const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
-  /* snapshot the current sensor reading — az/el/roll + provenance */
-  const snapPose = () => ({ pose: gRef.current ? poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current }) : null, heading: headRef.current, compassAcc, gps, gravity: gRef.current, gSign: gSignRef.current, whenMs: Date.now() });
+  /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {
