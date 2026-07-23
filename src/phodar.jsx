@@ -2201,7 +2201,7 @@ function MediaMeasure({ src, update, wizard }) {
                 return (
                   <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--green)", borderRadius: 10, background: "rgba(90,200,140,.06)" }}>
                     <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
-                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
+                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. If one pans out of view, add a fresh one — it hands off as long as it <b>overlaps an existing ref on ≥1 frame</b>. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
                     </div>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                       {camRefs.map((r, i) => {
