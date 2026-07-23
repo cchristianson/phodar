@@ -1510,7 +1510,7 @@ function MediaMeasure({ src, update, wizard }) {
     const S = 110;
     const dprL = cv.width / S || 1;               // device-res backing store
     ctx.setTransform(dprL, 0, 0, dprL, 0, 0);     // draw in CSS px, render at native res
-    let pxPerNat = Math.max(4, 3 * (view.z || 1) * scale); // never weaker than 4× absolute
+    let pxPerNat = Math.max(2, 1.5 * (view.z || 1) * scale); // half the old zoom — more surrounding context to line a feature up
     if (sf && sf.sizeNat) {
       /* frame the WHOLE shape: fit it to ~62% of the glass, never dropping
          below ~screen scale (at which point the loupe adds nothing) */
