@@ -396,6 +396,8 @@ const css = `
   .rotate-lock .ic{font-size:44px; animation:rot-nudge 1.6s ease-in-out infinite;}
   @keyframes rot-nudge{0%,100%{transform:rotate(0)}50%{transform:rotate(-90deg)}}
 }
+/* sensor capture is a full-screen camera — allow landscape (no portrait lock) */
+html.capturing .rotate-lock{display:none !important;}
 .help-q{width:30px; height:30px; flex:0 0 auto; border-radius:50%; border:1px solid var(--line);
   background:var(--panel2); color:var(--amber); font-weight:800; font-size:15px; line-height:1;
   cursor:pointer; pointer-events:auto; display:inline-flex; align-items:center; justify-content:center;}
@@ -7149,7 +7151,7 @@ function SensorCapture({ onCapture, onClose }) {
   const [pose, setPose] = useState(null);
   const [compassAcc, setCompassAcc] = useState(null);
   const [gps, setGps] = useState(null);
-  const [gSign, setGSign] = useState(() => { try { return localStorage.getItem("phodar-gsign") === "-1" ? -1 : 1; } catch (e) { return 1; } });
+  const [gSign, setGSign] = useState(() => { try { return localStorage.getItem("phodar-gsign") === "1" ? 1 : -1; } catch (e) { return -1; } });  // −1 = iOS accel-points-down (default); ⇅ flip → +1
   const gSignRef = useRef(gSign); gSignRef.current = gSign;
   const onOrient = useCallback((e) => {
     if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
@@ -7204,6 +7206,12 @@ function SensorCapture({ onCapture, onClose }) {
     window.removeEventListener("devicemotion", onMotion, true);
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
   }, [onOrient, onMotion]);
+  /* the capture is a full-screen camera — suppress the app's portrait lock so it
+     works held in landscape (natural for a wide scene / the horizon). */
+  useEffect(() => {
+    document.documentElement.classList.add("capturing");
+    return () => document.documentElement.classList.remove("capturing");
+  }, []);
   const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
   /* snapshot the current sensor reading — az/el/roll + provenance */
   const snapPose = () => ({ pose: gRef.current ? poseFromGravity(gRef.current, headRef.current, { gSign: gSignRef.current }) : null, heading: headRef.current, compassAcc, gps, gravity: gRef.current, gSign: gSignRef.current, whenMs: Date.now() });
@@ -7224,7 +7232,7 @@ function SensorCapture({ onCapture, onClose }) {
   const q = poseQuality(compassAcc, true);
   const readVal = (v, suf) => isNum(v) ? Math.round(v) + (suf || "") : "—";
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 4000, background: "#000", display: "flex", flexDirection: "column" }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "#000", display: "flex", flexDirection: "column" }}>
       <video ref={videoRef} muted playsInline autoPlay style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", background: "#000" }} />
       {/* crosshair */}
       {started && (
