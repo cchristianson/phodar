@@ -138,69 +138,14 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
   const path = Object.values(byT).sort((a, b) => a.t - b.t);
   /* AVERAGE OUT imperfect placement: each keyframe's pose carries the noise of
      that frame's taps. Run the same evidence-weighted despike + smooth the auto
-     walk uses (weighted by each keyframe's anchor count `n`) so a single sloppy
-     mark is pulled back toward its neighbours and per-frame jitter is damped,
-     while a real sustained pan/turn passes through. */
-  if (path.length >= 3 && opts.smooth !== false) {
+     walk uses so a single sloppy mark is pulled back toward its neighbours and
+     per-frame jitter is damped, while a real sustained pan/turn passes through.
+     `smoothAmt` (0..1, default 0.4) is the user's smoothing slider: 0 = raw, 1 =
+     heavy — it scales the per-step pull toward the neighbours' interpolation. */
+  const amt = opts.smooth === false ? 0 : (opts.smoothAmt == null ? 0.4 : clampN(+opts.smoothAmt, 0, 1));
+  if (path.length >= 3 && amt > 0) {
     despikePath(path, { passes: 1 });
-    smoothPath(path, { passes: opts.smoothPasses == null ? 1 : opts.smoothPasses });
+    smoothPath(path, { passes: 2, al: clampN(0.12 + amt * 0.55, 0.05, 0.75) });
   }
   return path.length ? path : null;
-}
-
-/* HYBRID: fuse the automatic stabilization with the hand-marked pose. The
-   automatic walk gives dense, smooth motion but can be CONFIDENTLY WRONG
-   (cloud-locked, or frozen on a held frame); the manual keyframes are ground
-   truth but sparse. So decide span-by-span between consecutive manual
-   keyframes:
-     • auto AGREES with the marks at both ends (center within `gate`, roll too,
-       and the frame wasn't held) → keep auto's dense shape, but smear a linear
-       correction across the span so it passes exactly through both marks (the
-       same drift-correction the auto walk does at re-anchors);
-     • auto DISAGREES at either end (garbage / held) → drop auto there and use
-       the manual interpolation.
-   Ground truth is pinned at every manual keyframe either way. If auto is all
-   bad it degrades to (dense) manual; if auto is all good it's auto with tiny
-   corrections. Returns a dense posePath tagged per-sample with `src`. */
-export function hybridPath(autoPath, manualPath, opts = {}) {
-  if (!Array.isArray(autoPath) || !autoPath.length) return manualPath || null;
-  if (!Array.isArray(manualPath) || !manualPath.length) return autoPath;
-  const gate = opts.gate == null ? 2.5 : opts.gate;        // deg the auto MOTION may differ from the marks across a span
-  const angD = (a, b) => ((a - b + 540) % 360) - 180;
-  const nAt = (t) => { let bd = Infinity, bn = 99; for (const p of autoPath) { const d = Math.abs(p.t - t); if (d < bd) { bd = d; bn = p.n == null ? 99 : p.n; } } return bn; };
-
-  // residual (mark − auto) at each manual keyframe
-  const anch = manualPath.map((m) => {
-    const a = posePathAt(autoPath, m.t);
-    return { t: m.t, held: nAt(m.t) < 6, res: { dAz: angD(m.az, a.az), dEl: m.el - (a.el || 0), dRoll: (m.roll || 0) - (a.roll || 0), dFov: m.fov - a.fov } };
-  });
-  /* Trust auto in a span only when its MOTION matches the marks — i.e. the
-     correction is roughly CONSTANT across the span (a steady offset/drift, which
-     the smear removes), NOT merely that auto happens to match at the endpoints.
-     A span where auto barely moved but the marks swept has a big correction
-     CHANGE → distrust → use the marks. (This was the bug: cloud-locked auto that
-     matched the sparse marks by luck but undershot the real pan between them,
-     leaving jitter instead of the big movement.) */
-  const consistent = (A, B) => !A.held && !B.held
-    && Math.abs(angD(A.res.dAz, B.res.dAz)) <= gate
-    && Math.abs(A.res.dEl - B.res.dEl) <= gate
-    && Math.abs(A.res.dRoll - B.res.dRoll) <= gate * 1.5;
-
-  const times = [...new Set([...autoPath.map((p) => +p.t), ...manualPath.map((p) => +p.t)])].sort((a, b) => a - b);
-  const out = [];
-  for (const t of times) {
-    let lo = null, hi = null;
-    for (const an of anch) { if (an.t <= t + 1e-9) lo = an; if (an.t >= t - 1e-9 && !hi) hi = an; }
-    const useAuto = !!(lo && hi && consistent(lo, hi));   // interior span AND auto's motion agrees with the marks
-    if (useAuto) {
-      const a = posePathAt(autoPath, t);
-      const u = hi.t > lo.t ? clampN((t - lo.t) / (hi.t - lo.t), 0, 1) : 0;
-      const lin = (k) => lo.res[k] + (hi.res[k] - lo.res[k]) * u;
-      out.push({ t, az: (((a.az + lin("dAz")) % 360) + 360) % 360, el: a.el + lin("dEl"), roll: (a.roll || 0) + lin("dRoll"), fov: a.fov + lin("dFov"), k: a.k || 0, n: a.n, src: "auto" });
-    } else {
-      const m = posePathAt(manualPath, t);
-      out.push({ t, az: m.az, el: m.el, roll: m.roll || 0, fov: m.fov, k: m.k || 0, n: m.n, src: "manual" });
-    }
-  }
-  return out;
 }

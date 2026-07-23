@@ -899,7 +899,7 @@ export function smoothPath(path, opts = {}) {
       const a = src[i - 1], b = src[i], c = src[i + 1];
       const span = c.t - a.t; if (!(span > 1e-6)) continue;
       const n = path[i].n == null ? 12 : path[i].n;
-      const al = n >= 18 ? 0.18 : n >= 10 ? 0.32 : 0.5;
+      const al = opts.al != null ? opts.al : (n >= 18 ? 0.18 : n >= 10 ? 0.32 : 0.5);
       const u = (b.t - a.t) / span;
       const mAz = a.az + angD(c.az, a.az) * u;
       path[i].az = +(((b.az + al * angD(mAz, b.az)) % 360 + 360) % 360).toFixed(3);
