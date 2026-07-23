@@ -165,30 +165,37 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
 export function hybridPath(autoPath, manualPath, opts = {}) {
   if (!Array.isArray(autoPath) || !autoPath.length) return manualPath || null;
   if (!Array.isArray(manualPath) || !manualPath.length) return autoPath;
-  const gate = opts.gate == null ? 4 : opts.gate;          // deg of auto-vs-mark disagreement tolerated
+  const gate = opts.gate == null ? 2.5 : opts.gate;        // deg the auto MOTION may differ from the marks across a span
   const angD = (a, b) => ((a - b + 540) % 360) - 180;
-  const sep = (p, q) => Math.acos(clampN(dot(dirFromAzEl(p.az, p.el), dirFromAzEl(q.az, q.el)), -1, 1)) * R2D;
   const nAt = (t) => { let bd = Infinity, bn = 99; for (const p of autoPath) { const d = Math.abs(p.t - t); if (d < bd) { bd = d; bn = p.n == null ? 99 : p.n; } } return bn; };
 
-  // residual (mark − auto) and reliability at each manual keyframe
+  // residual (mark − auto) at each manual keyframe
   const anch = manualPath.map((m) => {
     const a = posePathAt(autoPath, m.t);
-    const res = { dAz: angD(m.az, a.az), dEl: m.el - (a.el || 0), dRoll: (m.roll || 0) - (a.roll || 0), dFov: m.fov - a.fov };
-    const reliable = nAt(m.t) >= 6 && sep(m, a) <= gate && Math.abs(res.dRoll) <= gate * 1.5;
-    return { t: m.t, res, reliable };
+    return { t: m.t, held: nAt(m.t) < 6, res: { dAz: angD(m.az, a.az), dEl: m.el - (a.el || 0), dRoll: (m.roll || 0) - (a.roll || 0), dFov: m.fov - a.fov } };
   });
+  /* Trust auto in a span only when its MOTION matches the marks — i.e. the
+     correction is roughly CONSTANT across the span (a steady offset/drift, which
+     the smear removes), NOT merely that auto happens to match at the endpoints.
+     A span where auto barely moved but the marks swept has a big correction
+     CHANGE → distrust → use the marks. (This was the bug: cloud-locked auto that
+     matched the sparse marks by luck but undershot the real pan between them,
+     leaving jitter instead of the big movement.) */
+  const consistent = (A, B) => !A.held && !B.held
+    && Math.abs(angD(A.res.dAz, B.res.dAz)) <= gate
+    && Math.abs(A.res.dEl - B.res.dEl) <= gate
+    && Math.abs(A.res.dRoll - B.res.dRoll) <= gate * 1.5;
 
   const times = [...new Set([...autoPath.map((p) => +p.t), ...manualPath.map((p) => +p.t)])].sort((a, b) => a - b);
   const out = [];
   for (const t of times) {
     let lo = null, hi = null;
     for (const an of anch) { if (an.t <= t + 1e-9) lo = an; if (an.t >= t - 1e-9 && !hi) hi = an; }
-    const rLo = lo || hi, rHi = hi || lo;
-    const useAuto = !!(rLo && rHi && rLo.reliable && rHi.reliable);
+    const useAuto = !!(lo && hi && consistent(lo, hi));   // interior span AND auto's motion agrees with the marks
     if (useAuto) {
       const a = posePathAt(autoPath, t);
-      const u = rHi.t > rLo.t ? clampN((t - rLo.t) / (rHi.t - rLo.t), 0, 1) : 0;
-      const lin = (k) => rLo.res[k] + (rHi.res[k] - rLo.res[k]) * u;
+      const u = hi.t > lo.t ? clampN((t - lo.t) / (hi.t - lo.t), 0, 1) : 0;
+      const lin = (k) => lo.res[k] + (hi.res[k] - lo.res[k]) * u;
       out.push({ t, az: (((a.az + lin("dAz")) % 360) + 360) % 360, el: a.el + lin("dEl"), roll: (a.roll || 0) + lin("dRoll"), fov: a.fov + lin("dFov"), k: a.k || 0, n: a.n, src: "auto" });
     } else {
       const m = posePathAt(manualPath, t);

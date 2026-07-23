@@ -1717,23 +1717,27 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(devSm < devRaw * 0.7 ? 1 : 0, 1, 0, `manualPose: smoothing pulls it back toward the pan (${devSm.toFixed(2)}° < ${devRaw.toFixed(2)}°)`);
   }
 
-  // HYBRID: auto is right in the first half, garbage (cloud-locked) in the
-  // second. Manual keyframes are ground truth. hybridPath must KEEP auto where
-  // it agrees and REPLACE it with manual where it's wrong — pinned to the marks.
+  // HYBRID: auto TRACKS the true motion for t<3, then STALLS (cloud-locked:
+  // stops advancing) for t>=3 while the object keeps moving. The marks are
+  // ground truth. hybridPath must keep auto where its MOTION matches the marks
+  // and fall back to the marks (restoring the big movement) where auto stalled —
+  // NOT let the stalled auto and the marks fight to a jittery near-standstill
+  // (the real-clip failure).
   {
-    // dense auto path: correct for t<3, then drifts +8° az wrong for t>=3
     const auto = [];
-    for (let i = 0; i <= 12; i++) { const t = i * 0.5; const bad = t >= 3 ? 8 : 0; auto.push({ t, az: 100 + t * 2 + bad, el: 20, roll: 0, fov: 60, k: 0, n: 20 }); }
-    // manual keyframes on the TRUE motion (no bad offset), sparse
+    for (let i = 0; i <= 12; i++) { const t = i * 0.5; const az = t < 3 ? 100 + t * 2 : 106; auto.push({ t, az, el: 20, roll: 0, fov: 60, k: 0, n: 20 }); }
     const man = [0, 1.5, 3, 4.5, 6].map((t) => ({ t, az: 100 + t * 2, el: 20, roll: 0, fov: 60, n: 4 }));
-    const hyb = hybridPath(auto, man, { gate: 4 });
+    const hyb = hybridPath(auto, man);
     const at = (t) => hyb.find((p) => Math.abs(p.t - t) < 1e-6);
-    approx(at(3) && Math.abs(((at(3).az - 106 + 540) % 360) - 180) < 0.2 ? 1 : 0, 1, 0, "hybrid: truth pinned at the mark where auto goes bad (t=3)");
-    approx(at(5) && Math.abs(((at(5).az - 110 + 540) % 360) - 180) < 0.6 ? 1 : 0, 1, 0, "hybrid: garbage auto span replaced by the marks (t=5)");
-    // in the GOOD half a sample between marks should come from auto (dense shape kept)
+    // GOOD half: auto's motion matches → kept, on truth
     const g = at(1.0);
-    approx(g && g.src === "auto" && Math.abs(((g.az - 102 + 540) % 360) - 180) < 0.3 ? 1 : 0, 1, 0, "hybrid: auto kept where it agrees with the marks (t=1)");
-    approx(at(5) && at(5).src === "manual" ? 1 : 0, 1, 0, "hybrid: bad span tagged as manual");
+    approx(g && g.src === "auto" && Math.abs(((g.az - 102 + 540) % 360) - 180) < 0.3 ? 1 : 0, 1, 0, "hybrid: auto kept where its motion matches the marks (t=1)");
+    // STALLED half: the marks must drive → the big movement is restored, NOT stuck near 106
+    const b = at(5.0);
+    approx(b && b.src === "manual" && Math.abs(((b.az - 110 + 540) % 360) - 180) < 0.6 ? 1 : 0, 1, 0, "hybrid: stalled auto span replaced by the marks — big movement restored (t=5)");
+    // the whole second half must actually sweep, not sit at auto's frozen 106
+    const sweep = Math.abs(((at(6).az - at(3).az + 540) % 360) - 180);
+    approx(sweep > 5 ? 1 : 0, 1, 0, `hybrid: second half sweeps with the marks (${sweep.toFixed(1)}°, not frozen)`);
   }
 }
 
