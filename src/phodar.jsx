@@ -7102,6 +7102,12 @@ function AerialMeasure({ src, update, unitsImp }) {
   const platLon = isNum(plat.lon) ? +plat.lon : (isNum(src.meta?.lon) ? +src.meta.lon : null);
   const platAlt = isNum(plat.alt) ? +plat.alt : (isNum(src.meta?.alt) ? +src.meta.alt : 1000);    // metres MSL
   const groundAlt = isNum(src.groundAlt) ? +src.groundAlt : 0;
+  /* target HEIGHT ABOVE GROUND (m). 0 = the target sits on the ground (a
+     vehicle, a building). >0 = an AIRBORNE object (a drone, an orb) — its
+     sight-line must be stopped at its own altitude plane, not the ground, or it
+     geolocates to the ground point beneath it (its shadow). With one platform
+     this height is a FREE unknown, exactly like assumed distance in sky mode. */
+  const objH = isNum(src.objH) ? +src.objH : 0;
   const setPlat = (p) => update({ plat: { ...plat, ...p } });
 
   /* sensor pose: look azimuth (true°), depression (el is NEGATIVE), FOV (°).
@@ -7140,16 +7146,23 @@ function AerialMeasure({ src, update, unitsImp }) {
   const geoH = method === "gcp" ? groundHomography(gcpsReady) : null;
   const solveOk = method === "telemetry" ? telemetryOk : !!(geoH && natW > 0);
 
-  /* unified pixel→ground for whichever method is active */
-  const locate = (x, y) => method === "gcp"
+  /* pixel→ground on an arbitrary MSL plane. GCP homography is fixed to the
+     ground plane, so it can't lift off it — an airborne target there resolves to
+     its ground shadow (flagged in the UI). Ray-cast honours any plane, so an
+     airborne object is intersected at groundAlt + objH. */
+  const objAlt = groundAlt + objH;
+  const airborne = objH > 0;
+  const locateAt = (x, y, alt) => method === "gcp"
     ? (geoH ? pixelToGroundH(x, y, geoH) : null)
-    : (telemetryOk ? pixelToGround(x, y, cam, platform, groundAlt) : null);
+    : (telemetryOk ? pixelToGround(x, y, cam, platform, alt) : null);
+  const locate = (x, y) => locateAt(x, y, groundAlt);        // ground (footprint)
+  const locateObj = (x, y) => locateAt(x, y, objAlt);        // the object's own plane (target/size/track)
 
   /* geolocation results (live) */
-  const tGround = target && solveOk ? locate(target.x, target.y) : null;
+  const tGround = target && solveOk ? locateObj(target.x, target.y) : null;
   const gsd = telemetryOk ? centerGSD(cam, platform, groundAlt) : null;   // slant-based; telemetry only
   const spanM = span.length === 2 && solveOk
-    ? (method === "gcp" ? groundSpanH(span[0], span[1], geoH) : groundSpanM(span[0], span[1], cam, platform, groundAlt))
+    ? (method === "gcp" ? groundSpanH(span[0], span[1], geoH) : groundSpanM(span[0], span[1], cam, platform, objAlt))
     : null;
   const tRange = tGround && method === "telemetry" ? haversineM(platform, tGround) : null;
   const tBearing = tGround && method === "telemetry" ? bearingDegGround(platform, tGround) : null;
@@ -7162,9 +7175,10 @@ function AerialMeasure({ src, update, unitsImp }) {
 
   /* moving-target ground kinematics (fixed-pose assumption — the platform is
      hovering / the GCPs hold across the marked frames). Each track mark
-     geolocates, then groundKinematics gives distance-true speed + heading. */
+     geolocates on the object's plane, then groundKinematics gives distance-true
+     speed + heading (horizontal, at the assumed height for an airborne object). */
   const trackGeo = solveOk && track.length >= 2
-    ? track.map((p) => { const g = locate(p.x, p.y); return g && isNum(g.lat) ? { t: p.t, lat: g.lat, lon: g.lon } : null; }).filter(Boolean)
+    ? track.map((p) => { const g = locateObj(p.x, p.y); return g && isNum(g.lat) ? { t: p.t, lat: g.lat, lon: g.lon } : null; }).filter(Boolean)
     : [];
   const kin = trackGeo.length >= 2 ? groundKinematics(trackGeo) : null;
 
@@ -7412,6 +7426,25 @@ function AerialMeasure({ src, update, unitsImp }) {
         height above ground: {isNum(platLat) ? fmtLenShort(platAlt - groundAlt) : "—"}
       </div>
 
+      {/* target height above ground — 0 for a ground target, >0 for an AIRBORNE
+          object (drone / orb) so its ray stops at its own altitude, not the ground */}
+      <div style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <ML style={{ marginBottom: 1 }}>Target height above ground</ML>
+          <span style={{ color: airborne ? "var(--amber)" : "var(--teal)", fontFamily: "var(--mono)", fontSize: 11 }}>{airborne ? fmtLenShort(objH) : "on the ground"}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input value={+toDisp(objH).toFixed(0)} inputMode="numeric"
+            onChange={(e) => update({ objH: Math.max(0, +fromDisp(+e.target.value)) })} style={{ width: 90 }} />
+          <span style={{ color: "var(--dim)", fontSize: 12 }}>{altUnit} {objH > 0 ? `· ${fmtLenShort(platAlt - objAlt)} below platform` : ""}</span>
+        </div>
+        <div style={{ fontSize: 10, color: airborne ? "var(--amber)" : "var(--dim)", marginTop: 2, lineHeight: 1.5 }}>
+          {airborne
+            ? <>Airborne target: with one platform its height is an assumption — the position below <b>scales with it</b> (like distance for a single sky witness). Sweep it, or fix it with a second observer.</>
+            : <>0 for something on the ground (vehicle, structure). Raise it for an airborne object (drone, orb) so its sight-line stops at its own altitude, not the ground beneath it.</>}
+        </div>
+      </div>
+
       {/* sensor look azimuth */}
       <div style={{ marginTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -7460,22 +7493,24 @@ function AerialMeasure({ src, update, unitsImp }) {
               {tGround ? (
                 <>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ color: "var(--teal)" }}>target&nbsp;</span>
+                    <span style={{ color: "var(--teal)" }}>{airborne && method === "telemetry" ? "object" : "target"}&nbsp;</span>
                     <b>{tGround.lat.toFixed(6)}, {tGround.lon.toFixed(6)}</b>
                     <button className="btn sm ghost" style={{ padding: "2px 7px", fontSize: 10 }}
                       onClick={() => { try { navigator.clipboard.writeText(`${tGround.lat.toFixed(6)}, ${tGround.lon.toFixed(6)}`); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch (e) { } }}>{copied ? "✓" : "copy"}</button>
                   </div>
                   {method === "telemetry"
-                    ? <div style={{ color: "var(--dim)" }}>slant range <b style={{ color: "var(--ink)" }}>{fmtLenShort(tGround.slant)}</b> · ground dist <b style={{ color: "var(--ink)" }}>{fmtLenShort(tRange)}</b> · bearing <b style={{ color: "var(--ink)" }}>{Math.round(tBearing)}° {compass8(tBearing)}</b></div>
+                    ? <div style={{ color: "var(--dim)" }}>slant range <b style={{ color: "var(--ink)" }}>{fmtLenShort(tGround.slant)}</b> · ground dist <b style={{ color: "var(--ink)" }}>{fmtLenShort(tRange)}</b> · bearing <b style={{ color: "var(--ink)" }}>{Math.round(tBearing)}° {compass8(tBearing)}</b>{airborne ? <> · at <b style={{ color: "var(--amber)" }}>{fmtLenShort(objH)}</b> AGL</> : ""}</div>
                     : <div style={{ color: "var(--dim)" }}>from {gcpsReady.length} ground points · fit rms <b style={{ color: "var(--ink)" }}>{fmtLenShort(geoH.rms)}</b></div>}
                 </>
               ) : <div style={{ color: "var(--amber)" }}>Tap the target — {method === "gcp" ? "it geolocates through the ground homography." : "its sight-line clears the ground plane at this pose."}</div>}
               {method === "telemetry" && <div style={{ color: "var(--dim)", marginTop: 2 }}>resolution ≈ <b style={{ color: "var(--ink)" }}>{gsd ? (unitsImp ? (gsd / M_PER_FT).toFixed(2) + " ft/px" : gsd.toFixed(2) + " m/px") : "—"}</b> at frame centre</div>}
-              {span.length === 2 && <div style={{ color: "var(--amber)", marginTop: 2 }}>bracketed size <b style={{ color: "var(--ink)" }}>{spanM != null ? fmtLenShort(spanM) : "—"}</b></div>}
+              {span.length === 2 && <div style={{ color: "var(--amber)", marginTop: 2 }}>bracketed size <b style={{ color: "var(--ink)" }}>{spanM != null ? fmtLenShort(spanM) : "—"}</b>{airborne && method === "telemetry" ? " (at assumed height)" : ""}</div>}
               {span.length === 1 && <div style={{ color: "var(--dim)", marginTop: 2 }}>size: tap the second edge…</div>}
+              {/* airborne honesty: a ground homography can't leave its plane */}
+              {method === "gcp" && tGround && <div style={{ color: "var(--amber)", marginTop: 5, fontSize: 11, lineHeight: 1.5 }}>⚠ This is the point on the GROUND under the target's line of sight. For an <b>airborne</b> object (drone, orb) that's its shadow, not its position — a ground homography can't leave the ground plane. Its true position needs the platform's pose (📡 tab) or a second observer.</div>}
             </div>
             {(() => {
-              const spanGeo = span.length === 2 && solveOk ? span.map((p) => locate(p.x, p.y)) : null;
+              const spanGeo = span.length === 2 && solveOk ? span.map((p) => locateObj(p.x, p.y)) : null;
               return (<>
                 <AerialGroundMap footprint={footprint} target={tGround} span={spanGeo} track={trackGeo} platform={method === "telemetry" ? { lat: platLat, lon: platLon } : null} />
                 <AerialFootprint footprint={footprint} target={tGround} span={spanGeo} showNadir={method === "telemetry"} />
