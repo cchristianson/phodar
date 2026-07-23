@@ -18,6 +18,13 @@
    capture UI exposes a one-tap "flip" that persists the choice per device, so
    it's self-correcting on-device without a code change. Everything else is
    unambiguous geometry, asserted in mathcheck.
+
+   ONE more empirical fact, field-measured: `webkitCompassHeading` is reported
+   in a frame that FLIPS 180° when the interface rotates to landscape (portrait
+   reads dead-on; the same scene held landscape reads exactly 180° off — a clean
+   flip, not a ±90° edge confusion, so it's symmetric across both landscape
+   holds). `opts.orient` (the screen angle: 0 portrait, ±90 landscape) applies
+   the +180° in landscape. Asserted in mathcheck.
    ============================================================ */
 
 import { R2D } from "../math/geodesy.js";
@@ -70,13 +77,28 @@ export function poseFromGravity(gravity, headingDeg, opts = {}) {
     const camH = projH([0, 0, -1]);                           // −Z camera axis, horizontal part
     const tn = Math.hypot(topH[0], topH[1], topH[2]), cn = Math.hypot(camH[0], camH[1], camH[2]);
     if (tn > 0.3 && cn > 1e-3) {
-      // signed angle top→cam, clockwise viewed from above (+u): compass grows CW
+      // Rotate the compass heading from the top edge (+Y) to the camera axis
+      // (−Z) about world-up. `atan2(crUp, dotTC)` is the MATH-positive angle
+      // from top→cam about +u; compass heading runs CLOCKWISE from north (the
+      // negative sense viewed from above), so heading(cam) = heading(top) −
+      // that angle. Hence the leading minus — verified against both landscape
+      // orientations in mathcheck (camera-north maps to az 0 either way).
       const crx = topH[1] * camH[2] - topH[2] * camH[1], cry = topH[2] * camH[0] - topH[0] * camH[2], crz = topH[0] * camH[1] - topH[1] * camH[0];
       const crUp = crx * u[0] + cry * u[1] + crz * u[2];
       const dotTC = topH[0] * camH[0] + topH[1] * camH[1] + topH[2] * camH[2];
       const deltaCW = -Math.atan2(crUp, dotTC) * R2D;
       az = ((az + deltaCW) % 360 + 360) % 360;
     }
+  }
+  /* LANDSCAPE 180° flip (field-measured, see header). iOS reports the compass
+     heading in a frame that reverses when the UI is landscape; the geometry
+     above is otherwise exact, so the whole output is a clean 180° off. `orient`
+     is the screen angle from the capture UI (window.orientation /
+     screen.orientation.angle): 45–135° or 225–315° ⇒ landscape. */
+  if (isNum(headingDeg) && isNum(opts.orient)) {
+    const o = ((+opts.orient % 360) + 360) % 360;
+    const landscape = (o >= 45 && o < 135) || (o >= 225 && o < 315);
+    if (landscape) az = (az + 180) % 360;
   }
   return { az: +az.toFixed(1), el: +el.toFixed(1), roll: +roll.toFixed(1) };
 }

@@ -1026,7 +1026,7 @@ function MediaMeasure({ src, update, wizard }) {
         const az = isNum(exifAz) ? exifAz : (isNum(sp.pose?.az) ? sp.pose.az : (isNum(sp.heading) ? ((sp.heading % 360) + 360) % 360 : 0));
         patch.mediaAim = { az: +(+az).toFixed(1), el: isNum(sp.pose?.el) ? sp.pose.el : 15, roll: isNum(sp.pose?.roll) ? sp.pose.roll : 0 };
         meta = { ...(meta || {}), sensor: true, ...(isNum(sp.heading) ? { sensorAz: +(((sp.heading % 360) + 360) % 360).toFixed(1) } : {}) };
-        patch.capture = { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs };
+        patch.capture = { heading: sp.heading, compassAcc: sp.compassAcc, gravity: sp.gravity, gSign: sp.gSign, orient: sp.orient, raw: sp.raw, gps: sp.gps, pose: sp.pose, whenMs: sp.whenMs };
         if (!isNum(patch.lat) && sp.gps && isNum(sp.gps.lat)) { patch.lat = sp.gps.lat.toFixed(6); patch.lon = sp.gps.lon.toFixed(6); if (isNum(sp.gps.alt)) patch.alt = sp.gps.alt.toFixed(0); }
         if (!isNum(patch.whenMs) && sp.whenMs) patch.whenMs = sp.whenMs;
       }
@@ -7145,7 +7145,7 @@ function PositionEditor({ src, update, others }) {
    ============================================================ */
 function SensorCapture({ onCapture, onClose }) {
   const videoRef = useRef(null), streamRef = useRef(null);
-  const gRef = useRef(null), headRef = useRef(null);
+  const gRef = useRef(null), headRef = useRef(null), rawRef = useRef({});
   const [started, setStarted] = useState(false);
   const [camErr, setCamErr] = useState("");
   const [pose, setPose] = useState(null);
@@ -7156,6 +7156,10 @@ function SensorCapture({ onCapture, onClose }) {
   const onOrient = useCallback((e) => {
     if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
     else if (isNum(e.alpha)) headRef.current = ((360 - e.alpha) % 360 + 360) % 360;   // non-iOS fallback (magnetic)
+    /* raw sensor block — kept so the landscape-compass behaviour is DIAGNOSABLE
+       from a field screenshot instead of guessed at (α/β/γ + the untouched
+       webkitCompassHeading, before any correction). */
+    rawRef.current = { hdg: isNum(e.webkitCompassHeading) ? e.webkitCompassHeading : null, alpha: isNum(e.alpha) ? e.alpha : null, beta: isNum(e.beta) ? e.beta : null, gamma: isNum(e.gamma) ? e.gamma : null };
   }, []);
   const onMotion = useCallback((e) => {
     const g = e.accelerationIncludingGravity;
@@ -7203,6 +7207,13 @@ function SensorCapture({ onCapture, onClose }) {
      snapshot — a steadier readout and a more reliable seed. */
   const gEmaRef = useRef(null), hEmaRef = useRef(null);
   const smoothedHeading = () => { const h = hEmaRef.current; return h && (Math.abs(h.c) + Math.abs(h.s)) > 1e-3 ? ((Math.atan2(h.s, h.c) * R2D) % 360 + 360) % 360 : headRef.current; };
+  /* interface orientation (screen angle) — iOS reports webkitCompassHeading in a
+     frame that flips 180° in landscape, so the pose math needs to know the hold.
+     screen.orientation.angle is the modern API; window.orientation the iOS one. */
+  const screenAngle = () => {
+    try { const a = window.screen && window.screen.orientation && window.screen.orientation.angle; if (isNum(a)) return a; } catch (e) { }
+    return isNum(window.orientation) ? window.orientation : 0;
+  };
   useEffect(() => {
     let raf;
     const A = 0.18;
@@ -7216,7 +7227,7 @@ function SensorCapture({ onCapture, onClose }) {
           const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
           hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
         }
-        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current }));
+        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { gSign: gSignRef.current, orient: screenAngle() }));
       }
       raf = requestAnimationFrame(tick);
     };
@@ -7236,7 +7247,7 @@ function SensorCapture({ onCapture, onClose }) {
   }, []);
   const flip = () => setGSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-gsign", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
-  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, whenMs: Date.now() }; };
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { gSign: gSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, gSign: gSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {
@@ -7294,6 +7305,12 @@ function SensorCapture({ onCapture, onClose }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "rgba(0,0,0,.5)", borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: 10.5, color: "#cfe" }}>
             <span>{gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}` : "GPS…"}</span>
             <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
+          </div>
+          {/* raw-sensor diagnostic — so a landscape screenshot shows the actual
+             numbers (untouched compass + α/β/γ + screen angle) and the compass
+             frame can be solved from data, not guessed. */}
+          <div style={{ background: "rgba(0,0,0,.5)", borderRadius: 8, padding: "4px 10px", marginBottom: 10, fontFamily: "var(--mono)", fontSize: 9.5, color: "#8ab", textAlign: "center", letterSpacing: 0.2 }}>
+            raw hdg {isNum(headRef.current) ? Math.round(headRef.current) + "°" : "—"} · scr {Math.round(screenAngle())}° · α{isNum(rawRef.current.alpha) ? Math.round(rawRef.current.alpha) : "—"} β{isNum(rawRef.current.beta) ? Math.round(rawRef.current.beta) : "—"} γ{isNum(rawRef.current.gamma) ? Math.round(rawRef.current.gamma) : "—"}
           </div>
           {!pose
             ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank, turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b> and reopen.</div>
