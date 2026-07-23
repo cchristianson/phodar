@@ -7116,20 +7116,41 @@ function AerialMeasure({ src, update, unitsImp }) {
   const platform = { lat: platLat, lon: platLon, alt: platAlt };
   const telemetryOk = isNum(platLat) && isNum(platLon) && platAlt > groundAlt && natW > 0 && el < 0;
 
+  /* METHOD: 'telemetry' (ray-cast off a known platform pose) or 'gcp' (fit a
+     planar image→ground homography from ≥4 ground control points — no platform
+     position, altitude, or gimbal angle needed). The GCP path is the redacted-
+     footage answer: identify features whose real lat/lon you can read off a map. */
+  const method = src.aMethod === "gcp" ? "gcp" : "telemetry";
+  const setMethod = (m) => update({ aMethod: m });
+  const gcps = Array.isArray(src.gcps) ? src.gcps : [];
+  const gcpsReady = gcps.filter((g) => isNum(g.px) && isNum(g.lat) && isNum(g.lon));
+  const [gsel, setGsel] = useState(0);
+
   const target = src.aTarget && isNum(src.aTarget.x) ? src.aTarget : null;
   const span = Array.isArray(src.aSpan) ? src.aSpan.filter((p) => p && isNum(p.x)) : [];
 
-  /* geolocation results (live) */
-  const tGround = telemetryOk && target ? pixelToGround(target.x, target.y, cam, platform, groundAlt) : null;
-  const gsd = telemetryOk ? centerGSD(cam, platform, groundAlt) : null;
-  const spanM = telemetryOk && span.length === 2 ? groundSpanM(span[0], span[1], cam, platform, groundAlt) : null;
-  const tRange = tGround && isNum(platLat) ? haversineM(platform, tGround) : null;   // ground distance platform→target
-  const tBearing = tGround && isNum(platLat) ? bearingDegGround(platform, tGround) : null;
+  /* fit the GCP homography (least squares; rms = ground reprojection error, m) */
+  const geoH = method === "gcp" ? groundHomography(gcpsReady) : null;
+  const solveOk = method === "telemetry" ? telemetryOk : !!(geoH && natW > 0);
 
-  /* ground footprint: the four image corners cast to the ground plane (null for
-     any corner whose ray misses — a horizon-crossing oblique frame). */
-  const footprint = telemetryOk
-    ? [[0, 0], [natW, 0], [natW, natH], [0, natH]].map(([x, y]) => pixelToGround(x, y, cam, platform, groundAlt))
+  /* unified pixel→ground for whichever method is active */
+  const locate = (x, y) => method === "gcp"
+    ? (geoH ? pixelToGroundH(x, y, geoH) : null)
+    : (telemetryOk ? pixelToGround(x, y, cam, platform, groundAlt) : null);
+
+  /* geolocation results (live) */
+  const tGround = target && solveOk ? locate(target.x, target.y) : null;
+  const gsd = telemetryOk ? centerGSD(cam, platform, groundAlt) : null;   // slant-based; telemetry only
+  const spanM = span.length === 2 && solveOk
+    ? (method === "gcp" ? groundSpanH(span[0], span[1], geoH) : groundSpanM(span[0], span[1], cam, platform, groundAlt))
+    : null;
+  const tRange = tGround && method === "telemetry" ? haversineM(platform, tGround) : null;
+  const tBearing = tGround && method === "telemetry" ? bearingDegGround(platform, tGround) : null;
+
+  /* ground footprint: the four image corners cast to the ground (null for any
+     corner whose ray misses on the oblique telemetry path). */
+  const footprint = solveOk
+    ? [[0, 0], [natW, 0], [natW, natH], [0, natH]].map(([x, y]) => locate(x, y))
     : [];
 
   /* map a pointer event on the media to natural pixel coords (rect read LIVE —
@@ -7144,12 +7165,18 @@ function AerialMeasure({ src, update, unitsImp }) {
   };
   const onTap = (e) => {
     const p = evToNat(e); if (!p) return;
-    if (mode === "target") update({ aTarget: p });
-    else {
+    if (mode === "gcp" && method === "gcp") {
+      const g = { px: p.x, py: p.y, lat: null, lon: null };
+      const next = [...gcps, g];
+      update({ gcps: next });
+      setGsel(next.length - 1);          // select the fresh point so the map/inputs target it
+    } else if (mode === "size") {
       const next = span.length >= 2 ? [p] : [...span, p];   // 3rd tap restarts the pair
       update({ aSpan: next });
-    }
+    } else update({ aTarget: p });       // default (incl. a stale 'gcp' mode in telemetry)
   };
+  const setGcp = (i, patch) => update({ gcps: gcps.map((g, j) => (j === i ? { ...g, ...patch } : g)) });
+  const delGcp = (i) => { update({ gcps: gcps.filter((_, j) => j !== i) }); setGsel((s) => clampN(s > i ? s - 1 : s, 0, Math.max(0, gcps.length - 2))); };
 
   /* seed the target ground elevation from terrain under the platform (a decent
      flat-ground proxy; the target's own DEM refinement is a later step). */
@@ -7183,10 +7210,31 @@ function AerialMeasure({ src, update, unitsImp }) {
     }
   }, [isVideo, src.mediaUrl, src.A?.videoTime]);
 
+  const gcpDot = (g, i) => {
+    if (!(natW > 0)) return null;
+    const placed = isNum(g.lat) && isNum(g.lon), sel = i === gsel;
+    const col = placed ? "#7ee0a0" : "#ffb24a";
+    return (
+      <div key={"g" + i} style={{ position: "absolute", left: `${(g.px / natW) * 100}%`, top: `${(g.py / natH) * 100}%`, transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
+        <div style={{ width: sel ? 18 : 14, height: sel ? 18 : 14, borderRadius: 10, border: `2px solid ${col}`, background: sel ? "rgba(126,224,160,.25)" : "transparent", boxShadow: "0 0 0 1px rgba(0,0,0,.6)" }} />
+        <div style={{ position: "absolute", left: sel ? 18 : 15, top: -2, color: col, fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, textShadow: "0 0 3px #000" }}>{i + 1}{placed ? "" : "?"}</div>
+      </div>
+    );
+  };
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--dim)", padding: "0 2px 8px", lineHeight: 1.5 }}>
-        A <b style={{ color: "var(--teal)" }}>downward-looking</b> sensor of known position geolocates the ground under it — no second observer needed. Give the platform's spot, height, and where the sensor pointed, then tap the target in the frame.
+        A <b style={{ color: "var(--teal)" }}>downward-looking</b> sensor geolocates the ground under it — no second observer. {method === "gcp"
+          ? <>No telemetry needed: mark <b style={{ color: "var(--ink)" }}>≥4 ground features</b> whose real lat/lon you can read off a map, then tap the target.</>
+          : <>Give the platform's spot, height, and where the sensor pointed, then tap the target.</>}
+      </div>
+
+      {/* method: known platform pose (ray-cast) vs ground control points (redacted) */}
+      <div style={{ display: "inline-flex", border: "1px solid var(--line)", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
+        {[["telemetry", "📡 Known platform"], ["gcp", "🗺 Ground points (no telemetry)"]].map(([m, lbl]) => (
+          <button key={m} onClick={() => setMethod(m)}
+            style={{ border: "none", padding: "6px 11px", fontSize: 11.5, cursor: "pointer", background: method === m ? "var(--teal)" : "transparent", color: method === m ? "var(--bg)" : "var(--dim)", fontWeight: method === m ? 700 : 400 }}>{lbl}</button>
+        ))}
       </div>
 
       {/* ── the frame, with tap-to-mark ── */}
@@ -7196,6 +7244,7 @@ function AerialMeasure({ src, update, unitsImp }) {
           {isVideo
             ? <video ref={mediaRef} src={src.mediaUrl} muted playsInline preload="auto" style={{ display: "block", width: "100%" }} />
             : <img ref={mediaRef} src={src.mediaUrl} alt="frame" draggable={false} style={{ display: "block", width: "100%" }} />}
+          {method === "gcp" && gcps.map((g, i) => gcpDot(g, i))}
           {dot(target, "var(--teal)", "t", "target")}
           {span.map((p, i) => dot(p, "var(--amber)", "s" + i, i === 0 ? "size ①" : "size ②"))}
         </div>
@@ -7206,15 +7255,52 @@ function AerialMeasure({ src, update, unitsImp }) {
       )}
 
       {/* mark-mode toggle */}
-      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+        {method === "gcp" && (
+          <button className="btn sm" onClick={() => setMode("gcp")}
+            style={{ flex: 1, background: mode === "gcp" ? "var(--teal)" : "", color: mode === "gcp" ? "var(--bg)" : "" }}>🗺 Add ground point</button>
+        )}
         {[["target", "🎯 Mark target"], ["size", "📏 Bracket size"]].map(([m, lbl]) => (
           <button key={m} className="btn sm" onClick={() => setMode(m)}
             style={{ flex: 1, background: mode === m ? "var(--teal)" : "", color: mode === m ? "var(--bg)" : "" }}>{lbl}</button>
         ))}
-        {(target || span.length) ? <button className="btn sm ghost" style={{ color: "var(--red)" }} onClick={() => update({ aTarget: null, aSpan: [] })}>Clear</button> : null}
+        {(target || span.length) ? <button className="btn sm ghost" style={{ color: "var(--red)" }} onClick={() => update({ aTarget: null, aSpan: [] })}>Clear marks</button> : null}
       </div>
 
-      {/* ── platform position (pin) + sensor cone ── */}
+      {/* ── GCP list + placement map (gcp method) ── */}
+      {method === "gcp" && (
+        <div style={{ marginTop: 14 }}>
+          <ML>Ground control points — tap the frame (🗺 mode), then pin or type each one's real spot</ML>
+          {gcps.length === 0 && <div style={{ fontSize: 12, color: "var(--amber)", padding: "4px 2px" }}>Pick 🗺 Add ground point, then tap a recognisable feature in the frame (a road junction, a building corner). Repeat for ≥4.</div>}
+          {gcps.map((g, i) => {
+            const placed = isNum(g.lat) && isNum(g.lon), sel = i === gsel;
+            return (
+              <div key={i} onClick={() => setGsel(i)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 6px", marginTop: 4, borderRadius: 8, cursor: "pointer", border: `1px solid ${sel ? "var(--teal)" : "var(--line)"}`, background: sel ? "rgba(60,200,180,.08)" : "transparent" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: placed ? "#7ee0a0" : "#ffb24a", fontWeight: 700, width: 16 }}>{i + 1}</span>
+                <input value={isNum(g.lat) ? g.lat : ""} placeholder="lat" inputMode="decimal" onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setGcp(i, { lat: e.target.value === "" ? null : +e.target.value })} style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 6px" }} />
+                <input value={isNum(g.lon) ? g.lon : ""} placeholder="lon" inputMode="decimal" onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setGcp(i, { lon: e.target.value === "" ? null : +e.target.value })} style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 6px" }} />
+                <button className="btn sm ghost" style={{ color: "var(--red)", padding: "3px 7px" }} onClick={(e) => { e.stopPropagation(); delGcp(i); }}>✕</button>
+              </div>
+            );
+          })}
+          {gcps.length > 0 && (
+            <>
+              <div style={{ fontSize: 10.5, color: "var(--dim)", margin: "6px 2px 4px" }}>Drag the map so the crosshair sits on point {gsel + 1}'s real location — it fills that point's lat/lon.</div>
+              <PinMap lat={isNum(gcps[gsel]?.lat) ? +gcps[gsel].lat : null} lon={isNum(gcps[gsel]?.lon) ? +gcps[gsel].lon : null}
+                onChange={(la, lo) => setGcp(gsel, { lat: +la.toFixed(6), lon: +lo.toFixed(6) })} />
+            </>
+          )}
+          <div style={{ fontSize: 11, fontFamily: "var(--mono)", marginTop: 6, color: gcpsReady.length >= 4 ? "var(--teal)" : "var(--amber)" }}>
+            {gcpsReady.length} / {Math.max(4, gcps.length)} placed{gcpsReady.length < 4 ? ` · need ${4 - gcpsReady.length} more` : geoH ? ` · fit rms ${fmtLenShort(geoH.rms)}` : ""}
+          </div>
+        </div>
+      )}
+
+      {/* ── platform position (pin) + sensor pose (telemetry method) ── */}
+      {method === "telemetry" && (<>
       <ML style={{ marginTop: 14 }}>Platform position — where the sensor is</ML>
       <PinMap lat={platLat} lon={platLon} onChange={(la, lo) => setPlat({ lat: +la.toFixed(6), lon: +lo.toFixed(6) })} bearing={az} />
       <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -7278,16 +7364,19 @@ function AerialMeasure({ src, update, unitsImp }) {
           ? <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Sensor FOV comes from the frame's lens metadata.</div>
           : <input type="range" min={2} max={130} step={0.5} value={fov} onChange={(e) => update({ fovH: +(+e.target.value).toFixed(1) })} />}
       </div>
+      </>)}
 
       {/* ── results ── */}
       <div className="card" style={{ marginTop: 14 }}>
         <ML>Geolocation</ML>
-        {!telemetryOk ? (
+        {!solveOk ? (
           <div style={{ fontSize: 12, color: "var(--amber)", lineHeight: 1.5 }}>
-            {!(isNum(platLat) && isNum(platLon)) ? "Pin the platform position to solve."
-              : !(platAlt > groundAlt) ? "Platform altitude must be above the ground elevation."
-                : !(natW > 0) ? "Load the frame on the previous step."
-                  : "Set a downward depression angle."}
+            {method === "gcp"
+              ? (!(natW > 0) ? "Load the frame on the previous step." : `Place ${Math.max(0, 4 - gcpsReady.length)} more ground control point${4 - gcpsReady.length === 1 ? "" : "s"} (≥4 needed to fit).`)
+              : (!(isNum(platLat) && isNum(platLon)) ? "Pin the platform position to solve."
+                : !(platAlt > groundAlt) ? "Platform altitude must be above the ground elevation."
+                  : !(natW > 0) ? "Load the frame on the previous step."
+                    : "Set a downward depression angle.")}
           </div>
         ) : (
           <>
@@ -7300,14 +7389,16 @@ function AerialMeasure({ src, update, unitsImp }) {
                     <button className="btn sm ghost" style={{ padding: "2px 7px", fontSize: 10 }}
                       onClick={() => { try { navigator.clipboard.writeText(`${tGround.lat.toFixed(6)}, ${tGround.lon.toFixed(6)}`); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch (e) { } }}>{copied ? "✓" : "copy"}</button>
                   </div>
-                  <div style={{ color: "var(--dim)" }}>slant range <b style={{ color: "var(--ink)" }}>{fmtLenShort(tGround.slant)}</b> · ground dist <b style={{ color: "var(--ink)" }}>{fmtLenShort(tRange)}</b> · bearing <b style={{ color: "var(--ink)" }}>{Math.round(tBearing)}° {compass8(tBearing)}</b></div>
+                  {method === "telemetry"
+                    ? <div style={{ color: "var(--dim)" }}>slant range <b style={{ color: "var(--ink)" }}>{fmtLenShort(tGround.slant)}</b> · ground dist <b style={{ color: "var(--ink)" }}>{fmtLenShort(tRange)}</b> · bearing <b style={{ color: "var(--ink)" }}>{Math.round(tBearing)}° {compass8(tBearing)}</b></div>
+                    : <div style={{ color: "var(--dim)" }}>from {gcpsReady.length} ground points · fit rms <b style={{ color: "var(--ink)" }}>{fmtLenShort(geoH.rms)}</b></div>}
                 </>
-              ) : <div style={{ color: "var(--amber)" }}>Tap the target — its sight-line clears the ground plane at this pose.</div>}
-              <div style={{ color: "var(--dim)", marginTop: 2 }}>resolution ≈ <b style={{ color: "var(--ink)" }}>{gsd ? (unitsImp ? (gsd / M_PER_FT).toFixed(2) + " ft/px" : gsd.toFixed(2) + " m/px") : "—"}</b> at frame centre</div>
+              ) : <div style={{ color: "var(--amber)" }}>Tap the target — {method === "gcp" ? "it geolocates through the ground homography." : "its sight-line clears the ground plane at this pose."}</div>}
+              {method === "telemetry" && <div style={{ color: "var(--dim)", marginTop: 2 }}>resolution ≈ <b style={{ color: "var(--ink)" }}>{gsd ? (unitsImp ? (gsd / M_PER_FT).toFixed(2) + " ft/px" : gsd.toFixed(2) + " m/px") : "—"}</b> at frame centre</div>}
               {span.length === 2 && <div style={{ color: "var(--amber)", marginTop: 2 }}>bracketed size <b style={{ color: "var(--ink)" }}>{spanM != null ? fmtLenShort(spanM) : "—"}</b></div>}
               {span.length === 1 && <div style={{ color: "var(--dim)", marginTop: 2 }}>size: tap the second edge…</div>}
             </div>
-            <AerialFootprint footprint={footprint} platform={platform} target={tGround} span={telemetryOk && span.length === 2 ? span.map((p) => pixelToGround(p.x, p.y, cam, platform, groundAlt)) : null} />
+            <AerialFootprint footprint={footprint} target={tGround} span={span.length === 2 && solveOk ? span.map((p) => locate(p.x, p.y)) : null} showNadir={method === "telemetry"} />
           </>
         )}
       </div>
@@ -7315,10 +7406,12 @@ function AerialMeasure({ src, update, unitsImp }) {
   );
 }
 
-/* compact top-down schematic: the sensor footprint quad, the platform nadir, and
-   the geolocated target — a quick sanity read of the geometry before the full
-   satellite ground view. Pure canvas, auto-scaled to the points' bounds. */
-function AerialFootprint({ footprint, platform, target, span }) {
+/* compact top-down schematic: the sensor footprint quad, the geolocated target,
+   and (telemetry only) the platform nadir — a quick sanity read of the geometry
+   before the full satellite ground view. Everything arrives already in one ENU
+   (e,n) metre frame from `locate`, so there's no per-method conversion here.
+   Pure canvas, auto-scaled to the points' bounds. */
+function AerialFootprint({ footprint, target, span, showNadir }) {
   const ref = useRef(null);
   useEffect(() => {
     const cv = ref.current; if (!cv) return;
@@ -7326,19 +7419,14 @@ function AerialFootprint({ footprint, platform, target, span }) {
     cv.width = W * dpr; cv.height = H * dpr;
     const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    /* footprint e/n are ENU offsets from the platform nadir, so the nadir sits
-       at the origin (0,0); the target is placed relative to it in metres. */
-    const pts = [[0, 0]];
+    const pts = [];
+    if (showNadir) pts.push([0, 0]);
     const foot = (footprint || []).filter(Boolean);
     foot.forEach((g) => pts.push([g.e, g.n]));
-    let tEN = null;
-    if (target && isNum(platform.lat)) {
-      const dN = (target.lat - platform.lat) * 111320;
-      const dE = (target.lon - platform.lon) * 111320 * Math.cos(platform.lat * D2R);
-      tEN = [dE, dN]; pts.push(tEN);
-    }
-    let sEN = null;
-    if (span && span[0] && span[1]) { sEN = span.map((g) => [g.e, g.n]); sEN.forEach((p) => pts.push(p)); }
+    const tEN = target && isNum(target.e) ? [target.e, target.n] : null;
+    if (tEN) pts.push(tEN);
+    const sEN = (span && span[0] && span[1] && isNum(span[0].e)) ? span.map((g) => [g.e, g.n]) : null;
+    if (sEN) sEN.forEach((p) => pts.push(p));
     if (pts.length < 2) return;
     let minX = Math.min(...pts.map((p) => p[0])), maxX = Math.max(...pts.map((p) => p[0]));
     let minY = Math.min(...pts.map((p) => p[1])), maxY = Math.max(...pts.map((p) => p[1]));
@@ -7353,10 +7441,13 @@ function AerialFootprint({ footprint, platform, target, span }) {
       ctx.fillStyle = "rgba(60,200,180,.10)"; ctx.fill();
       ctx.strokeStyle = "rgba(60,200,180,.55)"; ctx.lineWidth = 1.4; ctx.stroke();
     }
-    // platform nadir
-    ctx.fillStyle = "#dfe8ff";
-    ctx.beginPath(); ctx.arc(X(0), Y(0), 4, 0, 7); ctx.fill();
-    ctx.font = "10px monospace"; ctx.fillStyle = "#8ea3bf"; ctx.fillText("nadir", X(0) + 6, Y(0) - 4);
+    // platform nadir (telemetry only — GCP mode has no platform)
+    ctx.font = "10px monospace";
+    if (showNadir) {
+      ctx.fillStyle = "#dfe8ff";
+      ctx.beginPath(); ctx.arc(X(0), Y(0), 4, 0, 7); ctx.fill();
+      ctx.fillStyle = "#8ea3bf"; ctx.fillText("nadir", X(0) + 6, Y(0) - 4);
+    }
     // size bracket
     if (sEN) {
       ctx.strokeStyle = "#ffb24a"; ctx.lineWidth = 2;
