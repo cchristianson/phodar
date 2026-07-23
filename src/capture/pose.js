@@ -53,7 +53,31 @@ export function poseFromGravity(gravity, headingDeg, opts = {}) {
      only the RESIDUAL tilt beyond 0/90/180/270° is a real roll for the placement
      (a level landscape shot → ~0, not 90). */
   roll = roll - 90 * Math.round(roll / 90);
-  const az = ((((isNum(headingDeg) ? +headingDeg : 0) % 360) + 360) % 360);
+
+  /* AZIMUTH — orientation-independent. `webkitCompassHeading` gives the compass
+     heading of the phone's TOP edge (+Y), but the camera looks along −Z. Held
+     PORTRAIT the top roughly matches the aim; held LANDSCAPE the top points 90°
+     sideways, so using the heading directly is ~90° wrong (field-confirmed:
+     landscape read 148° when the true aim was 244°). Fix: rotate from the +Y
+     heading to the −Z camera axis IN THE HORIZONTAL PLANE (found via gravity).
+     Degenerates only when +Y is near-vertical (portrait aimed at the horizon) —
+     there the heading is the best available, so fall back to it. */
+  let az = ((((isNum(headingDeg) ? +headingDeg : 0) % 360) + 360) % 360);
+  if (isNum(headingDeg)) {
+    const u = [ux, uy, uz];                                   // up unit (device frame)
+    const projH = (v) => { const d = v[0] * u[0] + v[1] * u[1] + v[2] * u[2]; return [v[0] - d * u[0], v[1] - d * u[1], v[2] - d * u[2]]; };
+    const topH = projH([0, 1, 0]);                            // +Y top edge, horizontal part
+    const camH = projH([0, 0, -1]);                           // −Z camera axis, horizontal part
+    const tn = Math.hypot(topH[0], topH[1], topH[2]), cn = Math.hypot(camH[0], camH[1], camH[2]);
+    if (tn > 0.3 && cn > 1e-3) {
+      // signed angle top→cam, clockwise viewed from above (+u): compass grows CW
+      const crx = topH[1] * camH[2] - topH[2] * camH[1], cry = topH[2] * camH[0] - topH[0] * camH[2], crz = topH[0] * camH[1] - topH[1] * camH[0];
+      const crUp = crx * u[0] + cry * u[1] + crz * u[2];
+      const dotTC = topH[0] * camH[0] + topH[1] * camH[1] + topH[2] * camH[2];
+      const deltaCW = -Math.atan2(crUp, dotTC) * R2D;
+      az = ((az + deltaCW) % 360 + 360) % 360;
+    }
+  }
   return { az: +az.toFixed(1), el: +el.toFixed(1), roll: +roll.toFixed(1) };
 }
 
