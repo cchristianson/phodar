@@ -27,6 +27,7 @@
 import { R2D, dot, clampN, dirFromAzEl } from "../math/geodesy.js";
 import { isNum } from "../math/format.js";
 import { pixToDirK } from "../math/projection.js";
+import { despikePath, smoothPath } from "./postrack.js";
 
 /* Solve one frame's pose from anchors [{px,py,g}] by coordinate descent with
    step-halving on summed squared angular error. UNLIKE solvePoseAnchors (which
@@ -135,5 +136,14 @@ export function solveManualPoses(camRefs, refPose, dims, opts = {}) {
   chain(times.filter((t) => t >= refT), start);            // forward from the align frame
   chain(times.filter((t) => t < refT).reverse(), start);   // then backward
   const path = Object.values(byT).sort((a, b) => a.t - b.t);
+  /* AVERAGE OUT imperfect placement: each keyframe's pose carries the noise of
+     that frame's taps. Run the same evidence-weighted despike + smooth the auto
+     walk uses (weighted by each keyframe's anchor count `n`) so a single sloppy
+     mark is pulled back toward its neighbours and per-frame jitter is damped,
+     while a real sustained pan/turn passes through. */
+  if (path.length >= 3 && opts.smooth !== false) {
+    despikePath(path, { passes: 1 });
+    smoothPath(path, { passes: opts.smoothPasses == null ? 1 : opts.smoothPasses });
+  }
   return path.length ? path : null;
 }
