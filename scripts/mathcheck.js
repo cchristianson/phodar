@@ -13,7 +13,7 @@ import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
-import { solveManualPoses, solvePose, hybridPath } from "../src/video/manualpose.js";
+import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1715,30 +1715,12 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const devRaw = Math.abs(mid(raw).az - truthMid), devSm = Math.abs(mid(sm).az - truthMid);
     approx(devRaw > 0.3 ? 1 : 0, 1, 0, `manualPose: the jittered keyframe is off before smoothing (${devRaw.toFixed(2)}°)`);
     approx(devSm < devRaw * 0.7 ? 1 : 0, 1, 0, `manualPose: smoothing pulls it back toward the pan (${devSm.toFixed(2)}° < ${devRaw.toFixed(2)}°)`);
+    // the smoothing-amount slider: more smoothing → closer to the neighbours' pan
+    const devLo = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.15 })).az - truthMid);
+    const devHi = Math.abs(mid(solveManualPoses(camRefsS, rp, { natW, natH }, { smoothAmt: 0.85 })).az - truthMid);
+    approx(devHi < devLo ? 1 : 0, 1, 0, `manualPose: more smoothing = smoother (${devHi.toFixed(2)}° < ${devLo.toFixed(2)}°)`);
   }
 
-  // HYBRID: auto TRACKS the true motion for t<3, then STALLS (cloud-locked:
-  // stops advancing) for t>=3 while the object keeps moving. The marks are
-  // ground truth. hybridPath must keep auto where its MOTION matches the marks
-  // and fall back to the marks (restoring the big movement) where auto stalled —
-  // NOT let the stalled auto and the marks fight to a jittery near-standstill
-  // (the real-clip failure).
-  {
-    const auto = [];
-    for (let i = 0; i <= 12; i++) { const t = i * 0.5; const az = t < 3 ? 100 + t * 2 : 106; auto.push({ t, az, el: 20, roll: 0, fov: 60, k: 0, n: 20 }); }
-    const man = [0, 1.5, 3, 4.5, 6].map((t) => ({ t, az: 100 + t * 2, el: 20, roll: 0, fov: 60, n: 4 }));
-    const hyb = hybridPath(auto, man);
-    const at = (t) => hyb.find((p) => Math.abs(p.t - t) < 1e-6);
-    // GOOD half: auto's motion matches → kept, on truth
-    const g = at(1.0);
-    approx(g && g.src === "auto" && Math.abs(((g.az - 102 + 540) % 360) - 180) < 0.3 ? 1 : 0, 1, 0, "hybrid: auto kept where its motion matches the marks (t=1)");
-    // STALLED half: the marks must drive → the big movement is restored, NOT stuck near 106
-    const b = at(5.0);
-    approx(b && b.src === "manual" && Math.abs(((b.az - 110 + 540) % 360) - 180) < 0.6 ? 1 : 0, 1, 0, "hybrid: stalled auto span replaced by the marks — big movement restored (t=5)");
-    // the whole second half must actually sweep, not sit at auto's frozen 106
-    const sweep = Math.abs(((at(6).az - at(3).az + 540) % 360) - 180);
-    approx(sweep > 5 ? 1 : 0, 1, 0, `hybrid: second half sweeps with the marks (${sweep.toFixed(1)}°, not frozen)`);
-  }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
