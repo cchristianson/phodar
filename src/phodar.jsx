@@ -7226,10 +7226,20 @@ function AerialMeasure({ src, update, unitsImp }) {
   useEffect(() => {
     if (isVideo && mediaRef.current) {
       const v = mediaRef.current;
-      const onMeta = () => { if (v.duration && isFinite(v.duration)) setDur(v.duration); if (isNum(src.A?.videoTime)) { try { v.currentTime = +src.A.videoTime; setVt(+src.A.videoTime); } catch (e) { } } };
+      const onMeta = () => {
+        if (v.duration && isFinite(v.duration)) setDur(v.duration);
+        /* backfill natW/natH from the clip itself — the measure step normally
+           sets them, but jumping straight here (or a reloaded session) can leave
+           them unset, and every tap-to-mark needs them. */
+        if (!(natW > 0) && v.videoWidth) update({ natW: v.videoWidth, natH: v.videoHeight });
+        /* seek to the marked frame (or nudge frame 0) — iOS Safari leaves a fresh
+           <video> blank until it decodes a frame, and marking needs it visible. */
+        if (isNum(src.A?.videoTime)) { try { v.currentTime = +src.A.videoTime; setVt(+src.A.videoTime); } catch (e) { } }
+        else { try { v.currentTime = 0.03; } catch (e) { } }
+      };
       if (v.readyState >= 1) onMeta(); else v.addEventListener("loadedmetadata", onMeta, { once: true });
     }
-  }, [isVideo, src.mediaUrl, src.A?.videoTime]);
+  }, [isVideo, src.mediaUrl, src.A?.videoTime, natW]);
 
   const gcpDot = (g, i) => {
     if (!(natW > 0)) return null;
