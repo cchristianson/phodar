@@ -14,7 +14,7 @@ import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
 import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
-import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo } from "../src/math/geolocate.js";
+import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo, groundHomography, pixelToGroundH, groundSpanH } from "../src/math/geolocate.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1767,6 +1767,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const gk = groundKinematics(trk);
   approx(gk ? gk.avgSpeedMS : 0, 200, 2, "geolocate: ground speed = 200 m/s (1000 m in 5 s)");
   approx(gk ? gk.headingDeg : -1, 0, 0.5, "geolocate: heading due North (0°)");
+
+  // GEOREFERENCE off GCPs (no telemetry): generate GCPs with the ray-cast method,
+  // fit a homography to them, then confirm it geolocates a FRESH pixel to the
+  // SAME spot — using no platform pose at all. Cross-validates the two methods.
+  {
+    const camG = { natW: 1920, natH: 1080, fov: 30, k: 0, roll: 3, az: 30, el: -40 };
+    const gcpPix = [{ x: 300, y: 250 }, { x: 1600, y: 260 }, { x: 340, y: 830 }, { x: 1580, y: 840 }, { x: 960, y: 540 }];
+    const gcps = gcpPix.map((p) => { const g = pixelToGround(p.x, p.y, camG, platform, 0); return { px: p.x, py: p.y, lat: g.lat, lon: g.lon }; });
+    const geo = groundHomography(gcps);
+    approx(geo && geo.rms < 0.5 ? 1 : 0, 1, 0, `georef: GCP homography fits (rms ${geo ? geo.rms.toFixed(2) : "—"} m)`);
+    const tp = { x: 1200, y: 400 };   // a fresh pixel, not a GCP
+    const gTrue = pixelToGround(tp.x, tp.y, camG, platform, 0);
+    const gH = pixelToGroundH(tp.x, tp.y, geo);
+    approx(gH ? haversineM(gTrue, gH) : 1e9, 0, 1.0, "georef: a fresh pixel geolocates to the same spot as the ray-cast (<1 m)");
+    // size via GCP homography matches the ray-cast size
+    const p1 = { x: 900, y: 500 }, p2 = { x: 1050, y: 560 };
+    const sH = groundSpanH(p1, p2, geo), sM = groundSpanM(p1, p2, camG, platform, 0);
+    approx(Math.abs(sH - sM) < 1 ? 1 : 0, 1, 0, `georef: object size matches the ray-cast (${sH.toFixed(1)} vs ${sM.toFixed(1)} m)`);
+  }
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
