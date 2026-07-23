@@ -13,7 +13,7 @@ import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
-import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
+import { solveManualPoses, solvePose, hybridPath } from "../src/video/manualpose.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -1715,6 +1715,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const devRaw = Math.abs(mid(raw).az - truthMid), devSm = Math.abs(mid(sm).az - truthMid);
     approx(devRaw > 0.3 ? 1 : 0, 1, 0, `manualPose: the jittered keyframe is off before smoothing (${devRaw.toFixed(2)}°)`);
     approx(devSm < devRaw * 0.7 ? 1 : 0, 1, 0, `manualPose: smoothing pulls it back toward the pan (${devSm.toFixed(2)}° < ${devRaw.toFixed(2)}°)`);
+  }
+
+  // HYBRID: auto is right in the first half, garbage (cloud-locked) in the
+  // second. Manual keyframes are ground truth. hybridPath must KEEP auto where
+  // it agrees and REPLACE it with manual where it's wrong — pinned to the marks.
+  {
+    // dense auto path: correct for t<3, then drifts +8° az wrong for t>=3
+    const auto = [];
+    for (let i = 0; i <= 12; i++) { const t = i * 0.5; const bad = t >= 3 ? 8 : 0; auto.push({ t, az: 100 + t * 2 + bad, el: 20, roll: 0, fov: 60, k: 0, n: 20 }); }
+    // manual keyframes on the TRUE motion (no bad offset), sparse
+    const man = [0, 1.5, 3, 4.5, 6].map((t) => ({ t, az: 100 + t * 2, el: 20, roll: 0, fov: 60, n: 4 }));
+    const hyb = hybridPath(auto, man, { gate: 4 });
+    const at = (t) => hyb.find((p) => Math.abs(p.t - t) < 1e-6);
+    approx(at(3) && Math.abs(((at(3).az - 106 + 540) % 360) - 180) < 0.2 ? 1 : 0, 1, 0, "hybrid: truth pinned at the mark where auto goes bad (t=3)");
+    approx(at(5) && Math.abs(((at(5).az - 110 + 540) % 360) - 180) < 0.6 ? 1 : 0, 1, 0, "hybrid: garbage auto span replaced by the marks (t=5)");
+    // in the GOOD half a sample between marks should come from auto (dense shape kept)
+    const g = at(1.0);
+    approx(g && g.src === "auto" && Math.abs(((g.az - 102 + 540) % 360) - 180) < 0.3 ? 1 : 0, 1, 0, "hybrid: auto kept where it agrees with the marks (t=1)");
+    approx(at(5) && at(5).src === "manual" ? 1 : 0, 1, 0, "hybrid: bad span tagged as manual");
   }
 }
 

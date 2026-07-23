@@ -14,7 +14,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
-import { solveManualPoses } from "./video/manualpose.js";
+import { solveManualPoses, hybridPath } from "./video/manualpose.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -2201,7 +2201,7 @@ function MediaMeasure({ src, update, wizard }) {
                 return (
                   <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--green)", borderRadius: 10, background: "rgba(90,200,140,.06)" }}>
                     <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
-                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. If one pans out of view, add a fresh one — it hands off as long as it <b>overlaps an existing ref on ≥1 frame</b>. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view.
+                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. If one pans out of view, add a fresh one — it hands off as long as it <b>overlaps an existing ref on ≥1 frame</b>. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view. (Tip: run <b>🎞 Stabilize</b> first and it will <b>combine</b> — keeping the auto tracking where it locks and using your marks only where it can't.)
                     </div>
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
                       {camRefs.map((r, i) => {
@@ -4288,10 +4288,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const nMarks = refs.reduce((a, r) => a + (r.marks || []).filter((m) => isNum(m.x)).length, 0);
     if (nMarks < 2) { setFlash("🎯 mark a fixed feature on ≥2 frames first (Cam refs, on the measure step)"); return; }
     const refPose = { t: alignT, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
-    const path = solveManualPoses(refs, refPose, { natW: source.natW, natH: source.natH });
+    const manual = solveManualPoses(refs, refPose, { natW: source.natW, natH: source.natH });
+    if (!manual || !manual.length) { setFlash("🎯 couldn't solve — mark more features / more frames"); return; }
+    /* HYBRID: if the automatic walk has run (autoPosePath), fuse it with the
+       marks — keep auto's dense motion where it agrees with your points, fall
+       back to the marks where it's cloud-locked/held. Otherwise pure manual. */
+    const auto = Array.isArray(source?.autoPosePath) && source.autoPosePath.length > 1 ? source.autoPosePath : null;
+    const path = auto ? hybridPath(auto, manual, {}) : manual;
     if (!path || !path.length) { setFlash("🎯 couldn't solve — mark more features / more frames"); return; }
     if (update) update({ posePath: path });
-    setFlash(`🎯 solved ${path.length} keyframe${path.length === 1 ? "" : "s"} from your marks — ▶ play to check the lock`);
+    if (auto) {
+      const usedAuto = path.filter((p) => p.src === "auto").length;
+      setFlash(`🎯 combined with auto: ${usedAuto}/${path.length} frames from tracking, the rest from your ${manual.length} marks — ▶ play to check`);
+    } else {
+      setFlash(`🎯 solved ${manual.length} keyframe${manual.length === 1 ? "" : "s"} from your marks — ▶ play to check the lock`);
+    }
   };
   const stabilize = async () => {
     if (source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize needs a video with a marked frame"); return; }
@@ -4535,7 +4546,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
         })
         : null;
-      if (update) update({ posePath: path, objPath: objGood ? objPath : null, ...(track2 ? { track: track2 } : {}) });
+      /* also stash the auto path as `autoPosePath` so "Solve from marks" can
+         COMBINE it with hand-marked refs later without re-running the walk */
+      if (update) update({ posePath: path, autoPosePath: path, objPath: objGood ? objPath : null, ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -6035,8 +6048,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       (the auto pass couldn't do it) — solves instantly from marks */}
                   {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && (source?.camRefs || []).some((r) => (r.marks || []).filter((m) => isNum(m.x)).length) && (
                     <button className="btn sm green" style={{ flex: "0 0 auto" }}
-                      title="Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"
-                      onClick={solveFromMarks}>🎯 Solve from marks</button>
+                      title={Array.isArray(source?.autoPosePath) && source.autoPosePath.length > 1
+                        ? "Combine your hand-marked references with the automatic tracking — keeps the auto motion where it agrees with your marks, falls back to the marks where it can't lock"
+                        : "Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"}
+                      onClick={solveFromMarks}>{Array.isArray(source?.autoPosePath) && source.autoPosePath.length > 1 ? "🎯 Combine with marks" : "🎯 Solve from marks"}</button>
                   )}
                   <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
                     🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
