@@ -4896,30 +4896,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [exportMenu, setExportMenu] = useState(false);
   const [smoothOpen, setSmoothOpen] = useState(false);
   /* SCREEN WAKE LOCK — a long stabilize/export stalls when the phone dozes
-     (field report: sleep pauses the processing). Held only while a solve or
-     export is actually running. iOS silently releases the lock whenever the
-     page hides, so it re-arms on every return to visible. No-ops where the
-     API is unsupported — nothing to feature-detect for the user. */
-  const wakeRef = useRef(null);
+     (field report: sleep pauses the processing). Uses the shared refcounted
+     holder (wakeHold/wakeRelease) so it composes with the report/bundle
+     builders; held only while a solve or export is actually running. */
   useEffect(() => {
-    const active = !!stabBusy || !!exporting;
-    let dead = false;
-    const grab = () => {
-      try {
-        navigator.wakeLock?.request("screen")
-          .then((l) => { if (dead) { try { l.release(); } catch (e) { } } else wakeRef.current = l; })
-          .catch(() => { });
-      } catch (e) { }
-    };
-    if (!active) { try { wakeRef.current?.release(); } catch (e) { } wakeRef.current = null; return; }
-    grab();
-    const onVis = () => { if (document.visibilityState === "visible") grab(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      dead = true;
-      document.removeEventListener("visibilitychange", onVis);
-      try { wakeRef.current?.release(); } catch (e) { } wakeRef.current = null;
-    };
+    if (!stabBusy && !exporting) return;
+    wakeHold();
+    return () => wakeRelease();
   }, [!!stabBusy, !!exporting]); // eslint-disable-line
   /* SMOOTHING SLIDERS — re-derive the smoothed paths from the RAW (despiked)
      solves at the chosen strength, non-destructively: raw is kept on the
@@ -8834,6 +8817,34 @@ function crc32buf(u8) {
   for (let i = 0; i < u8.length; i++) crc = (crc >>> 8) ^ _crcT[(crc ^ u8[i]) & 255];
   return (crc ^ -1) >>> 0;
 }
+/* --- shared screen wake lock: hold while ANY long job runs ----------------
+   Refcounted so overlapping jobs (a stabilize + a report build) compose;
+   iOS silently releases the lock when the page hides, so it re-arms on
+   every return to visible while jobs are outstanding. No-op without the
+   API. Callers: wakeHold() … try { work } finally { wakeRelease() }. */
+let _wakeJobs = 0, _wakeLock = null, _wakeVisArmed = false;
+async function _wakeGrab() {
+  try {
+    if (_wakeJobs > 0 && !_wakeLock && typeof navigator !== "undefined" && navigator.wakeLock) {
+      const l = await navigator.wakeLock.request("screen");
+      if (_wakeJobs > 0) { _wakeLock = l; l.addEventListener?.("release", () => { if (_wakeLock === l) _wakeLock = null; }); }
+      else { try { l.release(); } catch (e) { } }
+    }
+  } catch (e) { }
+}
+function wakeHold() {
+  _wakeJobs++;
+  if (!_wakeVisArmed && typeof document !== "undefined") {
+    _wakeVisArmed = true;
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") _wakeGrab(); });
+  }
+  _wakeGrab();
+}
+function wakeRelease() {
+  _wakeJobs = Math.max(0, _wakeJobs - 1);
+  if (!_wakeJobs && _wakeLock) { try { _wakeLock.release(); } catch (e) { } _wakeLock = null; }
+}
+
 function makeZip(files) { // STORE-method zip: JPEGs are incompressible anyway
   const chunks = [], central = [];
   let offset = 0;
@@ -10534,6 +10545,8 @@ function ReportView({ sources, est, onBack }) {
      before/after pair). A download, importable back into Phodar. */
   const downloadBundle = async () => {
     setMsg("packing bundle…");
+    wakeHold(); // keyframe baking + video packing runs long — don't let the phone doze
+    try {
     const html = await reportHtml(sources, est, { exhibits: "files" });
     const json = await buildShareJson(sources, est);
     const act = sources.filter((s) => !isEmptySource(s));
@@ -10563,11 +10576,13 @@ function ReportView({ sources, est, onBack }) {
     if (download("phodar-sighting.zip", blob, "application/zip"))
       setMsg(`✓ downloading bundle — ${(blob.size / 1048576).toFixed(1)} MB · report + data + full-res photos${vidN ? ` + ${vidN} video${vidN > 1 ? "s" : ""}` : ""}`);
     else setMsg("Bundle download needs the deployed app — this preview can't save binaries.");
+    } finally { wakeRelease(); }
   };
   /* share the viewable report page itself via the OS share sheet (text,
      email, AirDrop…); falls back to a download/copy where share is unsupported */
   const shareReportHtml = async () => {
-    const html = prevHtml || await reportHtml(sources, est, { exhibits: "full" });
+    let html = prevHtml;
+    if (!html) { wakeHold(); try { html = await reportHtml(sources, est, { exhibits: "full" }); } finally { wakeRelease(); } }
     try {
       const file = new File([html], "phodar-report.html", { type: "text/html" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -10577,7 +10592,7 @@ function ReportView({ sources, est, onBack }) {
     } catch (e) { if (e && e.name === "AbortError") return; }
     deliver("phodar-report.html", html, "text/html");
   };
-  const openReport = async () => { setMsg("packing…"); setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); setMsg(""); };
+  const openReport = async () => { setMsg("packing…"); wakeHold(); try { setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); } finally { wakeRelease(); } setMsg(""); };
   return (
     <div style={{ padding: "14px 12px 40px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -10784,7 +10799,8 @@ export default function App() {
   /* ——— guided wizard shell — the one and only workflow ——— */
   const goView = (view) => setUi((u) => ({ ...u, view }));
   const shareJsonNow = async () => {
-    const j = await buildShareJson(sources, est);
+    wakeHold(); // media packing (thumbnails/crops) can run long on big sightings
+    let j; try { j = await buildShareJson(sources, est); } finally { wakeRelease(); }
     const dl = download("sighting.phodar.json", j, "application/json");
     let cp = false;
     try { await navigator.clipboard.writeText(j); cp = true; } catch (e) { }
