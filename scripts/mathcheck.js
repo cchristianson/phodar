@@ -1861,6 +1861,23 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const d2 = applyDirFixes(dirs, base, [{ t: 4, az: 107, el: 21, roll: 0 }]);
   approx(d2[0].az, 203, 1e-6, "dirFix: object dirs shift by the pose delta at their time");
   approx(d2[1].el, 32, 1e-6, "dirFix: elevation delta applied");
+  /* EXACT dir fix (with frame dims): a ROLL anchor rotates an off-center
+     object about the frame center — a plain az/el delta shift misses that
+     entirely (field report: a ~4° roll fix pulled the tracked object off its
+     carefully-placed path). The object is a fixed PIXEL: converting that
+     pixel through the corrected pose must land exactly. */
+  const NW = 1920, NH = 1080;
+  const rollBase = Array.from({ length: 5 }, (_, i) => ({ t: i, az: 100, el: 20, roll: 0, fov: 60, k: 0 }));
+  const rollFix = [{ t: 2, az: 100, el: 20, roll: 4, fov: 60 }];
+  // an object well off frame-center, converted under the base pose of t=2
+  const objPix = { px: 1500, py: 300 };
+  const g0 = dirToAzEl(pixToDirK(objPix.px, objPix.py, NW, NH, 100, 20, 0, 60, 0));
+  const dExact = applyDirFixes([{ t: 2, az: g0.az, el: g0.el, q: 1 }], rollBase, rollFix, { natW: NW, natH: NH });
+  const want = dirToAzEl(pixToDirK(objPix.px, objPix.py, NW, NH, 100, 20, 4, 60, 0));
+  approx(dExact[0].az, want.az, 1e-3, "dirFix exact: roll anchor maps the object pixel through the corrected pose (az)");
+  approx(dExact[0].el, want.el, 1e-3, "dirFix exact: roll anchor exact (el)");
+  const dApprox = applyDirFixes([{ t: 2, az: g0.az, el: g0.el, q: 1 }], rollBase, rollFix); // no dims → old shift
+  approx(Math.abs(dApprox[0].el - want.el) > 0.3 ? 1 : 0, 1, 0, "dirFix exact: the az/el-shift approximation demonstrably misses a roll fix (regression guard)");
 }
 
 /* ── pinFind: faint-object pixel pin (close-up export) ──────────────────────
