@@ -6658,26 +6658,32 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
                         <button className="btn sm" style={fineOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                           title="Fine tune: one-axis nudge taps for this frame's pose" onClick={() => setFineOn((o) => !o)}>🎛</button>
-                        <button className="btn sm" onClick={() => setFixOn(false)}>✓</button>
                       </>
                     );
                   })()}
                 </div>
                 {fineOn && playPose && (
                   <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
+                    {/* arrow sense inverted per field test — the arrows move the
+                        photo the way the tap reads on screen */}
                     <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>az</span>
-                    <button className="btn sm" title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>‹</button>
-                    <button className="btn sm" title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>›</button>
+                    <button className="btn sm" title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>‹</button>
+                    <button className="btn sm" title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>›</button>
                     <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>el</span>
-                    <button className="btn sm" title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▼</button>
-                    <button className="btn sm" title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▲</button>
+                    <button className="btn sm" title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▼</button>
+                    <button className="btn sm" title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▲</button>
                     <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>roll</span>
                     <button className="btn sm" title="Roll −0.2°" onClick={() => nudgeFix(0, 0, -0.2)}>⟲</button>
                     <button className="btn sm" title="Roll +0.2°" onClick={() => nudgeFix(0, 0, 0.2)}>⟳</button>
                   </div>
                 )}
-                <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
-                  drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
+                {/* ✓ Done lives bottom-right beside the hint — in the top row it
+                    wrapped onto its own orphan line on narrow phones */}
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+                  <div style={{ flex: 1, fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
+                    drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
+                  </div>
+                  <button className="btn sm" style={{ flex: "0 0 auto" }} onClick={() => setFixOn(false)}>✓</button>
                 </div>
               </div>
             )}
