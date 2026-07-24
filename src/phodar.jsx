@@ -569,6 +569,7 @@ const HELP_SECTIONS = [
         { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
         { t: "✦ Manual star align", d: "The hands-on alternative to auto: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve. It drops to the warped view so you can aim, then ✓ Done aligning returns you; ↺ reset undoes it." },
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
+        { t: "🎛 fine tune", d: "Precise one-axis nudge buttons for roll (⟲ ⟳, 0.2° per tap) and FOV (− ＋, 0.3°). The two-finger twist and pinch are great for the rough placement but bleed into each other at small adjustments — these move exactly one thing. Each tap is undoable." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
@@ -2922,6 +2923,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      pending (un-anchored) adjustment lives ONLY in playPose (display override),
      so scrubbing away discards it and commitPlacement can never absorb it. */
   const [fixOn, setFixOn] = useState(false);
+  const [fineOn, setFineOn] = useState(false); // 🎛 place-mode fine-tune nudge buttons
   const fixDragRef = useRef(null);   // {x, y, az, el} — one-finger photo drag baseline
   const fixTwistRef = useRef(null);  // two-finger: twist=roll, pinch=view zoom, mid-drag=view pan
   const fixRafRef = useRef(0);
@@ -6465,6 +6467,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   calibAnchorsRef.current = []; setCalibCount(0); resetPlaceView();
                 }}>Reset placement</button>
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
+                <button className="btn sm" style={fineOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                  onClick={() => setFineOn((o) => !o)}
+                  title="Fine tune: precise roll/FOV nudge buttons — the two-finger twist and pinch bleed into each other at small adjustments">🎛</button>
+                {/* FINE TUNE row (field ask): twist and pinch are great for the
+                    initial rough placement but bleed into each other when fine
+                    tuning — these nudge exactly one axis per tap. Behind a
+                    toggle so the cramped place screen stays clean by default. */}
+                {fineOn && (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>roll</span>
+                    <button className="btn sm" title="Roll −0.2°" onClick={() => { pushUndo(snapPose()); calibRecRef.current = null; setPRoll((r) => clampN(r - 0.2, -90, 90)); }}>⟲</button>
+                    <button className="btn sm" title="Roll +0.2°" onClick={() => { pushUndo(snapPose()); calibRecRef.current = null; setPRoll((r) => clampN(r + 0.2, -90, 90)); }}>⟳</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 8 }}>fov</span>
+                    <button className="btn sm" title="FOV −0.3° (photo covers less sky)" onClick={() => { pushUndo(snapPose()); calibRecRef.current = null; setFovM((f) => clampN(f - 0.3, 12, 120)); }}>−</button>
+                    <button className="btn sm" title="FOV +0.3° (photo covers more sky)" onClick={() => { pushUndo(snapPose()); calibRecRef.current = null; setFovM((f) => clampN(f + 0.3, 12, 120)); }}>＋</button>
+                  </div>
+                )}
                 {/* the ALIGNMENT frame is chosen on the MEASURE step (⛰ Align
                     on this frame — cheap scrubbing there; a scrubber here
                     re-rendered the whole dome per tick and crawled). This line
@@ -6552,8 +6571,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <button className="btn sm" style={{ minWidth: 34 }} title="Back one frame"
                     onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx - 1); }}>‹</button>
-                  <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
-                    onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ flex: 1 }} />
+                  <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
+                    <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
+                      onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ width: "100%" }} />
+                    {/* ⚓ anchor ticks — where the manual pose fixes sit on the clip */}
+                    {fixOn && fixesNow.map((f) => {
+                      const pp3 = source.posePath, span = (pp3[pp3.length - 1].t - pp3[0].t) || 1;
+                      const pct = clampN(((+f.t - pp3[0].t) / span) * 100, 0, 100);
+                      return <span key={"tk" + f.t} style={{ position: "absolute", left: pct + "%", top: -3, transform: "translateX(-50%)", fontSize: 8, lineHeight: 1, color: "var(--amber)", pointerEvents: "none" }}>▾</span>;
+                    })}
+                  </div>
                   <button className="btn sm" style={{ minWidth: 34 }} title="Forward one frame"
                     onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx + 1); }}>›</button>
                 </div>
@@ -6584,32 +6611,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <div style={{ display: "grid", gap: 4, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--amber)", borderRadius: 10, padding: "6px 8px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", fontWeight: 800 }}>⚓</span>
-                  {playPose && isNum(playPose.t) && (
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: fixPending ? "var(--amber)" : "var(--dim)" }}>
-                      {(+playPose.t).toFixed(2)}s{fixPending ? " · adjusted" : ""}
-                    </span>
-                  )}
-                  <span style={{ flex: 1 }} />
-                  <button className="btn sm amber" disabled={!playPose || !isNum(playPose?.t)}
-                    title="Save this frame's pose as an anchor — corrections blend between anchors and hold past the outermost ones. Anchoring an untouched frame pins it as correct so a neighbouring correction can't bleed into it."
-                    onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
-                  {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
-                  <button className="btn sm" onClick={() => setFixOn(false)}>✓</button>
+                  {(() => {
+                    /* no per-anchor chips (they crowded the panel — scrub/step to
+                       a frame instead); the readout carries the anchor count and
+                       whether THIS frame is one, and ✕⚓ removes it in place */
+                    const curFix = playPose && isNum(playPose.t) ? fixesNow.find((f) => Math.abs(+f.t - +playPose.t) < 1e-3) : null;
+                    return (
+                      <>
+                        {playPose && isNum(playPose.t) && (
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: fixPending ? "var(--amber)" : "var(--dim)" }}>
+                            {(+playPose.t).toFixed(2)}s{fixPending ? " · adjusted" : curFix ? " · anchored" : ""}{fixesNow.length ? ` · ${fixesNow.length}⚓` : ""}
+                          </span>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <button className="btn sm amber" disabled={!playPose || !isNum(playPose?.t)}
+                          title="Save this frame's pose as an anchor — corrections blend between anchors and hold past the outermost ones. Anchoring an untouched frame pins it as correct so a neighbouring correction can't bleed into it."
+                          onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
+                        {curFix && !fixPending && <button className="btn sm" title="Remove this frame's anchor" onClick={() => dropFixAnchor(+curFix.t)}>✕⚓</button>}
+                        {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
+                        <button className="btn sm" onClick={() => setFixOn(false)}>✓</button>
+                      </>
+                    );
+                  })()}
                 </div>
-                {fixesNow.length > 0 && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    {fixesNow.map((f) => {
-                      const cur = playPose && isNum(playPose.t) && Math.abs(+f.t - +playPose.t) < 1e-3;
-                      return (
-                        <span key={"anc" + f.t} style={{ display: "inline-flex", alignItems: "center", gap: 4, border: `1px solid ${cur ? "var(--amber)" : "var(--line)"}`, borderRadius: 8, padding: "2px 6px", fontFamily: "var(--mono)", fontSize: 10, color: cur ? "var(--amber)" : "var(--track)" }}>
-                          <span style={{ cursor: "pointer" }} title="Jump to this anchor's frame"
-                            onClick={() => { const pp3 = source.posePath; let bi = 0; for (let i2 = 0; i2 < pp3.length; i2++) if (Math.abs(pp3[i2].t - f.t) < Math.abs(pp3[bi].t - f.t)) bi = i2; showFrame(bi); }}>{(+f.t).toFixed(2)}s</span>
-                          <span style={{ cursor: "pointer", color: "var(--dim)" }} title="Remove this anchor" onClick={() => dropFixAnchor(+f.t)}>✕</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
                 <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
                   drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
                 </div>
