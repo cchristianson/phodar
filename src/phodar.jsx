@@ -4872,6 +4872,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* the follow source decides the crop framing below, so resolve it first:
          auto-track when it survived, else the tapped-waypoint sky path */
       const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : followPath;
+      let maxAngX = 2; // object's largest angular size (deg) — set in the crop branch, drives the pixel-pin window
       if (mode === "crop") {
         /* the object marks live on the MARKED frame — when it differs from the
            alignment frame, project them through THAT frame's solved pose (the
@@ -4899,6 +4900,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            object can't walk out of a tight fixed crop. */
         const sized = (source.track || []).filter((p) => isNum(p.ang)).map((p) => +p.ang);
         const maxAng = Math.max(objAng, ...sized);
+        maxAngX = maxAng;
         camFov = objAll
           ? clampN(maxAng * 2.2, 0.8, 70)
           : clampN((minFov + maxFov) / 2, Math.max(minFov, objAng * 3, sep * 1.2, 1.6), 70);
@@ -4920,6 +4922,52 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const a = op[lo], b = op[hi], u = hi === lo ? 0 : (t - a.t) / Math.max(1e-9, b.t - a.t);
         const dAzT = ((b.az - a.az + 540) % 360) - 180;
         return { az: (((a.az + dAzT * u) % 360) + 360) % 360, el: a.el + (b.el - a.el) * u };
+      };
+      /* PIXEL-PINNED FOLLOW (close-up export only): the track is a solve at
+         ~4 samples/s — between samples the interpolated center drifts off the
+         object by a fraction of a degree, and a tight crop magnifies that
+         into visible wander. At export time each frame's PIXELS are in hand,
+         so re-lock the camera on the MEASURED object: a center-surround
+         contrast snap (the same detector that seeds the auto-tracker) in a
+         small window around the predicted pixel. EMA-damped so refine noise
+         can't inject its own jitter; any failed/edge find falls back to the
+         track prediction. Display-only — the objPath measurement is never
+         touched. */
+      const pinCvs = camFollow ? document.createElement("canvas") : null;
+      const pinCtx = pinCvs ? pinCvs.getContext("2d", { willReadFrequently: true }) : null;
+      let pinEma = null, pinOk = 0, pinTry = 0;
+      const refinePin = (p, pred) => {
+        if (!pinCtx || !v.videoWidth) return pred;
+        pinTry++;
+        const pp = dirToPixK(dirFromAzEl(pred.az, pred.el), natW, natH, p.az, p.el, p.roll || 0, p.fov, p.k || 0);
+        if (!pp) return pred;
+        /* window sized from the object's largest angular size under THIS
+           frame's solved FOV; search radius rides snapToObject's 4–16 cap */
+        const objPx = clampN(natW * Math.tan((Math.max(0.05, maxAngX) * RAD) / 2) / Math.tan((p.fov * RAD) / 2), 4, 220);
+        const R = clampN(Math.round(objPx * 0.7), 6, 16);
+        const W2 = clampN(2 * Math.round((objPx + R + 26) / 2) + 2, 64, 168); // even; covers template + search + snap's interior margins
+        if (pinCvs.width !== W2) { pinCvs.width = W2; pinCvs.height = W2; }
+        const sv = (v.videoWidth || natW) / natW;
+        /* applying the (possibly decayed) correction keeps failure frames
+           CONTINUOUS with pinned neighbours — snapping straight back to the
+           raw track on a single missed find would itself be a visible jump */
+        const applyEma = () => {
+          if (!pinEma || (!pinEma.x && !pinEma.y)) return pred;
+          const ae = dirToAzEl(pixToDirK(pp.px + pinEma.x, pp.py + pinEma.y, natW, natH, p.az, p.el, p.roll || 0, p.fov, p.k || 0));
+          return { az: ae.az, el: ae.el };
+        };
+        const missed = () => { if (pinEma) pinEma = { x: pinEma.x * 0.75, y: pinEma.y * 0.75 }; return applyEma(); };
+        try {
+          pinCtx.fillStyle = "#000"; pinCtx.fillRect(0, 0, W2, W2);
+          pinCtx.drawImage(v, (pp.px - W2 / 2) * sv, (pp.py - W2 / 2) * sv, W2 * sv, W2 * sv, 0, 0, W2, W2);
+          const sn = snapToObject(pinCtx.getImageData(0, 0, W2, W2).data, W2, W2, W2 / 2, W2 / 2, R);
+          if (!sn || !isNum(sn.x)) return missed();
+          const dx = sn.x - W2 / 2, dy = sn.y - W2 / 2;
+          if (Math.hypot(dx, dy) > R + 1.5) return missed();      // hit the search edge — likely background clutter
+          pinEma = pinEma ? { x: pinEma.x + 0.45 * (dx - pinEma.x), y: pinEma.y + 0.45 * (dy - pinEma.y) } : { x: dx, y: dy };
+          pinOk++;
+          return applyEma();
+        } catch (e) { return missed(); }
       };
       /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
          most-zoomed frame's pixel density survives (tan-space ratio of the
@@ -5171,7 +5219,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         }
       };
       const drawFrame = (p) => {
-        if (camFollow && isNum(p.t)) { ce = objAt(p.t); B = photoBasis(ce.az, ce.el, 0); }
+        if (camFollow && isNum(p.t)) { ce = refinePin(p, objAt(p.t)); B = photoBasis(ce.az, ce.el, 0); }
         ctx.fillStyle = "#0a0f1c"; ctx.fillRect(0, 0, OUT_W, OUT_H);
         /* az/el grid, world-locked — THE debugging reference: if stabilization
            holds, the scenery rides these lines while the frame moves. Grid
@@ -5399,7 +5447,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         a.download = `phodar-${mode === "crop" ? "object" : mode === "full" ? "stabilized-maxres" : "stabilized"}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
-        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} (${OUT_W}×${OUT_H}) — world-locked at ${camFov.toFixed(0)}° camera FOV. It's also packed into the report bundle.`);
+        const pinNote = camFollow && pinTry ? ` · pixel-pinned on the object (${Math.round(100 * pinOk / pinTry)}% of frames re-locked)` : "";
+        setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} (${OUT_W}×${OUT_H}) — world-locked at ${camFov.toFixed(0)}° camera FOV${pinNote}. It's also packed into the report bundle.`);
       } else setFlash("⬇ export cancelled");
     } catch (e) {
       /* say WHAT failed — "failed on this video" alone made field reports
@@ -6368,7 +6417,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 {[
                   ["view", "▣ World view", "the dome framing shown in playback — grid + all visible sky layers burned in"],
                   ["full", "⛶ Max resolution", "clean footage, no overlays — native source detail, sized so zoomed frames keep every pixel"],
-                  ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "clean full-resolution crop around the marked object, no overlays"]] : []),
+                  ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "zoomed crop that follows the object, pixel-pinned per frame at export — clean, no overlays"]] : []),
                 ].map(([m, t2, d2]) => (
                   <button key={m} className="btn sm" style={{ textAlign: "left", padding: "8px 10px" }}
                     onClick={() => { setExportMenu(false); exportStabilized(m); }}>
