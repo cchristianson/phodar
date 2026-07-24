@@ -1791,56 +1791,61 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
 
 /* ── capture pose from phone gravity (web sensor capture) ──────────────────
    Device frame X=right, Y=top, Z=out-of-screen; back camera looks along −Z.
-   Inputs are iOS accelerationIncludingGravity, which points ALONG gravity
-   (down) → default gSign=−1, up_device = −accel. The elevation sense is a
-   SEPARATE default elSign=−1 (field-measured: iOS reads aim-up inverted with
-   +1), owned by the ⇅ flip; gSign/az are untouched by it. */
+   Inputs are iOS accelerationIncludingGravity (points ALONG the pull, so
+   up_device = −accel, fixed). Azimuth model is FIELD-CALIBRATED:
+   portrait ⇒ webkitCompassHeading is already the camera heading (iOS
+   tilt-compensates — verified aiming down 11° AND up 20°); landscape ⇒ it's
+   the portrait top edge, ±90° off, recovered by the horizontal-plane
+   rotation. opts.orient (screen angle) selects the regime. */
 {
   const g = 9.81;
-  // upright portrait, camera at the horizon: gravity down = −Y  → el 0, roll 0
+  // upright portrait, camera at the horizon: gravity down = −Y → el 0, roll 0,
+  // and the heading passes through untouched (iOS already reports the camera)
   let p = poseFromGravity({ x: 0, y: -g, z: 0 }, 137);
   approx(p.el, 0, 0.01, "capture pose: horizon shot → elevation 0°");
   approx(p.roll, 0, 0.01, "capture pose: level shot → roll 0°");
-  approx(p.az, 137, 0.01, "capture pose: azimuth = compass heading");
-  // elevation sense with the field-corrected default (elSign −1): the raw
-  // asin(−up.z) is negated, so gravity +Z reads −90 and gravity −Z reads +90.
+  approx(p.az, 137, 0.01, "capture pose: portrait → heading is the camera az, untouched");
+  // camera straight up (screen faces the ground, gravity +Z): el +90
   p = poseFromGravity({ x: 0, y: 0, z: g }, 0);
-  approx(p.el, -90, 0.01, "capture pose: gravity +Z → elevation −90° (elSign −1 default)");
+  approx(p.el, 90, 0.01, "capture pose: straight-up shot → elevation +90°");
+  // camera straight down (gravity −Z): el −90
   p = poseFromGravity({ x: 0, y: 0, z: -g }, 0);
-  approx(p.el, 90, 0.01, "capture pose: gravity −Z → elevation +90° (elSign −1 default)");
+  approx(p.el, -90, 0.01, "capture pose: straight-down shot → elevation −90°");
+  // THE DISCRIMINATING FIELD CASE: portrait leaning BACK 22° (camera aims UP).
+  // iOS still reports the camera heading (241 read for truth 242); a top-edge
+  // model would demand +180 here. Passthrough + positive elevation.
+  const t22 = 22 / R2D;
+  p = poseFromGravity({ x: 0, y: -g * Math.cos(t22), z: g * Math.sin(t22) }, 241, { orient: 0 });
+  approx(p.az, 241, 0.1, "capture pose: portrait aimed UP → heading still passes through");
+  approx(p.el, 22, 0.1, "capture pose: portrait aimed UP 22° → elevation +22°");
+  // portrait leaning forward 11° (camera aims down): passthrough, el −11
+  const t11 = 11 / R2D;
+  p = poseFromGravity({ x: 0, y: -g * Math.cos(t11), z: -g * Math.sin(t11) }, 247, { orient: 0 });
+  approx(p.az, 247, 0.1, "capture pose: portrait aimed down → heading passes through");
+  approx(p.el, -11, 0.1, "capture pose: portrait aimed down 11° → elevation −11°");
   // rolled 30° (up leans toward +X ⇒ accel toward −X): roll ≈ 30
   p = poseFromGravity({ x: -Math.sin(30 / R2D) * g, y: -Math.cos(30 / R2D) * g, z: 0 }, 0);
   approx(p.roll, 30, 0.02, "capture pose: 30° tilt → roll 30°");
-  // held LANDSCAPE aiming at the horizon — the azimuth fix. webkitCompassHeading
-  // reports the phone's TOP edge, 90° off the camera in landscape; the fix must
-  // recover the true CAMERA heading (here: camera North = 0°).
-  // landscape-left (top→West, up=+X): gravity along −X, top-heading 270 → az 0
-  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270);
-  approx(p.az, 0, 0.1, "capture pose: landscape-left → camera azimuth (not top edge)");
+  // LANDSCAPE (orient ±90): heading is the portrait TOP edge, ±90° off the
+  // camera — the horizontal-plane rotation recovers the camera az, and it
+  // self-selects the sign for either hold. NO extra 180 anywhere.
+  // landscape-left (top→West, up=+X): gravity −X, top-heading 270 → camera 0
+  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
+  approx(p.az, 0, 0.1, "capture pose: landscape-left → camera azimuth (top edge +90)");
   approx(p.el, 0, 0.01, "capture pose: landscape horizon → elevation 0°");
   approx(p.roll, 0, 0.01, "capture pose: landscape hold → roll folds to ~0°");
-  // landscape-right (top→East, up=−X): gravity along +X, top-heading 90 → az 0
-  p = poseFromGravity({ x: g, y: 0, z: 0 }, 90);
-  approx(p.az, 0, 0.1, "capture pose: landscape-right → camera azimuth (not top edge)");
-  // FIELD-MEASURED: iOS reports webkitCompassHeading in a frame that flips 180°
-  // once the UI is landscape (portrait dead-on, same scene landscape exactly 180°
-  // off — clean flip, symmetric across both landscape holds). opts.orient (the
-  // screen angle) applies +180 in landscape; portrait (orient 0) is untouched.
-  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
-  approx(p.az, 180, 0.1, "capture pose: landscape + orient 90 → +180° iOS-frame flip");
-  p = poseFromGravity({ x: g, y: 0, z: 0 }, 90, { orient: -90 });
-  approx(p.az, 180, 0.1, "capture pose: other landscape (orient −90) → same +180° flip");
-  p = poseFromGravity({ x: 0, y: -g, z: 0 }, 137, { orient: 0 });
-  approx(p.az, 137, 0.1, "capture pose: portrait (orient 0) → no flip");
-  // portrait aimed at the horizon (top near-vertical) → degenerate, keep heading
-  p = poseFromGravity({ x: 0, y: -g, z: 0 }, 200);
-  approx(p.az, 200, 0.1, "capture pose: portrait horizon → falls back to heading");
-  // ⇅ flip (elSign=+1) inverts ONLY the tilt sense — gravity +Z flips −90 → +90
-  const pFlip = poseFromGravity({ x: 0, y: 0, z: g }, 0, { elSign: 1 });
-  approx(pFlip.el, 90, 0.01, "capture pose: ⇅ flip tilt inverts elevation (elSign +1)");
-  // …and the bearing is UNTOUCHED by the tilt flip (still uses gSign −1)
+  // landscape-right (top→East, up=−X): gravity +X, top-heading 90 → camera 0
+  p = poseFromGravity({ x: g, y: 0, z: 0 }, 90, { orient: 270 });
+  approx(p.az, 0, 0.1, "capture pose: landscape-right → camera azimuth (top edge −90)");
+  // without an orient hint the safe default is portrait passthrough
+  p = poseFromGravity({ x: -g, y: 0, z: 0 }, 270);
+  approx(p.az, 270, 0.1, "capture pose: no orient hint → portrait passthrough default");
+  // ⇅ flip (elSign −1) inverts ONLY the tilt sense…
+  const pFlip = poseFromGravity({ x: 0, y: 0, z: g }, 0, { elSign: -1 });
+  approx(pFlip.el, -90, 0.01, "capture pose: ⇅ flip tilt inverts elevation (elSign −1)");
+  // …and can never move the bearing, in either regime
   const pAz1 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
-  const pAz2 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90, elSign: 1 });
+  const pAz2 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90, elSign: -1 });
   approx(pAz2.az, pAz1.az, 0.01, "capture pose: flipping tilt does not move the bearing");
 }
 
