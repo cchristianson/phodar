@@ -6539,29 +6539,40 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 NOT inside the bottom collapse — the scrubber persists (field
                 ask: keep the video controls while viewing clean). */}
             {!calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}
+              <div style={{ display: "grid", gap: 6, marginBottom: 8 }}
                 title="World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves.">
-                <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
-                <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
-                  onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ flex: 1 }} />
-                <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap" }}>
-                  {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
-                </span>
-                {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
-                <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
-                  onClick={() => {
-                    playingRef.current = false; setPlaying(false);
-                    setSmoothOpen(false); setExportMenu(false);
-                    if (!fixOn && !playPose) showFrame(playIdx); // entering fix mode needs a frame on screen at its path pose
-                    setFixOn((o) => !o);
-                  }}
-                  title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
-                <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
-                  title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎚</button>
-                <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
-                  title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
-                  {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
-                </button>
+                {/* the SCRUBBER gets its own full-width line (precise thumb travel —
+                    the growing button row had squeezed it unusable), flanked by
+                    single-frame step buttons for exact frame selection */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button className="btn sm" style={{ minWidth: 34 }} title="Back one frame"
+                    onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx - 1); }}>‹</button>
+                  <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
+                    onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ flex: 1 }} />
+                  <button className="btn sm" style={{ minWidth: 34 }} title="Forward one frame"
+                    onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx + 1); }}>›</button>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
+                  <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {(source.posePath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
+                  </span>
+                  {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                  <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                    onClick={() => {
+                      playingRef.current = false; setPlaying(false);
+                      setSmoothOpen(false); setExportMenu(false);
+                      if (!fixOn && !playPose) showFrame(playIdx); // entering fix mode needs a frame on screen at its path pose
+                      setFixOn((o) => !o);
+                    }}
+                    title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
+                  <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
+                    title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎚</button>
+                  <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
+                    title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
+                    {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
+                  </button>
+                </div>
               </div>
             )}
             {fixOn && !calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
