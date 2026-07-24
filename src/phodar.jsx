@@ -5369,7 +5369,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           <div style={{
             position: "absolute", left: (cx * 100) + "%", top: (cy * 100) + "%",
             width: (FRAMEz * 100) + "%",
-            transform: `translate(-50%,-50%) rotate(${-pRoll}deg)`,
+            /* translate3d + willChange: keep the pinned photo on its OWN
+               compositor layer — pairs with the promoted sky-vehicle overlay
+               layer below to stop iOS-standalone ghost trails over the photo */
+            transform: `translate3d(-50%,-50%,0) rotate(${-pRoll}deg)`,
+            willChange: "transform, left, top",
             pointerEvents: "none",
           }}>
             {/* video shows the baked marked frame — the same still the warp uses */}
@@ -5503,6 +5507,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
 
+        {/* SKY-VEHICLE OVERLAYS (satellites · Starlink · aircraft) — one
+            promoted compositor layer. iOS STANDALONE (home-screen web app)
+            mode has a partial-invalidation bug: these chips/trails repaint on
+            every placement drag, and where they cross the composited photo
+            layer the stale rasters are never cleared — field report: dozens
+            of ghost satellite chips smeared inside the photo rect, PWA only
+            (a Safari tab renders the same build clean). translateZ(0) gives
+            the whole moving stack its own layer, recomposited wholesale
+            instead of partially repainted — the standard WebKit ghosting
+            cure. */}
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", transform: "translateZ(0)" }}>
         {/* satellites: markers + full-pass trails (cyan, dotted) */}
         {satView.length > 0 && (
           <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
@@ -5667,6 +5682,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </div>
           );
         })}
+        </div>
 
         {/* selected-aircraft detail card */}
         {selHex && (() => {
