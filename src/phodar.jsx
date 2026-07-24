@@ -1736,7 +1736,11 @@ function MediaMeasure({ src, update, wizard }) {
     if (!src.shapeFit || !p) return null;
     let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: (rotM && rotM.length === 9) ? rotM : (src.shapeFit.rotM || I3), roll: 0 };
     const pr = shapeProjNat(sfG); const pw = Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1;
-    return { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pw };
+    sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pw };
+    /* pin the SILHOUETTE midpoint on the point (matches the on-photo ghost):
+       origin-anchoring let asymmetric shapes slide off the point as they scaled */
+    const pr2 = shapeProjNat(sfG);
+    return { ...sfG, cx: sfG.cx + (p.x - (pr2.p1.x + pr2.p2.x) / 2), cy: sfG.cy + (p.y - (pr2.p1.y + pr2.p2.y) / 2) };
   };
   /* size/attitude target the SELECTED point (video = scrub position szIdx;
      still = tap-selected selTrk) — so a still can also record the object
@@ -2105,7 +2109,16 @@ function MediaMeasure({ src, update, wizard }) {
                       let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: rot, roll: 0 };
                       const pwG = (() => { const pr = shapeProjNat(sfG); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
                       sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pwG };
-                      const prG = shapeProjNat(sfG);
+                      /* anchor the SILHOUETTE midpoint on the tapped point, not the
+                         shape's 3D origin: for asymmetric shapes/attitudes the
+                         projected centre sits off the origin and that offset GROWS
+                         with size — origin-anchoring made the outline slide off the
+                         point as it scaled (field: "scales from a weird center").
+                         Translation is exact, so one correction re-pins it. */
+                      let prG = shapeProjNat(sfG);
+                      const mgx = (prG.p1.x + prG.p2.x) / 2, mgy = (prG.p1.y + prG.p2.y) / 2;
+                      if (Math.abs(mgx - p.x) + Math.abs(mgy - p.y) > 0.01)
+                        prG = shapeProjNat({ ...sfG, cx: sfG.cx + (p.x - mgx), cy: sfG.cy + (p.y - mgy) });
                       const colG = `hsl(${src.shapeFit.hue ?? 36},88%,60%)`;
                       return prG.curves.map((c, j) => (
                         <polyline key={`g${i}-${j}`} points={c.map((pt2) => TT(pt2.x, pt2.y).join(",")).join(" ")}
@@ -5288,10 +5301,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
   };
 
-  /* entering place mode (or any tool mode) must never inherit the playback
-     override — place gestures edit the REAL placement pose */
+  /* entering PLACE mode must never inherit the playback override — place
+     gestures edit the REAL placement pose, which describes the ALIGNMENT
+     frame, so the texture snaps back to that frame (calibration integrity
+     over continuity). The read-only tools (trajectory · size · compare) KEEP
+     the frame you scrubbed to — they only need a backdrop, and losing your
+     spot on every mode switch was a field annoyance — playback just pauses
+     there and resumes where you left it back in look mode. */
   useEffect(() => {
-    if ((pMode === "place" || trajOn || sizeOn || cmpOn) && (playPose || playingRef.current)) exitPlayback();
+    if (pMode === "place" && (playPose || playingRef.current)) { exitPlayback(); return; }
+    if ((trajOn || sizeOn || cmpOn) && playingRef.current) { playingRef.current = false; setPlaying(false); }
   }, [pMode, trajOn, sizeOn, cmpOn]); // eslint-disable-line
   /* teardown: cancel any running solve and release the playback video */
   useEffect(() => () => {
@@ -5734,7 +5753,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             object itself is represented by the wireframe overlay). */}
         {(() => {
           if (!source || !trajOn) return null;
-          const dirs = trackDirections(source);
+          /* SKY PATH, not frame path: on a stabilized video each waypoint was
+             tapped on ITS OWN frame, so its direction must go through THAT
+             frame's solved pose — converting them all through the single
+             placement pose (trackDirections' "camera never moved" assumption)
+             draws where the object sat IN THE FRAME, which a panning camera
+             makes meaningless. With a posePath, build the dirs per-frame;
+             everything else (stills, unstabilized clips) keeps the old path. */
+          let dirs = null;
+          const pp2 = source.mediaKind === "video" && Array.isArray(source.posePath) && source.posePath.length > 1 ? source.posePath : null;
+          if (pp2 && source.natW) {
+            const ptsT = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y)).sort((a, b) => a.t - b.t);
+            const conv = ptsT.map((q) => {
+              const ps2 = posePathAt(pp2, +q.t);
+              return ps2 && isNum(ps2.az) ? { d: pixToDirK(+q.x, +q.y, source.natW, source.natH, ps2.az, ps2.el, ps2.roll || 0, ps2.fov, ps2.k || 0) } : null;
+            });
+            if (conv.filter(Boolean).length >= 2) dirs = conv.filter(Boolean);
+          }
+          if (!dirs) dirs = trackDirections(source);
           if (!dirs || !dirs.length) return null;
           const ps = dirs.map((d) => { const pr = projectD(d.d); return pr.inFront ? [pr.x, pr.y] : null; });
           const poly = ps.filter(Boolean);
