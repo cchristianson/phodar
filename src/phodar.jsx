@@ -4942,7 +4942,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const patch = { poseFixes: list, ...rederivePaths(list, camSNow, objSNow) };
     mediaDel(source.id + ":stab");
     update(patch);
-    setFlash(`⚓ anchored ${fx.t.toFixed(2)}s — ${list.length} anchor${list.length > 1 ? "s" : ""}; corrections blend between anchors`);
+    /* no flash — users drop many anchors in a row and the toast slowed the
+       rhythm; the readout's "anchored · N⚓" and the scrubber tick confirm it */
   };
   const dropFixAnchor = (t) => {
     if (!source || !update) return;
@@ -6663,18 +6664,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   })()}
                 </div>
                 {fineOn && playPose && (
-                  <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
-                    {/* arrow sense inverted per field test — the arrows move the
-                        photo the way the tap reads on screen */}
+                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                    {/* arrow + roll sense inverted per field test — every tap moves
+                        the photo the way it reads on screen. Compact padding so
+                        az/el/roll/zoom all fit one line on a phone. */}
                     <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>az</span>
-                    <button className="btn sm" title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>‹</button>
-                    <button className="btn sm" title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>›</button>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>el</span>
-                    <button className="btn sm" title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▼</button>
-                    <button className="btn sm" title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▲</button>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>roll</span>
-                    <button className="btn sm" title="Roll −0.2°" onClick={() => nudgeFix(0, 0, -0.2)}>⟲</button>
-                    <button className="btn sm" title="Roll +0.2°" onClick={() => nudgeFix(0, 0, 0.2)}>⟳</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>‹</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>›</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>el</span>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▼</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▲</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>roll</span>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Roll +0.2°" onClick={() => nudgeFix(0, 0, 0.2)}>⟲</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Roll −0.2°" onClick={() => nudgeFix(0, 0, -0.2)}>⟳</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>zoom</span>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Zoom the view out (pose untouched)" onClick={() => setFov((f) => clampN(f * 1.18, 2, 90))}>−</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Zoom the view in (pose untouched)" onClick={() => setFov((f) => clampN(f / 1.18, 2, 90))}>＋</button>
                   </div>
                 )}
                 {/* ✓ Done lives bottom-right beside the hint — in the top row it
