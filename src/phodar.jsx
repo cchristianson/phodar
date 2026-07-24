@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
-import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality } from "./capture/pose.js";
@@ -4687,7 +4687,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          GUIDE: the human's trajectory owns the prediction and the pixel
          matcher only fine-tunes around it (stepObject opts.guide). */
       const objPath = [];
-      let objOk = 0, objMiss = 0, guideN = 0;
+      let objOk = 0, objMiss = 0, guideN = 0, guides = [];
       if (objMid) {
         /* the object seed lives on the MARKED frame (which may differ from
            the alignment frame): its pose comes from the just-solved camera
@@ -4704,7 +4704,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         };
         const ae0 = dirToAzEl(objSeed.g);
         objPath.push({ t: +markT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 });
-        const guides = (source.track || [])
+        guides = (source.track || [])
           .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
           .map((p) => {
             const ps = posePathAt(path, +p.t);
@@ -4735,7 +4735,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             const bufO = grabO();
             const ps = posePathAt(path, tt);
             const gd = guideAt(tt);
-            const o = stepObject(prevO, bufO, OW, OH, st2, ps, { natW: source.natW, natH: source.natH, objPx: objPxO, guide: gd, seed: { data: seedO, tx: objSeed.tx, ty: objSeed.ty } });
+            /* guide gate scales with the frame's FOV: a fixed 2° is half a
+               deep-zoom frame — a background latch could sit visibly off the
+               object while still "within the gate" (field: wireframe off the
+               object at the zoomed clip end) */
+            const o = stepObject(prevO, bufO, OW, OH, st2, ps, { natW: source.natW, natH: source.natH, objPx: objPxO, guide: gd, guideGate: clampN(ps.fov * 0.05, 0.6, 2), seed: { data: seedO, tx: objSeed.tx, ty: objSeed.ty } });
             prevO = bufO;
             st2 = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev };
             const ae = dirToAzEl(o.g);
@@ -4759,6 +4763,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const objSpiked = smoothObjPath(objPath, { passes: 0 });
       const objRaw = objPath.map((p) => ({ ...p }));
       smoothObjPathAt(objPath, isNum(source?.smoothObj) ? +source.smoothObj : 0.25, { despiked: true });
+      /* WAYPOINTS ARE GROUND TRUTH: the witness tapped the object on those
+         frames, so the final track must pass exactly through them — matcher
+         drift/misses and smoothing pull are corrected by an interpolated
+         delta field (snapDirsToAnchors), keeping the matcher's detail
+         between taps. This is what keeps the playback wireframe ON the
+         object wherever the user actually marked it. */
+      if (guides.length && objPath.length > 1) {
+        const anchors = guides.map((g2) => { const ae2 = dirToAzEl(g2.g); return { t: g2.t, az: ae2.az, el: ae2.el }; });
+        const snapped = snapDirsToAnchors(objPath, anchors);
+        objPath.length = 0; objPath.push(...snapped);
+      }
       const objGood = objMid && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
       /* per-frame SIZED track points (wpx from the measure step) get their
          angular size re-derived from each frame's SOLVED FOV — sized under a
@@ -4927,8 +4942,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const rawO = Array.isArray(source.objPathRaw) && source.objPathRaw.length ? source.objPathRaw : (Array.isArray(source.objPath) ? source.objPath : null);
     if (rawO && rawO.length) {
       if (!Array.isArray(source.objPathRaw) || !source.objPathRaw.length) patch.objPathRaw = rawO.map((p) => ({ ...p }));
-      const o = smoothObjPathAt(rawO.map((p) => ({ ...p })), objS, { despiked: true });
-      patch.objPath = fx.length ? applyDirFixes(o, base, fx, { natW: source.natW, natH: source.natH }) : o;
+      let o = smoothObjPathAt(rawO.map((p) => ({ ...p })), objS, { despiked: true });
+      if (fx.length) o = applyDirFixes(o, base, fx, { natW: source.natW, natH: source.natH });
+      /* waypoints are ground truth (same snap the stabilize pass applies):
+         converted through the CURRENT (fixed) pose path, so the track stays
+         pinned to the taps across smoothing and ⚓ anchor changes alike */
+      if (source.natW && Array.isArray(source.track)) {
+        const anchors = source.track
+          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
+          .map((p) => {
+            const ps = posePathAt(patch.posePath, +p.t);
+            return ps && isNum(ps.az) ? { t: +p.t, ...dirToAzEl(pixToDirK(+p.x, +p.y, source.natW, source.natH, ps.az, ps.el, ps.roll || 0, ps.fov, ps.k || 0)) } : null;
+          })
+          .filter(Boolean);
+        if (anchors.length && o.length > 1) o = snapDirsToAnchors(o, anchors);
+      }
+      patch.objPath = o;
     }
     return patch;
   };

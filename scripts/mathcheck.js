@@ -22,7 +22,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -1878,6 +1878,22 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(dExact[0].el, want.el, 1e-3, "dirFix exact: roll anchor exact (el)");
   const dApprox = applyDirFixes([{ t: 2, az: g0.az, el: g0.el, q: 1 }], rollBase, rollFix); // no dims → old shift
   approx(Math.abs(dApprox[0].el - want.el) > 0.3 ? 1 : 0, 1, 0, "dirFix exact: the az/el-shift approximation demonstrably misses a roll fix (regression guard)");
+  /* waypoint snap: the hand-tapped track points are ground truth — the final
+     track must pass exactly through them, with the matcher's detail between
+     taps preserved (an off-track drift is corrected by an interpolated delta
+     field, held beyond the outermost tap). */
+  const drift = Array.from({ length: 9 }, (_, i) => ({ t: i, az: 100 + i + 0.8, el: 20 + 0.4, q: 0.8 })); // matcher path with a constant +0.8/+0.4 error
+  const snapAn = [{ t: 2, az: 102, el: 20 }, { t: 6, az: 106, el: 20 }];
+  const snapped = snapDirsToAnchors(drift, snapAn);
+  approx(snapped[2].az, 102, 1e-6, "waypoint snap: track passes exactly through a tap (az)");
+  approx(snapped[2].el, 20, 1e-6, "waypoint snap: track passes exactly through a tap (el)");
+  approx(snapped[4].az, 104, 1e-6, "waypoint snap: constant error fully corrected between taps");
+  approx(snapped[0].az, 100, 1e-6, "waypoint snap: correction held before the first tap");
+  approx(snapped[8].az, 108, 1e-6, "waypoint snap: correction held after the last tap");
+  // a real wiggle BETWEEN taps survives: same anchors, matcher path with a bump at t=4
+  const bump = drift.map((p) => (p.t === 4 ? { ...p, az: p.az + 1.5 } : p));
+  const snapped2 = snapDirsToAnchors(bump, snapAn);
+  approx(snapped2[4].az - snapped[4].az, 1.5, 1e-6, "waypoint snap: matcher detail between taps is preserved");
 }
 
 /* ── pinFind: faint-object pixel pin (close-up export) ──────────────────────

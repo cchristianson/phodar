@@ -1053,6 +1053,46 @@ export function applyDirFixes(dirs, basePath, fixes, opts) {
   });
 }
 
+/* SNAP a direction series onto hand-marked ANCHORS (the measure-step track
+   waypoints, converted through the same pose path that draws the frames).
+   The witness TAPPED the object on those frames — that is ground truth the
+   auto-track must pass through: matcher misses extrapolate, marginal latches
+   sit at the guide-gate edge, and smoothing drags — all of which detach the
+   playback wireframe from the object while the waypoints stay glued (field
+   report). Same delta-field shape as applyPoseFixes: exact at each anchor,
+   linear between, held beyond the outermost; az wrap-aware; the matcher's
+   detail between anchors is preserved. Pure — returns a corrected copy. */
+export function snapDirsToAnchors(dirs, anchors) {
+  if (!Array.isArray(dirs) || dirs.length < 2 || !Array.isArray(anchors) || !anchors.length) return dirs;
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  const at = (arr, t) => {
+    if (t <= arr[0].t) return arr[0];
+    if (t >= arr[arr.length - 1].t) return arr[arr.length - 1];
+    let lo = 0, hi = arr.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m].t <= t) lo = m; else hi = m; }
+    const a = arr[lo], b = arr[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { az: a.az + angD(b.az, a.az) * u, el: a.el + (b.el - a.el) * u };
+  };
+  const an = [...anchors].filter((a) => a && Number.isFinite(+a.t) && Number.isFinite(+a.az) && Number.isFinite(+a.el)).sort((a, b) => a.t - b.t);
+  if (!an.length) return dirs;
+  const deltas = an.map((a) => {
+    const base = at(dirs, +a.t);
+    return { t: +a.t, dAz: angD(+a.az, base.az), dEl: +a.el - base.el };
+  });
+  const deltaAt = (t) => {
+    if (t <= deltas[0].t) return deltas[0];
+    if (t >= deltas[deltas.length - 1].t) return deltas[deltas.length - 1];
+    let lo = 0, hi = deltas.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (deltas[m].t <= t) lo = m; else hi = m; }
+    const a = deltas[lo], b = deltas[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { dAz: a.dAz + (b.dAz - a.dAz) * u, dEl: a.dEl + (b.dEl - a.dEl) * u };
+  };
+  return dirs.map((p) => {
+    const d = deltaAt(+p.t);
+    return { ...p, az: +((((+p.az + d.dAz) % 360) + 360) % 360).toFixed(3), el: +(+p.el + d.dEl).toFixed(3) };
+  });
+}
+
 /* PIN-FIND: locate a small LOW-CONTRAST object in a window. An integral-image
    center-surround sweep — O(1) per candidate, so the WHOLE window is
    affordable at full resolution, which is what acquires a faint object far
