@@ -1820,6 +1820,15 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const c1 = corner(); smoothObjPathAt(c1, 1);
   if (!(c1[10].az < 104.9)) { console.error("  FAIL smooth slider: s=1 should round the corner", c1[10].az); fails++; }
   else console.log(`  ok   smooth slider: s=1 rounds the corner (apex 105 → ${c1[10].az.toFixed(2)})`);
+  // (regression lock) the strength wrappers must return the PATH ARRAY itself —
+  // smoothObjPath returns a despike COUNT, and passing that through once
+  // overwrote a source's objPath with a number (field bug: slider vanished)
+  const retO = jig();
+  if (smoothObjPathAt(retO, 0.5) !== retO) { console.error("  FAIL smooth slider: smoothObjPathAt must return the path array"); fails++; }
+  else console.log("  ok   smooth slider: smoothObjPathAt returns the path array");
+  const retP = jigP();
+  if (smoothPathAt(retP, 0.5) !== retP) { console.error("  FAIL smooth slider: smoothPathAt must return the path array"); fails++; }
+  else console.log("  ok   smooth slider: smoothPathAt returns the path array");
   // (d) a perfectly linear camera pan is untouched even at full strength
   const pan = Array.from({ length: 25 }, (_, i) => ({ t: i * 0.25, az: 240 + i * 0.8, el: 20 + i * 0.1, roll: 0, fov: 60, n: 20 }));
   smoothPathAt(pan, 1);

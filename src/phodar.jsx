@@ -4824,6 +4824,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     mediaDel(source.id + ":stab");   // a previously exported render is stale under the new path
     update(patch);
   };
+  /* SELF-HEAL: a shipped bug briefly made the track-smoothing slider write the
+     despike COUNT (a number) into objPath, which hid the slider itself and
+     every other objPath consumer. The raw track was saved before the
+     corruption — restore from it at the saved strength. */
+  useEffect(() => {
+    if (!source || !update) return;
+    if (source.objPath != null && !Array.isArray(source.objPath) && Array.isArray(source.objPathRaw) && source.objPathRaw.length > 1) {
+      update({ objPath: smoothObjPathAt(source.objPathRaw.map((p) => ({ ...p })), isNum(source.smoothObj) ? +source.smoothObj : 0.25, { despiked: true }) });
+    }
+  }, [source?.objPath]); // eslint-disable-line
   const exportAbortRef = useRef(0);
   /* mode: "view" (dome framing as shown in playback) | "full" (same framing,
      output sized so the most-zoomed frames keep native pixel density) |
