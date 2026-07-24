@@ -22,7 +22,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -1835,6 +1835,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(Math.max(...pan.map((p, i) => Math.abs(p.az - (240 + i * 0.8)))), 0, 0.002, "smooth slider: a linear pan passes through untouched at full strength");
 }
 
+
+/* ── manual pose fixes (Fix frames mode) ────────────────────────────────────
+   Absolute per-frame anchors → a delta field: exact at anchors, linear
+   between them, HELD beyond the outermost (drift heals forward); a zero-
+   delta anchor bounds the corrected region. Az wrap-aware. */
+{
+  const base = Array.from({ length: 9 }, (_, i) => ({ t: i, az: 100 + i, el: 20, roll: 0, fov: 60, n: 12 }));
+  // one anchor at t=4, +3° az / +1° el off the solve → exact there, held both ways
+  let out = applyPoseFixes(base, [{ t: 4, az: 107, el: 21, roll: 0 }]);
+  approx(out[4].az, 107, 1e-6, "poseFix: anchor frame lands exactly on the anchor");
+  approx(out[4].el, 21, 1e-6, "poseFix: anchor elevation exact");
+  approx(out[0].az, 103, 1e-6, "poseFix: delta held before the first anchor (drift heals backward)");
+  approx(out[8].az, 111, 1e-6, "poseFix: delta held after the last anchor (drift heals forward)");
+  // a ZERO-delta anchor bounds the correction: interpolates 3°→0° between t=4 and t=8
+  out = applyPoseFixes(base, [{ t: 4, az: 107, el: 20, roll: 0 }, { t: 8, az: 108, el: 20, roll: 0 }]);
+  approx(out[6].az, 107.5, 1e-6, "poseFix: linear delta interpolation between anchors");
+  approx(out[8].az, 108, 1e-6, "poseFix: bounding anchor restores the solve");
+  // az wrap: fixing 359.5 → 0.5 must be a +1 delta, not −359
+  const wrapBase = [{ t: 0, az: 359.5, el: 10, roll: 0, fov: 60 }, { t: 1, az: 359.5, el: 10, roll: 0, fov: 60 }];
+  out = applyPoseFixes(wrapBase, [{ t: 0, az: 0.5, el: 10, roll: 0 }]);
+  approx(out[1].az, 0.5, 1e-6, "poseFix: az delta is wrap-aware across north");
+  // the object-direction series rides the same field
+  const dirs = [{ t: 2, az: 200, el: 30, q: 0.9 }, { t: 6, az: 201, el: 31, q: 0.9 }];
+  const d2 = applyDirFixes(dirs, base, [{ t: 4, az: 107, el: 21, roll: 0 }]);
+  approx(d2[0].az, 203, 1e-6, "dirFix: object dirs shift by the pose delta at their time");
+  approx(d2[1].el, 32, 1e-6, "dirFix: elevation delta applied");
+}
 
 /* ── pinFind: faint-object pixel pin (close-up export) ──────────────────────
    Integral-image contrast sweep: must ACQUIRE a faint blob far from the seed

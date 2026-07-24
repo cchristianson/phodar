@@ -720,7 +720,27 @@ terrain stay frozen and only the object moves. Build ladder:
    frame (full ≤0.3 s, gone by 1.1 s, 0.15 floor while the Track tool
    is active; the route polyline stays faint). Verified visually: the
    wireframe sits on the ground-truth dot across an in-app world-view
-   export. Manual per-frame correction of a solved track: not yet.
+   export. **Manual pose correction (⚓ Fix frames): DONE** — playback-row
+   ⚓ opens a mode where you scrub to a frame that lost the world lock,
+   drag the photo back onto the true horizon/terrain (one finger = az/el,
+   two-finger twist = roll; two-finger drag pans the view, pinch zooms),
+   and ⚓ Anchor it. Anchors are ABSOLUTE poses in `source.poseFixes`;
+   `applyPoseFixes` (postrack, pure, mathcheck-asserted) turns them into
+   a delta field over the smoothed base path — exact at anchors, linear
+   between, HELD beyond the outermost (so drift heals to the ends; a
+   zero-delta "Pin as correct" anchor bounds a correction region) — and
+   `applyDirFixes` shifts the object track through the same field. The
+   stored posePath/objPath are re-derived (rederivePaths) on every
+   anchor/smoothing change from the raws, so anchors and the smoothing
+   sliders compose non-destructively; waypoints re-convert through the
+   fixed path automatically. Live feedback: the pending (un-anchored)
+   drag lives ONLY in playPose (display override — scrubbing away
+   discards it, commitPlacement can't absorb it), and the trajectory
+   overlay renders in fix mode (gated by 🛸) from a preview path with
+   the pending pose applied as one more anchor, so the trajectory
+   slides live under your finger. Re-stabilizing clears poseFixes
+   (corrections of the old solve); re-aligning the placement rotates
+   them (reanchorPose), the PinMap bearing ray yaws them.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
