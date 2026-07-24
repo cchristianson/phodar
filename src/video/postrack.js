@@ -987,8 +987,13 @@ export function smoothPathAt(path, s) {
 export function smoothObjPathAt(op, s, opts = {}) {
   const m = smoothStrength(s);
   /* despike (outlier rejection) always runs unless the caller already did it —
-     a single-frame background latch is a tracker error, not a maneuver */
-  return smoothObjPath(op, { despikePasses: opts.despiked ? 0 : 2, passes: m.passes, gain: m.gain });
+     a single-frame background latch is a tracker error, not a maneuver.
+     NB: smoothObjPath returns the DESPIKE COUNT, not the path — return the
+     (mutated) path here, mirroring smoothPathAt. Passing the count through
+     once overwrote a source's objPath with a number and silently killed
+     every objPath consumer, including the slider itself (field bug). */
+  smoothObjPath(op, { despikePasses: opts.despiked ? 0 : 2, passes: m.passes, gain: m.gain });
+  return op;
 }
 
 /* Distribute a re-anchor's drift correction back across the un-anchored span
