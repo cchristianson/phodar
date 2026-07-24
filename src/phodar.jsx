@@ -5630,7 +5630,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   useEffect(() => {
     if (pMode === "place" && (playPose || playingRef.current)) { setFixOn(false); exitPlayback(); return; }
     if ((trajOn || sizeOn || cmpOn) && playingRef.current) { playingRef.current = false; setPlaying(false); }
-    if ((trajOn || sizeOn || cmpOn || calibOn) && fixOn) setFixOn(false); // the tools take over the gestures — a live fix drag must not linger underneath
+    /* trajectory stays compatible with fix mode (it's read-only in the world
+       view — no gesture conflict, and watching it move is the live feedback);
+       the other tools take over the gestures, so a fix drag must not linger */
+    if ((sizeOn || cmpOn || calibOn) && fixOn) setFixOn(false);
   }, [pMode, trajOn, sizeOn, cmpOn, calibOn]); // eslint-disable-line
   /* teardown: cancel any running solve and release the playback video */
   useEffect(() => () => {
@@ -6538,7 +6541,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 sky/terrain/stars stay frozen, the frame rectangle moves.
                 NOT inside the bottom collapse — the scrubber persists (field
                 ask: keep the video controls while viewing clean). */}
-            {!calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+            {/* trajOn does NOT hide this row — watching the trajectory while
+                scrubbing/fixing frames is the whole point (field ask) */}
+            {!calibOn && pMode !== "place" && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
               <div style={{ display: "grid", gap: 6, marginBottom: 8 }}
                 title="World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves.">
                 {/* the SCRUBBER gets its own full-width line (precise thumb travel —
@@ -6575,25 +6580,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               </div>
             )}
-            {fixOn && !calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
-              <div style={{ display: "grid", gap: 6, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", fontWeight: 800 }}>⚓ Fix frames</span>
+            {fixOn && !calibOn && pMode !== "place" && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+              <div style={{ display: "grid", gap: 4, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--amber)", borderRadius: 10, padding: "6px 8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", fontWeight: 800 }}>⚓</span>
                   {playPose && isNum(playPose.t) && (
                     <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: fixPending ? "var(--amber)" : "var(--dim)" }}>
-                      {(+playPose.t).toFixed(2)}s · az {(+playPose.az).toFixed(1)}° el {(+playPose.el).toFixed(1)}° roll {(+(playPose.roll || 0)).toFixed(1)}°{fixPending ? " · adjusted" : ""}
+                      {(+playPose.t).toFixed(2)}s{fixPending ? " · adjusted" : ""}
                     </span>
                   )}
                   <span style={{ flex: 1 }} />
                   <button className="btn sm amber" disabled={!playPose || !isNum(playPose?.t)}
-                    title="Save this frame's pose as an anchor — corrections interpolate between anchors and hold past the outermost ones. Anchoring an UNTOUCHED frame pins it as correct, so a neighbouring correction can't bleed into it."
-                    onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin as correct"}</button>
+                    title="Save this frame's pose as an anchor — corrections blend between anchors and hold past the outermost ones. Anchoring an untouched frame pins it as correct so a neighbouring correction can't bleed into it."
+                    onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
                   {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
-                  <button className="btn sm" onClick={() => setFixOn(false)}>✓ Done</button>
+                  <button className="btn sm" onClick={() => setFixOn(false)}>✓</button>
                 </div>
                 {fixesNow.length > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>anchors</span>
                     {fixesNow.map((f) => {
                       const cur = playPose && isNum(playPose.t) && Math.abs(+f.t - +playPose.t) < 1e-3;
                       return (
@@ -6606,12 +6610,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     })}
                   </div>
                 )}
-                <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.4 }}>
-                  Scrub to a frame where the world lock slipped, then <b>drag the photo</b> onto the true horizon/terrain
-                  — two-finger <b>twist</b> tilts it, two-finger drag pans the view, pinch zooms. <b>⚓ Anchor</b> saves the frame;
-                  the correction blends smoothly to the next anchor and holds past the ends, and the object trajectory
-                  {objOn ? " (shown live)" : " (toggle 🛸 to watch it live)"} + waypoints move with it.
-                  Scrubbing away without anchoring discards the adjustment. Anchors survive smoothing changes; re-stabilizing clears them.
+                <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
+                  drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
                 </div>
               </div>
             )}
@@ -6919,7 +6919,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             )}
           </div>
         )}
-        {!botMin && (
+        {!botMin && !fixOn && (
         <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
             ? (panMode
