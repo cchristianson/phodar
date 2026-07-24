@@ -22,7 +22,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -1833,6 +1833,32 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const pan = Array.from({ length: 25 }, (_, i) => ({ t: i * 0.25, az: 240 + i * 0.8, el: 20 + i * 0.1, roll: 0, fov: 60, n: 20 }));
   smoothPathAt(pan, 1);
   approx(Math.max(...pan.map((p, i) => Math.abs(p.az - (240 + i * 0.8)))), 0, 0.002, "smooth slider: a linear pan passes through untouched at full strength");
+}
+
+
+/* ── pinFind: faint-object pixel pin (close-up export) ──────────────────────
+   Integral-image contrast sweep: must ACQUIRE a faint blob far from the seed
+   (the field failure mode: prediction ~150+ px off a 12 px object), localise
+   it to sub-pixel, and never fake a lock on empty sky. */
+{
+  const W2 = 360, H2 = 360;
+  const mk = (bx, by, amp) => {
+    const d = new Uint8ClampedArray(W2 * H2 * 4);
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+      let v = 118 + 22 * (y / H2) + 6 * Math.sin(x * 0.05);
+      const rr = Math.hypot(x - bx, y - by);
+      if (amp) v -= amp * Math.exp(-(rr * rr) / (2 * 4.2 * 4.2));
+      const i = (y * W2 + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    }
+    return d;
+  };
+  let f = pinFind(mk(287.5, 96.5, 13), W2, H2, 180, 200, { objR: 5, reach: 160, step: 3 });
+  approx(Math.hypot(f.x - 287.5, f.y - 96.5), 0, 1.0, "pinFind: acquires a faint blob ~150px off the seed (sub-px)");
+  if (!(f.score >= 5)) { console.error("  FAIL pinFind: on-object score must clear the pin threshold", f.score); fails++; }
+  else console.log(`  ok   pinFind: on-object score ${f.score.toFixed(1)} clears the pin threshold (5)`);
+  f = pinFind(mk(0, 0, 0), W2, H2, 180, 180, { objR: 5, reach: 120, step: 3 });
+  if (!(f.score < 5)) { console.error("  FAIL pinFind: empty sky must score below the pin threshold", f.score); fails++; }
+  else console.log(`  ok   pinFind: empty gradient sky scores ${f.score.toFixed(2)} — no false lock`);
 }
 
 /* ── re-anchoring solved paths across a placement change ────────────────────

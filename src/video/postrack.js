@@ -962,6 +962,55 @@ export function smoothObjPath(op, opts = {}) {
   return spiked;
 }
 
+/* PIN-FIND: locate a small LOW-CONTRAST object in a window. An integral-image
+   center-surround sweep — O(1) per candidate, so the WHOLE window is
+   affordable at full resolution, which is what acquires a faint object far
+   from the prediction (multi-scale template ladders shrink a ~12 px object
+   into noise; field-proven failure). Then a step-1 refine and a deviation-
+   weighted SUB-PIXEL centroid (integer snapping reads as shimmer at close-up
+   magnification). Validated against a real field close-up: acquired a fading
+   object from a 220 px-wrong prediction and held it; crops at the found
+   positions show the object centered.
+     data: RGBA (ImageData.data), w×h window
+     x0,y0: search center · opts { objR, reach, step }
+   Returns { x, y, score } — score in luma units; ~<5 is sky noise. */
+export function pinFind(data, w, h, x0, y0, opts = {}) {
+  const g = gray(data, w, h);
+  const objR = Math.max(2, Math.round(opts.objR || 5));
+  const reach = Math.max(4, Math.round(opts.reach || 16));
+  const step = Math.max(1, Math.round(opts.step || 2));
+  const ii = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += g[y * w + x]; ii[(y + 1) * (w + 1) + (x + 1)] = ii[y * (w + 1) + (x + 1)] + row; } }
+  const box = (a, b, c, d) => {
+    a = Math.max(0, a); b = Math.max(0, b); c = Math.min(w - 1, c); d = Math.min(h - 1, d);
+    const n = (c - a + 1) * (d - b + 1); if (n <= 0) return { m: 0, n: 0 };
+    return { m: (ii[(d + 1) * (w + 1) + (c + 1)] - ii[b * (w + 1) + (c + 1)] - ii[(d + 1) * (w + 1) + a] + ii[b * (w + 1) + a]) / n, n };
+  };
+  const cs = (x, y) => {
+    const i2 = box(x - objR, y - objR, x + objR, y + objR);
+    const o = box(x - 3 * objR, y - 3 * objR, x + 3 * objR, y + 3 * objR);
+    if (!i2.n || o.n <= i2.n) return 0;
+    const ring = (o.m * o.n - i2.m * i2.n) / (o.n - i2.n);
+    return Math.abs(i2.m - ring);
+  };
+  let best = 0, bx = Math.round(x0), by = Math.round(y0);
+  for (let y = Math.round(y0 - reach); y <= y0 + reach; y += step) for (let x = Math.round(x0 - reach); x <= x0 + reach; x += step) {
+    const s = cs(x, y); if (s > best) { best = s; bx = x; by = y; }
+  }
+  for (let y = by - step; y <= by + step; y++) for (let x = bx - step; x <= bx + step; x++) {
+    const s = cs(x, y); if (s > best) { best = s; bx = x; by = y; }
+  }
+  const R = objR + 2, ring = box(bx - 3 * R, by - 3 * R, bx + 3 * R, by + 3 * R).m;
+  let ws = 0, xs = 0, ys = 0;
+  for (let y = -R; y <= R; y++) for (let x = -R; x <= R; x++) {
+    const px = bx + x, py = by + y;
+    if (px < 0 || py < 0 || px >= w || py >= h || Math.hypot(x, y) > R) continue;
+    const wg = Math.abs(g[py * w + px] - ring);
+    ws += wg; xs += wg * px; ys += wg * py;
+  }
+  return ws > 0 ? { x: xs / ws, y: ys / ws, score: best } : { x: bx, y: by, score: best };
+}
+
 /* --- USER-TUNABLE SMOOTHING STRENGTH (the field slider) ---------------------
    One knob s ∈ [0,1] per path, mapped onto the evidence-weighted smoothers so
    the character of the motion stays a WITNESS decision, not a baked constant:
