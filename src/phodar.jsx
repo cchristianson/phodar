@@ -592,8 +592,8 @@ const HELP_SECTIONS = [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
-      "🎚 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
-      "⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist tilts it), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.",
+      "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
+      "⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist tilts it), fine-tune with the always-on nudge taps (az/el arrows, roll, − ＋ photo size), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.",
     ],
   },
   {
@@ -4895,6 +4895,32 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [exporting, setExporting] = useState(0); // 0 idle | progress fraction
   const [exportMenu, setExportMenu] = useState(false);
   const [smoothOpen, setSmoothOpen] = useState(false);
+  /* SCREEN WAKE LOCK — a long stabilize/export stalls when the phone dozes
+     (field report: sleep pauses the processing). Held only while a solve or
+     export is actually running. iOS silently releases the lock whenever the
+     page hides, so it re-arms on every return to visible. No-ops where the
+     API is unsupported — nothing to feature-detect for the user. */
+  const wakeRef = useRef(null);
+  useEffect(() => {
+    const active = !!stabBusy || !!exporting;
+    let dead = false;
+    const grab = () => {
+      try {
+        navigator.wakeLock?.request("screen")
+          .then((l) => { if (dead) { try { l.release(); } catch (e) { } } else wakeRef.current = l; })
+          .catch(() => { });
+      } catch (e) { }
+    };
+    if (!active) { try { wakeRef.current?.release(); } catch (e) { } wakeRef.current = null; return; }
+    grab();
+    const onVis = () => { if (document.visibilityState === "visible") grab(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      dead = true;
+      document.removeEventListener("visibilitychange", onVis);
+      try { wakeRef.current?.release(); } catch (e) { } wakeRef.current = null;
+    };
+  }, [!!stabBusy, !!exporting]); // eslint-disable-line
   /* SMOOTHING SLIDERS — re-derive the smoothed paths from the RAW (despiked)
      solves at the chosen strength, non-destructively: raw is kept on the
      source, so any strength can be revisited without re-running the whole
@@ -6637,7 +6663,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     }}
                     title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
                   <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
-                    title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎚</button>
+                    title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎛</button>
                   <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
                     title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
                     {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
@@ -6667,13 +6693,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                           onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
                         {curFix && !fixPending && <button className="btn sm" title="Remove this frame's anchor" onClick={() => dropFixAnchor(+curFix.t)}>✕⚓</button>}
                         {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
-                        <button className="btn sm" style={fineOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
-                          title="Fine tune: one-axis nudge taps for this frame's pose" onClick={() => setFineOn((o) => !o)}>🎛</button>
                       </>
                     );
                   })()}
                 </div>
-                {fineOn && playPose && (
+                {/* nudge row is ALWAYS on in fix mode (field ask — no toggle) */}
+                {playPose && (
                   <div style={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
                     {/* arrow + roll sense inverted per field test — every tap moves
                         the photo the way it reads on screen. − ＋ scale the FRAME
