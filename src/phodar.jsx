@@ -590,6 +590,8 @@ const HELP_SECTIONS = [
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
+      "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
+      "🎚 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
     ],
   },
   {
@@ -2859,6 +2861,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
   const [trajOn, setTrajOn] = useState(false);  // trajectory drop-point tools — its own mode
+  /* clean-viewing collapses (field ask): tuck the header layer chips and the
+     bottom control stack away. The bottom ACTION row and the playback
+     scrubber always persist — never strand the user without navigation or
+     the video controls. */
+  const [hdrMin, setHdrMin] = useState(false);
+  const [botMin, setBotMin] = useState(false);
   const [mapPick, setMapPick] = useState(null); // {mode:'size'|'compare'} → distance-on-a-map modal open
   /* two-tap star align: tap a known object, tap where it really sits in the
      photo → solve the photo's roll + FOV (center kept, so the terrain match
@@ -6011,8 +6019,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               {pMode === "place" ? "Placing photo" : `Aiming moment ${which}`} · FOV {Math.round(effFov)}°
             </div>
           </div>
-          <div style={{ pointerEvents: "auto", flex: "0 0 auto" }}><HelpButton section="sky" style={{ background: "rgba(15,23,42,.7)" }} /></div>
+          <div style={{ pointerEvents: "auto", flex: "0 0 auto", display: "flex", gap: 6 }}>
+            <button className="btn sm" title={hdrMin ? "Show the sky-layer toggles" : "Hide the sky-layer toggles for a cleaner view"}
+              style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => setHdrMin((v) => !v)}>{hdrMin ? "⌄" : "⌃"}</button>
+            <HelpButton section="sky" style={{ background: "rgba(15,23,42,.7)" }} />
+          </div>
         </div>
+        {!hdrMin && (<>
         {/* sky-layer toggles — one row (terrain is always on) */}
         <div style={{ display: "flex", gap: 6, marginTop: 8, pointerEvents: "auto", flexWrap: "wrap" }}>
           {/* celestial group first (sun · moon · stars · satellites · Starlink),
@@ -6136,6 +6149,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             ✈ archive unavailable — showing traffic in the air NOW, {Math.round(Math.abs(Date.now() - T) / 3600000) || "<1"} h from the sighting
           </div>
         )}
+        </>)}
       </div>
 
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
@@ -6168,6 +6182,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {(motionMsg || cameraMsg) && <div className="warn" style={{ marginBottom: 8, marginTop: 0 }}>{motionMsg || cameraMsg}</div>}
         {source?.mediaUrl && photoOn && (
           <>
+            {!botMin && (<>
             {/* MODE BAR — one line, one mode at a time: place · trajectory · size · compare.
                The overlay-color SLIDER hides behind the swatch at the end of
                the row (shows the current color) — a full-time slider row was
@@ -6291,8 +6306,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 )}
               </div>
             )}
+            </>)}
             {/* world-locked playback — each frame drawn at ITS solved pose; the
-                sky/terrain/stars stay frozen, the frame rectangle moves */}
+                sky/terrain/stars stay frozen, the frame rectangle moves.
+                NOT inside the bottom collapse — the scrubber persists (field
+                ask: keep the video controls while viewing clean). */}
             {!calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
               <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}
                 title="World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves.">
@@ -6383,7 +6401,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           )}
         </div>
         )}
-        {!single && pMode !== "place" && (trajOn || sizeOn || cmpOn) && (
+        {!botMin && !single && pMode !== "place" && (trajOn || sizeOn || cmpOn) && (
           <div style={{ marginBottom: 8 }}>
             {trajOn && (<>
             {(source?.moments || []).filter((m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs)).length > 0 && (
@@ -6615,6 +6633,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             )}
           </div>
         )}
+        {!botMin && (
         <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
             ? (panMode
@@ -6636,17 +6655,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ? "Point the phone exactly where the object was, then capture."
                 : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}
         </div>
+        )}
+        {/* the PERSISTENT bottom row — never collapsed, hosts the ⌃/⌄ toggle */}
         {!wizard && pMode !== "place" && (
         <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" style={{ flex: "0 0 auto", padding: "10px 12px" }} title={botMin ? "Show the controls" : "Hide the controls for a cleaner view"} onClick={() => setBotMin((v) => !v)}>{botMin ? "⌃" : "⌄"}</button>
           <button className="btn amber" style={{ flex: 1 }} onClick={() => { onCapture("A", viewAz, viewAlt); setFlash("Moment A locked ✓ — sky view stays open; aim B or Close"); }}>Set Moment A</button>
           <button className="btn teal" style={{ flex: 1 }} onClick={() => { onCapture("B", viewAz, viewAlt); setFlash("Moment B locked ✓ — Close when done"); }}>Set Moment B</button>
         </div>
         )}
         {wizard && pMode === "place" && (
-          <button className="btn amber" style={{ width: "100%" }} onClick={donePlace}>✓ Horizon lined up — continue</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" style={{ flex: "0 0 auto", padding: "10px 12px" }} title={botMin ? "Show the alignment tools" : "Hide the tools — the photo and dome stay live for a clean look"} onClick={() => setBotMin((v) => !v)}>{botMin ? "⌃" : "⌄"}</button>
+            <button className="btn amber" style={{ flex: 1 }} onClick={donePlace}>✓ Horizon lined up — continue</button>
+          </div>
         )}
         {wizard && pMode !== "place" && (
           <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn" style={{ flex: "0 0 auto", padding: "10px 12px" }} title={botMin ? "Show the controls" : "Hide the controls for a cleaner view"} onClick={() => setBotMin((v) => !v)}>{botMin ? "⌃" : "⌄"}</button>
             <button className="btn" onClick={() => { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); }}>‹ Back</button>
             <button className="btn amber" style={{ flex: 1 }} onClick={() => { if (photoOn) commitPlacement(); onWizardNext && onWizardNext(); }}>Continue →</button>
           </div>
@@ -7446,9 +7472,16 @@ function SensorCapture({ onCapture, onClose }) {
   /* FULL-RES: freeze the pose, then hand off to the NATIVE camera for a true
      full-megapixel still (getUserMedia only yields a ~1080p video frame). The
      photo maps to the frozen pose — hold the aim while the camera opens. */
-  const nativeRef = useRef(null), shotPoseRef = useRef(null);
+  const nativeRef = useRef(null), libRef = useRef(null), shotPoseRef = useRef(null);
   const takeFullRes = () => { shotPoseRef.current = snapPose(); if (nativeRef.current) nativeRef.current.click(); };
   const onNativeFile = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) onCapture({ file: f, ...(shotPoseRef.current || snapPose()) }); };
+  /* NIGHT / LONG-EXPOSURE workflow: iOS gives web apps only a stripped-down
+     capture sheet — Night mode & long exposure are exclusive to the native
+     Camera app. So: freeze the aim HERE (sensor pose captured now), switch to
+     the Camera app for the long shot, come back, attach it from the library —
+     the photo carries the frozen pose. */
+  const [nightPose, setNightPose] = useState(null);
+  const freezeForNight = () => { const p = snapPose(); shotPoseRef.current = p; setNightPose(p); };
   const q = poseQuality(compassAcc, true);
   const readVal = (v, suf) => isNum(v) ? Math.round(v) + (suf || "") : "—";
   return (
@@ -7503,14 +7536,28 @@ function SensorCapture({ onCapture, onClose }) {
             ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank, turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b> and reopen.</div>
             : <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>}
           <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
-          {/* hidden native camera for the full-resolution still */}
+          {/* hidden native camera for the full-resolution still + a library
+              picker for the Night-mode workflow (no `capture` attr) */}
           <input ref={nativeRef} type="file" accept="image/*" capture="environment" onChange={onNativeFile} style={{ display: "none" }} />
+          <input ref={libRef} type="file" accept="image/*" onChange={(e) => { setNightPose(null); onNativeFile(e); }} style={{ display: "none" }} />
           {/* PRIMARY: full-resolution native photo (far objects need every pixel).
-              SECONDARY: instant lower-res frame with an exactly-synced pose. */}
+              SECONDARY: instant lower-res frame with an exactly-synced pose.
+              NIGHT: freeze the aim → shoot in the Camera app → attach. */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
             <button onClick={takeFullRes} className="btn amber" style={{ padding: "13px 22px", fontSize: 15, borderRadius: 30 }}>📸 Full-resolution photo</button>
             <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
-            <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
+              <button onClick={nightPose ? () => libRef.current && libRef.current.click() : freezeForNight}
+                style={{ background: nightPose ? "rgba(64,199,178,.25)" : "rgba(0,0,0,.5)", color: nightPose ? "var(--teal)" : "#fff", border: `1px solid ${nightPose ? "var(--teal)" : "rgba(255,255,255,.3)"}`, borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>
+                {nightPose ? "📁 Attach the shot" : "🌙 Night / long exposure"}
+              </button>
+            </div>
+            {nightPose && nightPose.pose && (
+              <div style={{ fontSize: 9.5, color: "var(--teal)", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 300, lineHeight: 1.5 }}>
+                Aim frozen ✓ ({Math.round(nightPose.pose.az)}° {compass8(nightPose.pose.az)} · {Math.round(nightPose.pose.el)}° up). iOS only gives web apps a basic camera — Night mode lives in the Camera app. Switch there, shoot from THIS spot at THIS aim, come back and 📁 attach it.
+              </div>
+            )}
           </div>
         </div>
       )}
