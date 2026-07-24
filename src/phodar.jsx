@@ -560,7 +560,7 @@ const HELP_SECTIONS = [
     intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. A row of tool buttons — ✥ Place · ⊕ Trajectory · 📏 Size · ⚖ Compare — switches modes; only one is active at a time, and each reveals its own controls.",
     groups: [
       { h: "The four tools (one at a time)", items: [
-        { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
+        { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). ONE AXIS PER GESTURE: the first movement (twist or pinch) claims the gesture so the other can't bleed in — lift your fingers to switch, or use 🎛 fine-tune taps. Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
         { t: "⊕ Trajectory", d: "Shows the object's path over the dome — read-only. You lay it down and edit it back on step 1 (⊕ Track points / ✎ Adjust); here it's drawn for reference so you can see it against the real sky." },
         { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
       ]},
@@ -3519,8 +3519,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const ratio = g.dist / t.dist;
         t.ang = g.ang; t.dist = g.dist;
         if (Math.abs(dA) > 0.6 || ratio < 0.67 || ratio > 1.5) return; // pointer glitch — skip this event
-        if (Math.abs(dA) > 0.002) queueFix({ dRoll: dA * R2D });
-        if (ratio !== 1) setFov((f) => clampN(f / ratio, 2, 90));
+        /* same one-axis-per-gesture lock as place mode: the first of
+           twist(roll) / pinch(view zoom) to cross its threshold wins */
+        t.pendRot = (t.pendRot || 0) + dA * R2D;
+        t.pendScale = (t.pendScale || 1) * ratio;
+        if (!t.lock) {
+          if (Math.abs(t.pendRot) > 0.8) t.lock = "rot";
+          else if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) t.lock = "scale";
+        }
+        if (t.lock === "rot" && Math.abs(t.pendRot) > 0.001) { queueFix({ dRoll: t.pendRot }); t.pendRot = 0; t.pendScale = 1; }
+        if (t.lock === "scale" && t.pendScale !== 1) { setFov((f) => clampN(f / t.pendScale, 2, 90)); t.pendScale = 1; t.pendRot = 0; }
         if (vp.w) queuePose("look",
           (((t.vAz - (g.mx - t.mx0) / vp.w * fovH) % 360) + 360) % 360,
           clampN(t.vAlt + (g.my - t.my0) / (vp.h || vp.w) * fovV, -15, EL_MAX));
@@ -3556,9 +3564,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            rotation and a twist doesn't dribble scale */
         t.pendRot = (t.pendRot || 0) + dA * R2D;
         t.pendScale = (t.pendScale || 1) * ratio;
+        /* ONE AXIS PER GESTURE (field ask): the first channel to cross its
+           threshold claims the whole gesture — twisting no longer bleeds
+           zoom and pinching no longer bleeds roll. Lift fingers to switch. */
+        if (!t.lock) {
+          if (Math.abs(t.pendRot) > 0.8) t.lock = "rot";
+          else if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) t.lock = "scale";
+        }
+        if (t.lock === "rot") t.pendScale = 1;
+        if (t.lock === "scale") t.pendRot = 0;
         let doRot = 0, doScale = 1;
-        if (Math.abs(t.pendRot) > 0.8) { doRot = t.pendRot; t.pendRot = 0; }
-        if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) { doScale = t.pendScale; t.pendScale = 1; }
+        if (t.lock === "rot" && Math.abs(t.pendRot) > 0.8) { doRot = t.pendRot; t.pendRot = 0; }
+        if (t.lock === "scale" && (t.pendScale > 1.015 || t.pendScale < 1 / 1.015)) { doScale = t.pendScale; t.pendScale = 1; }
         if (doRot || doScale !== 1) {
           placeMovedRef.current = true;
           if (doScale !== 1) setFovM((f) => clampN(f / doScale, 12, 120)); // inverted pinch: fingers apart → tighter FOV
@@ -4938,6 +4955,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const np = patch.posePath?.[playIdx];
     if (np && playPose) setPlayPose({ t: np.t, az: np.az, el: np.el, roll: np.roll, fov: np.fov, k: np.k || 0 });
   };
+  /* 🎛 one-axis nudge on the frame pose being fixed (same field ask as the
+     place-mode fine tune: gestures are for rough moves, taps for exact) */
+  const nudgeFix = (daz, del, drl) => setPlayPose((pp) => pp
+    ? { ...pp, az: (((pp.az + daz) % 360) + 360) % 360, el: clampN(pp.el + del, -89, 89), roll: clampN((pp.roll || 0) + drl, -180, 180) }
+    : pp);
   /* revert the pending (un-anchored) adjustment on the current frame */
   const revertFixFrame = () => {
     const p = source?.posePath?.[playIdx];
@@ -6489,8 +6511,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     re-rendered the whole dome per tick and crawled). This line
                     just says which frame the alignment describes. */}
                 {source.mediaKind === "video" && (
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", width: "100%" }}>
-                    🎞 aligning on {alignT.toFixed(2)}s{Math.abs(markT - alignT) > 0.1 ? ` · object on ${markT.toFixed(2)}s` : ""} — change it on the measure step (⛰ Align on this frame)
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", width: "100%" }}
+                    title="The frame this alignment describes — change it on the measure step (⛰ Align on this frame)">
+                    🎞 aligning on {alignT.toFixed(2)}s{Math.abs(markT - alignT) > 0.1 ? ` · object on ${markT.toFixed(2)}s` : ""}
                   </span>
                 )}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", width: "100%" }}>
@@ -6519,10 +6542,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       title="Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"
                       onClick={() => { setMSolveOpen(true); solveFromMarks(mSmooth); }}>🎯 Solve from marks</button>
                   )}
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
-                    🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
-                    {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
-                  </span>
+                  {/* hidden while placing — the place tools' "aligning on" line
+                      already says which frame matters there (screen space) */}
+                  {pMode !== "place" && (
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
+                      🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
+                      {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+                    </span>
+                  )}
                 </div>
                 {/* SMOOTHING slider popup — appears after Solve from marks, re-
                     solves live as you drag (the manual solve is instant), then
@@ -6629,11 +6656,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                           onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
                         {curFix && !fixPending && <button className="btn sm" title="Remove this frame's anchor" onClick={() => dropFixAnchor(+curFix.t)}>✕⚓</button>}
                         {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
+                        <button className="btn sm" style={fineOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                          title="Fine tune: one-axis nudge taps for this frame's pose" onClick={() => setFineOn((o) => !o)}>🎛</button>
                         <button className="btn sm" onClick={() => setFixOn(false)}>✓</button>
                       </>
                     );
                   })()}
                 </div>
+                {fineOn && playPose && (
+                  <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>az</span>
+                    <button className="btn sm" title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>‹</button>
+                    <button className="btn sm" title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>›</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>el</span>
+                    <button className="btn sm" title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▼</button>
+                    <button className="btn sm" title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▲</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 4 }}>roll</span>
+                    <button className="btn sm" title="Roll −0.2°" onClick={() => nudgeFix(0, 0, -0.2)}>⟲</button>
+                    <button className="btn sm" title="Roll +0.2°" onClick={() => nudgeFix(0, 0, 0.2)}>⟳</button>
+                  </div>
+                )}
                 <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
                   drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
                 </div>
@@ -6947,8 +6989,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
             ? (panMode
-              ? "✋ Pan mode — drag to move around the magnified view. Tap ✋ again to go back to sliding the sky. Zoom does not change your calibration."
-              : "The photo is pinned, undistorted — drag to slide the SKY behind it, pinch to change how much sky it covers (calibrates FOV), twist to rotate. Use +/− (right) to zoom in on a ridge, ✋ to pan. Line the horizon up, then ✓ Done — nothing will shift.")
+              ? "✋ Pan mode — drag moves the magnified view. Tap ✋ again to slide the sky."
+              : "drag = slide sky · pinch = FOV · twist = roll (first move wins the gesture) · 🎛 fine taps")
             : wizard
               ? (single
                 ? "Align this moment's photo to the sky, then Continue — it becomes one direction (its time comes from the moment). Together with the other moments it builds the trajectory."
