@@ -4945,7 +4945,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (rawO && rawO.length) {
       if (!Array.isArray(source.objPathRaw) || !source.objPathRaw.length) patch.objPathRaw = rawO.map((p) => ({ ...p }));
       const o = smoothObjPathAt(rawO.map((p) => ({ ...p })), objS, { despiked: true });
-      patch.objPath = fx.length ? applyDirFixes(o, base, fx) : o;
+      patch.objPath = fx.length ? applyDirFixes(o, base, fx, { natW: source.natW, natH: source.natH }) : o;
     }
     return patch;
   };

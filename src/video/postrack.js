@@ -16,7 +16,7 @@
    scripts/mathcheck.js against synthesized rotating frames.
    ============================================================ */
 
-import { D2R, R2D, dot, unit, clampN, dirToAzEl } from "../math/geodesy.js";
+import { D2R, R2D, dot, unit, clampN, dirToAzEl, dirFromAzEl } from "../math/geodesy.js";
 import { pixToDirK, dirToPixK, solvePoseAnchors } from "../math/projection.js";
 import { detectStars } from "../checks/platesolve.js";
 
@@ -1014,23 +1014,41 @@ export function applyPoseFixes(path, fixes) {
     };
   });
 }
-/* the same delta field applied to a DIRECTION series (the object track):
-   its entries were converted under the old poses, and a pose fix shifts a
-   frame-fixed pixel's world direction by ≈ the pose's az/el delta. */
-export function applyDirFixes(dirs, basePath, fixes) {
+/* the same delta field applied to a DIRECTION series (the object track).
+   EXACT when the frame dimensions are given (opts.natW/natH): the tracked
+   object is a FIXED PIXEL in its frame, so its old world dir is mapped back
+   to that pixel under the OLD pose and forward through the CORRECTED pose —
+   which carries roll and FOV fixes correctly. A plain az/el delta shift
+   cannot represent a roll fix (it rotates off-center directions about the
+   frame center; field report: a ~4° roll anchor visibly pulled the
+   carefully-tracked object off its path). Without dims it falls back to the
+   az/el delta approximation. */
+export function applyDirFixes(dirs, basePath, fixes, opts) {
   if (!Array.isArray(dirs) || !dirs.length || !Array.isArray(fixes) || !fixes.length) return dirs;
   const fixed = applyPoseFixes(basePath, fixes);
   const angD = (a, b) => ((a - b + 540) % 360) - 180;
-  const at = (arr, t) => {
+  const at = (arr, t) => { // FULL pose interp on a path (az wrap-aware)
     if (t <= arr[0].t) return arr[0];
     if (t >= arr[arr.length - 1].t) return arr[arr.length - 1];
     let lo = 0, hi = arr.length - 1;
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m].t <= t) lo = m; else hi = m; }
     const a = arr[lo], b = arr[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
-    return { az: a.az + angD(b.az, a.az) * u, el: a.el + (b.el - a.el) * u };
+    return {
+      az: a.az + angD(b.az, a.az) * u, el: a.el + (b.el - a.el) * u,
+      roll: (a.roll || 0) + ((b.roll || 0) - (a.roll || 0)) * u,
+      fov: a.fov + (b.fov - a.fov) * u, k: (a.k || 0) + ((b.k || 0) - (a.k || 0)) * u,
+    };
   };
+  const nw = opts && opts.natW, nh = opts && opts.natH;
   return dirs.map((p) => {
     const b0 = at(basePath, +p.t), b1 = at(fixed, +p.t);
+    if (nw && nh && Number.isFinite(b0.fov) && Number.isFinite(b1.fov)) {
+      const px = dirToPixK(dirFromAzEl(+p.az, +p.el), nw, nh, b0.az, b0.el, b0.roll || 0, b0.fov, b0.k || 0);
+      if (px && Number.isFinite(px.px) && Number.isFinite(px.py)) {
+        const ae = dirToAzEl(pixToDirK(px.px, px.py, nw, nh, b1.az, b1.el, b1.roll || 0, b1.fov, b1.k || 0));
+        return { ...p, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3) };
+      }
+    }
     return { ...p, az: +((((p.az + angD(b1.az, b0.az)) % 360) + 360) % 360).toFixed(3), el: +(p.el + (b1.el - b0.el)).toFixed(3) };
   });
 }
