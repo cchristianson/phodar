@@ -962,6 +962,79 @@ export function smoothObjPath(op, opts = {}) {
   return spiked;
 }
 
+/* --- MANUAL POSE FIXES (the "Fix frames" mode) ------------------------------
+   A user-set pose ANCHOR is an absolute {t, az, el, roll[, fov]} for one
+   frame: "THIS is where the horizon really sits here". The correction field
+   is the DELTA between each anchor and the solved path at its time,
+   interpolated linearly between anchors and HELD CONSTANT beyond the
+   outermost ones — pose error is usually drift, so a fix at time t should
+   heal everything after it; anchoring a frame that already looks right
+   (delta ≈ 0) bounds the corrected region. Az wrap-aware. Pure: takes the
+   solved path, returns a corrected copy; anchors at exact sample times land
+   exactly on the anchor pose. */
+export function applyPoseFixes(path, fixes) {
+  if (!Array.isArray(path) || !path.length || !Array.isArray(fixes) || !fixes.length) return path;
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  const fx = [...fixes].filter((f) => f && Number.isFinite(+f.t)).sort((a, b) => a.t - b.t);
+  if (!fx.length) return path;
+  const at = (arr, t) => { // pose interp on the base path (az wrap-aware)
+    if (t <= arr[0].t) return arr[0];
+    if (t >= arr[arr.length - 1].t) return arr[arr.length - 1];
+    let lo = 0, hi = arr.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m].t <= t) lo = m; else hi = m; }
+    const a = arr[lo], b = arr[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { az: a.az + angD(b.az, a.az) * u, el: a.el + (b.el - a.el) * u, roll: (a.roll || 0) + ((b.roll || 0) - (a.roll || 0)) * u, fov: a.fov + (b.fov - a.fov) * u };
+  };
+  const deltas = fx.map((f) => {
+    const base = at(path, +f.t);
+    return {
+      t: +f.t,
+      dAz: Number.isFinite(+f.az) ? angD(+f.az, base.az) : 0,
+      dEl: Number.isFinite(+f.el) ? +f.el - base.el : 0,
+      dRoll: Number.isFinite(+f.roll) ? +f.roll - (base.roll || 0) : 0,
+      dFov: Number.isFinite(+f.fov) ? +f.fov - base.fov : 0,
+    };
+  });
+  const deltaAt = (t) => {
+    if (t <= deltas[0].t) return deltas[0];
+    if (t >= deltas[deltas.length - 1].t) return deltas[deltas.length - 1];
+    let lo = 0, hi = deltas.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (deltas[m].t <= t) lo = m; else hi = m; }
+    const a = deltas[lo], b = deltas[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { dAz: a.dAz + (b.dAz - a.dAz) * u, dEl: a.dEl + (b.dEl - a.dEl) * u, dRoll: a.dRoll + (b.dRoll - a.dRoll) * u, dFov: a.dFov + (b.dFov - a.dFov) * u };
+  };
+  return path.map((p) => {
+    const d = deltaAt(p.t);
+    return {
+      ...p,
+      az: +((((p.az + d.dAz) % 360) + 360) % 360).toFixed(3),
+      el: +(p.el + d.dEl).toFixed(3),
+      roll: +((p.roll || 0) + d.dRoll).toFixed(3),
+      fov: +clampN(p.fov + d.dFov, 2, 150).toFixed(2),
+    };
+  });
+}
+/* the same delta field applied to a DIRECTION series (the object track):
+   its entries were converted under the old poses, and a pose fix shifts a
+   frame-fixed pixel's world direction by ≈ the pose's az/el delta. */
+export function applyDirFixes(dirs, basePath, fixes) {
+  if (!Array.isArray(dirs) || !dirs.length || !Array.isArray(fixes) || !fixes.length) return dirs;
+  const fixed = applyPoseFixes(basePath, fixes);
+  const angD = (a, b) => ((a - b + 540) % 360) - 180;
+  const at = (arr, t) => {
+    if (t <= arr[0].t) return arr[0];
+    if (t >= arr[arr.length - 1].t) return arr[arr.length - 1];
+    let lo = 0, hi = arr.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m].t <= t) lo = m; else hi = m; }
+    const a = arr[lo], b = arr[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { az: a.az + angD(b.az, a.az) * u, el: a.el + (b.el - a.el) * u };
+  };
+  return dirs.map((p) => {
+    const b0 = at(basePath, +p.t), b1 = at(fixed, +p.t);
+    return { ...p, az: +((((p.az + angD(b1.az, b0.az)) % 360) + 360) % 360).toFixed(3), el: +(p.el + (b1.el - b0.el)).toFixed(3) };
+  });
+}
+
 /* PIN-FIND: locate a small LOW-CONTRAST object in a window. An integral-image
    center-surround sweep — O(1) per candidate, so the WHOLE window is
    affordable at full resolution, which is what acquires a faint object far

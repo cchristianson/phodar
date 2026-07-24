@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
-import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality } from "./capture/pose.js";
@@ -592,6 +592,7 @@ const HELP_SECTIONS = [
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎚 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
+      "⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist tilts it), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.",
     ],
   },
   {
@@ -2911,6 +2912,38 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      pose into mediaAim. Cleared when playback exits (after the marked frame is
      re-baked, so texture and pose always agree). */
   const [playPose, setPlayPose] = useState(null);   // {az,el,roll,fov,k} | null
+  /* --- ⚓ FIX FRAMES: manual correction of the auto-stabilized pose path ---
+     Scrub to a frame where the solve lost the world lock, drag the photo back
+     onto the true horizon/terrain (twist = tilt), and ⚓ Anchor it. Anchors are
+     ABSOLUTE poses in source.poseFixes; applyPoseFixes turns them into a delta
+     field (exact at anchors, linear between, held beyond the ends) over the
+     smoothed base path, and applyDirFixes shifts the object track through the
+     same field — so waypoints/trajectory/wireframe/export all follow. The
+     pending (un-anchored) adjustment lives ONLY in playPose (display override),
+     so scrubbing away discards it and commitPlacement can never absorb it. */
+  const [fixOn, setFixOn] = useState(false);
+  const fixDragRef = useRef(null);   // {x, y, az, el} — one-finger photo drag baseline
+  const fixTwistRef = useRef(null);  // two-finger: twist=roll, pinch=view zoom, mid-drag=view pan
+  const fixRafRef = useRef(0);
+  const fixPendRef = useRef(null);
+  const queueFix = (mut) => {        // rAF-coalesced playPose edit (120 Hz phones flood React otherwise)
+    const p = fixPendRef.current || {};
+    if (mut.az != null) { p.az = mut.az; p.el = mut.el; }
+    if (mut.dRoll) p.dRoll = (p.dRoll || 0) + mut.dRoll;
+    fixPendRef.current = p;
+    if (!fixRafRef.current) fixRafRef.current = requestAnimationFrame(() => {
+      fixRafRef.current = 0;
+      const q = fixPendRef.current; fixPendRef.current = null;
+      if (!q) return;
+      setPlayPose((pp) => {
+        if (!pp) return pp;
+        const n2 = { ...pp };
+        if (q.az != null) { n2.az = ((q.az % 360) + 360) % 360; n2.el = clampN(q.el, -89, 89); }
+        if (q.dRoll) n2.roll = clampN((pp.roll || 0) - q.dRoll, -180, 180); // rotate(−roll): photo tracks the fingers
+        return n2;
+      });
+    });
+  };
   const [playIdx, setPlayIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const playingRef = useRef(false);
@@ -3413,6 +3446,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const n = pointersRef.current.size;
     if (placing && n === 1) { pendUndoRef.current = snapPose(); placeMovedRef.current = false; } // arm undo for this gesture
     if (n >= 2) {
+      /* fix mode: two fingers = twist rolls the FRAME POSE, pinch zooms the
+         view, midpoint drag pans the view — the photo edit stays in playPose */
+      if (fixOn && playPose && !placing) {
+        fixDragRef.current = null; panRef.current = null; calibTapRef.current = null;
+        const g = twoPtGeom();
+        if (g) fixTwistRef.current = { ...g, vAz: viewAz, vAlt: viewAlt, mx0: g.mx, my0: g.my };
+        return;
+      }
       /* Second finger while a point rotation is ALREADY underway → don't pinch:
          anchor with this finger and let the twist between the two fingers roll
          the shape about the view axis (fine control the 1-finger trackball
@@ -3448,6 +3489,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       dispPanRef.current = { x: e.clientX, y: e.clientY, px: pPan.x, py: pPan.y };
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
+    } else if (fixOn && playPose) {
+      /* fix mode: one finger drags the PHOTO onto the true horizon (the view
+         camera stays put) — baseline at the gesture start, like place mode */
+      fixDragRef.current = { x: e.clientX, y: e.clientY, az: playPose.az, el: playPose.el };
     } else if (rotMode && selPt != null && source?.shapeFit) {
       rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt), pid: e.pointerId };
     } else {
@@ -3462,6 +3507,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: pointersRef.current.get(e.pointerId)?.t ?? e.timeStamp });
     const n = pointersRef.current.size;
     if (n >= 2) {
+      /* fix mode: twist → frame roll, pinch → view zoom, midpoint drag → view pan */
+      if (fixTwistRef.current) {
+        const t = fixTwistRef.current;
+        const g = twoPtGeom(t.ids); if (!g) return;
+        let dA = g.ang - t.ang;
+        if (dA > Math.PI) dA -= 2 * Math.PI;
+        if (dA < -Math.PI) dA += 2 * Math.PI;
+        const ratio = g.dist / t.dist;
+        t.ang = g.ang; t.dist = g.dist;
+        if (Math.abs(dA) > 0.6 || ratio < 0.67 || ratio > 1.5) return; // pointer glitch — skip this event
+        if (Math.abs(dA) > 0.002) queueFix({ dRoll: dA * R2D });
+        if (ratio !== 1) setFov((f) => clampN(f / ratio, 2, 90));
+        if (vp.w) queuePose("look",
+          (((t.vAz - (g.mx - t.mx0) / vp.w * fovH) % 360) + 360) % 360,
+          clampN(t.vAlt + (g.my - t.my0) / (vp.h || vp.w) * fovV, -15, EL_MAX));
+        return;
+      }
       /* two-finger view-axis twist rolling the selected point's shape */
       if (rotTwistRef.current) {
         const tw = rotTwistRef.current;
@@ -3534,6 +3596,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       });
       return;
     }
+    if (fixDragRef.current && vp.w) {
+      /* fix mode: the photo follows the finger across the fixed sky — screen
+         right = +az, screen down = −el, scaled by the VIEW fov (the photo is
+         world-locked, so its screen motion is angular motion) */
+      const fd = fixDragRef.current;
+      const dx = (e.clientX - fd.x) / vp.w, dy = (e.clientY - fd.y) / (vp.h || vp.w);
+      queueFix({ az: fd.az + dx * fovH, el: fd.el - dy * fovV });
+      return;
+    }
     if (placeRef.current && vp.w) {
       const pr = placeRef.current; // snapshot: pointerup may null the ref before React flushes
       const dx = (e.clientX - pr.x) / vp.w, dy = (e.clientY - pr.y) / (vp.h || vp.w);
@@ -3564,7 +3635,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     pointersRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     const n = pointersRef.current.size;
-    if (n < 2) { pinchRef.current = null; twistRef.current = null; }
+    if (n < 2) { pinchRef.current = null; twistRef.current = null; fixTwistRef.current = null; }
     if (rotTwistRef.current && n < 2) {
       /* lifting out of a two-finger twist: hand control back to whichever
          finger remains, seeded at the post-twist orientation so it doesn't jump */
@@ -3579,6 +3650,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (n === 1) {
       const p = [...pointersRef.current.values()][0];
       if (placing) placeRef.current = { x: p.x, y: p.y, az: pAz, el: pEl };
+      else if (fixOn && playPose) fixDragRef.current = { x: p.x, y: p.y, az: playPose.az, el: playPose.el }; // hand back to photo drag (a pending rAF pose is at most one frame stale)
       else if (rotDragRef.current) { /* twist handed control back to this finger — keep the rotate drag */ }
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
@@ -3600,7 +3672,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (best && bestD < 60) pickCalib(best);
         else setCalibMsg("No named star near your tap — pan/zoom to bring one into view, then tap it");
       }
-      panRef.current = null; placeRef.current = null; dispPanRef.current = null; rotDragRef.current = null; rotTwistRef.current = null;
+      panRef.current = null; placeRef.current = null; dispPanRef.current = null; rotDragRef.current = null; rotTwistRef.current = null; fixDragRef.current = null; fixTwistRef.current = null;
       if (rotRafRef.current) { cancelAnimationFrame(rotRafRef.current); rotRafRef.current = 0; }
       if (placing) commitPlacement();
     }
@@ -4236,6 +4308,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (Array.isArray(source.posePathRaw) && source.posePathRaw.length) patch.posePathRaw = rotP(source.posePathRaw); // raws ride along, or a later re-smooth resurrects the old anchor
         if (Array.isArray(source.objPath) && source.objPath.length) patch.objPath = rotO(source.objPath);
         if (Array.isArray(source.objPathRaw) && source.objPathRaw.length) patch.objPathRaw = rotO(source.objPathRaw);
+        if (Array.isArray(source.poseFixes) && source.poseFixes.length) patch.poseFixes = rotP(source.poseFixes); // ⚓ anchors are absolute world poses — they rotate with the solution
       }
     }
     update(patch);
@@ -4680,7 +4753,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
         })
         : null;
-      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, ...(track2 ? { track: track2 } : {}) });
+      /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
+         them onto a fresh solve would re-apply stale deltas to good frames */
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -4804,26 +4879,92 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      source, so any strength can be revisited without re-running the whole
      stabilization. Legacy sources (no raw stored) adopt their current path
      as raw on first touch. */
+  /* ONE derivation for the stored paths: smoothing at the chosen strengths
+     over the raw solves, then the ⚓ Fix frames anchors applied on top —
+     absolute pose fixes whose deltas interpolate between anchors and hold
+     beyond the outermost ones (applyPoseFixes), with the object track
+     shifted through the same delta field (applyDirFixes). Every consumer
+     (playback, trajectory, waypoint conversion, exports, reports) reads the
+     stored posePath/objPath, so anchors flow everywhere automatically. */
+  const rederivePaths = (fixes, camS, objS) => {
+    const patch = {};
+    const rawP = Array.isArray(source?.posePathRaw) && source.posePathRaw.length ? source.posePathRaw : source?.posePath;
+    if (!Array.isArray(rawP) || !rawP.length) return patch;
+    if (!Array.isArray(source.posePathRaw) || !source.posePathRaw.length) patch.posePathRaw = rawP.map((p) => ({ ...p }));
+    const base = smoothPathAt(rawP.map((p) => ({ ...p })), camS);
+    const fx = Array.isArray(fixes) ? fixes.filter((f) => isNum(f?.t) && isNum(f?.az)) : [];
+    patch.posePath = fx.length ? applyPoseFixes(base, fx) : base;
+    const rawO = Array.isArray(source.objPathRaw) && source.objPathRaw.length ? source.objPathRaw : (Array.isArray(source.objPath) ? source.objPath : null);
+    if (rawO && rawO.length) {
+      if (!Array.isArray(source.objPathRaw) || !source.objPathRaw.length) patch.objPathRaw = rawO.map((p) => ({ ...p }));
+      const o = smoothObjPathAt(rawO.map((p) => ({ ...p })), objS, { despiked: true });
+      patch.objPath = fx.length ? applyDirFixes(o, base, fx) : o;
+    }
+    return patch;
+  };
+  const camSNow = isNum(source?.smoothCam) ? +source.smoothCam : 0.25;
+  const objSNow = isNum(source?.smoothObj) ? +source.smoothObj : 0.25;
+  const fixesNow = Array.isArray(source?.poseFixes) ? source.poseFixes : [];
   const applySmooth = (kind, v) => {
     if (!source || !update) return;
     const s = clampN(+v, 0, 1);
-    const patch = kind === "cam" ? { smoothCam: s } : { smoothObj: s };
-    if (kind === "cam") {
-      const raw = Array.isArray(source.posePathRaw) && source.posePathRaw.length ? source.posePathRaw : source.posePath;
-      if (Array.isArray(raw) && raw.length) {
-        if (!Array.isArray(source.posePathRaw) || !source.posePathRaw.length) patch.posePathRaw = raw.map((p) => ({ ...p }));
-        patch.posePath = smoothPathAt(raw.map((p) => ({ ...p })), s);
-      }
-    } else {
-      const raw = Array.isArray(source.objPathRaw) && source.objPathRaw.length ? source.objPathRaw : source.objPath;
-      if (Array.isArray(raw) && raw.length) {
-        if (!Array.isArray(source.objPathRaw) || !source.objPathRaw.length) patch.objPathRaw = raw.map((p) => ({ ...p }));
-        patch.objPath = smoothObjPathAt(raw.map((p) => ({ ...p })), s, { despiked: true });
-      }
-    }
+    const patch = {
+      ...(kind === "cam" ? { smoothCam: s } : { smoothObj: s }),
+      ...rederivePaths(fixesNow, kind === "cam" ? s : camSNow, kind === "obj" ? s : objSNow),
+    };
     mediaDel(source.id + ":stab");   // a previously exported render is stale under the new path
     update(patch);
   };
+  /* commit the pending playPose adjustment as an anchor (upsert by frame time) */
+  const setFixAnchor = () => {
+    if (!source || !update || !playPose || !isNum(playPose.t)) return;
+    const fx = { t: +(+playPose.t).toFixed(3), az: +(+playPose.az).toFixed(3), el: +(+playPose.el).toFixed(3), roll: +(+(playPose.roll || 0)).toFixed(2) };
+    const list = fixesNow.filter((f) => Math.abs(+f.t - fx.t) > 1e-3).concat([fx]).sort((a, b) => a.t - b.t);
+    const patch = { poseFixes: list, ...rederivePaths(list, camSNow, objSNow) };
+    mediaDel(source.id + ":stab");
+    update(patch);
+    setFlash(`⚓ anchored ${fx.t.toFixed(2)}s — ${list.length} anchor${list.length > 1 ? "s" : ""}; corrections blend between anchors`);
+  };
+  const dropFixAnchor = (t) => {
+    if (!source || !update) return;
+    const list = fixesNow.filter((f) => Math.abs(+f.t - t) > 1e-3);
+    const patch = { poseFixes: list.length ? list : null, ...rederivePaths(list, camSNow, objSNow) };
+    mediaDel(source.id + ":stab");
+    update(patch);
+    /* refresh the displayed pose from the re-derived path so the frame on
+       screen snaps back to what the path now says */
+    const np = patch.posePath?.[playIdx];
+    if (np && playPose) setPlayPose({ t: np.t, az: np.az, el: np.el, roll: np.roll, fov: np.fov, k: np.k || 0 });
+  };
+  /* revert the pending (un-anchored) adjustment on the current frame */
+  const revertFixFrame = () => {
+    const p = source?.posePath?.[playIdx];
+    if (p && playPose) setPlayPose({ t: p.t, az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 });
+  };
+  /* LIVE PREVIEW while adjusting: the pending pose applied as one more anchor
+     over the smoothed base — exactly what ⚓ Anchor would produce, so the
+     trajectory overlay shows the real outcome as you drag. When the frame is
+     unadjusted the pending delta equals the interpolated delta at t, so the
+     preview is identical to the stored path (no visual jump on scrub). */
+  const fixBase = useMemo(() => {
+    if (!fixOn || !Array.isArray(source?.posePath) || source.posePath.length < 2) return null;
+    const rawP = Array.isArray(source.posePathRaw) && source.posePathRaw.length ? source.posePathRaw : source.posePath;
+    return smoothPathAt(rawP.map((p) => ({ ...p })), camSNow);
+  }, [fixOn, source?.posePathRaw, source?.posePath, camSNow]); // eslint-disable-line
+  const fixPreview = useMemo(() => {
+    if (!fixOn || !fixBase || !playPose || !isNum(playPose.t)) return null;
+    const pend = { t: +playPose.t, az: +playPose.az, el: +playPose.el, roll: +(playPose.roll || 0) };
+    const list = fixesNow.filter((f) => Math.abs(+f.t - pend.t) > 1e-3).concat([pend]).sort((a, b) => a.t - b.t);
+    return applyPoseFixes(fixBase, list);
+  }, [fixOn, fixBase, playPose, source?.poseFixes]); // eslint-disable-line
+  /* pending = the on-screen pose differs from the stored path at this frame */
+  const fixPending = (() => {
+    if (!fixOn || !playPose) return false;
+    const p = source?.posePath?.[playIdx];
+    if (!p) return false;
+    const dAz2 = ((playPose.az - p.az + 540) % 360) - 180;
+    return Math.abs(dAz2) > 0.01 || Math.abs(playPose.el - p.el) > 0.01 || Math.abs((playPose.roll || 0) - (p.roll || 0)) > 0.01;
+  })();
   /* SELF-HEAL: a shipped bug briefly made the track-smoothing slider write the
      despike COUNT (a number) into objPath, which hid the slider itself and
      every other objPath consumer. The raw track was saved before the
@@ -5487,9 +5628,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      spot on every mode switch was a field annoyance — playback just pauses
      there and resumes where you left it back in look mode. */
   useEffect(() => {
-    if (pMode === "place" && (playPose || playingRef.current)) { exitPlayback(); return; }
+    if (pMode === "place" && (playPose || playingRef.current)) { setFixOn(false); exitPlayback(); return; }
     if ((trajOn || sizeOn || cmpOn) && playingRef.current) { playingRef.current = false; setPlaying(false); }
-  }, [pMode, trajOn, sizeOn, cmpOn]); // eslint-disable-line
+    if ((trajOn || sizeOn || cmpOn || calibOn) && fixOn) setFixOn(false); // the tools take over the gestures — a live fix drag must not linger underneath
+  }, [pMode, trajOn, sizeOn, cmpOn, calibOn]); // eslint-disable-line
   /* teardown: cancel any running solve and release the playback video */
   useEffect(() => () => {
     stabAbortRef.current++;
@@ -5499,7 +5641,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, []);
   /* new media (or a new marked frame) invalidates the playback element/pose */
   useEffect(() => {
-    playingRef.current = false; setPlaying(false); setPlayPose(null); setPlayIdx(0);
+    playingRef.current = false; setPlaying(false); setPlayPose(null); setPlayIdx(0); setFixOn(false);
     const v = playVidRef.current;
     if (v) { v.removeAttribute("src"); try { v.load(); } catch (e) { } playVidRef.current = null; }
   }, [source?.mediaUrl]);
@@ -5930,7 +6072,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             numbered chips + dashed path just clutter the world view (the
             object itself is represented by the wireframe overlay). */}
         {(() => {
-          if (!source || !trajOn) return null;
+          /* also shown while ⚓ Fix frames is active (gated by the 🛸 toggle):
+             the preview path feeds the conversion, so the trajectory slides
+             LIVE as you drag a frame back onto the horizon */
+          if (!source || !(trajOn || (fixOn && objOn))) return null;
           /* SKY PATH, not frame path: on a stabilized video each waypoint was
              tapped on ITS OWN frame, so its direction must go through THAT
              frame's solved pose — converting them all through the single
@@ -5939,7 +6084,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
              makes meaningless. With a posePath, build the dirs per-frame;
              everything else (stills, unstabilized clips) keeps the old path. */
           let dirs = null;
-          const pp2 = source.mediaKind === "video" && Array.isArray(source.posePath) && source.posePath.length > 1 ? source.posePath : null;
+          const ppSrc = (fixOn && fixPreview) || source.posePath;
+          const pp2 = source.mediaKind === "video" && Array.isArray(ppSrc) && ppSrc.length > 1 ? ppSrc : null;
           if (pp2 && source.natW) {
             const ptsT = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y)).sort((a, b) => a.t - b.t);
             const conv = ptsT.map((q) => {
@@ -5960,6 +6106,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </svg>
               )}
               {(() => {
+                /* fix mode (trajectory tool closed): just small dots on the
+                   waypoints — the sliding polyline is the live feedback, the
+                   numbered chips + wireframes would clutter and cost frames */
+                if (!trajOn) return ps.map((p, i) => (p && !dirs[i].virt ? (
+                  <div key={"fx" + i} style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", width: 6, height: 6, borderRadius: "50%", background: "var(--track)", opacity: 0.85, pointerEvents: "none" }} />
+                ) : null));
                 let n = -1;
                 return ps.map((p, i) => {
                   if (dirs[i].virt) return null;
@@ -6395,13 +6547,61 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap" }}>
                   {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
                 </span>
-                {playPose && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
-                <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); }}
+                {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                  onClick={() => {
+                    playingRef.current = false; setPlaying(false);
+                    setSmoothOpen(false); setExportMenu(false);
+                    if (!fixOn && !playPose) showFrame(playIdx); // entering fix mode needs a frame on screen at its path pose
+                    setFixOn((o) => !o);
+                  }}
+                  title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
+                <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
                   title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎚</button>
                 <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
                   title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
                   {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
                 </button>
+              </div>
+            )}
+            {fixOn && !calibOn && pMode !== "place" && !trajOn && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+              <div style={{ display: "grid", gap: 6, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--amber)", fontWeight: 800 }}>⚓ Fix frames</span>
+                  {playPose && isNum(playPose.t) && (
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: fixPending ? "var(--amber)" : "var(--dim)" }}>
+                      {(+playPose.t).toFixed(2)}s · az {(+playPose.az).toFixed(1)}° el {(+playPose.el).toFixed(1)}° roll {(+(playPose.roll || 0)).toFixed(1)}°{fixPending ? " · adjusted" : ""}
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <button className="btn sm amber" disabled={!playPose || !isNum(playPose?.t)}
+                    title="Save this frame's pose as an anchor — corrections interpolate between anchors and hold past the outermost ones. Anchoring an UNTOUCHED frame pins it as correct, so a neighbouring correction can't bleed into it."
+                    onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin as correct"}</button>
+                  {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
+                  <button className="btn sm" onClick={() => setFixOn(false)}>✓ Done</button>
+                </div>
+                {fixesNow.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>anchors</span>
+                    {fixesNow.map((f) => {
+                      const cur = playPose && isNum(playPose.t) && Math.abs(+f.t - +playPose.t) < 1e-3;
+                      return (
+                        <span key={"anc" + f.t} style={{ display: "inline-flex", alignItems: "center", gap: 4, border: `1px solid ${cur ? "var(--amber)" : "var(--line)"}`, borderRadius: 8, padding: "2px 6px", fontFamily: "var(--mono)", fontSize: 10, color: cur ? "var(--amber)" : "var(--track)" }}>
+                          <span style={{ cursor: "pointer" }} title="Jump to this anchor's frame"
+                            onClick={() => { const pp3 = source.posePath; let bi = 0; for (let i2 = 0; i2 < pp3.length; i2++) if (Math.abs(pp3[i2].t - f.t) < Math.abs(pp3[bi].t - f.t)) bi = i2; showFrame(bi); }}>{(+f.t).toFixed(2)}s</span>
+                          <span style={{ cursor: "pointer", color: "var(--dim)" }} title="Remove this anchor" onClick={() => dropFixAnchor(+f.t)}>✕</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.4 }}>
+                  Scrub to a frame where the world lock slipped, then <b>drag the photo</b> onto the true horizon/terrain
+                  — two-finger <b>twist</b> tilts it, two-finger drag pans the view, pinch zooms. <b>⚓ Anchor</b> saves the frame;
+                  the correction blends smoothly to the next anchor and holds past the ends, and the object trajectory
+                  {objOn ? " (shown live)" : " (toggle 🛸 to watch it live)"} + waypoints move with it.
+                  Scrubbing away without anchoring discards the adjustment. Anchors survive smoothing changes; re-stabilizing clears them.
+                </div>
               </div>
             )}
             {smoothOpen && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
@@ -7178,6 +7378,7 @@ function PositionEditor({ src, update, others }) {
       if (Array.isArray(src.posePathRaw) && src.posePathRaw.length) patch.posePathRaw = yaw(src.posePathRaw);
       if (Array.isArray(src.objPath) && src.objPath.length) patch.objPath = yaw(src.objPath);
       if (Array.isArray(src.objPathRaw) && src.objPathRaw.length) patch.objPathRaw = yaw(src.objPathRaw);
+      if (Array.isArray(src.poseFixes) && src.poseFixes.length) patch.poseFixes = yaw(src.poseFixes); // ⚓ Fix-frames anchors are absolute poses — they yaw along
     }
     update(patch);
   };
