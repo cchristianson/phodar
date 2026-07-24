@@ -4814,6 +4814,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const aspect = natH / natW;
       const minFov = Math.min(...path.map((p) => p.fov));
       const maxFov = Math.max(...path.map((p) => p.fov));
+      /* the follow source decides the crop framing below, so resolve it first:
+         auto-track when it survived, else the tapped-waypoint sky path */
+      const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : followPath;
       if (mode === "crop") {
         /* the object marks live on the MARKED frame — when it differs from the
            alignment frame, project them through THAT frame's solved pose (the
@@ -4830,24 +4833,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           cd = unit([cd[0] + gB[0], cd[1] + gB[1], cd[2] + gB[2]]);
         }
         ce = dirToAzEl(cd);
-        /* crop to the AVERAGE WINDOW of the clip's own zoom range: the mean of
-           the most zoomed-OUT frame (maxFov) and the most zoomed-IN frame
-           (minFov). This tracks how the footage was actually framed and is
-           tighter than the old object-proportional formula. Floored so the
-           object (≈⅓ of the frame) and both sight-lines still fit, and never
-           tighter than the most-zoomed frame itself. */
-        camFov = clampN((minFov + maxFov) / 2, Math.max(minFov, objAng * 3, sep * 1.2, 1.6), 70);
+        /* CLOSE-UP framing: a zoomed-in video of the OBJECT, with a little
+           space around it at its LARGEST size along the track (keyframed
+           sizes included) — user decision, replacing the clip-zoom-window
+           average, whose "never tighter than the most-zoomed frame" floor
+           meant it never actually read as a close-up. 2.2× the max angular
+           size ⇒ the object fills ~45% of the frame at its biggest. Only
+           safe when the camera FOLLOWS the object; with nothing to follow
+           the static camera keeps the old zoom-window framing so a moving
+           object can't walk out of a tight fixed crop. */
+        const sized = (source.track || []).filter((p) => isNum(p.ang)).map((p) => +p.ang);
+        const maxAng = Math.max(objAng, ...sized);
+        camFov = objAll
+          ? clampN(maxAng * 2.2, 0.8, 70)
+          : clampN((minFov + maxFov) / 2, Math.max(minFov, objAng * 3, sep * 1.2, 1.6), 70);
       }
       let B = photoBasis(ce.az, ce.el, 0);
       let mx = 0.05, my = 0.05;
       for (const d of corners) { const z = dot(d, B.f); if (z <= 0.05) continue; mx = Math.max(mx, Math.abs(dot(d, B.r) / z)); my = Math.max(my, Math.abs(dot(d, B.u) / z)); }
       if (mode !== "crop") camFov = clampN(2 * Math.atan(Math.max(mx, my / aspect) / 0.94) * R2D, 20, 118);
-      /* close-up FOLLOWS the object when a track exists: the virtual camera
-         re-centers on the tracked direction each frame, so the object stays
-         in the middle of the crop even as it crosses the sky */
-      /* auto-track when it survived, else the tapped-waypoint sky path —
-         the close-up camera follows the object either way */
-      const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : followPath;
+      /* close-up FOLLOWS the object when a track exists (objAll, resolved
+         above): the virtual camera re-centers on the tracked direction each
+         frame, so the object stays in the middle of the crop even as it
+         crosses the sky */
       const camFollow = mode === "crop" && objAll;
       const objAt = (t) => {
         const op = objAll;
