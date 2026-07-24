@@ -2923,6 +2923,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      pending (un-anchored) adjustment lives ONLY in playPose (display override),
      so scrubbing away discards it and commitPlacement can never absorb it. */
   const [fixOn, setFixOn] = useState(false);
+  useEffect(() => { setPanMode(false); }, [fixOn]); // ✋ never carries across a fix-mode toggle
   const [fineOn, setFineOn] = useState(false); // 🎛 place-mode fine-tune nudge buttons
   const fixDragRef = useRef(null);   // {x, y, az, el} — one-finger photo drag baseline
   const fixTwistRef = useRef(null);  // two-finger: twist=roll, pinch=view zoom, mid-drag=view pan
@@ -3491,9 +3492,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       dispPanRef.current = { x: e.clientX, y: e.clientY, px: pPan.x, py: pPan.y };
     } else if (placing) {
       placeRef.current = { x: e.clientX, y: e.clientY, az: pAz, el: pEl };
-    } else if (fixOn && playPose) {
+    } else if (fixOn && playPose && !panMode) {
       /* fix mode: one finger drags the PHOTO onto the true horizon (the view
-         camera stays put) — baseline at the gesture start, like place mode */
+         camera stays put) — baseline at the gesture start, like place mode.
+         With ✋ pan mode on, this falls through to the normal view pan. */
       fixDragRef.current = { x: e.clientX, y: e.clientY, az: playPose.az, el: playPose.el };
     } else if (rotMode && selPt != null && source?.shapeFit) {
       rotDragRef.current = { idx: selPt, x: e.clientX, y: e.clientY, R0: ptRotM(selPt), pid: e.pointerId };
@@ -3669,7 +3671,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (n === 1) {
       const p = [...pointersRef.current.values()][0];
       if (placing) placeRef.current = { x: p.x, y: p.y, az: pAz, el: pEl };
-      else if (fixOn && playPose) fixDragRef.current = { x: p.x, y: p.y, az: playPose.az, el: playPose.el }; // hand back to photo drag (a pending rAF pose is at most one frame stale)
+      else if (fixOn && playPose && !panMode) fixDragRef.current = { x: p.x, y: p.y, az: playPose.az, el: playPose.el }; // hand back to photo drag (a pending rAF pose is at most one frame stale)
       else if (rotDragRef.current) { /* twist handed control back to this finger — keep the rotate drag */ }
       else panRef.current = { x: p.x, y: p.y, az: viewAz, alt: viewAlt };
     } else if (n === 0) {
@@ -4937,7 +4939,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* commit the pending playPose adjustment as an anchor (upsert by frame time) */
   const setFixAnchor = () => {
     if (!source || !update || !playPose || !isNum(playPose.t)) return;
-    const fx = { t: +(+playPose.t).toFixed(3), az: +(+playPose.az).toFixed(3), el: +(+playPose.el).toFixed(3), roll: +(+(playPose.roll || 0)).toFixed(2) };
+    const fx = { t: +(+playPose.t).toFixed(3), az: +(+playPose.az).toFixed(3), el: +(+playPose.el).toFixed(3), roll: +(+(playPose.roll || 0)).toFixed(2), fov: +(+playPose.fov).toFixed(2) };
     const list = fixesNow.filter((f) => Math.abs(+f.t - fx.t) > 1e-3).concat([fx]).sort((a, b) => a.t - b.t);
     const patch = { poseFixes: list, ...rederivePaths(list, camSNow, objSNow) };
     mediaDel(source.id + ":stab");
@@ -4958,8 +4960,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   /* 🎛 one-axis nudge on the frame pose being fixed (same field ask as the
      place-mode fine tune: gestures are for rough moves, taps for exact) */
-  const nudgeFix = (daz, del, drl) => setPlayPose((pp) => pp
-    ? { ...pp, az: (((pp.az + daz) % 360) + 360) % 360, el: clampN(pp.el + del, -89, 89), roll: clampN((pp.roll || 0) + drl, -180, 180) }
+  const nudgeFix = (daz, del, drl, dfov) => setPlayPose((pp) => pp
+    ? { ...pp, az: (((pp.az + daz) % 360) + 360) % 360, el: clampN(pp.el + del, -89, 89), roll: clampN((pp.roll || 0) + drl, -180, 180), fov: dfov ? clampN(pp.fov + dfov, 2, 150) : pp.fov }
     : pp);
   /* revert the pending (un-anchored) adjustment on the current frame */
   const revertFixFrame = () => {
@@ -4978,7 +4980,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, [fixOn, source?.posePathRaw, source?.posePath, camSNow]); // eslint-disable-line
   const fixPreview = useMemo(() => {
     if (!fixOn || !fixBase || !playPose || !isNum(playPose.t)) return null;
-    const pend = { t: +playPose.t, az: +playPose.az, el: +playPose.el, roll: +(playPose.roll || 0) };
+    const pend = { t: +playPose.t, az: +playPose.az, el: +playPose.el, roll: +(playPose.roll || 0), fov: +playPose.fov };
     const list = fixesNow.filter((f) => Math.abs(+f.t - pend.t) > 1e-3).concat([pend]).sort((a, b) => a.t - b.t);
     return applyPoseFixes(fixBase, list);
   }, [fixOn, fixBase, playPose, source?.poseFixes]); // eslint-disable-line
@@ -4988,7 +4990,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const p = source?.posePath?.[playIdx];
     if (!p) return false;
     const dAz2 = ((playPose.az - p.az + 540) % 360) - 180;
-    return Math.abs(dAz2) > 0.01 || Math.abs(playPose.el - p.el) > 0.01 || Math.abs((playPose.roll || 0) - (p.roll || 0)) > 0.01;
+    return Math.abs(dAz2) > 0.01 || Math.abs(playPose.el - p.el) > 0.01 || Math.abs((playPose.roll || 0) - (p.roll || 0)) > 0.01 || Math.abs(playPose.fov - p.fov) > 0.05;
   })();
   /* SELF-HEAL: a shipped bug briefly made the track-smoothing slider write the
      despike COUNT (a number) into objPath, which hid the slider itself and
@@ -6412,6 +6414,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         <div style={{ position: "absolute", right: 10, top: ctrlBandPct + "%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
           <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f * 0.72).toFixed(1), 2, 90))}>+</button>
           <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f / 0.72).toFixed(1), 2, 90))}>−</button>
+          {/* fix mode: one finger normally drags the PHOTO — ✋ flips it to
+              panning the view (like place mode's ✋), so a zoomed-in horizon
+              can be reached without disturbing the frame pose */}
+          {fixOn && (
+            <button className={"btn" + (panMode ? " amber" : "")} title="Pan mode: drag looks around the view instead of moving the photo"
+              style={{ width: 42, height: 42, padding: 0, fontSize: 17, background: panMode ? undefined : "rgba(15,23,42,.75)" }}
+              onClick={() => setPanMode((v) => !v)}>✋</button>
+          )}
         </div>
       )}
 
@@ -6664,22 +6674,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   })()}
                 </div>
                 {fineOn && playPose && (
-                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
                     {/* arrow + roll sense inverted per field test — every tap moves
-                        the photo the way it reads on screen. Compact padding so
-                        az/el/roll/zoom all fit one line on a phone. */}
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>az</span>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Azimuth +0.1°" onClick={() => nudgeFix(0.1, 0, 0)}>‹</button>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Azimuth −0.1°" onClick={() => nudgeFix(-0.1, 0, 0)}>›</button>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>el</span>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Elevation +0.1°" onClick={() => nudgeFix(0, 0.1, 0)}>▼</button>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Elevation −0.1°" onClick={() => nudgeFix(0, -0.1, 0)}>▲</button>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>roll</span>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Roll +0.2°" onClick={() => nudgeFix(0, 0, 0.2)}>⟲</button>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Roll −0.2°" onClick={() => nudgeFix(0, 0, -0.2)}>⟳</button>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", marginLeft: 2 }}>zoom</span>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Zoom the view out (pose untouched)" onClick={() => setFov((f) => clampN(f * 1.18, 2, 90))}>−</button>
-                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Zoom the view in (pose untouched)" onClick={() => setFov((f) => clampN(f / 1.18, 2, 90))}>＋</button>
+                        the photo the way it reads on screen. − ＋ scale the FRAME
+                        POSE (its FOV — how much sky the photo spans), part of the
+                        anchor like az/el/roll. No labels: 8 buttons must fit one
+                        phone line. */}
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Photo left (azimuth +0.1°)" onClick={() => nudgeFix(0.1, 0, 0)}>‹</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Photo right (azimuth −0.1°)" onClick={() => nudgeFix(-0.1, 0, 0)}>›</button>
+                    <button className="btn sm" style={{ padding: "6px 9px", marginLeft: 5 }} title="Photo down (elevation +0.1°)" onClick={() => nudgeFix(0, 0.1, 0)}>▼</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Photo up (elevation −0.1°)" onClick={() => nudgeFix(0, -0.1, 0)}>▲</button>
+                    <button className="btn sm" style={{ padding: "6px 9px", marginLeft: 5 }} title="Tilt (roll +0.2°)" onClick={() => nudgeFix(0, 0, 0.2)}>⟲</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Tilt (roll −0.2°)" onClick={() => nudgeFix(0, 0, -0.2)}>⟳</button>
+                    <button className="btn sm" style={{ padding: "6px 9px", marginLeft: 5 }} title="Photo smaller — spans less sky (FOV −0.3°)" onClick={() => nudgeFix(0, 0, 0, -0.3)}>−</button>
+                    <button className="btn sm" style={{ padding: "6px 9px" }} title="Photo bigger — spans more sky (FOV +0.3°)" onClick={() => nudgeFix(0, 0, 0, 0.3)}>＋</button>
                   </div>
                 )}
                 {/* ✓ Done lives bottom-right beside the hint — in the top row it
