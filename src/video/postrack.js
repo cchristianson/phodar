@@ -899,7 +899,8 @@ export function smoothPath(path, opts = {}) {
       const a = src[i - 1], b = src[i], c = src[i + 1];
       const span = c.t - a.t; if (!(span > 1e-6)) continue;
       const n = path[i].n == null ? 12 : path[i].n;
-      const al = opts.al != null ? opts.al : (n >= 18 ? 0.18 : n >= 10 ? 0.32 : 0.5);
+      const al0 = opts.al != null ? opts.al : (n >= 18 ? 0.18 : n >= 10 ? 0.32 : 0.5);
+      const al = clampN(al0 * (opts.gain || 1), 0, 0.8);   // gain: user smoothing strength, evidence tiers preserved
       const u = (b.t - a.t) / span;
       const mAz = a.az + angD(c.az, a.az) * u;
       path[i].az = +(((b.az + al * angD(mAz, b.az)) % 360 + 360) % 360).toFixed(3);
@@ -950,7 +951,8 @@ export function smoothObjPath(op, opts = {}) {
       const a = src[i - 1], b = src[i], c = src[i + 1];
       const span = c.t - a.t; if (!(span > 1e-6)) continue;
       const q = op[i].q == null ? 0.5 : op[i].q;
-      const al = q >= 0.7 ? 0.2 : q >= 0.3 ? 0.42 : 0.6;        // strong lock barely moves, miss leans hard
+      const al0 = q >= 0.7 ? 0.2 : q >= 0.3 ? 0.42 : 0.6;       // strong lock barely moves, miss leans hard
+      const al = clampN(al0 * (opts.gain || 1), 0, 0.85);       // gain: user smoothing strength
       const u = (b.t - a.t) / span;
       const mAz = a.az + angD(c.az, a.az) * u;
       op[i].az = +(((b.az + al * angD(mAz, b.az)) % 360 + 360) % 360).toFixed(3);
@@ -958,6 +960,35 @@ export function smoothObjPath(op, opts = {}) {
     }
   }
   return spiked;
+}
+
+/* --- USER-TUNABLE SMOOTHING STRENGTH (the field slider) ---------------------
+   One knob s ∈ [0,1] per path, mapped onto the evidence-weighted smoothers so
+   the character of the motion stays a WITNESS decision, not a baked constant:
+     s = 0    → outlier despike only — hard corners fully preserved (a real
+                anomalous maneuver must never be averaged away)
+     s = 0.25 → exactly the old built-in default (2 passes, gain 1)
+     s = 1    → heavy: 8 passes, ~2× pull — an airplane's jittery track reads
+                as the clean curve it physically flew
+   Both re-apply cleanly to a RAW (despiked, unsmoothed) path, so a slider can
+   re-derive the smoothed path non-destructively at any time.
+   NOTE (honesty): smoothing is applied to a MEASUREMENT — heavier smoothing
+   also damps real fast maneuvers and lowers peak rates/g-loads downstream.
+   That trade is exactly why it's a visible slider and not a hidden constant. */
+export function smoothStrength(s) {
+  const v = clampN(Number.isFinite(+s) ? +s : 0.25, 0, 1);
+  return { passes: Math.round(v * 8), gain: Math.max(0, 1 + (v - 0.25) * 1.2) };
+}
+export function smoothPathAt(path, s) {
+  const m = smoothStrength(s);
+  if (m.passes > 0) smoothPath(path, { passes: m.passes, gain: m.gain });
+  return path;
+}
+export function smoothObjPathAt(op, s, opts = {}) {
+  const m = smoothStrength(s);
+  /* despike (outlier rejection) always runs unless the caller already did it —
+     a single-frame background latch is a tracker error, not a maneuver */
+  return smoothObjPath(op, { despikePasses: opts.despiked ? 0 : 2, passes: m.passes, gain: m.gain });
 }
 
 /* Distribute a re-anchor's drift correction back across the un-anchored span

@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
-import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality } from "./capture/pose.js";
@@ -4222,9 +4222,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const to = { az: pAz, el: pEl, roll: pRoll };
       const dAz = Math.abs(((to.az - from.az + 540) % 360) - 180);
       if (dAz > 0.02 || Math.abs(to.el - from.el) > 0.02 || Math.abs(to.roll - from.roll) > 0.02) {
-        patch.posePath = source.posePath.map((p) => { const q = reanchorPose(p, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3), roll: +q.roll.toFixed(2) }; });
-        if (Array.isArray(source.objPath) && source.objPath.length)
-          patch.objPath = source.objPath.map((p) => { const q = reanchorAzEl(+p.az, +p.el, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3) }; });
+        const rotP = (arr) => arr.map((p) => { const q = reanchorPose(p, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3), roll: +q.roll.toFixed(2) }; });
+        const rotO = (arr) => arr.map((p) => { const q = reanchorAzEl(+p.az, +p.el, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3) }; });
+        patch.posePath = rotP(source.posePath);
+        if (Array.isArray(source.posePathRaw) && source.posePathRaw.length) patch.posePathRaw = rotP(source.posePathRaw); // raws ride along, or a later re-smooth resurrects the old anchor
+        if (Array.isArray(source.objPath) && source.objPath.length) patch.objPath = rotO(source.objPath);
+        if (Array.isArray(source.objPathRaw) && source.objPathRaw.length) patch.objPathRaw = rotO(source.objPathRaw);
       }
     }
     update(patch);
@@ -4561,11 +4564,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          brief "jump out of lock" in playback — despike against neighbours
          (real motion is a ramp across samples and is preserved) */
       const deglitched = despikePath(path);
+      /* keep the RAW (despiked, unsmoothed) path so the steadiness slider can
+         re-derive the smoothed path non-destructively at any strength later */
+      const pathRaw = path.map((p) => ({ ...p }));
       /* then damp sub-degree solve noise (background jitter in the render):
          evidence-weighted pull toward the neighbours — strong solves barely
          move, weak ones lean on the interpolation. Real motion is a ramp
-         across samples and passes through. */
-      smoothPath(path);
+         across samples and passes through. Strength = the source's saved
+         slider value (0.25 default = the historical fixed behaviour). */
+      smoothPathAt(path, isNum(source?.smoothCam) ? +source.smoothCam : 0.25);
       /* honesty: frames with too few background references held the previous
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
@@ -4642,10 +4649,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          with a manual guide the human's path stands even where pixels failed */
       objPath.sort((a, b) => a.t - b.t);
       /* smooth the object track: the per-frame matcher jitters and
-         occasionally latches a background lookalike — an evidence-weighted
-         despike+smooth (q = match confidence) makes the outline glide instead
-         of stutter, without dragging real motion (low-frequency, passes) */
-      const objSpiked = smoothObjPath(objPath);
+         occasionally latches a background lookalike. DESPIKE (outlier
+         rejection) always runs — a single-frame latch is a tracker error, not
+         a maneuver — then keep the RAW despiked track and apply the source's
+         saved SMOOTHING STRENGTH (the track-smoothing slider: 0 preserves
+         hard corners, high strength reads an airplane as its clean curve). */
+      const objSpiked = smoothObjPath(objPath, { passes: 0 });
+      const objRaw = objPath.map((p) => ({ ...p }));
+      smoothObjPathAt(objPath, isNum(source?.smoothObj) ? +source.smoothObj : 0.25, { despiked: true });
       const objGood = objMid && (guideN >= 2 || objOk >= Math.max(4, (objOk + objMiss) * 0.3));
       /* per-frame SIZED track points (wpx from the measure step) get their
          angular size re-derived from each frame's SOLVED FOV — sized under a
@@ -4661,7 +4672,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
         })
         : null;
-      if (update) update({ posePath: path, objPath: objGood ? objPath : null, ...(track2 ? { track: track2 } : {}) });
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -4779,6 +4790,32 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      clip (MediaRecorder stamps wall time); effective fps = seek throughput. */
   const [exporting, setExporting] = useState(0); // 0 idle | progress fraction
   const [exportMenu, setExportMenu] = useState(false);
+  const [smoothOpen, setSmoothOpen] = useState(false);
+  /* SMOOTHING SLIDERS — re-derive the smoothed paths from the RAW (despiked)
+     solves at the chosen strength, non-destructively: raw is kept on the
+     source, so any strength can be revisited without re-running the whole
+     stabilization. Legacy sources (no raw stored) adopt their current path
+     as raw on first touch. */
+  const applySmooth = (kind, v) => {
+    if (!source || !update) return;
+    const s = clampN(+v, 0, 1);
+    const patch = kind === "cam" ? { smoothCam: s } : { smoothObj: s };
+    if (kind === "cam") {
+      const raw = Array.isArray(source.posePathRaw) && source.posePathRaw.length ? source.posePathRaw : source.posePath;
+      if (Array.isArray(raw) && raw.length) {
+        if (!Array.isArray(source.posePathRaw) || !source.posePathRaw.length) patch.posePathRaw = raw.map((p) => ({ ...p }));
+        patch.posePath = smoothPathAt(raw.map((p) => ({ ...p })), s);
+      }
+    } else {
+      const raw = Array.isArray(source.objPathRaw) && source.objPathRaw.length ? source.objPathRaw : source.objPath;
+      if (Array.isArray(raw) && raw.length) {
+        if (!Array.isArray(source.objPathRaw) || !source.objPathRaw.length) patch.objPathRaw = raw.map((p) => ({ ...p }));
+        patch.objPath = smoothObjPathAt(raw.map((p) => ({ ...p })), s, { despiked: true });
+      }
+    }
+    mediaDel(source.id + ":stab");   // a previously exported render is stale under the new path
+    update(patch);
+  };
   const exportAbortRef = useRef(0);
   /* mode: "view" (dome framing as shown in playback) | "full" (same framing,
      output sized so the most-zoomed frames keep native pixel density) |
@@ -6266,10 +6303,36 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {(source.posePath[playIdx]?.t ?? 0).toFixed(1)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
                 </span>
                 {playPose && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); }}
+                  title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎚</button>
                 <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
                   title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
                   {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
                 </button>
+              </div>
+            )}
+            {smoothOpen && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+              <div style={{ display: "grid", gap: 6, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", minWidth: 86 }}>🎥 steadiness</span>
+                  <input type="range" min={0} max={1} step={0.05} value={isNum(source?.smoothCam) ? +source.smoothCam : 0.25}
+                    onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                    onChange={(e) => applySmooth("cam", +e.target.value)} style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
+                </div>
+                {Array.isArray(source?.objPath) && source.objPath.length > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", minWidth: 86 }}>🛸 track smooth</span>
+                    <input type="range" min={0} max={1} step={0.05} value={isNum(source?.smoothObj) ? +source.smoothObj : 0.25}
+                      onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
+                      onChange={(e) => applySmooth("obj", +e.target.value)} style={{ flex: 1, touchAction: "auto", pointerEvents: "auto" }} />
+                  </div>
+                )}
+                <div style={{ fontSize: 9.5, color: "var(--dim)", lineHeight: 1.4 }}>
+                  Non-destructive — re-applied from the raw solve, so slide freely. Left = keep hard corners
+                  (a real anomalous maneuver is never averaged away); right = smooth into a clean curve
+                  (an airplane's jitter is tracker noise, not flight). Heavier track smoothing also damps
+                  real fast maneuvers in the measured rates — that trade is yours to make, so it's a slider.
+                </div>
               </div>
             )}
             {exportMenu && !exporting && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
@@ -7009,9 +7072,11 @@ function PositionEditor({ src, update, others }) {
        anchored to it, so they yaw by the same delta (a rotation about world-up
        leaves el/roll untouched) — same re-anchoring the sky view does */
     if (Math.abs(d) > 0.02 && Array.isArray(src.posePath) && src.posePath.length) {
-      patch.posePath = src.posePath.map((p) => ({ ...p, az: +rot(p.az).toFixed(3) }));
-      if (Array.isArray(src.objPath) && src.objPath.length)
-        patch.objPath = src.objPath.map((p) => ({ ...p, az: +rot(p.az).toFixed(3) }));
+      const yaw = (arr) => arr.map((p) => ({ ...p, az: +rot(p.az).toFixed(3) }));
+      patch.posePath = yaw(src.posePath);
+      if (Array.isArray(src.posePathRaw) && src.posePathRaw.length) patch.posePathRaw = yaw(src.posePathRaw);
+      if (Array.isArray(src.objPath) && src.objPath.length) patch.objPath = yaw(src.objPath);
+      if (Array.isArray(src.objPathRaw) && src.objPathRaw.length) patch.objPathRaw = yaw(src.objPathRaw);
     }
     update(patch);
   };
