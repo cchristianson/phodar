@@ -10,7 +10,7 @@
    the camera never moved.
    ============================================================ */
 
-import { D2R, R2D, RAD, dot, unit, dirFromAzEl } from "./geodesy.js";
+import { D2R, R2D, RAD, dot, unit, dirFromAzEl, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
 
 /* focal length in pixels for a given horizontal FOV */
@@ -117,6 +117,42 @@ export function solvePoseAnchors(anchors, natW, natH, az0, el0, seed) {
     if (!any) { for (const pn of params) step[pn] *= 0.5; if (step.fov < 1e-4) break; }
   }
   return { az: P.az, el: P.el, roll: P.roll, fov: P.fov, k: P.k, rms: Math.sqrt(sse(P) / Math.max(1, n)) * R2D };
+}
+
+/* --- RE-ANCHORING: carry solved world data across a placement change. ---
+   A stabilized camera path (posePath) and its object track (objPath) are
+   solved RELATIVE to the placement pose of the alignment frame. When that
+   placement later moves (drag re-align, snap-to-ridges, star-align, the
+   map bearing ray), every stored world az/el is off by exactly the rigid
+   rotation between the old and new placements — the paths don't become
+   wrong, they become MIS-ANCHORED. These rotate them along:
+   R = B_new · B_oldᵀ, with B the camera→world basis from photoBasis.
+   (FOV/lens changes are NOT compensated — rotation is the dominant and
+   exactly-correctable part; a big FOV recalibration warrants re-running
+   the stabilization.) */
+export function reanchorDir(v, fromPose, toPose) {
+  const A = photoBasis(+fromPose.az, +fromPose.el, +fromPose.roll || 0);
+  const B = photoBasis(+toPose.az, +toPose.el, +toPose.roll || 0);
+  const cr = dot(A.r, v), cu = dot(A.u, v), cf = dot(A.f, v);
+  return unit([
+    B.r[0] * cr + B.u[0] * cu + B.f[0] * cf,
+    B.r[1] * cr + B.u[1] * cu + B.f[1] * cf,
+    B.r[2] * cr + B.u[2] * cu + B.f[2] * cf,
+  ]);
+}
+export function reanchorAzEl(az, el, fromPose, toPose) {
+  return dirToAzEl(reanchorDir(dirFromAzEl(+az, +el), fromPose, toPose));
+}
+export function reanchorPose(pose, fromPose, toPose) {
+  const pb = photoBasis(+pose.az, +pose.el, +pose.roll || 0);
+  const f2 = reanchorDir(pb.f, fromPose, toPose);
+  const r2 = reanchorDir(pb.r, fromPose, toPose);
+  const ae = dirToAzEl(f2);
+  /* roll = angle of the rotated right axis against the LEVEL frame at the new
+     forward dir — matches photoBasis's convention (r = r0·cosρ + u0·sinρ) */
+  const L = photoBasis(ae.az, ae.el, 0);
+  const roll = Math.atan2(dot(r2, L.u), dot(r2, L.r)) * R2D;
+  return { az: ae.az, el: ae.el, roll };
 }
 
 export function angSizeFromPoints(p1, p2, natW, natH, fovH) {

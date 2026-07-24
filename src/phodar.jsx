@@ -12,7 +12,7 @@ const windColor = (ms) => ms < 2.5 ? "#5FD3BC" : ms < 7 ? "#8FB4FF" : ms < 13 ? 
 const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} ft`;
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
-import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors } from "./math/projection.js";
+import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
 import { initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
@@ -3923,6 +3923,28 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
     return playPose ? pixToDirK(px, py, source.natW, source.natH, pAz, pEl, pRoll, fovM, pDist) : pixDir(px, py);
   };
+  /* dense object-direction timeline for every FOLLOW consumer (the dome
+     wireframe during playback, the close-up export camera): the auto-tracked
+     objPath when it survived, otherwise the user's own TIMED WAYPOINTS
+     converted through their frames' solved poses — so follow features work
+     from manual taps alone (field: the close-up export sat still and the 3D
+     wireframe froze at the marked spot when the auto-track was absent). */
+  const followPath = useMemo(() => {
+    const op = source?.objPath;
+    if (Array.isArray(op) && op.length > 1) return op;
+    const pp = source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
+    if (!pp || !source?.natW) return null;
+    const pts = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y)).sort((a, b) => a.t - b.t);
+    if (pts.length < 2) return null;
+    const out = [];
+    for (const q of pts) {
+      const ps = posePathAt(pp, +q.t);
+      if (!ps || !isNum(ps.az)) continue;
+      const ae = dirToAzEl(pixToDirK(+q.x, +q.y, source.natW, source.natH, ps.az, ps.el, ps.roll || 0, ps.fov, ps.k || 0));
+      out.push({ t: +q.t, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3) });
+    }
+    return out.length > 1 ? out : null;
+  }, [source?.objPath, source?.posePath, source?.track, source?.natW, source?.natH, source?.mediaKind]);
 
   /* known sky objects usable as calibration anchors (bright + labeled) */
   const skyRefs = (() => {
@@ -4046,7 +4068,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          are their own observations. */
       const objFollow = (() => {
         if (!playPose || !isNum(playPose.t)) return null;
-        const op = source?.objPath;
+        /* auto-track when it survived, else the tapped-waypoint sky path —
+           the wireframe rides the trajectory either way */
+        const op = followPath;
         if (!Array.isArray(op) || op.length < 2 || !source?.A?.p1 || !source?.A?.p2) return null;
         const t = +playPose.t;
         let lo = 0, hi = op.length - 1;
@@ -4182,6 +4206,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         : (source.A?.p1 && source.A?.p2 ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null);
       if (c) { const ae = dirAt(c.x, c.y); patch.A = { ...source.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
       if (source.B?.pb) { const ae = dirAt(source.B.pb.x, source.B.pb.y); patch.B = { ...source.B, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
+    }
+    /* RE-ANCHOR the solved paths: the stabilized camera path + object track
+       were solved RELATIVE to the previous placement of the alignment frame.
+       A re-align (drag, snap-to-ridges, star-align) rotates the whole world
+       solution by exactly the old→new placement rotation — rotate the stored
+       paths along, so the trajectory, wireframe-follow and close-up export
+       keep matching the fresh calibration instead of silently going stale
+       (field: "the trajectory still seems off" after re-aligning a
+       stabilized clip). Rotation only — a big FOV recalibration still
+       warrants re-running the stabilization. */
+    const oldAim = source?.mediaAim;
+    if (oldAim && isNum(oldAim.az) && Array.isArray(source?.posePath) && source.posePath.length) {
+      const from = { az: +oldAim.az, el: isNum(oldAim.el) ? +oldAim.el : 0, roll: isNum(oldAim.roll) ? +oldAim.roll : 0 };
+      const to = { az: pAz, el: pEl, roll: pRoll };
+      const dAz = Math.abs(((to.az - from.az + 540) % 360) - 180);
+      if (dAz > 0.02 || Math.abs(to.el - from.el) > 0.02 || Math.abs(to.roll - from.roll) > 0.02) {
+        patch.posePath = source.posePath.map((p) => { const q = reanchorPose(p, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3), roll: +q.roll.toFixed(2) }; });
+        if (Array.isArray(source.objPath) && source.objPath.length)
+          patch.objPath = source.objPath.map((p) => { const q = reanchorAzEl(+p.az, +p.el, from, to); return { ...p, az: +q.az.toFixed(3), el: +q.el.toFixed(3) }; });
+      }
     }
     update(patch);
   };
@@ -4771,8 +4815,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const minFov = Math.min(...path.map((p) => p.fov));
       const maxFov = Math.max(...path.map((p) => p.fov));
       if (mode === "crop") {
-        const g1 = pixToDirK(source.A.p1.x, source.A.p1.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
-        const g2 = pixToDirK(source.A.p2.x, source.A.p2.y, natW, natH, pAz, pEl, pRoll, fovM, pDist);
+        /* the object marks live on the MARKED frame — when it differs from the
+           alignment frame, project them through THAT frame's solved pose (the
+           placement pose describes the align frame only) */
+        const mkp = (Math.abs(markT - alignT) > 0.05 && posePathAt(path, markT)) || { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
+        const g1 = pixToDirK(source.A.p1.x, source.A.p1.y, natW, natH, mkp.az, mkp.el, mkp.roll || 0, mkp.fov, mkp.k || 0);
+        const g2 = pixToDirK(source.A.p2.x, source.A.p2.y, natW, natH, mkp.az, mkp.el, mkp.roll || 0, mkp.fov, mkp.k || 0);
         const objAng = Math.acos(clampN(dot(g1, g2), -1, 1)) * R2D;
         let cd = unit([g1[0] + g2[0], g1[1] + g2[1], g1[2] + g2[2]]);
         let sep = 0;
@@ -4797,7 +4845,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* close-up FOLLOWS the object when a track exists: the virtual camera
          re-centers on the tracked direction each frame, so the object stays
          in the middle of the crop even as it crosses the sky */
-      const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : null;
+      /* auto-track when it survived, else the tapped-waypoint sky path —
+         the close-up camera follows the object either way */
+      const objAll = Array.isArray(source?.objPath) && source.objPath.length > 1 ? source.objPath : followPath;
       const camFollow = mode === "crop" && objAll;
       const objAt = (t) => {
         const op = objAll;
@@ -6947,6 +6997,14 @@ function PositionEditor({ src, update, others }) {
     const patch = { mediaAim: { az: +b.toFixed(2), el: src.mediaAim?.el ?? 15, roll: src.mediaAim?.roll ?? 0 } };
     if (isNum(src.A?.az)) patch.A = { ...src.A, az: rot(src.A.az).toFixed(1) };
     if (isNum(src.B?.az)) patch.B = { ...src.B, az: rot(src.B.az).toFixed(1) };
+    /* a pure yaw of the placement: the solved camera path + object track are
+       anchored to it, so they yaw by the same delta (a rotation about world-up
+       leaves el/roll untouched) — same re-anchoring the sky view does */
+    if (Math.abs(d) > 0.02 && Array.isArray(src.posePath) && src.posePath.length) {
+      patch.posePath = src.posePath.map((p) => ({ ...p, az: +rot(p.az).toFixed(3) }));
+      if (Array.isArray(src.objPath) && src.objPath.length)
+        patch.objPath = src.objPath.map((p) => ({ ...p, az: +rot(p.az).toFixed(3) }));
+    }
     update(patch);
   };
   /* how high you were looking — the ONE piece the metadata can't give us (iOS

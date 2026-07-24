@@ -12,7 +12,7 @@ import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
-import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors } from "../src/math/projection.js";
+import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors, reanchorDir, reanchorAzEl, reanchorPose } from "../src/math/projection.js";
 import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
 import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo, groundHomography, pixelToGroundH, groundSpanH } from "../src/math/geolocate.js";
 import { poseFromGravity } from "../src/capture/pose.js";
@@ -1787,6 +1787,41 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const sH = groundSpanH(p1, p2, geo), sM = groundSpanM(p1, p2, camG, platform, 0);
     approx(Math.abs(sH - sM) < 1 ? 1 : 0, 1, 0, `georef: object size matches the ray-cast (${sH.toFixed(1)} vs ${sM.toFixed(1)} m)`);
   }
+}
+
+/* ── re-anchoring solved paths across a placement change ────────────────────
+   posePath/objPath are solved relative to the alignment frame's placement;
+   when the placement moves, the stored world data must rotate by exactly the
+   old→new placement rotation (R = B_new·B_oldᵀ). */
+{
+  const F = { az: 250.0, el: 8.0, roll: 1.5 };     // placement at stabilize time
+  const T = { az: 243.2, el: 10.4, roll: -0.8 };   // re-aligned placement
+  // identity: same from/to leaves a pose untouched
+  let q = reanchorPose({ az: 100, el: 20, roll: 5 }, F, F);
+  approx(q.az, 100, 1e-6, "reanchor: identity keeps az");
+  approx(q.el, 20, 1e-6, "reanchor: identity keeps el");
+  approx(q.roll, 5, 1e-6, "reanchor: identity keeps roll");
+  // pure yaw delta: every pose yaws by the same amount, el/roll untouched
+  q = reanchorPose({ az: 100, el: 20, roll: 5 }, { az: 10, el: 0, roll: 0 }, { az: 35, el: 0, roll: 0 });
+  approx(q.az, 125, 1e-6, "reanchor: pure yaw shifts az by the delta");
+  approx(q.el, 20, 1e-6, "reanchor: pure yaw keeps el");
+  approx(q.roll, 5, 1e-6, "reanchor: pure yaw keeps roll");
+  // consistency: a pixel through the re-anchored pose equals the rotated
+  // direction of the same pixel through the original pose (fov/k carried)
+  const P = { az: 231.0, el: 14.0, roll: 3.0, fov: 62, k: 0.05 };
+  const P2 = { ...reanchorPose(P, F, T), fov: P.fov, k: P.k };
+  for (const [px, py] of [[100, 80], [1800, 950], [960, 540]]) {
+    const d1 = reanchorDir(pixToDirK(px, py, 1920, 1080, P.az, P.el, P.roll, P.fov, P.k), F, T);
+    const d2 = pixToDirK(px, py, 1920, 1080, P2.az, P2.el, P2.roll, P2.fov, P2.k);
+    const c = Math.min(1, Math.max(-1, d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]));
+    approx(Math.acos(c) * R2D, 0, 1e-4, `reanchor: pixel (${px},${py}) maps identically through the re-anchored pose`);
+  }
+  // bare az/el direction rides the same rotation
+  const ae = reanchorAzEl(200, 30, F, T);
+  const dd = reanchorDir(dirFromAzEl(200, 30), F, T);
+  const ae2 = dirToAzEl(dd);
+  approx(ae.az, ae2.az, 1e-9, "reanchor: az/el helper matches the dir rotation");
+  approx(ae.el, ae2.el, 1e-9, "reanchor: az/el helper matches the dir rotation (el)");
 }
 
 /* ── capture pose from phone gravity (web sensor capture) ──────────────────
