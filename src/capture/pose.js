@@ -11,20 +11,16 @@
 
    Device frame (W3C / iOS, portrait): X → screen-right, Y → screen-top,
    Z → out of the screen toward the viewer. The BACK camera looks along −Z.
-   `gravity` is `DeviceMotionEvent.accelerationIncludingGravity` in that frame.
+   `gravity` is `DeviceMotionEvent.accelerationIncludingGravity` in that frame
+   (iOS reports it ALONG the pull — screen-up on a table reads z ≈ −9.8 — so
+   up_device = −ĝ, fixed, no longer user-flippable: an earlier ⇅ that flipped
+   the WHOLE gravity sign silently negated the landscape bearing rotation too
+   and poisoned two rounds of field calibration. The ⇅ button now owns ONLY
+   the elevation sense, so bearing observations can't be corrupted again).
 
-   The one empirical unknown is the SIGN of iOS's gravity reading (some builds
-   report the reaction "up", some the pull "down"). `gSign` selects it; the
-   capture UI exposes a one-tap "flip" that persists the choice per device, so
-   it's self-correcting on-device without a code change. Everything else is
-   unambiguous geometry, asserted in mathcheck.
-
-   ONE more empirical fact, field-measured: `webkitCompassHeading` is reported
-   in a frame that FLIPS 180° when the interface rotates to landscape (portrait
-   reads dead-on; the same scene held landscape reads exactly 180° off — a clean
-   flip, not a ±90° edge confusion, so it's symmetric across both landscape
-   holds). `opts.orient` (the screen angle: 0 portrait, ±90 landscape) applies
-   the +180° in landscape. Asserted in mathcheck.
+   The AZIMUTH model is empirical, settled by a portrait shot aimed UP 20°
+   (the one case that discriminates the hypotheses) — see the comment in
+   poseFromGravity. Everything is asserted in mathcheck.
    ============================================================ */
 
 import { R2D } from "../math/geodesy.js";
@@ -35,31 +31,23 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /* Camera elevation + roll from the gravity vector, azimuth from the compass.
      gravity   : {x,y,z}  device-frame accelerationIncludingGravity
      headingDeg: webkitCompassHeading (° from true north), or null
-     opts.gSign: sign of the gravity reading for the UP VECTOR (az + roll). −1
-                 (iOS points along the pull) is field-correct and fixed.
-     opts.elSign: elevation sense (the ⇅ flip). −1 by default — field-measured
-                 iOS reads aim-up as inverted with +1. Kept SEPARATE from gSign
-                 so flipping tilt never disturbs the bearing.
+     opts.orient: screen angle (screen.orientation.angle / window.orientation);
+                 0/180 portrait, ±90/270 landscape — selects the azimuth regime.
+     opts.elSign: elevation sense, owned by the ⇅ "flip tilt" button. Default
+                 +1 (aim up → positive el — field truth +21.9° read +20 raw).
+                 Independent of the bearing math by construction.
    Returns { az, el, roll } in degrees (el positive = camera tilted UP).
 
-   Geometry: up_device = gSign·ĝ. The camera axis is a = (0,0,−1).
-     elevation = elSign · asin(dot(a, up)) = elSign · asin(−up.z).
+   Geometry: up_device = −ĝ. The camera axis is a = (0,0,−1).
+     elevation = elSign · asin(dot(a, up)) = elSign · asin(−up.z)
+       → horizon 0°; straight up +90°; straight down −90°.
      roll = angle of world-up projected into the screen (XY) plane, measured
             from screen-up (+Y): atan2(up.x, up.y) → 0° when the phone is level. */
 export function poseFromGravity(gravity, headingDeg, opts = {}) {
-  /* `gSign` sets the gravity sign for the UP VECTOR used by azimuth + roll; −1
-     (iOS accelerationIncludingGravity points along the pull) is field-correct
-     for the bearing, so it's FIXED here — the ⇅ flip no longer touches it, so
-     it can't disturb the (working) landscape bearing. */
-  const gSign = opts.gSign === 1 ? 1 : -1;
-  /* `elSign` is the ELEVATION sense, DECOUPLED from gSign and owned by the ⇅
-     "flip tilt" button. DEFAULT −1: field-measured — with +1 the horizon rose
-     when the camera aimed UP (inverted). Independent so flipping tilt can never
-     move the bearing. */
-  const elSign = opts.elSign === 1 ? 1 : -1;
+  const elSign = opts.elSign === -1 ? -1 : 1;
   const gx = +gravity.x, gy = +gravity.y, gz = +gravity.z;
   const m = Math.hypot(gx, gy, gz) || 1;
-  const ux = (gSign * gx) / m, uy = (gSign * gy) / m, uz = (gSign * gz) / m;  // up in device frame
+  const ux = -gx / m, uy = -gy / m, uz = -gz / m;   // up in device frame (iOS: accel = pull)
   const el = elSign * Math.asin(clamp(-uz, -1, 1)) * R2D;
   let roll = Math.atan2(ux, uy) * R2D;
   /* Fold roll to the nearest quadrant: the phone can be held portrait OR
@@ -68,44 +56,46 @@ export function poseFromGravity(gravity, headingDeg, opts = {}) {
      (a level landscape shot → ~0, not 90). */
   roll = roll - 90 * Math.round(roll / 90);
 
-  /* AZIMUTH — orientation-independent. `webkitCompassHeading` gives the compass
-     heading of the phone's TOP edge (+Y), but the camera looks along −Z. Held
-     PORTRAIT the top roughly matches the aim; held LANDSCAPE the top points 90°
-     sideways, so using the heading directly is ~90° wrong (field-confirmed:
-     landscape read 148° when the true aim was 244°). Fix: rotate from the +Y
-     heading to the −Z camera axis IN THE HORIZONTAL PLANE (found via gravity).
-     Degenerates only when +Y is near-vertical (portrait aimed at the horizon) —
-     there the heading is the best available, so fall back to it. */
+  /* AZIMUTH — what iOS actually reports, all field-measured on ONE device with
+     terrain-aligned ground truth:
+       · PORTRAIT hold: `webkitCompassHeading` is already tilt-compensated to
+         the CAMERA's heading. Aiming down 11° it read 247 vs truth 244; aiming
+         UP 20° it STILL read the camera heading (truth 242) — where a naive
+         top-edge-projection model would flip 180° once the phone leans past
+         vertical. The up-tilt shot is what discriminates: pass raw through,
+         and any "correction" on top is exactly what broke it (the seed came
+         out 61 = 241 + a spurious 180).
+       · LANDSCAPE hold: the compensation does NOT follow the camera — the
+         reading stays referenced to the portrait TOP edge (+Y), ±90° off the
+         camera. Rotate from +Y's horizontal projection to the camera axis's,
+         about world-up; the rotation self-selects +90 vs −90 for either
+         landscape hold. Field: this rotation alone landed the bearing; a
+         former extra +180 "iOS frame flip" (removed) made it read exactly
+         opposite — that patch was fitted to an old reading taken while the
+         since-removed whole-gravity ⇅ flip had negated the rotation's sign.
+     The UI orientation (opts.orient) picks the regime — it's what iOS's own
+     compensation keys off, and a deliberate photo is taken in one or the
+     other, not diagonally. */
   let az = ((((isNum(headingDeg) ? +headingDeg : 0) % 360) + 360) % 360);
-  if (isNum(headingDeg)) {
+  const o = isNum(opts.orient) ? ((+opts.orient % 360) + 360) % 360 : 0;
+  const landscape = (o >= 45 && o < 135) || (o >= 225 && o < 315);
+  if (isNum(headingDeg) && landscape) {
     const u = [ux, uy, uz];                                   // up unit (device frame)
     const projH = (v) => { const d = v[0] * u[0] + v[1] * u[1] + v[2] * u[2]; return [v[0] - d * u[0], v[1] - d * u[1], v[2] - d * u[2]]; };
     const topH = projH([0, 1, 0]);                            // +Y top edge, horizontal part
     const camH = projH([0, 0, -1]);                           // −Z camera axis, horizontal part
     const tn = Math.hypot(topH[0], topH[1], topH[2]), cn = Math.hypot(camH[0], camH[1], camH[2]);
-    if (tn > 0.3 && cn > 1e-3) {
-      // Rotate the compass heading from the top edge (+Y) to the camera axis
-      // (−Z) about world-up. `atan2(crUp, dotTC)` is the MATH-positive angle
-      // from top→cam about +u; compass heading runs CLOCKWISE from north (the
-      // negative sense viewed from above), so heading(cam) = heading(top) −
-      // that angle. Hence the leading minus — verified against both landscape
-      // orientations in mathcheck (camera-north maps to az 0 either way).
+    if (tn > 0.05 && cn > 1e-3) {                             // in landscape tn ≈ 1; tiny floor is numerical only
+      // Signed angle from the top edge to the camera axis about world-up:
+      // atan2(crUp, dotTC) is the MATH-positive rotation; compass heading runs
+      // CLOCKWISE from north (the negative sense seen from above), hence the
+      // leading minus. Both landscape holds asserted in mathcheck.
       const crx = topH[1] * camH[2] - topH[2] * camH[1], cry = topH[2] * camH[0] - topH[0] * camH[2], crz = topH[0] * camH[1] - topH[1] * camH[0];
       const crUp = crx * u[0] + cry * u[1] + crz * u[2];
       const dotTC = topH[0] * camH[0] + topH[1] * camH[1] + topH[2] * camH[2];
       const deltaCW = -Math.atan2(crUp, dotTC) * R2D;
       az = ((az + deltaCW) % 360 + 360) % 360;
     }
-  }
-  /* LANDSCAPE 180° flip (field-measured, see header). iOS reports the compass
-     heading in a frame that reverses when the UI is landscape; the geometry
-     above is otherwise exact, so the whole output is a clean 180° off. `orient`
-     is the screen angle from the capture UI (window.orientation /
-     screen.orientation.angle): 45–135° or 225–315° ⇒ landscape. */
-  if (isNum(headingDeg) && isNum(opts.orient)) {
-    const o = ((+opts.orient % 360) + 360) % 360;
-    const landscape = (o >= 45 && o < 135) || (o >= 225 && o < 315);
-    if (landscape) az = (az + 180) % 360;
   }
   return { az: +az.toFixed(1), el: +el.toFixed(1), roll: +roll.toFixed(1) };
 }

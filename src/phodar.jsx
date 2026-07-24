@@ -7151,9 +7151,11 @@ function SensorCapture({ onCapture, onClose }) {
   const [pose, setPose] = useState(null);
   const [compassAcc, setCompassAcc] = useState(null);
   const [gps, setGps] = useState(null);
-  /* ⇅ flip now controls the ELEVATION sense only (decoupled from bearing/roll).
-     −1 default = field-correct on iOS (aim up → horizon drops); +1 inverts. */
-  const [elSign, setElSign] = useState(() => { try { return localStorage.getItem("phodar-elsign") === "1" ? 1 : -1; } catch (e) { return -1; } });
+  /* ⇅ flip controls the ELEVATION sense only (decoupled from bearing/roll).
+     +1 default = field-correct on iOS (truth +21.9° read +20 raw); −1 inverts.
+     Key bumped (…2) so devices that toggled during the inverted-default build
+     reset to the corrected default. */
+  const [elSign, setElSign] = useState(() => { try { return localStorage.getItem("phodar-elsign2") === "-1" ? -1 : 1; } catch (e) { return 1; } });
   const elSignRef = useRef(elSign); elSignRef.current = elSign;
   const onOrient = useCallback((e) => {
     if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
@@ -7247,7 +7249,7 @@ function SensorCapture({ onCapture, onClose }) {
     document.documentElement.classList.add("capturing");
     return () => document.documentElement.classList.remove("capturing");
   }, []);
-  const flip = () => setElSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-elsign", String(n)); } catch (e) { } return n; });
+  const flip = () => setElSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-elsign2", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
   const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
