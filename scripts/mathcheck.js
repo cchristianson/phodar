@@ -22,7 +22,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -1787,6 +1787,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const sH = groundSpanH(p1, p2, geo), sM = groundSpanM(p1, p2, camG, platform, 0);
     approx(Math.abs(sH - sM) < 1 ? 1 : 0, 1, 0, `georef: object size matches the ray-cast (${sH.toFixed(1)} vs ${sM.toFixed(1)} m)`);
   }
+}
+
+/* ── user-tunable smoothing strength (the field slider) ─────────────────────
+   One knob s∈[0,1]: 0 = despike only (hard corners preserved — a real
+   anomalous maneuver is never averaged away), 0.25 = the historical fixed
+   default, 1 = heavy (an airplane's jittery track reads as its clean curve). */
+{
+  const mkO = (t, az, q) => ({ t, az, el: 20, q });
+  // (a) backward compatibility: s=0.25 reproduces the legacy built-in smoothing
+  const jig = () => Array.from({ length: 30 }, (_, i) => mkO(i * 0.25, 100 + i * 0.3 + (i % 2 ? 0.25 : -0.25), 0.9));
+  const legacy = jig(); smoothObjPath(legacy);
+  const at25 = jig(); smoothObjPathAt(at25, 0.25);
+  approx(Math.max(...legacy.map((p, i) => Math.abs(p.az - at25[i].az))), 0, 1e-9, "smooth slider: s=0.25 equals the legacy object smoothing");
+  const jigP = () => Array.from({ length: 30 }, (_, i) => ({ t: i * 0.25, az: 250 + (i % 2 ? 0.2 : -0.2), el: 20, roll: 0, fov: 60, n: 12 }));
+  const legP = jigP(); smoothPath(legP);
+  const atP = jigP(); smoothPathAt(atP, 0.25);
+  approx(Math.max(...legP.map((p, i) => Math.abs(p.az - atP[i].az))), 0, 1e-9, "smooth slider: s=0.25 equals the legacy camera smoothing");
+  // (b) strength monotonically cleans a noisy straight track (airplane case)
+  const rmsTo = (op) => Math.sqrt(op.slice(2, -2).reduce((s2, p, i) => { const truth = 100 + (i + 2) * 0.3; return s2 + (p.az - truth) ** 2; }, 0) / (op.length - 4));
+  const s0 = jig(); smoothObjPathAt(s0, 0);
+  const s25 = jig(); smoothObjPathAt(s25, 0.25);
+  const s100 = jig(); smoothObjPathAt(s100, 1);
+  if (!(rmsTo(s100) < rmsTo(s25) && rmsTo(s25) < rmsTo(s0))) { console.error("  FAIL smooth slider: strength must monotonically clean a noisy line", rmsTo(s0), rmsTo(s25), rmsTo(s100)); fails++; }
+  else console.log(`  ok   smooth slider: noisy line rms ${rmsTo(s0).toFixed(3)}° → ${rmsTo(s25).toFixed(3)}° → ${rmsTo(s100).toFixed(3)}° as strength rises`);
+  approx(rmsTo(s100), 0, 0.06, "smooth slider: full strength nearly recovers the clean line");
+  // (c) a genuine hard corner survives s=0 exactly and is rounded at s=1 —
+  // the trade the slider makes explicit (UAP corners vs airplane curves)
+  const corner = () => Array.from({ length: 21 }, (_, i) => mkO(i * 0.25, i <= 10 ? 100 + i * 0.5 : 105 - (i - 10) * 0.5, 0.9));
+  const c0 = corner(); smoothObjPathAt(c0, 0);
+  approx(c0[10].az, 105, 1e-9, "smooth slider: s=0 preserves a hard corner exactly");
+  const c1 = corner(); smoothObjPathAt(c1, 1);
+  if (!(c1[10].az < 104.9)) { console.error("  FAIL smooth slider: s=1 should round the corner", c1[10].az); fails++; }
+  else console.log(`  ok   smooth slider: s=1 rounds the corner (apex 105 → ${c1[10].az.toFixed(2)})`);
+  // (d) a perfectly linear camera pan is untouched even at full strength
+  const pan = Array.from({ length: 25 }, (_, i) => ({ t: i * 0.25, az: 240 + i * 0.8, el: 20 + i * 0.1, roll: 0, fov: 60, n: 20 }));
+  smoothPathAt(pan, 1);
+  approx(Math.max(...pan.map((p, i) => Math.abs(p.az - (240 + i * 0.8)))), 0, 0.002, "smooth slider: a linear pan passes through untouched at full strength");
 }
 
 /* ── re-anchoring solved paths across a placement change ────────────────────
