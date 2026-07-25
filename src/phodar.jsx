@@ -5006,8 +5006,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const DW = 480, k = DW / source.natW, DH = Math.max(60, Math.round(source.natH * k));
     const cv = document.createElement("canvas"); cv.width = DW; cv.height = DH;
     const ctx = cv.getContext("2d", { willReadFrequently: true });
-    const found = [];
-    let noSky = 0, badFit = 0;
+    let found = [];
+    let noSky = 0, badFit = 0, odd = 0;
+    const rmsSeen = [];
+    const RMS_MAX = 0.8;   // matchSkyline fit quality gate (same as ⛰ Snap to ridges)
     try {
       const v = await ensurePlayVid();
       for (let i = 0; i < times.length; i++) {
@@ -5037,20 +5039,37 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           el = clampN(el + m.dEl, -20, EL_MAX);
           roll -= m.dRollDeg;
         }
-        if (!m || m.rms > 0.8) { badFit++; continue; }
-        /* a solve that lands absurdly far from the tracked pose is a mis-match
-           (a cloud bank read as a ridge), not a correction — the tracker is
-           never degrees-wrong in one frame */
-        if (Math.abs(((az - p.az + 540) % 360) - 180) > 6 || Math.abs(el - p.el) > 6) { badFit++; continue; }
-        found.push({ t: tt, az: +az.toFixed(3), el: +el.toFixed(3), roll: +roll.toFixed(2), fov: +p.fov.toFixed(2), src: "terrain", rms: +m.rms.toFixed(2) });
+        if (!m || m.rms > RMS_MAX) { badFit++; if (m) rmsSeen.push(m.rms); continue; }
+        rmsSeen.push(m.rms);
+        /* NO absolute cap on the size of the correction: a placement that was
+           eyeballed can legitimately be 10°+ off, and rejecting big corrections
+           silently killed every frame (field report). Implausible matches are
+           filtered AFTER the pass by cross-frame agreement instead — a real
+           correction drifts slowly, a cloud-bank mis-match jumps around. */
+        found.push({ t: tt, az: +az.toFixed(3), el: +el.toFixed(3), roll: +roll.toFixed(2), fov: +p.fov.toFixed(2), src: "terrain", rms: +m.rms.toFixed(2), dAz: ((az - p.az + 540) % 360) - 180, dEl: el - p.el });
       }
     } catch (e) { setTerrBusy(0); setFlash("⛰ couldn't read the clip for terrain anchoring"); return; }
     setTerrBusy(0);
     if (terrAbortRef.current !== run) { setFlash("⛰ terrain anchoring cancelled"); return; }
     if (!found.length) {
-      setFlash(`⛰ no frame matched the DEM skyline${noSky ? ` (${noSky} had no clean horizon)` : ""}${badFit ? ` (${badFit} didn't fit)` : ""} — anchor those frames by hand instead`);
+      /* say WHICH failure it was — "didn't fit" alone can't tell a treeline
+         (shape genuinely unlike the DEM) from a near miss */
+      const med = rmsSeen.length ? rmsSeen.slice().sort((a, b) => a - b)[rmsSeen.length >> 1] : null;
+      setFlash(noSky && !badFit
+        ? `⛰ no clean horizon found in ${noSky} sampled frame${noSky > 1 ? "s" : ""} — the sky/ground edge is too soft here. Anchor by hand (⚓ Pin) instead.`
+        : `⛰ the skyline was found but doesn't match the DEM (best fit ${med != null ? med.toFixed(1) + "°" : "—"}, needs ≤${RMS_MAX}°)${noSky ? ` · ${noSky} frame${noSky > 1 ? "s" : ""} had no clean edge` : ""}. A nearby TREE LINE isn't the terrain horizon — that's the usual cause. Anchor by hand (⚓ Pin) instead.`);
       return;
     }
+    /* CROSS-FRAME AGREEMENT: keep only solves whose correction sits near the
+       median. A genuine drift correction varies slowly along the clip; a
+       mis-match (cloud bank, treeline crest) lands somewhere unrelated. */
+    const medOf = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+    if (found.length >= 3) {
+      const mAz = medOf(found.map((f) => f.dAz)), mEl = medOf(found.map((f) => f.dEl));
+      const keep = found.filter((f) => Math.abs(f.dAz - mAz) < 3 && Math.abs(f.dEl - mEl) < 3);
+      if (keep.length >= Math.max(2, Math.round(found.length * 0.4))) { odd = found.length - keep.length; found = keep; }
+    }
+    found.forEach((f) => { delete f.dAz; delete f.dEl; });
     /* keep the user's HAND-placed anchors; replace any earlier terrain run */
     const manual = fixesNow.filter((f) => f.src !== "terrain" && !found.some((g) => Math.abs(+g.t - +f.t) < 1e-3));
     const list = manual.concat(found).sort((a, b) => a.t - b.t);
@@ -5061,7 +5080,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
        frame the scrubber is parked on so texture and pose agree again */
     if (playPose) showFrameRef.current(playIdx);
     const rms = found.reduce((a, f) => a + f.rms, 0) / found.length;
-    setFlash(`⛰ ${found.length} frame${found.length > 1 ? "s" : ""} anchored to the terrain skyline (fit ${rms.toFixed(2)}°)${manual.length ? ` · ${manual.length} hand anchor${manual.length > 1 ? "s" : ""} kept` : ""}${noSky + badFit ? ` · ${noSky + badFit} frame${noSky + badFit > 1 ? "s" : ""} had no usable horizon` : ""}. Drift between them is corrected.`);
+    const skipped = noSky + badFit + odd;
+    setFlash(`⛰ ${found.length} frame${found.length > 1 ? "s" : ""} anchored to the terrain skyline (fit ${rms.toFixed(2)}°)${manual.length ? ` · ${manual.length} hand anchor${manual.length > 1 ? "s" : ""} kept` : ""}${skipped ? ` · ${skipped} skipped (${noSky} no clean edge, ${badFit} poor fit, ${odd} disagreed)` : ""}. Drift between them is corrected.`);
   };
   /* commit the pending playPose adjustment as an anchor (upsert by frame time) */
   const setFixAnchor = () => {
