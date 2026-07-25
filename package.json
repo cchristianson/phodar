@@ -32,6 +32,7 @@
     "preview": "vite preview",
     "start": "node server/index.mjs",
     "start:static": "vite preview --host 0.0.0.0 --port ${PORT:-4173}",
+    "skycheck": "node scripts/skycheck.mjs",
     "test": "node scripts/mathcheck.js && node scripts/trajcheck.js && echo ALL-MATH-CHECKS-PASS"
   },
   "dependencies": {
