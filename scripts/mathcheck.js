@@ -10,6 +10,7 @@ import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline }
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
+import { sensorAt, syncSensor, fuseSensorVisual, fuseStats } from "../src/video/sensorpath.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors, reanchorDir, reanchorAzEl, reanchorPose } from "../src/math/projection.js";
@@ -1865,6 +1866,58 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const pan = Array.from({ length: 25 }, (_, i) => ({ t: i * 0.25, az: 240 + i * 0.8, el: 20 + i * 0.1, roll: 0, fov: 60, n: 20 }));
   smoothPathAt(pan, 1);
   approx(Math.max(...pan.map((p, i) => Math.abs(p.az - (240 + i * 0.8)))), 0, 0.002, "smooth slider: a linear pan passes through untouched at full strength");
+}
+
+
+/* ── sensor attitude path: sync + visual/sensor fusion ──────────────────────
+   The phone's attitude log is drift-free in pitch/roll (gravity) and smooth
+   but BIASED in azimuth (compass). So sync must ignore bias, and fusion must
+   take only MOTION from the sensor while vision owns the absolute frame. */
+{
+  /* a synthetic truth camera: a pan with a wobble, so the sync has real shape */
+  const truth = (t) => ({ t, az: 250 + 4 * t + 1.5 * Math.sin(t * 2.2), el: 12 + 0.8 * Math.sin(t * 1.3), roll: 0.5 * Math.sin(t * 0.9) });
+  /* the sensor log: same motion, its own clock (+0.42 s), compass biased +37° */
+  const OFF = 0.42, BIAS = 37;
+  const log = [];
+  for (let t = -1; t <= 24; t += 1 / 60) { const p = truth(t - OFF); log.push({ t, az: p.az + BIAS, el: p.el, roll: p.roll }); }
+  const visual = [];
+  for (let t = 0; t <= 22; t += 0.25) visual.push({ ...truth(t), fov: 32, n: 30, held: false });
+
+  approx(sensorAt(log, 5).el, truth(5 - OFF).el, 0.01, "sensorAt: interpolates the log");
+  const sync = syncSensor(log, visual, { range: 1.5, step: 0.02 });
+  /* convention: offset is what you ADD to a video time to index the log */
+  approx(sync.offset, OFF, 0.05, "syncSensor: recovers the clock offset despite a 37° compass bias");
+  approx(sync.conf > 0.5 ? 1 : 0, 1, 0, "syncSensor: reports high confidence on a clip with real motion");
+
+  /* FUSION: knock out a run of frames the way a real tracker fails (held), and
+     check the sensor carries the true motion across it instead of freezing */
+  const broken = visual.map((p, i) => (i >= 20 && i <= 27 ? { ...p, held: true, n: 2, az: visual[19].az, el: visual[19].el, roll: visual[19].roll } : { ...p }));
+  const fused = fuseSensorVisual(broken, log, { offset: sync.offset, minN: 6 });
+  let heldErr = 0, fusedErr = 0;
+  for (let i = 20; i <= 27; i++) {
+    const tr = truth(broken[i].t);
+    heldErr = Math.max(heldErr, Math.abs(((broken[i].az - tr.az + 540) % 360) - 180));
+    fusedErr = Math.max(fusedErr, Math.abs(((fused[i].az - tr.az + 540) % 360) - 180));
+  }
+  approx(heldErr > 1.5 ? 1 : 0, 1, 0, "fusion: the frozen run really was badly wrong (setup check)");
+  approx(fusedErr < 0.25 ? 1 : 0, 1, 0, `fusion: sensor carries the held run to truth (${fusedErr.toFixed(2)}° vs ${heldErr.toFixed(2)}° frozen)`);
+
+  /* frames vision solved well must come through UNTOUCHED — the compass bias
+     must never leak into an absolutely-anchored pose */
+  let maxTouch = 0;
+  for (let i = 0; i < fused.length; i++) if (fused[i].src === "v") maxTouch = Math.max(maxTouch, Math.abs(((fused[i].az - broken[i].az + 540) % 360) - 180));
+  approx(maxTouch, 0, 1e-9, "fusion: solved frames are left exactly alone (no compass bias leak)");
+
+  /* the carried run must MEET the recovered solve, not snap to it */
+  const jump = Math.abs(((fused[28].az - fused[27].az + 540) % 360) - 180);
+  approx(jump < 1.2 ? 1 : 0, 1, 0, "fusion: carried run is smeared onto the recovered solve, no snap");
+
+  /* a gap longer than maxCarry is left frozen and FLAGGED rather than invented */
+  const longGap = visual.map((p, i) => (i >= 20 && i <= 60 ? { ...p, held: true, n: 1 } : { ...p }));
+  const st = fuseStats(fuseSensorVisual(longGap, log, { offset: sync.offset, maxCarry: 2.5 }));
+  approx(st.h > 0 ? 1 : 0, 1, 0, "fusion: a too-long sensor-only stretch is left held, not fabricated");
+  /* no log at all → unchanged path */
+  approx(fuseSensorVisual(visual, null).length, visual.length, 0, "fusion: no sensor log leaves the path untouched");
 }
 
 
