@@ -80,16 +80,36 @@ function parseTiff(u8, base) {
   }
   return Object.keys(out).length ? out : null;
 }
+/* QuickTime metadata (GPS as ISO-6709, creation time in `mvhd`) lives in the
+   `moov` atom — and an iPhone writes `moov` at the END of the file, not the
+   start (no faststart). Scanning only the head therefore missed the position
+   and timestamp of EVERY clip bigger than the window: measured on a 27 MB
+   field recording, `moov` began at byte 26,968,202 and the location string sat
+   in the last 200 bytes. So scan a head window AND a tail window; a
+   faststart/streaming file is still caught by the head. Offsets are tracked
+   per window because the byte reads below index the ORIGINAL array. */
 function parseMovMeta(u8) {
   const out = {};
-  const txt = new TextDecoder("latin1").decode(u8.subarray(0, Math.min(u8.length, 3000000)));
-  const m = txt.match(/([+-]\d{1,2}\.\d{2,})([+-]\d{1,3}\.\d{2,})([+-]\d+(\.\d+)?)?\//);
-  if (m) { out.lat = +(+m[1]).toFixed(6); out.lon = +(+m[2]).toFixed(6); if (m[3]) out.alt = +(+m[3]).toFixed(1); }
-  const mi = txt.indexOf("mvhd");
-  if (mi > 0 && u8[mi + 4] === 0) {
-    const p = mi + 8; // version(1)+flags(3) then creation u32 (seconds since 1904)
-    const sec = ((u8[p] << 24) | (u8[p + 1] << 16) | (u8[p + 2] << 8) | u8[p + 3]) >>> 0;
-    if (sec > 2082844800) out.timeMs = (sec - 2082844800) * 1000;
+  const HEAD = 3000000, TAIL = 8000000;
+  const dec = new TextDecoder("latin1");
+  const wins = [{ off: 0, txt: dec.decode(u8.subarray(0, Math.min(u8.length, HEAD))) }];
+  if (u8.length > HEAD) {
+    const off = Math.max(HEAD, u8.length - TAIL);
+    wins.push({ off, txt: dec.decode(u8.subarray(off)) });
+  }
+  for (const w of wins) {
+    if (out.lat == null) {
+      const m = w.txt.match(/([+-]\d{1,2}\.\d{2,})([+-]\d{1,3}\.\d{2,})([+-]\d+(\.\d+)?)?\//);
+      if (m) { out.lat = +(+m[1]).toFixed(6); out.lon = +(+m[2]).toFixed(6); if (m[3]) out.alt = +(+m[3]).toFixed(1); }
+    }
+    if (!out.timeMs) {
+      const mi = w.txt.indexOf("mvhd");
+      if (mi > 0 && u8[w.off + mi + 4] === 0) {
+        const p = w.off + mi + 8; // version(1)+flags(3) then creation u32 (seconds since 1904)
+        const sec = ((u8[p] << 24) | (u8[p + 1] << 16) | (u8[p + 2] << 8) | u8[p + 3]) >>> 0;
+        if (sec > 2082844800) out.timeMs = (sec - 2082844800) * 1000;
+      }
+    }
   }
   return Object.keys(out).length ? out : null;
 }
