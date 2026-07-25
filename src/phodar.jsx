@@ -7856,6 +7856,15 @@ function SensorCapture({ onCapture, onClose }) {
   const [compassAcc, setCompassAcc] = useState(null);
   const [gps, setGps] = useState(null);
   const gpsRef = useRef(null), watchRef = useRef(null);
+  const [gpsBusy, setGpsBusy] = useState(false);
+  const askGps = () => {
+    if (!navigator.geolocation) { setCamErr("This browser can't provide a position — you'll set it by hand on the next step."); return; }
+    setGpsBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (p) => { const g = { lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }; gpsRef.current = g; setGps(g); setGpsBusy(false); },
+      () => { setGpsBusy(false); setCamErr("Location is blocked for this site — allow it in Settings › Safari (or the share menu), or set your position by hand on the next step."); },
+      { enableHighAccuracy: true, timeout: 10000 });
+  };
   /* ⇅ flip controls the ELEVATION sense only (decoupled from bearing/roll).
      +1 default = field-correct on iOS (truth +21.9° read +20 raw); −1 inverts.
      Key bumped (…2) so devices that toggled during the inverted-default build
@@ -8054,9 +8063,9 @@ function SensorCapture({ onCapture, onClose }) {
           try {
             navigator.geolocation.getCurrentPosition(
               (p) => fin({ lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }),
-              () => fin(null), { enableHighAccuracy: true, timeout: 6000 });
+              () => fin(null), { enableHighAccuracy: true, timeout: 3500 });
           } catch (e) { fin(null); }
-          setTimeout(() => fin(null), 6500);
+          setTimeout(() => fin(null), 4000);   // never leave the user staring at a stopped recording
         });
         if (g) { gpsRef.current = g; setGps(g); snap = { ...snap, gps: g }; }
         else setCamErr("Recorded, but no GPS fix — you'll need to set your position by hand on the next step.");
@@ -8117,7 +8126,14 @@ function SensorCapture({ onCapture, onClose }) {
             ))}
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "rgba(0,0,0,.5)", borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: 10.5, color: "#cfe" }}>
-            <span>{gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}` : "GPS…"}</span>
+            {/* A RECORDED clip carries no EXIF, so this fix is the only position
+                it will ever have — make its absence loud and RETRYABLE. Tapping
+                re-requests from a fresh user gesture, which is what actually
+                makes iOS show the prompt when it was dismissed or never asked. */}
+            <span onClick={askGps} style={{ cursor: "pointer", color: gps ? undefined : "var(--amber)", fontWeight: gps ? undefined : 800 }}>
+              {gps ? `GPS ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)}${isNum(gps.acc) ? ` ±${Math.round(gps.acc)}m` : ""}`
+                : (gpsBusy ? "GPS — finding…" : "📍 No position — tap to allow")}
+            </span>
             <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
           </div>
           {/* raw-sensor diagnostic — so a landscape screenshot shows the actual
@@ -8150,6 +8166,10 @@ function SensorCapture({ onCapture, onClose }) {
               drift-free reference in every frame, and frames with nothing to track stop freezing.
               <b style={{ color: "#cde" }}> Records at ~1080p with no zoom</b>, so use it when the
               measurement matters more than the footage.
+              {!gps && <b style={{ color: "var(--amber)", display: "block", marginTop: 3 }}>
+                No position yet — a recorded clip carries no EXIF, so tap the GPS line above first
+                or you'll have to type your location on the next step.
+              </b>}
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
