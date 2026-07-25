@@ -4842,37 +4842,70 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     });
   };
   const SCRUB_MIN_MS = 75;   // min gap between chased scrub seeks (iOS decoder pacing)
+  const PLAY_DT = 0.1;       // target video-time per playback step (≈10 fps, see below)
+  /* A seek's `seeked` event can fire BEFORE the decoded frame is actually
+     presented — drawImage then bakes the PREVIOUS frame, so the texture lags
+     the pose by one step and the photo appears to twitch against the fixed
+     terrain/grid (field report: "scrubbing has a lot of jitter"). rVFC fires
+     only once a frame is available; the timeout keeps a browser without it
+     (or a stalled decoder) on the old behaviour. */
+  const nextFrame = (v) => new Promise((res) => {
+    if (typeof v.requestVideoFrameCallback !== "function") { res(); return; }
+    let done = false, id = 0;
+    const fin = () => { if (done) return; done = true; try { v.cancelVideoFrameCallback(id); } catch (e) { } res(); };
+    try { id = v.requestVideoFrameCallback(fin); } catch (e) { res(); return; }
+    setTimeout(fin, 100);   // armed BEFORE the seek, so a frame presented with `seeked` still resolves promptly
+  });
+  /* i is a FLOAT sample index: playback advances in sub-sample steps and takes
+     the pose from posePathAt, so the motion is a ramp at ~10 fps instead of a
+     jump at the 0.25 s solve cadence. That cadence is why playback looked
+     worse than the export — the export always rendered interpolated poses at
+     the clip's own frame rate. Integer indices (the scrubber, ‹ ›) land exactly
+     on a solved sample, unchanged. */
   const showFrame = (i) => {
     const path = source?.posePath; if (!path || !path.length) return;
-    pendingIdxRef.current = clampN(Math.round(i), 0, path.length - 1);
+    pendingIdxRef.current = clampN(i, 0, path.length - 1);
     if (seekBusyRef.current) return;              // one seek in flight; the latest request wins
     seekBusyRef.current = true;
     ensurePlayVid().then((v) => {
       const step = () => {
-        const j = pendingIdxRef.current, p = path[j];
+        const j = pendingIdxRef.current;
+        const i0 = Math.floor(j), i1 = Math.min(path.length - 1, i0 + 1), u = j - i0;
+        const tt = path[i0].t + (path[i1].t - path[i0].t) * u;
+        const p = posePathAt(path, tt) || path[i0];
         const t0 = Date.now();
-        seekSafe(v, p.t, (okSeek) => {
+        const framed = nextFrame(v);   // arm before the seek — see nextFrame
+        seekSafe(v, tt, (okSeek) => {
           if (!okSeek) { seekBusyRef.current = false; playingRef.current = false; setPlaying(false); setFlash("🎞 playback seek stalled — tap ▶ to retry"); return; }
-          if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
-          setPlayPose({ t: p.t, az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 }); // t drives the object-track follow
-          setPlayIdx(j);
-          if (pendingIdxRef.current !== j) {
-            /* a fast drag outran this seek — CHASE the latest, but PACE it: a
-               back-to-back seek→decode→bake loop at drag speed floods the iOS
-               video decoder (buffers accumulate faster than they're freed) and
-               crashes the tab. ~75 ms floor caps the loop to ~13 seeks/s — a
-               smooth scrub preview the decoder can actually sustain. */
-            const gap = SCRUB_MIN_MS - (Date.now() - t0);
-            if (gap > 0) setTimeout(step, gap); else step();
-            return;
-          }
-          seekBusyRef.current = false;
-          if (playingRef.current) {
-            if (j + 1 < path.length) {
-              const dtMs = clampN((path[j + 1].t - p.t) * 1000, 60, 1500);
-              setTimeout(() => { if (playingRef.current) showFrameRef.current(j + 1); }, dtMs);
-            } else { playingRef.current = false; setPlaying(false); }
-          }
+          framed.then(() => {
+            if (v.videoWidth) { try { bakeTex(v, v.videoWidth, v.videoHeight); } catch (e) { } }
+            setPlayPose({ t: tt, az: p.az, el: p.el, roll: p.roll, fov: p.fov, k: p.k || 0 }); // t drives the object-track follow
+            setPlayIdx(Math.round(j));
+            const cost = Date.now() - t0;
+            if (pendingIdxRef.current !== j) {
+              /* a fast drag outran this seek — CHASE the latest, but PACE it: a
+                 back-to-back seek→decode→bake loop at drag speed floods the iOS
+                 video decoder (buffers accumulate faster than they're freed) and
+                 crashes the tab. ~75 ms floor caps the loop to ~13 seeks/s — a
+                 smooth scrub preview the decoder can actually sustain. */
+              const gap = SCRUB_MIN_MS - cost;
+              if (gap > 0) setTimeout(step, gap); else step();
+              return;
+            }
+            seekBusyRef.current = false;
+            if (playingRef.current) {
+              if (j < path.length - 1) {
+                /* sub-sample step, but only while the device keeps up: a seek
+                   costing more than the budget falls back to whole samples so a
+                   slow phone plays at today's cadence instead of stuttering */
+                const dtS = Math.max(1e-3, path[i1].t - path[i0].t);
+                const frac = cost > 90 ? 1 : clampN(PLAY_DT / dtS, 0.25, 1);
+                const next = Math.min(path.length - 1, j + frac);
+                const dtMs = clampN((next - j) * dtS * 1000, 60, 1500);
+                setTimeout(() => { if (playingRef.current) showFrameRef.current(next); }, dtMs);
+              } else { playingRef.current = false; setPlaying(false); }
+            }
+          });
         });
       };
       step();
