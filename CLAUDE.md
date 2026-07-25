@@ -792,6 +792,37 @@ terrain stay frozen and only the object moves. Build ladder:
    the fine ladder pushed `maxA` from 0.11° to 0.29° against a 0.3°
    limit. Steady-state precision trades against deep-zoom robustness
    there; the absolute terrain anchor sidesteps the trade entirely.
+   **INSTRUMENTED CAPTURE (sensor attitude log): v1 DONE** — the answer to
+   the drift measured above, from the other direction. `SensorCapture` gains
+   "🎬 Record with motion data": getUserMedia + MediaRecorder while the
+   existing gravity/compass pose loop logs `{t, az, el, roll}` at ~25 Hz
+   (rAF-paced, gravity-smoothed, throttled so a long clip still autosaves)
+   into `source.sensorPath`. `src/video/sensorpath.js` (pure,
+   mathcheck-asserted) then does the work:
+   `syncSensor` recovers the constant offset between the log's clock and the
+   encoded timeline — the gap between "start recording" and the first frame
+   is device-specific — by minimising disagreement on the SHAPE of the
+   motion with each axis's mean removed, so the compass bias (field-measured
+   14-66 deg near metal) cannot drag the answer; convention is
+   `sensorAt(log, videoT + offset)`. `fuseSensorVisual` then walks the solved
+   path: a well-solved frame is taken as-is and becomes an anchor, a weak or
+   held frame is carried from the last anchor by the SENSOR'S OWN DELTA
+   (real motion instead of a frozen repeat), and when vision recovers the
+   carried run is smeared onto it so the two meet in the middle. A stretch
+   longer than `maxCarry` (2.5 s) is left held and flagged rather than
+   fabricated. Each entry gains `src`: v/s/b/h, counted in the stabilize
+   flash. Applied in `rederivePaths`, so smoothing sliders and Fix-frames
+   anchors compose with it.
+   DIVISION OF LABOUR (do not blur it): gravity is absolute and drift-free
+   so the sensors own MOTION; the compass is biased so they never own
+   absolute pointing — vision keeps the absolute frame. Asserted: sync
+   recovers a 0.42 s offset through a 37 deg compass bias, a frozen run is
+   carried to within 0.25 deg of truth (vs 10.4 deg frozen), solved frames
+   come through bit-identical (no bias leak), and an over-long gap stays
+   held. TRADE-OFF stated in the UI: getUserMedia records ~1080p with no
+   lens switching or optical zoom, so this is a MEASUREMENT mode, not the
+   way to shoot the best-looking evidence. UNTESTED ON A DEVICE — the
+   sensor half cannot be exercised in CI.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).

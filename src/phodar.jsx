@@ -13,6 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
+import { syncSensor, fuseSensorVisual, fuseStats } from "./video/sensorpath.js";
 import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
@@ -988,11 +989,16 @@ function MediaMeasure({ src, update, wizard }) {
     });
     if (kind === "video") mediaPut(src.id, { kind: "video", data: f }); // survives reload via IndexedDB
     const sp = opts.sensorPose || null;
+    /* instrumented capture: the continuous attitude log rides on the source and
+       is fused with the visual solve later (src/video/sensorpath.js) */
+    const sensorPath = Array.isArray(opts.sensorPath) && opts.sensorPath.length > 4 ? opts.sensorPath : null;
+    if (sensorPath) update({ sensorPath });
     /* mine the file for EXIF / QuickTime metadata and AUTO-APPLY it —
        the photo is the authority on its own capture conditions */
     f.arrayBuffer().then((buf) => {
       const m = parseMediaMeta(buf, kind === "video");
       const patch = {};
+      if (sensorPath) patch.sensorPath = sensorPath;
       let meta;
       if (!m) {
         /* valid pixels but no GPS/time/bearing: HEIC can't expose it in-browser,
@@ -1050,7 +1056,11 @@ function MediaMeasure({ src, update, wizard }) {
        full megapixels with its own EXIF. Route it through ingestFile so it keeps
        resolution + real FOV/GPS, and overlay the sensor pose EXIF can't carry. */
     if (cap.file) {
-      ingestFile(cap.file, { sensorPose: { pose: cap.pose, heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, whenMs: cap.whenMs } });
+      ingestFile(cap.file, {
+        sensorPose: { pose: cap.pose, heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, whenMs: cap.whenMs },
+        /* instrumented video: the continuous attitude log rides along */
+        sensorPath: Array.isArray(cap.sensorPath) && cap.sensorPath.length > 4 ? cap.sensorPath : null,
+      });
       setCapOpen(false);
       return;
     }
@@ -4789,9 +4799,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
         })
         : null;
+      /* INSTRUMENTED CLIP: recover the log's clock offset against THIS solve
+         (the gap between "start recording" and the first encoded frame is
+         device-specific), then fuse — vision keeps the absolute frame, the
+         sensors carry the frames vision couldn't hold. Sync compares only the
+         SHAPE of the motion, so the compass bias can't drag the placement. */
+      let sensorNote = "", sensorSync = null;
+      if (Array.isArray(source?.sensorPath) && source.sensorPath.length > 4) {
+        sensorSync = syncSensor(source.sensorPath, path, { range: 2, step: 0.02 });
+        if (sensorSync) {
+          const fused = fuseSensorVisual(path, source.sensorPath, { offset: sensorSync.offset });
+          const st = fuseStats(fused);
+          for (let i2 = 0; i2 < path.length; i2++) path[i2] = fused[i2];
+          const carried = (st.s || 0) + (st.b || 0);
+          sensorNote = ` · motion log synced ${sensorSync.offset >= 0 ? "+" : ""}${sensorSync.offset.toFixed(2)}s (${Math.round(sensorSync.conf * 100)}% confident)${carried ? `, ${carried} weak frame${carried > 1 ? "s" : ""} carried on the phone's own attitude` : ""}${st.h ? `, ${st.h} still held` : ""}`;
+        } else sensorNote = " · motion log present but couldn't be synced to the clip";
+      }
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
-      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, ...(track2 ? { track: track2 } : {}) });
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -4805,7 +4831,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
@@ -4969,7 +4995,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const rawP = Array.isArray(source?.posePathRaw) && source.posePathRaw.length ? source.posePathRaw : source?.posePath;
     if (!Array.isArray(rawP) || !rawP.length) return patch;
     if (!Array.isArray(source.posePathRaw) || !source.posePathRaw.length) patch.posePathRaw = rawP.map((p) => ({ ...p }));
-    const base = smoothPathAt(rawP.map((p) => ({ ...p })), camS);
+    let base = smoothPathAt(rawP.map((p) => ({ ...p })), camS);
+    /* SENSOR FUSION: an instrumented clip carries a continuous attitude log.
+       Vision keeps the absolute frame; the log supplies MOTION across frames
+       the tracker solved weakly or held, so they stop freezing. Re-applied
+       here (not just in the walk) so smoothing and ⚓ anchors compose with it. */
+    if (Array.isArray(source.sensorPath) && source.sensorPath.length > 4) {
+      base = fuseSensorVisual(base, source.sensorPath, { offset: isNum(source.sensorSync?.offset) ? +source.sensorSync.offset : 0 });
+    }
     const fx = Array.isArray(fixes) ? fixes.filter((f) => isNum(f?.t) && isNum(f?.az)) : [];
     patch.posePath = fx.length ? applyPoseFixes(base, fx) : base;
     const rawO = Array.isArray(source.objPathRaw) && source.objPathRaw.length ? source.objPathRaw : (Array.isArray(source.objPath) ? source.objPath : null);
@@ -7902,7 +7935,24 @@ function SensorCapture({ onCapture, onClose }) {
           const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
           hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
         }
-        setPose(poseFromGravity(gEmaRef.current, smoothedHeading(), { elSign: elSignRef.current, orient: screenAngle() }));
+        const pv = poseFromGravity(gEmaRef.current, smoothedHeading(), { elSign: elSignRef.current, orient: screenAngle() });
+        setPose(pv);
+        /* INSTRUMENTED VIDEO: log the same solved attitude the readout shows,
+           on the recorder's clock. rAF paces this at the display rate (~60 Hz),
+           which is far denser than the 0.25 s the stabilizer solves at — and
+           the samples are already gravity-smoothed, so the log carries motion
+           rather than accelerometer noise. */
+        if (recordingRef.current && pv) {
+          const L = logRef.current;
+          const tt = (performance.now() - recT0Ref.current) / 1000;
+          /* ~25 Hz is plenty — six times denser than the 0.25 s the stabilizer
+             solves at — and keeps a long clip's log small enough to autosave
+             (localStorage caps around 5 MB and the whole sighting shares it) */
+          if (L.length < 30000 && (!L.length || tt - L[L.length - 1].t >= 0.04)) L.push({
+            t: +tt.toFixed(3),
+            az: +pv.az.toFixed(2), el: +pv.el.toFixed(2), roll: +(pv.roll || 0).toFixed(2),
+          });
+        }
       }
       raf = requestAnimationFrame(tick);
     };
@@ -7937,6 +7987,57 @@ function SensorCapture({ onCapture, onClose }) {
   const nativeRef = useRef(null), libRef = useRef(null), shotPoseRef = useRef(null);
   const takeFullRes = () => { shotPoseRef.current = snapPose(); if (nativeRef.current) nativeRef.current.click(); };
   const onNativeFile = (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) onCapture({ file: f, ...(shotPoseRef.current || snapPose()) }); };
+  /* ============================================================
+     INSTRUMENTED VIDEO — record a clip WITH a continuous attitude log.
+
+     The stabilizer's weakness is structural: its only absolute reference is
+     the frame you aligned, so between re-anchors it is an incremental chain
+     that drifts (~1.4° measured over 22 s) and freezes on frames with nothing
+     to track. A phone's own attitude has the opposite profile — gravity gives
+     pitch and roll absolutely, in EVERY frame, and cannot drift. Logging it
+     alongside the clip lets the two cover for each other (src/video/
+     sensorpath.js does the fusion; vision keeps the absolute frame, the
+     sensors supply motion).
+
+     Honest trade-off, stated in the UI: getUserMedia records at ~1080p with
+     no lens switching and no optical zoom, so this is a MEASUREMENT mode, not
+     the way to shoot your best-looking evidence. The log's clock is anchored
+     at recorder start; the residual constant offset to the encoded timeline is
+     recovered later by syncSensor, so it does not need to be exact here. */
+  const recRef = useRef(null), chunksRef = useRef([]), logRef = useRef([]), recT0Ref = useRef(0);
+  const [recording, setRecording] = useState(false);
+  const [recSecs, setRecSecs] = useState(0);
+  const recordingRef = useRef(false); recordingRef.current = recording;
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => setRecSecs(Math.max(0, (performance.now() - recT0Ref.current) / 1000)), 250);
+    return () => clearInterval(id);
+  }, [recording]);
+  const startRec = () => {
+    const st = streamRef.current;
+    if (!st) { setCamErr("Camera isn't running yet — tap ▶ Start first."); return; }
+    if (typeof MediaRecorder === "undefined") { setCamErr("This browser can't record video (no MediaRecorder)."); return; }
+    const mime = ["video/mp4", "video/webm;codecs=vp9", "video/webm"].find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
+    let rec;
+    try { rec = new MediaRecorder(st, mime ? { mimeType: mime } : undefined); }
+    catch (e) { setCamErr("Couldn't start recording: " + (e?.message || e)); return; }
+    chunksRef.current = []; logRef.current = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mime || "video/mp4" });
+      const ext = /mp4/.test(mime) ? "mp4" : "webm";
+      const file = new File([blob], `phodar-instrumented.${ext}`, { type: blob.type });
+      const log = logRef.current.slice();
+      setRecording(false);
+      if (!log.length) { setCamErr("Recorded, but no motion data arrived — check Settings › Safari › Motion & Orientation Access."); }
+      onCapture({ file, sensorPath: log, ...snapPose() });
+    };
+    recT0Ref.current = performance.now();
+    try { rec.start(250); } catch (e) { setCamErr("Couldn't start recording: " + (e?.message || e)); return; }
+    recRef.current = rec;
+    setRecSecs(0); setRecording(true);
+  };
+  const stopRec = () => { const r = recRef.current; recRef.current = null; if (r && r.state !== "inactive") { try { r.stop(); } catch (e) { setRecording(false); } } else setRecording(false); };
   /* NIGHT / LONG-EXPOSURE workflow: iOS gives web apps only a stripped-down
      capture sheet — Night mode & long exposure are exclusive to the native
      Camera app. So: freeze the aim HERE (sensor pose captured now), switch to
@@ -8008,6 +8109,17 @@ function SensorCapture({ onCapture, onClose }) {
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
             <button onClick={takeFullRes} className="btn amber" style={{ padding: "13px 22px", fontSize: 15, borderRadius: 30 }}>📸 Full-resolution photo</button>
             <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
+            {/* INSTRUMENTED VIDEO — records the attitude log with the clip */}
+            <button onClick={recording ? stopRec : startRec}
+              style={{ background: recording ? "rgba(229,72,77,.85)" : "rgba(64,199,178,.22)", color: recording ? "#fff" : "var(--teal)", border: `1px solid ${recording ? "#e5484d" : "var(--teal)"}`, borderRadius: 30, padding: "11px 20px", fontSize: 14, fontWeight: 700 }}>
+              {recording ? `⏹ Stop  ${recSecs.toFixed(1)}s` : "🎬 Record with motion data"}
+            </button>
+            <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 300 }}>
+              Logs the phone's tilt, roll and bearing continuously — the stabilizer then has a
+              drift-free reference in every frame, and frames with nothing to track stop freezing.
+              <b style={{ color: "#cde" }}> Records at ~1080p with no zoom</b>, so use it when the
+              measurement matters more than the footage.
+            </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
               <button onClick={nightPose ? () => libRef.current && libRef.current.click() : freezeForNight}
