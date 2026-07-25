@@ -7855,6 +7855,7 @@ function SensorCapture({ onCapture, onClose }) {
   const [pose, setPose] = useState(null);
   const [compassAcc, setCompassAcc] = useState(null);
   const [gps, setGps] = useState(null);
+  const gpsRef = useRef(null), watchRef = useRef(null);
   /* ⇅ flip controls the ELEVATION sense only (decoupled from bearing/roll).
      +1 default = field-correct on iOS (truth +21.9° read +20 raw); −1 inverts.
      Key bumped (…2) so devices that toggled during the inverted-default build
@@ -7902,9 +7903,20 @@ function SensorCapture({ onCapture, onClose }) {
       streamRef.current = s;
       if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play().catch(() => { }); }
     } catch (e) { setCamErr((c) => c || ("Camera blocked — allow camera access for this site (and use https). " + (e?.message || ""))); }
-    if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
-      (p) => setGps({ lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }),
-      () => { }, { enableHighAccuracy: true, timeout: 8000 });
+    /* GPS: WATCH it, don't sample it once. A recorded clip carries no EXIF, so
+       the sensor fix is the ONLY position it will ever have — and a one-shot
+       read can arrive after the shutter (or not at all), which left the
+       position step empty and un-advanceable after an instrumented recording
+       (field report). The ref also dodges the stale-closure trap: MediaRecorder
+       callbacks are bound once, at record start. */
+    const gotGps = (p) => {
+      const g = { lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy };
+      gpsRef.current = g; setGps(g);
+    };
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(gotGps, () => { }, { enableHighAccuracy: true, timeout: 8000 });
+      try { watchRef.current = navigator.geolocation.watchPosition(gotGps, () => { }, { enableHighAccuracy: true, maximumAge: 4000 }); } catch (e) { }
+    }
     setStarted(true);
   };
   /* SMOOTHING — the raw magnetometer/accelerometer jitters frame to frame,
@@ -7962,6 +7974,7 @@ function SensorCapture({ onCapture, onClose }) {
   useEffect(() => () => {
     window.removeEventListener("deviceorientation", onOrient, true);
     window.removeEventListener("devicemotion", onMotion, true);
+    if (watchRef.current != null) { try { navigator.geolocation.clearWatch(watchRef.current); } catch (e) { } watchRef.current = null; }
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
   }, [onOrient, onMotion]);
   /* the capture is a full-screen camera — suppress the app's portrait lock so it
@@ -7972,7 +7985,7 @@ function SensorCapture({ onCapture, onClose }) {
   }, []);
   const flip = () => setElSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-elsign2", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
-  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient }) : null, heading: hd, compassAcc, gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient }) : null, heading: hd, compassAcc, gps: gpsRef.current || gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {
@@ -8023,14 +8036,32 @@ function SensorCapture({ onCapture, onClose }) {
     catch (e) { setCamErr("Couldn't start recording: " + (e?.message || e)); return; }
     chunksRef.current = []; logRef.current = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunksRef.current.push(e.data); };
-    rec.onstop = () => {
+    rec.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: mime || "video/mp4" });
       const ext = /mp4/.test(mime) ? "mp4" : "webm";
       const file = new File([blob], `phodar-instrumented.${ext}`, { type: blob.type });
       const log = logRef.current.slice();
       setRecording(false);
       if (!log.length) { setCamErr("Recorded, but no motion data arrived — check Settings › Safari › Motion & Orientation Access."); }
-      onCapture({ file, sensorPath: log, ...snapPose() });
+      /* LAST CHANCE at a position: a recorded clip has no EXIF, so if the watch
+         hasn't produced a fix yet this is the final opportunity to get one —
+         without it the sighting opens at step 2 with nothing to continue from. */
+      let snap = snapPose();
+      if (!(snap.gps && isNum(snap.gps.lat)) && navigator.geolocation) {
+        const g = await new Promise((res) => {
+          let done = false;
+          const fin = (v) => { if (!done) { done = true; res(v); } };
+          try {
+            navigator.geolocation.getCurrentPosition(
+              (p) => fin({ lat: p.coords.latitude, lon: p.coords.longitude, alt: p.coords.altitude, acc: p.coords.accuracy, altAcc: p.coords.altitudeAccuracy }),
+              () => fin(null), { enableHighAccuracy: true, timeout: 6000 });
+          } catch (e) { fin(null); }
+          setTimeout(() => fin(null), 6500);
+        });
+        if (g) { gpsRef.current = g; setGps(g); snap = { ...snap, gps: g }; }
+        else setCamErr("Recorded, but no GPS fix — you'll need to set your position by hand on the next step.");
+      }
+      onCapture({ file, sensorPath: log, ...snap });
     };
     recT0Ref.current = performance.now();
     try { rec.start(250); } catch (e) { setCamErr("Couldn't start recording: " + (e?.message || e)); return; }
