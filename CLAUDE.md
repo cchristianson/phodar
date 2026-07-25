@@ -741,33 +741,35 @@ terrain stay frozen and only the object moves. Build ladder:
    slides live under your finger. Re-stabilizing clears poseFixes
    (corrections of the old solve); re-aligning the placement rotates
    them (reanchorPose), the PinMap bearing ray yaws them.
-   **⛰ AUTO-ANCHOR TO TERRAIN: DONE** — the structural cure for slow
-   world-lock drift, and the answer to "the shake is gone but it still
-   slides". MEASURED on a real field clip (22.8 s, 1.35× zoom, handheld,
-   ridge visible throughout): the stabilizer removes the shake well —
-   residual frame-to-frame background motion 0.26 px at 540-wide, HF
-   jitter 0.08 px/frame vs 0.11 in the original — but the lock SLIDES,
-   ~60 px cumulative excursion at 540-wide (~120 px at output res),
-   accumulating mostly over the first 10 s. Visible directly in the
-   world-view export: the photo's ridge sits ON the burned-in DEM
-   terrain line at t=8 s and ~1.4° BELOW it at t=16 s. Cause: the only
-   absolute reference is the ONE marked frame, so everything between
-   re-anchors is an incremental chain, and the coarse global register
-   (96 px, integer NCC peak ≈ 0.4°/px, 11.5% scale rungs) can't hold it
-   better than ~1–2°. Cure: the DEM skyline is an absolute reference
-   present in EVERY frame with a horizon. `autoTerrainAnchors` (SkyAimer,
-   ⛰ Auto in the ⚓ panel) samples ~30 frames, runs the SAME
-   detectSkyline + two-pass matchSkyline that one-tap "⛰ Snap to ridges"
-   uses (validated to ~0.1° against a real DEM), and writes each solved
-   absolute pose as a `poseFixes` anchor — so it flows through the
-   existing correction field, blends between samples, and drags the
-   object track with it. Frames with no clean horizon or rms > 0.8° are
-   skipped and counted honestly; a solve landing >6° from the tracked
-   pose is rejected as a mis-match (a cloud bank read as a ridge); the
-   user's hand anchors are kept, earlier terrain runs replaced. Verified
-   offline that detectSkyline returns a clean 67–72 point ridge in every
-   sampled frame of that clip.
-   **Tracker-precision experiments that did NOT ship** (measured; kept
+   **⛰ AUTO-ANCHOR TO TERRAIN: TRIED AND REVERTED** — do not rebuild it
+   this way. The diagnosis behind it still stands and is worth keeping:
+   MEASURED on a real field clip (22.8 s, 1.35x zoom, handheld, ridge
+   visible throughout) the stabilizer removes the SHAKE well — residual
+   frame-to-frame background motion 0.26 px at 540-wide, HF jitter
+   0.08 px/frame vs 0.11 in the original — but the lock SLIDES, ~60 px
+   cumulative excursion at 540-wide (~120 px at output res), accumulating
+   mostly over the first 10 s, and visible in the world-view export as the
+   photo's ridge sitting ON the burned-in DEM terrain line at t=8 s and
+   ~1.4 deg BELOW it at t=16 s. Cause: the only absolute reference is the
+   ONE marked frame, so everything between re-anchors is an incremental
+   chain, and the coarse global register (96 px, integer NCC peak
+   ~0.4 deg/px, 11.5% scale rungs) can't hold it better than ~1-2 deg.
+   The attempted cure ran detectSkyline + matchSkyline on ~30 sampled
+   frames and wrote each solved pose as a poseFixes anchor. IT FAILED
+   BADLY IN THE FIELD: `matchSkyline` scans the FULL 360 deg of azimuth,
+   so an edge that is not really the terrain horizon — a nearby TREE LINE
+   across a flat meadow, which is the common case — fits best at a
+   completely wrong bearing. The anchors disagreed frame to frame, the
+   world-view export's virtual camera grew to contain them, and the photo
+   rendered as a tiny tilted sliver in a mostly-empty frame. (Beware: a
+   frame-to-frame background-motion metric IMPROVES in that state, because
+   there are barely any photo pixels left to measure — always look at a
+   frame, not just the number.) A cross-frame median filter on the
+   corrections was added and still did not save it. If this is retried,
+   the azimuth scan must be BOUNDED to a few degrees around the tracked
+   pose, the detected edge must be verified as terrain (not canopy), and
+   the result must be judged on a rendered frame.
+      **Tracker-precision experiments that did NOT ship** (measured; kept
    here so they aren't retried blind): sub-pixel parabolic peak on the
    global NCC surface, refilling the feature herd toward maxN instead of
    minMatch+4, widening the absolute re-anchor past `ref.feats.slice(0,20)`,
