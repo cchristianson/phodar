@@ -13,7 +13,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
-import { syncSensor, fuseSensorVisual, fuseStats } from "./video/sensorpath.js";
+import { syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "./video/sensorpath.js";
 import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
@@ -4806,14 +4806,38 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          SHAPE of the motion, so the compass bias can't drag the placement. */
       let sensorNote = "", sensorSync = null;
       if (Array.isArray(source?.sensorPath) && source.sensorPath.length > 4) {
-        sensorSync = syncSensor(source.sensorPath, path, { range: 2, step: 0.02 });
-        if (sensorSync) {
-          const fused = fuseSensorVisual(path, source.sensorPath, { offset: sensorSync.offset });
-          const st = fuseStats(fused);
-          for (let i2 = 0; i2 < path.length; i2++) path[i2] = fused[i2];
-          const carried = (st.s || 0) + (st.b || 0);
-          sensorNote = ` · motion log synced ${sensorSync.offset >= 0 ? "+" : ""}${sensorSync.offset.toFixed(2)}s (${Math.round(sensorSync.conf * 100)}% confident)${carried ? `, ${carried} weak frame${carried > 1 ? "s" : ""} carried on the phone's own attitude` : ""}${st.h ? `, ${st.h} still held` : ""}`;
-        } else sensorNote = " · motion log present but couldn't be synced to the clip";
+        const log = source.sensorPath;
+        /* DID THE VISION ACTUALLY TRACK? Inlier count says nothing about that —
+           a tracker that loses the scene and re-acquires on whatever drifted in
+           reports a confident solve that barely moves. Field case: the phone
+           swept 95° (gravity agrees: 27° of elevation with it) while the solve
+           reported 11.5° at 34-46 inliers, so every frame passed as "strong"
+           and the sensors were never consulted. Gravity can't be wrong about
+           that, so compare how far each source says the camera travelled. */
+        const dis = motionDisagreement(path, log, 0);
+        if (dis && dis.sen > 15 && dis.ratio < 0.45) {
+          /* the log is the better witness for MOTION — but the absolute frame
+             still comes from the placement, so the compass bias cancels */
+          const anchor = { t: refT, az: refPose.az, el: refPose.el, roll: refPose.roll, fov: refPose.fov, k: refPose.k || 0 };
+          const only = sensorOnlyPath(log, path.map((p) => p.t), anchor, { offset: 0 });
+          if (only) {
+            for (let i2 = 0; i2 < path.length; i2++) path[i2] = { ...path[i2], ...only[i2] };
+            sensorSync = { offset: 0, mode: "sensor", vis: dis.vis, sen: dis.sen };
+            sensorNote = ` · ⚠ the tracker lost the scene (it followed ${dis.vis.toFixed(0)}° while the phone turned ${dis.sen.toFixed(0)}°) — using the RECORDED MOTION instead, anchored to your alignment`;
+          }
+        } else {
+          sensorSync = syncSensor(log, path, { range: 2, step: 0.02 });
+          /* a railed or hopeless sync is worse than none — don't fuse on it */
+          const bad = !sensorSync || sensorSync.conf < 0.45 || Math.abs(sensorSync.offset) > 1.9;
+          if (bad) { sensorNote = " · motion log couldn't be matched to the clip — visual solve used alone"; sensorSync = null; }
+          else {
+            const fused = fuseSensorVisual(path, log, { offset: sensorSync.offset });
+            const st = fuseStats(fused);
+            for (let i2 = 0; i2 < path.length; i2++) path[i2] = fused[i2];
+            const carried = (st.s || 0) + (st.b || 0);
+            sensorNote = ` · motion log synced ${sensorSync.offset >= 0 ? "+" : ""}${sensorSync.offset.toFixed(2)}s (${Math.round(sensorSync.conf * 100)}% confident)${carried ? `, ${carried} weak frame${carried > 1 ? "s" : ""} carried on the phone's own attitude` : ""}${st.h ? `, ${st.h} still held` : ""}`;
+          }
+        }
       }
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
@@ -5000,8 +5024,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
        Vision keeps the absolute frame; the log supplies MOTION across frames
        the tracker solved weakly or held, so they stop freezing. Re-applied
        here (not just in the walk) so smoothing and ⚓ anchors compose with it. */
-    if (Array.isArray(source.sensorPath) && source.sensorPath.length > 4) {
-      base = fuseSensorVisual(base, source.sensorPath, { offset: isNum(source.sensorSync?.offset) ? +source.sensorSync.offset : 0 });
+    if (Array.isArray(source.sensorPath) && source.sensorPath.length > 4 && source.sensorSync) {
+      /* sensor-only clips were already rebuilt from the log at stabilize time
+         and must not be re-fused against a solve that never tracked */
+      if (source.sensorSync.mode !== "sensor") base = fuseSensorVisual(base, source.sensorPath, { offset: isNum(source.sensorSync.offset) ? +source.sensorSync.offset : 0 });
     }
     const fx = Array.isArray(fixes) ? fixes.filter((f) => isNum(f?.t) && isNum(f?.az)) : [];
     patch.posePath = fx.length ? applyPoseFixes(base, fx) : base;
@@ -7857,6 +7883,17 @@ function SensorCapture({ onCapture, onClose }) {
   const [gps, setGps] = useState(null);
   const gpsRef = useRef(null), watchRef = useRef(null);
   const [gpsBusy, setGpsBusy] = useState(false);
+  /* NO-MOTION GUARD: DeviceOrientation/Motion simply never fire in some
+     browsers (a Chrome tab on iOS, an in-app webview, desktop). Without this
+     the capture looks alive — camera running, shutter working — while tilt,
+     roll and bearing sit at "—" and the recorded clip carries an empty log.
+     Cost a full field session to diagnose, so say it plainly. */
+  const [noMotion, setNoMotion] = useState(false);
+  useEffect(() => {
+    if (!started) return;
+    const id = setTimeout(() => { if (!gRef.current && headRef.current == null) setNoMotion(true); }, 2500);
+    return () => clearTimeout(id);
+  }, [started]);
   const askGps = () => {
     if (!navigator.geolocation) { setCamErr("This browser can't provide a position — you'll set it by hand on the next step."); return; }
     setGpsBusy(true);
@@ -8156,6 +8193,14 @@ function SensorCapture({ onCapture, onClose }) {
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
             <button onClick={takeFullRes} className="btn amber" style={{ padding: "13px 22px", fontSize: 15, borderRadius: 30 }}>📸 Full-resolution photo</button>
             <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
+            {noMotion && (
+              <div style={{ background: "rgba(229,72,77,.18)", border: "1px solid #e5484d", color: "#ffd7d9", borderRadius: 10, padding: "8px 10px", fontSize: 11, maxWidth: 320, textAlign: "center", lineHeight: 1.45 }}>
+                <b>No motion data.</b> If you opened this in a browser tab, use the
+                home-screen app instead — iOS only gives motion access there.
+                Otherwise allow Settings › Safari › Motion &amp; Orientation Access.
+                Recording still works, but the clip won't carry attitude.
+              </div>
+            )}
             {/* INSTRUMENTED VIDEO — records the attitude log with the clip */}
             <button onClick={recording ? stopRec : startRec}
               style={{ background: recording ? "rgba(229,72,77,.85)" : "rgba(64,199,178,.22)", color: recording ? "#fff" : "var(--teal)", border: `1px solid ${recording ? "#e5484d" : "var(--teal)"}`, borderRadius: 30, padding: "11px 20px", fontSize: 14, fontWeight: 700 }}>

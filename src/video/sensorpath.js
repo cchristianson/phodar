@@ -141,6 +141,57 @@ export function fuseSensorVisual(visual, log, opts = {}) {
   return out;
 }
 
+
+/* MOTION DISAGREEMENT. Inlier count is NOT a truth signal: a tracker that
+   loses the scene and re-acquires on whatever drifted into frame reports a
+   confident, high-inlier solve that barely moves. Field case: the phone swept
+   95° of azimuth (gravity confirms 27° of elevation with it) while the visual
+   solve reported 11.5° and 34–46 inliers throughout — so every frame passed as
+   "strong" and the sensors were never consulted.
+
+   Gravity cannot be wrong about that, so compare the PATH LENGTH each source
+   travelled. Returns {vis, sen, ratio} in degrees; a ratio far below 1 means
+   the vision missed real motion. */
+export function motionDisagreement(visual, log, offset = 0) {
+  if (!Array.isArray(visual) || visual.length < 3 || !Array.isArray(log) || log.length < 3) return null;
+  let vis = 0, sen = 0;
+  for (let i = 1; i < visual.length; i++) {
+    const a = visual[i - 1], b = visual[i];
+    vis += Math.hypot(angD(b.az, a.az) * Math.cos(((a.el + b.el) / 2) * Math.PI / 180), b.el - a.el);
+    const s0 = sensorAt(log, a.t + offset), s1 = sensorAt(log, b.t + offset);
+    if (s0 && s1) sen += Math.hypot(angD(s1.az, s0.az) * Math.cos(((s0.el + s1.el) / 2) * Math.PI / 180), s1.el - s0.el);
+  }
+  return { vis: +vis.toFixed(2), sen: +sen.toFixed(2), ratio: sen > 1e-6 ? +(vis / sen).toFixed(3) : 1 };
+}
+
+/* SENSOR-ONLY PATH. When the vision demonstrably missed the motion, the log is
+   the better witness — but ONLY for motion. The absolute frame still comes from
+   the user's alignment: the path is built so that at `anchor.t` it equals the
+   placement pose exactly, and every other frame is that pose plus the sensor's
+   own delta. So the compass bias cancels out entirely (it is common to both
+   ends of the difference) and a star/terrain-calibrated placement is preserved.
+
+   FOV is carried from the anchor unchanged: this mode exists for in-app
+   recordings, which have no optical zoom, so a constant field of view is not an
+   assumption — it is the truth about the capture. */
+export function sensorOnlyPath(log, times, anchor, opts = {}) {
+  if (!Array.isArray(log) || log.length < 2 || !Array.isArray(times) || !times.length || !anchor) return null;
+  const off = opts.offset || 0;
+  const s0 = sensorAt(log, anchor.t + off);
+  if (!s0) return null;
+  return times.map((t) => {
+    const s = sensorAt(log, t + off) || s0;
+    return {
+      t: +t.toFixed(3),
+      az: +norm360(anchor.az + angD(s.az, s0.az)).toFixed(3),
+      el: +(anchor.el + (s.el - s0.el)).toFixed(3),
+      roll: +((anchor.roll || 0) + ((s.roll || 0) - (s0.roll || 0))).toFixed(3),
+      fov: anchor.fov, k: anchor.k || 0,
+      n: 0, src: "s",
+    };
+  });
+}
+
 /* how much of a fused path came from where — for honest UI/report wording */
 export function fuseStats(path) {
   const c = { v: 0, s: 0, b: 0, h: 0 };
