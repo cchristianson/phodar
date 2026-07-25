@@ -42,6 +42,17 @@ comments, in this order:
 
 1. **EXIF / QuickTime parser** — hand-rolled TIFF walk: GPS, time, bearing
    (`GPSImgDirection` + true/mag ref), 35 mm focal → FOV, orientation.
+   **QuickTime is scanned at BOTH ends**: an iPhone writes `moov` (which
+   carries the ISO-6709 location and `mvhd` creation time) at the END of the
+   file, not the start, so a head-only scan silently lost GPS + timestamp on
+   every clip bigger than the window — measured on a 27 MB field recording
+   whose location string sat in the last 200 bytes, which is why video
+   sightings kept needing the position typed in by hand. Head window catches
+   faststart/streaming files; both cases asserted in mathcheck.
+   `scripts/metacheck.mjs <file>` runs this parser over any candidate and
+   prints what the app will actually see (position / bearing / FOV) plus
+   Overpass + F4map links for the spot — use it before building a test around
+   a photo, since most web images have EXIF stripped.
 2. **3D shape system** — `SHAPES`, `shapeWire` (orb/saucer/capsule/tri/plane/
    bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).

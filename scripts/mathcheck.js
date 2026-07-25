@@ -570,6 +570,38 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   }
 }
 
+// --- QuickTime metadata at the END of the file. An iPhone writes `moov` last
+//     (no faststart), so a head-only scan silently lost GPS + timestamp on
+//     EVERY clip bigger than the window — measured on a 27 MB field recording
+//     whose location string sat in the last 200 bytes. ---
+{
+  const mkMov = (size, atEnd) => {
+    const u8 = new Uint8Array(size);
+    for (let i = 0; i < size; i++) u8[i] = 0x20;                    // filler ('mdat' payload)
+    const put = (off, s) => { for (let i = 0; i < s.length; i++) u8[off + i] = s.charCodeAt(i); };
+    const moov = atEnd ? size - 400 : 100;
+    put(moov, "moov");
+    put(moov + 4, "mvhd");
+    u8[moov + 8] = 0;                                               // version 0 → u32 creation time
+    const sec = 2082844800 + 1700000000;                            // 1904 epoch + a real unix time
+    u8[moov + 12] = (sec >>> 24) & 255; u8[moov + 13] = (sec >>> 16) & 255;
+    u8[moov + 14] = (sec >>> 8) & 255; u8[moov + 15] = sec & 255;
+    put(moov + 200, "©xyz");
+    put(moov + 210, "+42.1569-123.5579+486.714/");                  // ISO-6709, as an iPhone writes it
+    return u8;
+  };
+  const head = parseMediaMeta(mkMov(6000000, false).buffer, true);
+  approx(head && head.lat, 42.1569, 1e-4, "QuickTime: faststart (moov at head) still parses");
+  const tail = parseMediaMeta(mkMov(27000000, true).buffer, true);
+  if (!tail) { fails++; console.error("  FAIL QuickTime: moov at END of a 27 MB file returned null"); }
+  else {
+    approx(tail.lat, 42.1569, 1e-4, "QuickTime GPS lat from moov at END of file");
+    approx(tail.lon, -123.5579, 1e-4, "QuickTime GPS lon from moov at END of file");
+    approx(tail.alt, 486.7, 0.05, "QuickTime altitude from moov at END of file");
+    approx(tail.timeMs, 1700000000 * 1000, 1000, "QuickTime creation time from moov at END of file");
+  }
+}
+
 // --- planets vs JPL Horizons ground truth (fetched 2026-07-14) ---
 {
   const ms = Date.UTC(2026, 6, 14, 18, 0, 0);
