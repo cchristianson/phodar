@@ -741,6 +741,44 @@ terrain stay frozen and only the object moves. Build ladder:
    slides live under your finger. Re-stabilizing clears poseFixes
    (corrections of the old solve); re-aligning the placement rotates
    them (reanchorPose), the PinMap bearing ray yaws them.
+   **⛰ AUTO-ANCHOR TO TERRAIN: DONE** — the structural cure for slow
+   world-lock drift, and the answer to "the shake is gone but it still
+   slides". MEASURED on a real field clip (22.8 s, 1.35× zoom, handheld,
+   ridge visible throughout): the stabilizer removes the shake well —
+   residual frame-to-frame background motion 0.26 px at 540-wide, HF
+   jitter 0.08 px/frame vs 0.11 in the original — but the lock SLIDES,
+   ~60 px cumulative excursion at 540-wide (~120 px at output res),
+   accumulating mostly over the first 10 s. Visible directly in the
+   world-view export: the photo's ridge sits ON the burned-in DEM
+   terrain line at t=8 s and ~1.4° BELOW it at t=16 s. Cause: the only
+   absolute reference is the ONE marked frame, so everything between
+   re-anchors is an incremental chain, and the coarse global register
+   (96 px, integer NCC peak ≈ 0.4°/px, 11.5% scale rungs) can't hold it
+   better than ~1–2°. Cure: the DEM skyline is an absolute reference
+   present in EVERY frame with a horizon. `autoTerrainAnchors` (SkyAimer,
+   ⛰ Auto in the ⚓ panel) samples ~30 frames, runs the SAME
+   detectSkyline + two-pass matchSkyline that one-tap "⛰ Snap to ridges"
+   uses (validated to ~0.1° against a real DEM), and writes each solved
+   absolute pose as a `poseFixes` anchor — so it flows through the
+   existing correction field, blends between samples, and drags the
+   object track with it. Frames with no clean horizon or rms > 0.8° are
+   skipped and counted honestly; a solve landing >6° from the tracked
+   pose is rejected as a mis-match (a cloud bank read as a ridge); the
+   user's hand anchors are kept, earlier terrain runs replaced. Verified
+   offline that detectSkyline returns a clean 67–72 point ridge in every
+   sampled frame of that clip.
+   **Tracker-precision experiments that did NOT ship** (measured; kept
+   here so they aren't retried blind): sub-pixel parabolic peak on the
+   global NCC surface, refilling the feature herd toward maxN instead of
+   minMatch+4, widening the absolute re-anchor past `ref.feats.slice(0,20)`,
+   and a fine second scale ladder. Together they halved the field clip's
+   azimuth error (rms 0.82°→0.44°, FOV range 25%→17%), but each of the
+   last three degrades the synthetic 2× zoom-cycle regression (`textured
+   world`): widening the re-anchor breaks it outright (heavy template
+   resampling biases it — the very thing its scale gate exists for), and
+   the fine ladder pushed `maxA` from 0.11° to 0.29° against a 0.3°
+   limit. Steady-state precision trades against deep-zoom robustness
+   there; the absolute terrain anchor sidesteps the trade entirely.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
