@@ -4911,6 +4911,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [exporting, setExporting] = useState(0); // 0 idle | progress fraction
   const [exportMenu, setExportMenu] = useState(false);
   const [smoothOpen, setSmoothOpen] = useState(false);
+  /* ⛰ terrain auto-anchor progress (declared here: the wake-lock effect
+     below reads it during render, so it must exist by then) */
+  const [terrBusy, setTerrBusy] = useState(0);
+  const terrAbortRef = useRef(0);
   /* SCREEN WAKE LOCK — a long stabilize/export stalls when the phone dozes
      (field report: sleep pauses the processing). Uses the shared refcounted
      holder (wakeHold/wakeRelease) so it composes with the report/bundle
@@ -4986,8 +4990,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      real DEM) yields absolute poses — which are exactly ⚓ anchors, so they
      flow through the existing correction field, blend between samples, and
      drag the object track with them. Drift can't accumulate past an anchor. */
-  const [terrBusy, setTerrBusy] = useState(0);
-  const terrAbortRef = useRef(0);
   const autoTerrainAnchors = async () => {
     if (terrBusy) { terrAbortRef.current++; return; }        // tap again = cancel
     const path = source?.posePath;
