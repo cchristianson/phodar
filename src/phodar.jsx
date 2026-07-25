@@ -594,6 +594,7 @@ const HELP_SECTIONS = [
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
       "⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist tilts it), fine-tune with the always-on nudge taps (az/el arrows, roll, − ＋ photo size), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.",
+      "⛰ Auto (in the ⚓ panel) anchors the whole clip to the terrain skyline automatically: it solves sampled frames against the DEM horizon — the same match as ⛰ Snap to ridges — and drops an anchor on each, so slow world-lock drift is corrected end to end. Needs a visible horizon; frames without one are skipped and reported. Your hand-placed anchors are kept.",
     ],
   },
   {
@@ -4915,10 +4916,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      holder (wakeHold/wakeRelease) so it composes with the report/bundle
      builders; held only while a solve or export is actually running. */
   useEffect(() => {
-    if (!stabBusy && !exporting) return;
+    if (!stabBusy && !exporting && !terrBusy) return;
     wakeHold();
     return () => wakeRelease();
-  }, [!!stabBusy, !!exporting]); // eslint-disable-line
+  }, [!!stabBusy, !!exporting, !!terrBusy]); // eslint-disable-line
   /* SMOOTHING SLIDERS — re-derive the smoothed paths from the RAW (despiked)
      solves at the chosen strength, non-destructively: raw is kept on the
      source, so any strength can be revisited without re-running the whole
@@ -4973,6 +4974,92 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     };
     mediaDel(source.id + ":stab");   // a previously exported render is stale under the new path
     update(patch);
+  };
+  /* ⛰ AUTO-ANCHOR TO TERRAIN — the structural cure for slow world-lock drift.
+     Measured on a field clip: the stabilizer removes the shake well (residual
+     frame-to-frame background motion 0.26 px, HF jitter 0.08 px/frame) but the
+     lock SLIDES ~1.4° over the clip, because every absolute reference is the
+     one marked frame and the chain between them accumulates error. The DEM
+     skyline is an absolute reference available in EVERY frame that shows a
+     horizon: solving each sampled frame against it (the same detectSkyline +
+     matchSkyline the one-tap "⛰ Snap to ridges" uses, validated to ~0.1° on a
+     real DEM) yields absolute poses — which are exactly ⚓ anchors, so they
+     flow through the existing correction field, blend between samples, and
+     drag the object track with them. Drift can't accumulate past an anchor. */
+  const [terrBusy, setTerrBusy] = useState(0);
+  const terrAbortRef = useRef(0);
+  const autoTerrainAnchors = async () => {
+    if (terrBusy) { terrAbortRef.current++; return; }        // tap again = cancel
+    const path = source?.posePath;
+    if (!terr?.els) { setFlash("⛰ terrain data isn't loaded for this spot yet"); return; }
+    if (!Array.isArray(path) || path.length < 2 || source?.mediaKind !== "video" || !source?.natW) { setFlash("⛰ stabilize the clip first"); return; }
+    const run = ++terrAbortRef.current;
+    const base = Array.isArray(source.posePathRaw) && source.posePathRaw.length
+      ? smoothPathAt(source.posePathRaw.map((p) => ({ ...p })), camSNow) : path;
+    /* sample ~1 s apart, capped — each solve is a skyline detect + DEM match */
+    const t0 = base[0].t, t1 = base[base.length - 1].t;
+    const step = Math.max(1, (t1 - t0) / 30);
+    const times = []; for (let t = t0; t <= t1 + 1e-6; t += step) times.push(+t.toFixed(3));
+    setTerrBusy(1);
+    const DW = 480, k = DW / source.natW, DH = Math.max(60, Math.round(source.natH * k));
+    const cv = document.createElement("canvas"); cv.width = DW; cv.height = DH;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    const found = [];
+    let noSky = 0, badFit = 0;
+    try {
+      const v = await ensurePlayVid();
+      for (let i = 0; i < times.length; i++) {
+        if (terrAbortRef.current !== run) break;
+        setTerrBusy(i + 1);
+        const tt = times[i];
+        const p = posePathAt(base, tt);
+        if (!p || !isNum(p.az)) continue;
+        const ok = await new Promise((res) => seekSafe(v, tt, res));
+        if (!ok || !v.videoWidth) continue;
+        try { ctx.drawImage(v, 0, 0, DW, DH); } catch (e) { continue; }
+        const pts = detectSkyline(ctx.getImageData(0, 0, DW, DH), DW, DH);
+        if (!pts) { noSky++; continue; }
+        const fpx = (source.natW / 2) / Math.tan((p.fov * D2R) / 2);
+        let az = p.az, el = p.el, roll = p.roll || 0, m = null;
+        for (let pass = 0; pass < 2; pass++) {          // same two-pass refine as Snap to ridges
+          const bb = photoBasis(az, el, roll);
+          const samples = pts.map((q) => {
+            const nx = q.x / k, ny = q.y / k;
+            const x = (nx - source.natW / 2) / fpx, y = (source.natH / 2 - ny) / fpx;
+            const ae = dirToAzEl(unit([bb.f[0] + bb.r[0] * x + bb.u[0] * y, bb.f[1] + bb.r[1] * x + bb.u[1] * y, bb.f[2] + bb.r[2] * x + bb.u[2] * y]));
+            return { az: ae.az, el: ae.el, thx: Math.atan2(nx - source.natW / 2, fpx) };
+          });
+          m = matchSkyline(samples, (a) => skylineElAt(terr.els, a));
+          if (!m || m.rms > 0.8) break;
+          az = ((az + m.dAz) % 360 + 360) % 360;
+          el = clampN(el + m.dEl, -20, EL_MAX);
+          roll -= m.dRollDeg;
+        }
+        if (!m || m.rms > 0.8) { badFit++; continue; }
+        /* a solve that lands absurdly far from the tracked pose is a mis-match
+           (a cloud bank read as a ridge), not a correction — the tracker is
+           never degrees-wrong in one frame */
+        if (Math.abs(((az - p.az + 540) % 360) - 180) > 6 || Math.abs(el - p.el) > 6) { badFit++; continue; }
+        found.push({ t: tt, az: +az.toFixed(3), el: +el.toFixed(3), roll: +roll.toFixed(2), fov: +p.fov.toFixed(2), src: "terrain", rms: +m.rms.toFixed(2) });
+      }
+    } catch (e) { setTerrBusy(0); setFlash("⛰ couldn't read the clip for terrain anchoring"); return; }
+    setTerrBusy(0);
+    if (terrAbortRef.current !== run) { setFlash("⛰ terrain anchoring cancelled"); return; }
+    if (!found.length) {
+      setFlash(`⛰ no frame matched the DEM skyline${noSky ? ` (${noSky} had no clean horizon)` : ""}${badFit ? ` (${badFit} didn't fit)` : ""} — anchor those frames by hand instead`);
+      return;
+    }
+    /* keep the user's HAND-placed anchors; replace any earlier terrain run */
+    const manual = fixesNow.filter((f) => f.src !== "terrain" && !found.some((g) => Math.abs(+g.t - +f.t) < 1e-3));
+    const list = manual.concat(found).sort((a, b) => a.t - b.t);
+    const patch = { poseFixes: list, ...rederivePaths(list, camSNow, objSNow) };
+    mediaDel(source.id + ":stab");
+    update(patch);
+    /* the pass seeked the offscreen video all over the clip — re-bake the
+       frame the scrubber is parked on so texture and pose agree again */
+    if (playPose) showFrameRef.current(playIdx);
+    const rms = found.reduce((a, f) => a + f.rms, 0) / found.length;
+    setFlash(`⛰ ${found.length} frame${found.length > 1 ? "s" : ""} anchored to the terrain skyline (fit ${rms.toFixed(2)}°)${manual.length ? ` · ${manual.length} hand anchor${manual.length > 1 ? "s" : ""} kept` : ""}${noSky + badFit ? ` · ${noSky + badFit} frame${noSky + badFit > 1 ? "s" : ""} had no usable horizon` : ""}. Drift between them is corrected.`);
   };
   /* commit the pending playPose adjustment as an anchor (upsert by frame time) */
   const setFixAnchor = () => {
@@ -6705,6 +6792,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                           onClick={setFixAnchor}>{fixPending ? "⚓ Anchor" : "⚓ Pin"}</button>
                         {curFix && !fixPending && <button className="btn sm" title="Remove this frame's anchor" onClick={() => dropFixAnchor(+curFix.t)}>✕⚓</button>}
                         {fixPending && <button className="btn sm" title="Discard the adjustment on this frame" onClick={revertFixFrame}>↺</button>}
+                        {terr?.els && (
+                          <button className="btn sm teal" style={{ opacity: terrBusy ? 0.7 : 1 }}
+                            title="Auto-anchor to the terrain skyline: solves sampled frames against the DEM horizon (the same match as ⛰ Snap to ridges) and drops an anchor on each one, so slow drift is corrected across the whole clip. Your hand-placed anchors are kept. Tap again to cancel."
+                            onClick={autoTerrainAnchors}>{terrBusy ? `⛰ ${terrBusy}…` : "⛰ Auto"}</button>
+                        )}
                       </>
                     );
                   })()}
