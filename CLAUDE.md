@@ -813,6 +813,23 @@ terrain stay frozen and only the object moves. Build ladder:
    fabricated. Each entry gains `src`: v/s/b/h, counted in the stabilize
    flash. Applied in `rederivePaths`, so smoothing sliders and Fix-frames
    anchors compose with it.
+   **INLIER COUNT IS NOT A TRUTH SIGNAL** (field case, first instrumented
+   clip): a tracker that loses the scene and re-acquires on whatever drifted
+   into frame reports a CONFIDENT solve that barely moves — the phone swept
+   95 deg of azimuth (gravity concurring with 27 deg of elevation) while the
+   visual solve reported 11.5 deg at 34-46 inliers per frame. Every frame
+   therefore passed `strong()` and the sensors were never consulted at all.
+   So `motionDisagreement` compares the PATH LENGTH each source travelled,
+   and when the log says the camera moved and the vision says it did not
+   (sen > 15 deg and vis/sen < 0.45), `sensorOnlyPath` rebuilds the whole
+   path from the log — motion from the sensors, ABSOLUTE frame from the
+   placement (each sample is the placement pose plus the sensor's delta
+   from the alignment frame, so the compass bias cancels exactly and a
+   star/terrain calibration is preserved), FOV carried from the placement
+   because an in-app recording has no optical zoom. Reported honestly in
+   the flash. A railed or low-confidence sync (conf < 0.45 or |offset| >
+   1.9 s) is now rejected rather than fused on — the first field clip
+   produced offset -2.0 s at rms 20 deg, i.e. the search hit its own limit.
    DIVISION OF LABOUR (do not blur it): gravity is absolute and drift-free
    so the sensors own MOTION; the compass is biased so they never own
    absolute pointing — vision keeps the absolute frame. Asserted: sync

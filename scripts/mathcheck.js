@@ -10,7 +10,7 @@ import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline }
 import { raDecToAzEl } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
-import { sensorAt, syncSensor, fuseSensorVisual, fuseStats } from "../src/video/sensorpath.js";
+import { sensorAt, syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "../src/video/sensorpath.js";
 import { planetPositions } from "../src/math/planets.js";
 import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors, reanchorDir, reanchorAzEl, reanchorPose } from "../src/math/projection.js";
@@ -1916,6 +1916,27 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const longGap = visual.map((p, i) => (i >= 20 && i <= 60 ? { ...p, held: true, n: 1 } : { ...p }));
   const st = fuseStats(fuseSensorVisual(longGap, log, { offset: sync.offset, maxCarry: 2.5 }));
   approx(st.h > 0 ? 1 : 0, 1, 0, "fusion: a too-long sensor-only stretch is left held, not fabricated");
+  /* FIELD CASE: the tracker lost the scene and froze at ~98° with 34-46
+     inliers while the phone actually swept 95°. Inlier count called every
+     frame "strong", so fusion never fired — the disagreement check is what
+     catches it. */
+  const frozen = visual.map((p, i) => ({ ...p, az: i < 8 ? p.az : visual[8].az, el: i < 8 ? p.el : visual[8].el, n: 40, held: false }));
+  const dis = motionDisagreement(frozen, log, sync.offset);
+  approx(dis.ratio < 0.3 ? 1 : 0, 1, 0, `disagreement: a frozen solve is caught (vision ${dis.vis}° vs sensors ${dis.sen}°)`);
+  const agree = motionDisagreement(visual, log, sync.offset);
+  approx(agree.ratio > 0.8 && agree.ratio < 1.25 ? 1 : 0, 1, 0, `disagreement: a good solve agrees with the log (ratio ${agree.ratio})`);
+
+  /* sensor-only path: motion from the log, ABSOLUTE frame from the placement */
+  const anchor = { t: 4, az: 250, el: 12, roll: 0, fov: 41.6, k: 0 };
+  const only = sensorOnlyPath(log, visual.map((p) => p.t), anchor, { offset: sync.offset });
+  const atA = only.find((p) => Math.abs(p.t - 4) < 1e-6);
+  approx(atA.az, 250, 0.05, "sensorOnly: the anchor frame keeps the placement azimuth exactly");
+  approx(atA.el, 12, 0.05, "sensorOnly: the anchor frame keeps the placement elevation exactly");
+  /* the 37° compass bias must cancel: motion between frames matches truth */
+  const p8 = only.find((p) => Math.abs(p.t - 8) < 1e-6);
+  approx(p8.az - atA.az, truth(8).az - truth(4).az, 0.15, "sensorOnly: motion matches truth, compass bias cancels");
+  approx(only.every((p) => p.fov === 41.6) ? 1 : 0, 1, 0, "sensorOnly: FOV carried from the anchor (in-app capture has no optical zoom)");
+
   /* no log at all → unchanged path */
   approx(fuseSensorVisual(visual, null).length, visual.length, 0, "fusion: no sensor log leaves the path untouched");
 }
