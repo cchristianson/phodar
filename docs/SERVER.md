@@ -72,15 +72,34 @@ environment variables and no API keys anywhere in the project.
 
 `npm run start:static` exists for the static-only case (Vite preview, no API).
 
+## Rate limiting
+
+`/api/*` (except `/api/health`) is rate limited per client IP by two token
+buckets, because the cost classes differ:
+
+| Bucket | Burst | Refill | Covers |
+| --- | --- | --- | --- |
+| `tile` | 400 | 8/s | `/api/tile/*` — a report's basemap is up to 108 fetches in one go, and they're cached hard downstream |
+| `query` | 40 | 0.5/s | everything else — each one is an upstream round trip, and a history slice is 10–25 MB |
+
+Normal use is nowhere near either ceiling. Over the limit returns **429** with
+`Retry-After`; the client treats that like any other upstream failure, so the
+affected check degrades with a caveat instead of breaking.
+
+The client IP is taken from `X-Forwarded-For`'s first hop when present (Railway
+and most PaaS hosts sit behind a proxy), otherwise the socket address. Set
+`PHODAR_RATELIMIT=off` to disable — reasonable when you're the only user.
+
 ## Before you host this publicly
 
-The proxy is deliberately narrow — every handler builds its own upstream URL
-from validated numeric parameters, and there is no user-supplied host or path
-anywhere, so it can't be turned into an open relay. But it is **unauthenticated
-and unthrottled**, and it forwards to volunteer-funded infrastructure
-(Overpass, the tar1090 archives). If you run a public instance:
+The proxy is deliberately narrow: every handler builds its own upstream URL
+from validated numeric parameters, coordinates are range-checked, and there is
+no user-supplied host or path anywhere, so it can't be turned into an open
+relay. If you run a public instance:
 
-- put a rate limit in front of it, per IP;
-- keep the `user-agent` identifying your deployment, not `phodar/1`, so the
-  upstreams can reach you if your instance misbehaves;
-- read `docs/DATA-SOURCES.md` for each source's terms and limits.
+- keep the rate limit on, and tighten it if you get real traffic;
+- change the `user-agent` strings to identify **your** deployment rather than
+  `phodar/1`, so the upstreams can reach you if your instance misbehaves;
+- read `docs/DATA-SOURCES.md` for each source's terms and limits;
+- remember your access log will contain the coordinates your users query — see
+  `PRIVACY.md`.
