@@ -13,6 +13,20 @@ import to add their own perspective.
 Built mobile-first for real sighting conditions. It runs entirely in your
 browser; your photos never leave your device.
 
+## Try it
+
+### ▶ [phodar-production.up.railway.app](https://phodar-production.up.railway.app/)
+
+No account, nothing to install — open it in a phone browser. Add it to your
+home screen if you want the motion-sensor capture mode; on iPhone that is the
+only way the sensors are allowed to work.
+
+[![Watch the demo](https://img.youtube.com/vi/p1pjgN36lDA/hqdefault.jpg)](https://youtu.be/p1pjgN36lDA)
+
+**[Watch the demo](https://youtu.be/p1pjgN36lDA)** — a drone flown to a known
+position, photographed from several angles, measured in the app, then checked
+against the truth.
+
 ## Does it actually work?
 
 It was validated on ground truth. Two phone photos of a rooftop weathervane
