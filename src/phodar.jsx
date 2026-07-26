@@ -4980,14 +4980,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      gated on source.posePath and is unreachable until you stabilize. */
   const [previewDur, setPreviewDur] = useState(0);
   const solvedPath = Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
-  const playPath = useMemo(() => {
-    if (solvedPath) return solvedPath;
-    if (source?.mediaKind !== "video" || !(previewDur > 0.1)) return null;
-    const out = [];
-    for (let t = 0; t < previewDur - 0.02; t += 0.25) out.push({ t: +t.toFixed(3), az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist });
-    if (out.length < 2) return null;
-    return out;
-  }, [solvedPath, source?.mediaKind, previewDur, pAz, pEl, pRoll, fovM, pDist]);
+  /* An INSTRUMENTED clip already knows where it was pointing: the recording
+     logged the phone's own attitude at ~25 Hz. So the preview does not have to
+     be a still frame on a fixed pose — build it from the log and the clip is
+     world-locked immediately, with no visual solve at all. Motion comes from
+     gravity (absolute, drift-free); the absolute frame comes from the
+     placement, so the compass bias cancels and any star/terrain calibration is
+     preserved. That is `sensorOnlyPath`, the same function the stabilizer falls
+     back to when the vision demonstrably lost the scene.
+     The clock offset between the log and the encoded timeline can only be
+     recovered against a visual solve, so an unstabilized preview assumes 0
+     (small for an in-app recording, since both clocks start at the tap) or
+     reuses whatever a previous run recovered. */
+  const [playPath, previewKind] = useMemo(() => {
+    if (solvedPath) return [solvedPath, null];
+    if (source?.mediaKind !== "video" || !(previewDur > 0.1)) return [null, null];
+    const times = [];
+    for (let t = 0; t < previewDur - 0.02; t += 0.25) times.push(+t.toFixed(3));
+    if (times.length < 2) return [null, null];
+    const log = source?.sensorPath;
+    if (Array.isArray(log) && log.length > 4) {
+      const sp = sensorOnlyPath(log, times, { t: alignT, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist },
+        { offset: isNum(source?.sensorSync?.offset) ? +source.sensorSync.offset : 0 });
+      if (sp && sp.length > 1) return [sp, "sensor"];
+    }
+    /* no log: one pose for every frame, so the dome cannot world-lock anything
+       and the footage moves against a fixed sky exactly as the camera moved */
+    return [times.map((t) => ({ t, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist })), "flat"];
+  }, [solvedPath, source?.mediaKind, source?.sensorPath, source?.sensorSync, previewDur, alignT, pAz, pEl, pRoll, fovM, pDist]);
   const playPathRef = useRef(playPath); playPathRef.current = playPath;
   /* read the duration once, lazily, so an unstabilized clip can be scrubbed.
      Cheap: the element is the same one playback reuses. */
@@ -6858,7 +6878,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               <div style={{ display: "grid", gap: 6, marginBottom: 8 }}
                 title={solvedPath
                   ? "World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves."
-                  : "Preview only — the clip has not been stabilized, so every frame is drawn at the placement pose and the footage moves against a fixed sky. Stabilize to world-lock it."}>
+                  : previewKind === "sensor"
+                    ? "World-locked from the recording's own motion log — no visual solve. Gravity gives tilt and roll absolutely in every frame; the bearing rides the placement. Good enough to see what the clip does; stabilize for measurement-grade pointing and the object track."
+                    : "Preview only — the clip has not been stabilized, so every frame is drawn at the placement pose and the footage moves against a fixed sky. Stabilize to world-lock it."}>
                 {/* the SCRUBBER gets its own full-width line (precise thumb travel —
                     the growing button row had squeezed it unusable), flanked by
                     single-frame step buttons for exact frame selection */}
@@ -6882,7 +6904,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
                   <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: !solvedPath ? "var(--amber)" : playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
-                    {!solvedPath && " · preview, not stabilized"}
+                    {!solvedPath && (previewKind === "sensor" ? " · from motion log, not stabilized" : " · preview, not stabilized")}
                   </span>
                   {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
                   {/* ⚓ / 🎛 / ⬇ all operate ON a solved path — their panels are
