@@ -179,7 +179,7 @@ async function refineViaTrace(day, hex, tMs) {
 }
 
 async function apiHist(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), t = +q.get("t");
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), t = +q.get("t");
   const nm = Math.min(250, Math.max(5, +(q.get("nm") || 60)));
   const winMin = Math.min(30, Math.max(1, +(q.get("win") || 8)));
   if (!isFinite(lat) || !isFinite(lon) || !isFinite(t)) return json(res, 400, { error: "lat, lon, t required" });
@@ -250,6 +250,17 @@ function json(res, code, obj) {
   res.writeHead(code, { "content-type": "application/json", "access-control-allow-origin": "*" });
   res.end(body);
 }
+/* A MISSING search param coerces to 0, not NaN — so `+q.get("lat")` turned an
+   omitted coordinate into a perfectly finite 0,0 and every handler happily
+   forwarded a query about the Gulf of Guinea to its upstream. Parse coordinates
+   through this instead: absent, unparseable or out-of-range all yield NaN, which
+   the existing isFinite guards reject as a 400 before anything leaves the box. */
+const coord = (q, key, lim) => {
+  const raw = q.get(key);
+  if (raw == null || raw === "") return NaN;
+  const v = Number(raw);
+  return Math.abs(v) <= lim ? v : NaN;
+};
 /* Esri tile proxy — lets the browser composite the report's satellite basemap
    + map-data overlay onto a canvas WITHOUT a CORS taint (same origin here), so
    toDataURL succeeds and the tiles bake into the self-contained report.
@@ -313,7 +324,7 @@ async function apiFireballs(q, res) {
    CORS-unreliable reason as /api/peaks: proxy + race mirrors + cache. */
 const airportsCache = new Map();
 async function apiAirports(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(80000, Math.max(2000, +q.get("r") || 40000));
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(80000, Math.max(2000, +q.get("r") || 40000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
   const hit = airportsCache.get(key);
@@ -348,7 +359,7 @@ async function apiAirports(q, res) {
 }
 const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
   const hit = peaksCache.get(key);
@@ -394,7 +405,7 @@ async function apiPeaks(q, res) {
    empty result is legitimate here (rural — no buildings), returned as 200 []. */
 const bldgCache = new Map(); // key → { t, body }
 async function apiBuildings(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon"), r = Math.min(2000, Math.max(200, +q.get("r") || 1200));
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(2000, Math.max(200, +q.get("r") || 1200));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const key = `${lat.toFixed(4)},${lon.toFixed(4)},${r}`;
   const hit = bldgCache.get(key);
@@ -497,7 +508,7 @@ async function fetchOpenSky(lat, lon, nm) {
   }));
 }
 async function apiLive(q, res) {
-  const lat = +q.get("lat"), lon = +q.get("lon");
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180);
   const nm = Math.min(250, Math.max(5, +q.get("nm") || 60)), R = Math.round(nm);
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
   const feeds = [
@@ -529,9 +540,58 @@ async function apiLive(q, res) {
   const ac = [...byHex.values()];
   return json(res, 200, { ac, sources: used, errors: errs.length ? errs : undefined, now: Date.now(), merged: ac.length });
 }
+/* ---------- per-IP rate limit ----------
+   Everything this proxy forwards to is free and most of it is volunteer-run
+   (Overpass, the tar1090 archives, the ADS-B feeders). A public instance is
+   one enthusiastic script away from being the reason those services start
+   blocking people, and the app itself is nowhere near these ceilings — a full
+   report is a few dozen tile fetches and a handful of queries.
+
+   Two token buckets per client, because the cost classes are genuinely
+   different: tiles arrive in bursts of ~36 while a report bakes its basemap
+   and are cached hard downstream; the query endpoints each cost an upstream
+   round trip (a history slice is 10–25 MB). Set PHODAR_RATELIMIT=off to
+   disable — reasonable when you are the only user. */
+const RL_ON = String(process.env.PHODAR_RATELIMIT || "").toLowerCase() !== "off";
+const BUCKETS = {
+  tile: { burst: 400, perSec: 8 },   // one report's basemap is up to 108 fetches
+  query: { burst: 40, perSec: 0.5 },
+};
+const rlSeen = new Map(); // ip -> { tile: {n, t}, query: {n, t} }
+const clientIp = (req) => {
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  return req.socket?.remoteAddress || "?";
+};
+/* returns 0 when allowed, else the seconds to wait */
+function rateLimit(req, kind) {
+  if (!RL_ON) return 0;
+  const cfg = BUCKETS[kind], ip = clientIp(req), now = Date.now();
+  let rec = rlSeen.get(ip);
+  if (!rec) {
+    /* bound the table: sweep anything idle for 10 min before growing it */
+    if (rlSeen.size > 5000) for (const [k, v] of rlSeen) if (now - Math.max(v.tile.t, v.query.t) > 600000) rlSeen.delete(k);
+    rec = { tile: { n: BUCKETS.tile.burst, t: now }, query: { n: BUCKETS.query.burst, t: now } };
+    rlSeen.set(ip, rec);
+  }
+  const b = rec[kind];
+  b.n = Math.min(cfg.burst, b.n + ((now - b.t) / 1000) * cfg.perSec);
+  b.t = now;
+  if (b.n < 1) return Math.ceil((1 - b.n) / cfg.perSec);
+  b.n -= 1;
+  return 0;
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
+    if (u.pathname.startsWith("/api/") && u.pathname !== "/api/health") {
+      const wait = rateLimit(req, u.pathname.startsWith("/api/tile/") ? "tile" : "query");
+      if (wait) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": String(wait), "cache-control": "no-store" });
+        return res.end(JSON.stringify({ error: "rate limited — this proxy forwards to free, volunteer-run services", retryAfter: wait }));
+      }
+    }
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
     if (u.pathname === "/api/live") return await apiLive(u.searchParams, res);
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
