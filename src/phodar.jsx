@@ -7898,6 +7898,18 @@ function SensorCapture({ onCapture, onClose }) {
   const [gps, setGps] = useState(null);
   const gpsRef = useRef(null), watchRef = useRef(null);
   const [gpsBusy, setGpsBusy] = useState(false);
+  /* CLEAN VIEW (👁). This screen is a viewfinder pointed at something that is
+     happening NOW, and the guidance stacked under it — readout tiles, GPS line,
+     raw sensors, two explanation paragraphs, the secondary shutters — leaves
+     little sky to actually look at. The toggle strips it to what you cannot
+     shoot without: the crosshair, a one-line pose readout, the full-res shutter,
+     the record button, and the way out.
+     What survives on PURPOSE even in the clean view: the camera error, the
+     "no motion data" box and the missing-position warning. Those change what the
+     capture IS WORTH, and a tidier screen is not worth letting someone shoot a
+     whole session believing it carried attitude when it didn't. */
+  const [lean, setLean] = useState(() => { try { return localStorage.getItem("phodar-capclean") === "1"; } catch (e) { return false; } });
+  const toggleLean = () => setLean((v) => { const n = !v; try { localStorage.setItem("phodar-capclean", n ? "1" : "0"); } catch (e) { } return n; });
   /* NO-MOTION GUARD: DeviceOrientation/Motion simply never fire in some
      browsers (a Chrome tab on iOS, an in-app webview, desktop). Without this
      the capture looks alive — camera running, shutter working — while tilt,
@@ -8196,8 +8208,16 @@ function SensorCapture({ onCapture, onClose }) {
       )}
       {/* header */}
       <div style={{ position: "relative", zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(8px + env(safe-area-inset-top)) 12px 8px" }}>
-        <span style={{ color: "#fff", fontFamily: "var(--mono)", fontSize: 12, background: "rgba(0,0,0,.4)", padding: "3px 8px", borderRadius: 8 }}>📷 Sensor capture <b style={{ color: "var(--amber)" }}>beta</b></span>
-        <button onClick={onClose} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 18, width: 36, height: 36, fontSize: 18 }}>✕</button>
+        {lean
+          ? <span />
+          : <span style={{ color: "#fff", fontFamily: "var(--mono)", fontSize: 12, background: "rgba(0,0,0,.4)", padding: "3px 8px", borderRadius: 8 }}>📷 Sensor capture <b style={{ color: "var(--amber)" }}>beta</b></span>}
+        <div style={{ display: "flex", gap: 8 }}>
+          {started && (
+            <button onClick={toggleLean} title={lean ? "show the guidance" : "clean view — hide everything but the essentials"}
+              style={{ background: lean ? "rgba(64,199,178,.25)" : "rgba(0,0,0,.5)", color: lean ? "var(--teal)" : "#fff", border: `1px solid ${lean ? "var(--teal)" : "rgba(255,255,255,.3)"}`, borderRadius: 18, width: 36, height: 36, fontSize: 16 }}>👁</button>
+          )}
+          <button onClick={onClose} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 18, width: 36, height: 36, fontSize: 18 }}>✕</button>
+        </div>
       </div>
       <div style={{ flex: 1 }} />
       {/* start gate OR live readout + shutter */}
@@ -8212,17 +8232,28 @@ function SensorCapture({ onCapture, onClose }) {
       ) : (
         <div style={{ position: "relative", zIndex: 2, padding: "0 14px calc(20px + env(safe-area-inset-bottom))" }}>
           {camErr && <div style={{ color: "var(--amber)", fontSize: 11.5, marginBottom: 8, background: "rgba(0,0,0,.55)", padding: "6px 10px", borderRadius: 8 }}>{camErr}</div>}
-          {/* live pose readout */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, fontFamily: "var(--mono)" }}>
-            {[["tilt", pose ? readVal(pose.el, "°") : "—", "up/down"], ["roll", pose ? readVal(pose.roll, "°") : "—", "level"], ["bearing", pose && isNum(headRef.current) ? readVal(pose.az, "° " + compass8(pose.az)) : "—", "compass"]].map(([k, v, sub]) => (
-              <div key={k} style={{ flex: 1, background: "rgba(0,0,0,.55)", borderRadius: 10, padding: "7px 6px", textAlign: "center" }}>
-                <div style={{ fontSize: 10, color: "var(--dim)", textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: "var(--teal)" }}>{v}</div>
-                <div style={{ fontSize: 9, color: "var(--dim)" }}>{sub}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "rgba(0,0,0,.5)", borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: 10.5, color: "#cfe" }}>
+          {/* live pose readout — the one thing the clean view keeps, because
+              recording a pose you can't see is the whole failure mode this
+              screen exists to avoid. One line instead of three tiles. */}
+          {lean ? (
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12.5, background: "rgba(0,0,0,.5)", borderRadius: 9, padding: "6px 10px", marginBottom: 10, textAlign: "center", color: "var(--teal)" }}>
+              {pose
+                ? <>{readVal(pose.el, "°")} up · {readVal(pose.roll, "°")} roll · {isNum(headRef.current) ? readVal(pose.az, "° " + compass8(pose.az)) : "no compass"}</>
+                : <span style={{ color: "var(--amber)" }}>waiting for motion sensors…</span>}
+              {!gps && <span onClick={askGps} style={{ color: "var(--amber)", fontWeight: 800, cursor: "pointer" }}> · 📍 no fix</span>}
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, fontFamily: "var(--mono)" }}>
+              {[["tilt", pose ? readVal(pose.el, "°") : "—", "up/down"], ["roll", pose ? readVal(pose.roll, "°") : "—", "level"], ["bearing", pose && isNum(headRef.current) ? readVal(pose.az, "° " + compass8(pose.az)) : "—", "compass"]].map(([k, v, sub]) => (
+                <div key={k} style={{ flex: 1, background: "rgba(0,0,0,.55)", borderRadius: 10, padding: "7px 6px", textAlign: "center" }}>
+                  <div style={{ fontSize: 10, color: "var(--dim)", textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: "var(--teal)" }}>{v}</div>
+                  <div style={{ fontSize: 9, color: "var(--dim)" }}>{sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!lean && <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "rgba(0,0,0,.5)", borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: 10.5, color: "#cfe" }}>
             {/* A RECORDED clip carries no EXIF, so this fix is the only position
                 it will ever have — make its absence loud and RETRYABLE. Tapping
                 re-requests from a fresh user gesture, which is what actually
@@ -8232,17 +8263,17 @@ function SensorCapture({ onCapture, onClose }) {
                 : (gpsBusy ? "GPS — finding…" : "📍 No position — tap to allow")}
             </span>
             <button onClick={flip} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.35)", color: "#fff", borderRadius: 8, padding: "3px 8px", fontSize: 10.5 }}>⇅ flip tilt</button>
-          </div>
+          </div>}
           {/* raw-sensor diagnostic — so a landscape screenshot shows the actual
              numbers (untouched compass + α/β/γ + screen angle) and the compass
              frame can be solved from data, not guessed. */}
-          <div style={{ background: "rgba(0,0,0,.5)", borderRadius: 8, padding: "4px 10px", marginBottom: 10, fontFamily: "var(--mono)", fontSize: 9.5, color: "#8ab", textAlign: "center", letterSpacing: 0.2 }}>
+          {!lean && <div style={{ background: "rgba(0,0,0,.5)", borderRadius: 8, padding: "4px 10px", marginBottom: 10, fontFamily: "var(--mono)", fontSize: 9.5, color: "#8ab", textAlign: "center", letterSpacing: 0.2 }}>
             raw hdg {isNum(headRef.current) ? Math.round(headRef.current) + "°" : "—"} · scr {Math.round(screenAngle())}° · α{isNum(rawRef.current.alpha) ? Math.round(rawRef.current.alpha) : "—"} β{isNum(rawRef.current.beta) ? Math.round(rawRef.current.beta) : "—"} γ{isNum(rawRef.current.gamma) ? Math.round(rawRef.current.gamma) : "—"} · {sensorMode || "no-compass"}{gSignRef.current === -1 ? " g−" : ""}
-          </div>
-          {!pose
+          </div>}
+          {!lean && (!pose
             ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank: on iPhone turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b>, on Android allow motion sensors for this site, then reopen.</div>
-            : <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>}
-          <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
+            : <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>)}
+          {!lean && <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>}
           {/* hidden native camera for the full-resolution still + a library
               picker for the Night-mode workflow (no `capture` attr) */}
           <input ref={nativeRef} type="file" accept="image/*" capture="environment" onChange={onNativeFile} style={{ display: "none" }} />
@@ -8252,7 +8283,7 @@ function SensorCapture({ onCapture, onClose }) {
               NIGHT: freeze the aim → shoot in the Camera app → attach. */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
             <button onClick={takeFullRes} className="btn amber" style={{ padding: "13px 22px", fontSize: 15, borderRadius: 30 }}>📸 Full-resolution photo</button>
-            <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
+            {!lean && <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>}
             {noMotion && (
               <div style={{ background: "rgba(229,72,77,.18)", border: "1px solid #e5484d", color: "#ffd7d9", borderRadius: 10, padding: "8px 10px", fontSize: 11, maxWidth: 320, textAlign: "center", lineHeight: 1.45 }}>
                 <b>No motion data.</b> On iPhone, use the home-screen app rather
@@ -8267,24 +8298,31 @@ function SensorCapture({ onCapture, onClose }) {
               style={{ background: recording ? "rgba(229,72,77,.85)" : "rgba(64,199,178,.22)", color: recording ? "#fff" : "var(--teal)", border: `1px solid ${recording ? "#e5484d" : "var(--teal)"}`, borderRadius: 30, padding: "11px 20px", fontSize: 14, fontWeight: 700 }}>
               {recording ? `⏹ Stop  ${recSecs.toFixed(1)}s` : "🎬 Record with motion data"}
             </button>
-            <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 300 }}>
-              Logs the phone's tilt, roll and bearing continuously — the stabilizer then has a
-              drift-free reference in every frame, and frames with nothing to track stop freezing.
-              <b style={{ color: "#cde" }}> Records at ~1080p with no zoom</b>, so use it when the
-              measurement matters more than the footage.
-              {!gps && <b style={{ color: "var(--amber)", display: "block", marginTop: 3 }}>
-                No position yet — a recorded clip carries no EXIF, so tap the GPS line above first
-                or you'll have to type your location on the next step.
-              </b>}
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {/* the explanation goes in the clean view; the missing-position
+                warning does NOT — a clip with no fix and no EXIF is a sighting
+                with no observer, which is worth interrupting a tidy screen for */}
+            {(!lean || !gps) && (
+              <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 300 }}>
+                {!lean && <>
+                  Logs the phone's tilt, roll and bearing continuously — the stabilizer then has a
+                  drift-free reference in every frame, and frames with nothing to track stop freezing.
+                  <b style={{ color: "#cde" }}> Records at ~1080p with no zoom</b>, so use it when the
+                  measurement matters more than the footage.
+                </>}
+                {!gps && <b onClick={askGps} style={{ color: "var(--amber)", display: "block", marginTop: lean ? 0 : 3, fontSize: lean ? 10 : 9, cursor: "pointer" }}>
+                  No position yet — a recorded clip carries no EXIF, so tap here for a fix
+                  or you'll have to type your location on the next step.
+                </b>}
+              </div>
+            )}
+            {!lean && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={shoot} style={{ background: "rgba(0,0,0,.5)", color: "#fff", border: "1px solid rgba(255,255,255,.3)", borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>⚡ Quick frame (lower-res)</button>
               <button onClick={nightPose ? () => libRef.current && libRef.current.click() : freezeForNight}
                 style={{ background: nightPose ? "rgba(64,199,178,.25)" : "rgba(0,0,0,.5)", color: nightPose ? "var(--teal)" : "#fff", border: `1px solid ${nightPose ? "var(--teal)" : "rgba(255,255,255,.3)"}`, borderRadius: 20, padding: "6px 14px", fontSize: 12 }}>
                 {nightPose ? "📁 Attach the shot" : "🌙 Night / long exposure"}
               </button>
-            </div>
-            {nightPose && nightPose.pose && (
+            </div>}
+            {!lean && nightPose && nightPose.pose && (
               <div style={{ fontSize: 9.5, color: "var(--teal)", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 300, lineHeight: 1.5 }}>
                 Aim frozen ✓ ({Math.round(nightPose.pose.az)}° {compass8(nightPose.pose.az)} · {Math.round(nightPose.pose.el)}° up). iOS only gives web apps a basic camera — Night mode lives in the Camera app. Switch there, shoot from THIS spot at THIS aim, come back and 📁 attach it.
               </div>
