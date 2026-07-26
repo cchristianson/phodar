@@ -4921,6 +4921,41 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     try { id = v.requestVideoFrameCallback(fin); } catch (e) { res(); return; }
     setTimeout(fin, 100);   // armed BEFORE the seek, so a frame presented with `seeked` still resolves promptly
   });
+  /* PREVIEW BEFORE STABILIZING. Playback used to require a solved posePath,
+     which meant you could not even look through a clip in the sky view until
+     you had sat through a stabilize run — and stabilizing is the slow step you
+     most want to make an informed decision about. So when there is no solved
+     path, synthesise one: the same 0.25 s cadence over the clip's duration,
+     every sample carrying the CURRENT placement pose.
+
+     That is honest by construction rather than by promise — with one pose for
+     every frame the dome cannot world-lock anything, so the sky stays put and
+     the footage moves against it exactly as the camera moved. It is a preview
+     of the FOOTAGE, not of the result, and the row says so.
+
+     Everything downstream (scrub, play, the readout, ‹ ›) indexes a path and
+     does not care which kind it got. What genuinely needs solved poses — ⚓ fix
+     frames, the smoothing sliders, export, the trajectory overlay — stays
+     gated on source.posePath and is unreachable until you stabilize. */
+  const [previewDur, setPreviewDur] = useState(0);
+  const solvedPath = Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
+  const playPath = useMemo(() => {
+    if (solvedPath) return solvedPath;
+    if (source?.mediaKind !== "video" || !(previewDur > 0.1)) return null;
+    const out = [];
+    for (let t = 0; t < previewDur - 0.02; t += 0.25) out.push({ t: +t.toFixed(3), az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist });
+    if (out.length < 2) return null;
+    return out;
+  }, [solvedPath, source?.mediaKind, previewDur, pAz, pEl, pRoll, fovM, pDist]);
+  const playPathRef = useRef(playPath); playPathRef.current = playPath;
+  /* read the duration once, lazily, so an unstabilized clip can be scrubbed.
+     Cheap: the element is the same one playback reuses. */
+  useEffect(() => {
+    if (!open || solvedPath || source?.mediaKind !== "video" || previewDur > 0) return;
+    let dead = false;
+    ensurePlayVid().then((v) => { if (!dead && v.duration && isFinite(v.duration)) setPreviewDur(v.duration); }).catch(() => { });
+    return () => { dead = true; };
+  }, [open, solvedPath, source?.mediaKind, source?.mediaUrl]); // eslint-disable-line
   /* i is a FLOAT sample index: playback advances in sub-sample steps and takes
      the pose from posePathAt, so the motion is a ramp at ~10 fps instead of a
      jump at the 0.25 s solve cadence. That cadence is why playback looked
@@ -4928,7 +4963,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the clip's own frame rate. Integer indices (the scrubber, ‹ ›) land exactly
      on a solved sample, unchanged. */
   const showFrame = (i) => {
-    const path = source?.posePath; if (!path || !path.length) return;
+    const path = playPathRef.current; if (!path || !path.length) return;
     pendingIdxRef.current = clampN(i, 0, path.length - 1);
     if (seekBusyRef.current) return;              // one seek in flight; the latest request wins
     seekBusyRef.current = true;
@@ -4980,7 +5015,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const togglePlay = () => {
     if (playingRef.current) { playingRef.current = false; setPlaying(false); return; }
     playingRef.current = true; setPlaying(true);
-    const path = source?.posePath || [];
+    const path = playPath || [];
     showFrame(playIdx >= path.length - 1 ? 0 : playIdx + (playPose ? 1 : 0));
   };
   /* exit playback: re-bake the MARKED frame, then drop the pose override —
@@ -4988,7 +5023,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const exitPlayback = () => {
     playingRef.current = false; setPlaying(false);
     const refT2 = alignT;   // the static texture outside playback is the ALIGNMENT frame
-    const path = source?.posePath || [];
+    const path = playPath || [];
     let ri = 0; for (let i = 0; i < path.length; i++) if (Math.abs(path[i].t - refT2) < Math.abs(path[ri].t - refT2)) ri = i;
     pendingIdxRef.current = ri;
     const v = playVidRef.current;
@@ -6765,9 +6800,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ask: keep the video controls while viewing clean). */}
             {/* trajOn does NOT hide this row — watching the trajectory while
                 scrubbing/fixing frames is the whole point (field ask) */}
-            {!calibOn && pMode !== "place" && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+            {!calibOn && pMode !== "place" && !sizeOn && !cmpOn && source?.mediaKind === "video" && playPath && playPath.length > 1 && (
               <div style={{ display: "grid", gap: 6, marginBottom: 8 }}
-                title="World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves.">
+                title={solvedPath
+                  ? "World-locked playback: every frame is drawn at its own solved camera pose, so the sky and terrain stay fixed on the dome and only the object moves."
+                  : "Preview only — the clip has not been stabilized, so every frame is drawn at the placement pose and the footage moves against a fixed sky. Stabilize to world-lock it."}>
                 {/* the SCRUBBER gets its own full-width line (precise thumb travel —
                     the growing button row had squeezed it unusable), flanked by
                     single-frame step buttons for exact frame selection */}
@@ -6775,11 +6812,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <button className="btn sm" style={{ minWidth: 34 }} title="Back one frame"
                     onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx - 1); }}>‹</button>
                   <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
-                    <input type="range" min={0} max={source.posePath.length - 1} step={1} value={playIdx}
+                    <input type="range" min={0} max={playPath.length - 1} step={1} value={playIdx}
                       onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ width: "100%" }} />
                     {/* ⚓ anchor ticks — where the manual pose fixes sit on the clip */}
                     {fixOn && fixesNow.map((f) => {
-                      const pp3 = source.posePath, span = (pp3[pp3.length - 1].t - pp3[0].t) || 1;
+                      const pp3 = playPath, span = (pp3[pp3.length - 1].t - pp3[0].t) || 1;
                       const pct = clampN(((+f.t - pp3[0].t) / span) * 100, 0, 100);
                       return <span key={"tk" + f.t} style={{ position: "absolute", left: pct + "%", top: -3, transform: "translateX(-50%)", fontSize: 8, lineHeight: 1, color: "var(--amber)", pointerEvents: "none" }}>▾</span>;
                     })}
@@ -6789,10 +6826,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
-                  <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {(source.posePath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(source.posePath[playIdx]?.n) ? ` · ${source.posePath[playIdx].n} refs` : ""}
+                  <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: !solvedPath ? "var(--amber)" : playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
+                    {!solvedPath && " · preview, not stabilized"}
                   </span>
                   {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                  {/* ⚓ / 🎛 / ⬇ all operate ON a solved path — their panels are
+                      gated on one, so in preview mode the buttons would toggle
+                      and open nothing. Hide them until there is something to
+                      correct, smooth or render. */}
+                  {solvedPath && <>
                   <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                     onClick={() => {
                       playingRef.current = false; setPlaying(false);
@@ -6807,6 +6850,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
                     {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
                   </button>
+                  </>}
                 </div>
               </div>
             )}
