@@ -9388,7 +9388,7 @@ async function reportPlotSvg(fix, traj) {
   const target = span / 4;
   const nice = Math.pow(10, Math.floor(Math.log10(target))) * ([1, 2, 5, 10].find((f) => Math.pow(10, Math.floor(Math.log10(target))) * f >= target) || 10);
   g += `<line x1="16" y1="${H - 16}" x2="${16 + nice * s}" y2="${H - 16}" stroke="${bm ? "#fff" : "#555"}" stroke-width="2.5"/>` + tx(16, H - 22, fmtLenShort(nice), { size: 10, fill: "#555" }) + tx(16, 20, "N ↑", { size: 12, fill: "#555" });
-  if (bm) g += tx(W - 6, H - 6, "© Esri, Maxar", { size: 9 }).replace("<text ", '<text text-anchor="end" opacity=".9" ');
+  if (bm) g += tx(W - 6, H - 6, "© Esri, Maxar, Earthstar Geographics", { size: 9 }).replace("<text ", '<text text-anchor="end" opacity=".9" ');
   return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:${bm ? "#111" : "#fafafa"}">${g}</svg>`;
 }
 
@@ -10532,6 +10532,7 @@ ${collapsible(`<h2>Method</h2><p>Each photo is pixel-normalized and its lens fie
 ${collapsible(`<h2>Caveats</h2><p>${fix.ok ? `Quality <b>${fix.rating}</b>: baseline ${fmtLenShort(fix.baseline)}, convergence ${fix.conv.toFixed(1)}°, rms ray miss ${fmtLenShort(fix.solA.rmsMiss)}; a ±1° bearing error implies ≈ ${fmtLenShort(fix.posErr)} of position uncertainty.` : `Single-perspective data — directions and angular sizes are honest; absolute range, size and speed require a second viewpoint.`} Compass bearings may be magnetic rather than true; EXIF times are device-local.</p>`, false)}
 ${diagHtml}
 <p class="cap"> ${opts.exhibits === "full" || opts.exhibits === "files" ? "Exhibit photos are full resolution; the embedded share data carries 1600 px working copies." : "Bundled photos are 1600 px working copies; analysis used the originals."}</p>
+<p class="cap">Cross-check data: aircraft from the ADS-B community networks (airplanes.live, adsb.lol, adsb.fi, OpenSky); satellites from CelesTrak; terrain from Terrarium/AWS Open Data; peaks, buildings, aerodromes and street maps © OpenStreetMap contributors (ODbL); satellite imagery © Esri, Maxar, Earthstar Geographics; winds from Open-Meteo; magnetic declination from NOAA WMM2025. Every one of them is a free public source — see docs/DATA-SOURCES.md in the Phodar repository.</p>
 <p class="noprint"><b>Add your perspective:</b> open Phodar → Import and choose this very file — the sighting data and photos are embedded below.</p>
 <script type="application/json" id="phodar-data">${data}</script>
 <script>(function(){function set(open){document.querySelectorAll('details.sec').forEach(function(d){if(open){if(!d.open){d.dataset.was='0';d.open=true}}else if(d.dataset.was==='0'){d.open=false;delete d.dataset.was}})}window.addEventListener('beforeprint',function(){set(true)});window.addEventListener('afterprint',function(){set(false)});if(window.matchMedia){var mq=window.matchMedia('print');if(mq.addListener)mq.addListener(function(e){set(e.matches)})}})();</script>
