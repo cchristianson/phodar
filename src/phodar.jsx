@@ -4549,8 +4549,49 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (update) update({ posePath: path });
     setFlash(`🎯 solved ${path.length} keyframe${path.length === 1 ? "" : "s"} from your marks · smoothing ${Math.round(smoothAmt * 100)}% — ▶ play to check`);
   };
+  /* UNDO A STABILIZE RUN. The walk is destructive in five directions at once:
+     it overwrites posePath AND posePathRaw, replaces the object track and its
+     raw, clears EVERY ⚓ anchor, and can rewrite the keyframed track. A run that
+     makes things worse — a clip the tracker cannot hold, or a sensor capture
+     whose object pass latches onto the wrong thing — used to be unrecoverable,
+     with no way back to footage that was fine before you asked.
+
+     So snapshot what the run is about to overwrite, and keep ONE level: the
+     semantic that matches "the thing I just did was wrong". Undoing restores
+     the snapshot exactly, anchors included.
+
+     With no snapshot (a clip stabilized before this existed) undo still has
+     somewhere useful to go — it clears the solve, and since preview playback
+     no longer needs a posePath, that lands you on the original clip rather
+     than a dead screen. */
+  const preStabSnap = () => ({
+    posePath: source?.posePath || null, posePathRaw: source?.posePathRaw || null,
+    objPath: source?.objPath || null, objPathRaw: source?.objPathRaw || null,
+    poseFixes: source?.poseFixes || null, sensorSync: source?.sensorSync || null,
+    track: Array.isArray(source?.track) && source.track.length ? source.track : null,
+  });
+  const undoStabilize = () => {
+    const p = source?.preStab;
+    playingRef.current = false; setPlaying(false);
+    setPlayPose(null); setPlayIdx(0);
+    setFixOn(false); setSmoothOpen(false); setExportMenu(false);
+    mediaDel(source.id + ":stab");   // the exported render belongs to the solve being discarded
+    if (p) {
+      update({
+        posePath: p.posePath || null, posePathRaw: p.posePathRaw || null,
+        objPath: p.objPath || null, objPathRaw: p.objPathRaw || null,
+        poseFixes: p.poseFixes || null, sensorSync: p.sensorSync || null,
+        ...(p.track ? { track: p.track } : {}), preStab: null,
+      });
+      setFlash(p.posePath && p.posePath.length > 1 ? "↶ back to the previous stabilize" : "↶ stabilization removed — the original clip is back");
+    } else {
+      update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, preStab: null });
+      setFlash("↶ stabilization removed — the original clip is back");
+    }
+  };
   const stabilize = async () => {
     if (source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize needs a video with a marked frame"); return; }
+    const preStab = preStabSnap();
     const run = ++stabAbortRef.current;
     const refPose = { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
     /* the walk anchors on the ALIGNMENT frame (what the placement pose
@@ -4856,7 +4897,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
-      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -6744,6 +6785,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1, flex: "0 0 auto" }}
                       title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
                       onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
+                  )}
+                  {/* ↶ UNDO — a bad run is otherwise unrecoverable. Restores the
+                      snapshot taken before the last run (anchors included), or
+                      clears the solve when there is no snapshot, which now lands
+                      on the original clip rather than a dead screen. */}
+                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+                    <button className="btn sm" style={{ flex: "0 0 auto" }}
+                      title={source?.preStab
+                        ? (source.preStab.posePath && source.preStab.posePath.length > 1
+                          ? "Undo the last stabilize — back to the previous solve, with its ⚓ anchors and object track"
+                          : "Undo the stabilize — back to the original clip, before any solve")
+                        : "Remove the stabilization — back to the original clip. (Recorded before undo existed, so there is no earlier solve to return to.)"}
+                      onClick={undoStabilize}>↶ Undo</button>
                   )}
                   {/* MANUAL solve: only when the clip has hand-marked camera refs
                       (the auto pass couldn't do it) — solves instantly from marks,
@@ -9370,7 +9424,10 @@ async function packSources(sources) {
   const act = sources.filter((s) => !isEmptySource(s));
   const out = [];
   for (const s of act) {
-    const { mediaUrl, mediaKind, mediaNorm, open, ...r } = s;
+    /* preStab is the undo snapshot for the last stabilize run — private working
+       state, and a full duplicate of both paths. It has no meaning to a
+       recipient and would roughly double the video payload of every share. */
+    const { mediaUrl, mediaKind, mediaNorm, open, preStab, ...r } = s;
     /* moments carry their own (heavy) photos — keep the measurements (whenMs +
        A.az/el + marks + natW/H/fovH) so an imported sighting still reconstructs
        the multi-photo trajectory via sourceTrack, and bundle a modest thumbnail
