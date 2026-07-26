@@ -366,7 +366,11 @@ const css = `
 .lmk-obj{color:var(--amber); font-size:17px; font-weight:800;}
 .lmk-obj span{color:var(--amber); font-weight:700; left:11px; top:-7px;}
 .mappick-modal{position:fixed; inset:0; z-index:4000; display:flex; flex-direction:column;
-  background:var(--bg); padding-top:env(safe-area-inset-top);}
+  background:var(--bg); padding-top:env(safe-area-inset-top);
+  /* its Cancel / ✓ buttons live in a footer — without this they sit under the
+     home indicator in the installed PWA, same reachability bug the report
+     preview had at the top */
+  padding-bottom:env(safe-area-inset-bottom);}
 .mappick-modal .leaflet-container{width:100%; height:100%; background:#08101F;}
 .mappick-modal .leaflet-control-attribution{background:rgba(7,11,20,.55); color:var(--dim); font-size:9px;}
 .mappick-modal .leaflet-control-attribution a{color:var(--dim);}
@@ -10980,9 +10984,15 @@ function ReportView({ sources, est, onBack }) {
         </div>
       </div>
 
+      {/* A fixed inset:0 overlay in the INSTALLED PWA starts at the physical
+          top of the screen — the status bar is translucent — so a plain padding
+          put this header under the notch and its buttons out of reach (field
+          report). Every other full-screen overlay already pads by the safe
+          area; this one and the copy box below were the misses. Bottom inset
+          too, or the report's last lines sit under the home indicator. */}
       {prevHtml && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#0009", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", gap: 6, padding: "10px 12px", background: "var(--bg)", alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#0009", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div style={{ display: "flex", gap: 6, padding: "calc(10px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 10px calc(12px + env(safe-area-inset-left))", background: "var(--bg)", alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1, minWidth: 60 }}>REPORT</span>
             <button className="btn sm amber" onClick={shareReportHtml}>📤 Share/Download page</button>
             <button className="btn sm" onClick={() => setPrevHtml(null)}>✕ Close</button>
@@ -10993,7 +11003,7 @@ function ReportView({ sources, est, onBack }) {
       )}
 
       {manual && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#000c", display: "flex", flexDirection: "column", padding: 12 }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 300, background: "#000c", display: "flex", flexDirection: "column", padding: "calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left))" }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 800, flex: 1, color: "var(--ink)" }}>{manual.name} — select all, then Copy</span>
             <button className="btn sm" onClick={() => setManual(null)}>✕ Close</button>
