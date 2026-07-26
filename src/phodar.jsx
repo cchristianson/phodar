@@ -17,7 +17,7 @@ import { syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnly
 import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
-import { poseFromGravity, poseQuality } from "./capture/pose.js";
+import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
@@ -1057,7 +1057,7 @@ function MediaMeasure({ src, update, wizard }) {
        resolution + real FOV/GPS, and overlay the sensor pose EXIF can't carry. */
     if (cap.file) {
       ingestFile(cap.file, {
-        sensorPose: { pose: cap.pose, heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, whenMs: cap.whenMs },
+        sensorPose: { pose: cap.pose, heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, raw: cap.raw, gps: cap.gps, whenMs: cap.whenMs },
         /* instrumented video: the continuous attitude log rides along */
         sensorPath: Array.isArray(cap.sensorPath) && cap.sensorPath.length > 4 ? cap.sensorPath : null,
       });
@@ -1072,7 +1072,7 @@ function MediaMeasure({ src, update, wizard }) {
       A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [],
       whenMs: cap.whenMs || Date.now(),
       meta: { sensor: true, ...(isNum(cap.heading) ? { azTrue: +(((cap.heading % 360) + 360) % 360).toFixed(1) } : {}), ...(cap.gps && isNum(cap.gps.lat) ? { lat: +cap.gps.lat.toFixed(6), lon: +cap.gps.lon.toFixed(6), ...(isNum(cap.gps.alt) ? { alt: +cap.gps.alt.toFixed(0) } : {}) } : {}) },
-      capture: { heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, gSign: cap.gSign, gps: cap.gps, pose: cap.pose, whenMs: cap.whenMs },
+      capture: { heading: cap.heading, compassAcc: cap.compassAcc, gravity: cap.gravity, raw: cap.raw, gps: cap.gps, pose: cap.pose, whenMs: cap.whenMs },
     };
     if (cap.pose) patch.mediaAim = { az: cap.pose.az, el: cap.pose.el, roll: cap.pose.roll };
     if (cap.gps && isNum(cap.gps.lat)) { patch.lat = cap.gps.lat.toFixed(6); patch.lon = cap.gps.lon.toFixed(6); if (isNum(cap.gps.alt)) patch.alt = cap.gps.alt.toFixed(0); }
@@ -1092,7 +1092,18 @@ function MediaMeasure({ src, update, wizard }) {
       } catch (err) { /* fall through */ }
     }
     setLoading(false);
-    setLoadErr("The browser refused to display that file. Try a smaller image (a screenshot of it works) or another format.");
+    /* NAME the likely cause. The common one is cross-platform: iPhones shoot
+       HEIC/HEVC, and a browser that isn't Safari usually can't decode either —
+       so an Android or desktop witness handed an iPhone original sees a file
+       that simply won't open, and a generic message reads as an app bug. */
+    const f = fileRef.current, n = (f && f.name) || "", t = (f && f.type) || "";
+    const heic = /hei[cf]/i.test(t) || /\.hei[cf]$/i.test(n);
+    const hevc = /\.(mov|mp4)$/i.test(n) || /quicktime/i.test(t);
+    setLoadErr(heic
+      ? "This is an Apple HEIC photo, which only Safari can display. On the iPhone that took it, share or export it as JPEG (Settings › Camera › Formats › Most Compatible shoots JPEG from now on) — that also lets Phodar read its GPS, time and lens data."
+      : hevc
+        ? "The browser couldn't decode that video — iPhone clips are often HEVC, which Safari plays but most other browsers don't. Open it in Safari, or re-export the clip as H.264."
+        : "The browser refused to display that file. Try a smaller image (a screenshot of it works) or another format.");
   };
 
   /* Force the first video frame to render. A muted, unplayed <video> shows
@@ -7908,17 +7919,53 @@ function SensorCapture({ onCapture, onClose }) {
      reset to the corrected default. */
   const [elSign, setElSign] = useState(() => { try { return localStorage.getItem("phodar-elsign2") === "-1" ? -1 : 1; } catch (e) { return 1; } });
   const elSignRef = useRef(elSign); elSignRef.current = elSign;
+  /* WHICH SENSOR STORY THIS DEVICE TELLS. iOS hands over a tilt-compensated
+     camera heading (webkitCompassHeading) and an accelerometer pointing along
+     the pull; nothing else does either. `modeRef` records which path is live so
+     the readout can say so and the pose math can branch:
+       "ios"    — webkitCompassHeading present; the field-calibrated path, untouched
+       "orient" — an ABSOLUTE alpha/beta/gamma (Android): the camera pose comes
+                  straight out of the rotation matrix, no accelerometer needed
+       null     — no compass reference at all; tilt/roll only, bearing unknown
+     gSignRef is the accelerometer's sign convention, detected at runtime by
+     comparing it against the orientation angles rather than sniffing the UA.
+     Last non-zero answer wins (a swinging phone can't answer). */
+  const modeRef = useRef(null), gSignRef = useRef(1), betaRef = useRef(null);
+  const [sensorMode, setSensorMode] = useState(null);
   const onOrient = useCallback((e) => {
-    if (isNum(e.webkitCompassHeading)) { headRef.current = e.webkitCompassHeading; if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy)); }
-    else if (isNum(e.alpha)) headRef.current = ((360 - e.alpha) % 360 + 360) % 360;   // non-iOS fallback (magnetic)
+    const abs = e.absolute === true;
+    if (isNum(e.beta) && isNum(e.gamma)) betaRef.current = { beta: e.beta, gamma: e.gamma };
+    if (isNum(e.webkitCompassHeading)) {
+      headRef.current = e.webkitCompassHeading;
+      if (isNum(e.webkitCompassAccuracy)) setCompassAcc(Math.abs(e.webkitCompassAccuracy));
+      if (modeRef.current !== "ios") { modeRef.current = "ios"; setSensorMode("ios"); }
+    } else if (abs && isNum(e.alpha) && isNum(e.beta) && isNum(e.gamma)) {
+      /* Android: alpha is rotation about the device's OWN axis, NOT a camera
+         heading — resolve the real one through the rotation matrix, and take
+         the gravity direction from the same angles (already OS-fused, and it
+         sidesteps the accelerometer sign question entirely). */
+      const p = poseFromOrientation(e.alpha, e.beta, e.gamma);
+      const u = upFromOrientation(e.beta, e.gamma);
+      if (p && u) {
+        headRef.current = p.az;
+        gRef.current = { x: -u.x * 9.80665, y: -u.y * 9.80665, z: -u.z * 9.80665 };  // in the iOS convention
+        if (modeRef.current !== "orient") { modeRef.current = "orient"; setSensorMode("orient"); }
+      }
+    }
     /* raw sensor block — kept so the landscape-compass behaviour is DIAGNOSABLE
        from a field screenshot instead of guessed at (α/β/γ + the untouched
        webkitCompassHeading, before any correction). */
-    rawRef.current = { hdg: isNum(e.webkitCompassHeading) ? e.webkitCompassHeading : null, alpha: isNum(e.alpha) ? e.alpha : null, beta: isNum(e.beta) ? e.beta : null, gamma: isNum(e.gamma) ? e.gamma : null };
+    rawRef.current = { hdg: isNum(e.webkitCompassHeading) ? e.webkitCompassHeading : null, alpha: isNum(e.alpha) ? e.alpha : null, beta: isNum(e.beta) ? e.beta : null, gamma: isNum(e.gamma) ? e.gamma : null, abs, mode: modeRef.current, gSign: gSignRef.current };
   }, []);
   const onMotion = useCallback((e) => {
     const g = e.accelerationIncludingGravity;
-    if (g && isNum(g.x) && isNum(g.y) && isNum(g.z)) gRef.current = { x: g.x, y: g.y, z: g.z };
+    if (!(g && isNum(g.x) && isNum(g.y) && isNum(g.z))) return;
+    const b = betaRef.current;
+    if (b) { const s = gravitySign(g, b.beta, b.gamma); if (s) gSignRef.current = s; }
+    /* the orientation path already wrote a fused, sign-free gravity vector */
+    if (modeRef.current === "orient") return;
+    const k = gSignRef.current;
+    gRef.current = { x: g.x * k, y: g.y * k, z: g.z * k };
   }, []);
   /* Everything kicks off from the ▶ Start tap (iOS gates getUserMedia AND
      requestPermission behind a user gesture). ORDER MATTERS: request the
@@ -7939,10 +7986,18 @@ function SensorCapture({ onCapture, onClose }) {
       }
     } catch (e) { motionGranted = false; }
     if (motionGranted) {
+      /* BOTH names: iOS only ever fires "deviceorientation" (carrying
+         webkitCompassHeading), while Chrome on Android puts the
+         compass-referenced angles on "deviceorientationabsolute" and leaves
+         plain "deviceorientation" RELATIVE to wherever the phone happened to be
+         — an alpha from that event is not a bearing at all. Which one a given
+         event is gets decided by its own `absolute` flag, not by its name, so
+         Firefox (absolute on the plain event) works too. */
       window.addEventListener("deviceorientation", onOrient, true);
+      if ("ondeviceorientationabsolute" in window) window.addEventListener("deviceorientationabsolute", onOrient, true);
       window.addEventListener("devicemotion", onMotion, true);
     } else {
-      setCamErr("Motion access denied — turn ON Settings › Safari › Motion & Orientation Access, then reopen this capture.");
+      setCamErr("Motion access was denied. On iPhone: Settings › Safari › Motion & Orientation Access. On Android: allow motion sensors for this site. Then reopen this capture.");
     }
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
@@ -7993,7 +8048,7 @@ function SensorCapture({ onCapture, onClose }) {
           const c = Math.cos(h * D2R), s = Math.sin(h * D2R), he = hEmaRef.current;
           hEmaRef.current = he ? { c: he.c + (c - he.c) * A, s: he.s + (s - he.s) * A } : { c, s };
         }
-        const pv = poseFromGravity(gEmaRef.current, smoothedHeading(), { elSign: elSignRef.current, orient: screenAngle() });
+        const pv = poseFromGravity(gEmaRef.current, smoothedHeading(), { elSign: elSignRef.current, orient: screenAngle(), headingIsCamera: modeRef.current === "orient" });
         setPose(pv);
         /* INSTRUMENTED VIDEO: log the same solved attitude the readout shows,
            on the recorder's clock. rAF paces this at the display rate (~60 Hz),
@@ -8019,6 +8074,7 @@ function SensorCapture({ onCapture, onClose }) {
   }, []);
   useEffect(() => () => {
     window.removeEventListener("deviceorientation", onOrient, true);
+    if ("ondeviceorientationabsolute" in window) window.removeEventListener("deviceorientationabsolute", onOrient, true);
     window.removeEventListener("devicemotion", onMotion, true);
     if (watchRef.current != null) { try { navigator.geolocation.clearWatch(watchRef.current); } catch (e) { } watchRef.current = null; }
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
@@ -8031,7 +8087,7 @@ function SensorCapture({ onCapture, onClose }) {
   }, []);
   const flip = () => setElSign((s) => { const n = s === 1 ? -1 : 1; try { localStorage.setItem("phodar-elsign2", String(n)); } catch (e) { } return n; });
   /* snapshot the SMOOTHED sensor reading — az/el/roll + provenance */
-  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(); return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient }) : null, heading: hd, compassAcc, gps: gpsRef.current || gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
+  const snapPose = () => { const g = gEmaRef.current || gRef.current, hd = smoothedHeading(), orient = screenAngle(), camHdg = modeRef.current === "orient"; return { pose: g ? poseFromGravity(g, hd, { elSign: elSignRef.current, orient, headingIsCamera: camHdg }) : null, heading: hd, compassAcc, gps: gpsRef.current || gps, gravity: g, elSign: elSignRef.current, orient, raw: { ...rawRef.current }, whenMs: Date.now() }; };
   /* QUICK: an instant getUserMedia frame — lower-res but the pose is exactly
      synced to the pixels. Good for a near/large object. */
   const shoot = () => {
@@ -8122,7 +8178,7 @@ function SensorCapture({ onCapture, onClose }) {
      the photo carries the frozen pose. */
   const [nightPose, setNightPose] = useState(null);
   const freezeForNight = () => { const p = snapPose(); shotPoseRef.current = p; setNightPose(p); };
-  const q = poseQuality(compassAcc, true);
+  const q = poseQuality(compassAcc, true, sensorMode);
   const readVal = (v, suf) => isNum(v) ? Math.round(v) + (suf || "") : "—";
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "#000", display: "flex", flexDirection: "column" }}>
@@ -8177,10 +8233,10 @@ function SensorCapture({ onCapture, onClose }) {
              numbers (untouched compass + α/β/γ + screen angle) and the compass
              frame can be solved from data, not guessed. */}
           <div style={{ background: "rgba(0,0,0,.5)", borderRadius: 8, padding: "4px 10px", marginBottom: 10, fontFamily: "var(--mono)", fontSize: 9.5, color: "#8ab", textAlign: "center", letterSpacing: 0.2 }}>
-            raw hdg {isNum(headRef.current) ? Math.round(headRef.current) + "°" : "—"} · scr {Math.round(screenAngle())}° · α{isNum(rawRef.current.alpha) ? Math.round(rawRef.current.alpha) : "—"} β{isNum(rawRef.current.beta) ? Math.round(rawRef.current.beta) : "—"} γ{isNum(rawRef.current.gamma) ? Math.round(rawRef.current.gamma) : "—"}
+            raw hdg {isNum(headRef.current) ? Math.round(headRef.current) + "°" : "—"} · scr {Math.round(screenAngle())}° · α{isNum(rawRef.current.alpha) ? Math.round(rawRef.current.alpha) : "—"} β{isNum(rawRef.current.beta) ? Math.round(rawRef.current.beta) : "—"} γ{isNum(rawRef.current.gamma) ? Math.round(rawRef.current.gamma) : "—"} · {sensorMode || "no-compass"}{gSignRef.current === -1 ? " g−" : ""}
           </div>
           {!pose
-            ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank, turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b> and reopen.</div>
+            ? <div style={{ fontSize: 10.5, color: "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000", lineHeight: 1.5 }}>Waiting for motion sensors — move the phone slightly. If tilt/roll stay blank: on iPhone turn ON <b>Settings › Safari › Motion &amp; Orientation Access</b>, on Android allow motion sensors for this site, then reopen.</div>
             : <div style={{ fontSize: 10, color: q.headingOk ? "var(--teal)" : "var(--amber)", textAlign: "center", marginBottom: 6, textShadow: "0 1px 3px #000" }}>{q.note}</div>}
           <div style={{ fontSize: 9.5, color: "#9ab", textAlign: "center", marginBottom: 10, textShadow: "0 1px 3px #000" }}>Aim at the horizon → tilt should read ≈ 0°; straight up → ≈ 90°. If it's inverted, tap ⇅ flip.</div>
           {/* hidden native camera for the full-resolution still + a library
@@ -8195,9 +8251,10 @@ function SensorCapture({ onCapture, onClose }) {
             <div style={{ fontSize: 9, color: "#9ab", textAlign: "center", textShadow: "0 1px 3px #000", maxWidth: 280 }}>Opens the phone camera at full megapixels and keeps this aim — hold steady and shoot right away. Best for distant objects.</div>
             {noMotion && (
               <div style={{ background: "rgba(229,72,77,.18)", border: "1px solid #e5484d", color: "#ffd7d9", borderRadius: 10, padding: "8px 10px", fontSize: 11, maxWidth: 320, textAlign: "center", lineHeight: 1.45 }}>
-                <b>No motion data.</b> If you opened this in a browser tab, use the
-                home-screen app instead — iOS only gives motion access there.
-                Otherwise allow Settings › Safari › Motion &amp; Orientation Access.
+                <b>No motion data.</b> On iPhone, use the home-screen app rather
+                than a browser tab — iOS only gives motion access there — or
+                allow Settings › Safari › Motion &amp; Orientation Access. On
+                Android, allow motion sensors for this site (and use https).
                 Recording still works, but the clip won't carry attitude.
               </div>
             )}
@@ -10608,6 +10665,14 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   return (
     <div style={{ padding: "26px 14px 40px", position: "relative" }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
+      {/* the shim fell back to memory (private browsing / site data blocked):
+          everything still works, but nothing survives a reload — say so once,
+          here, rather than letting someone lose an hour of marking to it */}
+      {typeof window !== "undefined" && window.storageVolatile && (
+        <div className="warn" style={{ margin: "0 0 10px", fontSize: 11.5 }}>
+          ⚠ This browser is blocking site storage (private browsing, or site data turned off). Phodar works, but <b>nothing will survive a reload</b> — export the report or share file before you close the tab.
+        </div>
+      )}
       <div style={{ textAlign: "center", marginTop: 16 }}>
         <img src={phodarLogo} alt="PHODAR" style={{ display: "block", width: "min(460px, 94%)", margin: "0 auto", borderRadius: 12 }} />
         <div className="microlabel" style={{ marginTop: 6 }}>Photogrammetric detection &amp; ranging</div>

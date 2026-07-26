@@ -34,6 +34,7 @@
     "start:static": "vite preview --host 0.0.0.0 --port ${PORT:-4173}",
     "skycheck": "node scripts/skycheck.mjs",
     "capcheck": "node scripts/capcheck.mjs",
+    "storecheck": "node scripts/storecheck.mjs",
     "test": "node scripts/mathcheck.js && node scripts/trajcheck.js && echo ALL-MATH-CHECKS-PASS"
   },
   "dependencies": {

@@ -847,6 +847,61 @@ First video ground truth: tripod clip of an airliner + ADS-B replay.
 Prerequisite discipline: keep pose/projection math pure & frame-agnostic
 through the module split; allow track points an optional per-frame pose field.
 
+## Cross-platform: the two things iOS does differently
+The app is developed on an iPhone 14 and that path is FIELD-CALIBRATED — do not
+touch it. But two of its assumptions are iOS-only, and each now has a tested
+alternative rather than a silent wrong answer:
+
+1. **Attitude.** iOS gives `webkitCompassHeading` (already tilt-compensated to
+   the CAMERA in portrait) and an `accelerationIncludingGravity` that points
+   ALONG the pull (flat, screen up → z ≈ −9.8). Android gives NEITHER: the
+   compass-referenced angle arrives on **`deviceorientationabsolute`** (plain
+   `deviceorientation` there is RELATIVE to wherever the phone happened to be —
+   its alpha is not a bearing at all), that alpha is rotation about the DEVICE's
+   own Z axis rather than a camera heading, and the accelerometer follows the
+   W3C convention, which is the exact OPPOSITE sign (z ≈ +9.8) — so feeding it
+   to the iOS math returns a NEGATED elevation and a 180°-rotated roll.
+   - `poseFromOrientation(α,β,γ)` (capture/pose.js) solves the camera pose from
+     the rotation matrix R = Rz(α)Rx(β)Ry(γ): camera axis = −(third column),
+     bearing = its horizontal angle CW from north. No accelerometer involved.
+     Asserted against an explicit matrix multiply over 2000 random holds.
+   - `gravitySign(g, β, γ)` detects the accelerometer convention AT RUNTIME by
+     comparing the reading against the orientation angles (which mean the same
+     thing everywhere) — **never** by sniffing the user agent, which is a guess
+     about a physical convention. Returns 0 while the phone is being swung;
+     the caller keeps the last non-zero answer.
+   - `poseFromGravity` gained `opts.headingIsCamera` so the non-iOS path can say
+     "this heading is already the camera's" and skip the landscape regime
+     correction, which exists ONLY to undo iOS's own tilt compensation.
+   - SensorCapture branches on `modeRef` (`"ios"` / `"orient"` / null) and both
+     branches are driven END-TO-END by `npm run capcheck`, which now runs twice:
+     the iOS stub must still come out on the iOS path, and the Android stub must
+     recover exactly the pose its angles imply (verified: az 324.9 / el +10 /
+     roll 0.9, with the raw block recording `mode:"orient", gSign:−1`).
+   - HONEST CAVEAT, deliberately not "fixed": the Android bearing may be
+     MAGNETIC. iOS's is true north; the orientation sensor elsewhere may or may
+     not have declination applied and there is no way to ask. Auto-correcting
+     would double-correct on devices that already did it, so `poseQuality` says
+     so and the sky view calibration is the answer. The pose was only ever a seed.
+2. **Storage.** `localStorage` is not always there: Safari private browsing has
+   thrown on write, and Firefox with site data off (plus some webviews) throws
+   on the property ACCESS. Unguarded that is a BLANK APP, not a degraded one —
+   the exception fires during module init before anything renders.
+   `storageShim.js` probes once and falls back to an in-memory map, setting
+   `window.storageVolatile` so WizHome can warn that nothing survives a reload.
+   **Every reference to window.localStorage must stay INSIDE that try/catch** —
+   the first version touched it once more outside, to compare, which threw in
+   exactly the case it existed to handle and left `window.storage` undefined.
+   `npm run storecheck` exists because of that and would have caught it.
+
+Everything else was already feature-detected with a real fallback (WebCodecs →
+MediaRecorder, `requestVideoFrameCallback` → timeout, Wake Lock / Web Share →
+nothing). The one UA sniff in the codebase is the iOS export-size cap, which is
+a genuine hardware limit. Media decode is the remaining unavoidable gap: HEIC
+and HEVC are Safari-only, so an iPhone original handed to an Android or desktop
+witness simply won't decode — `onMediaError` now NAMES that instead of blaming
+the file generically.
+
 ## Style
 Functional React, hooks only, no state libraries. The entire aesthetic (night
 instrument: `--bg #070B14`, amber inputs, teal computed values, mono readouts)

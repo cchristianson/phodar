@@ -37,16 +37,20 @@ The second process is optional, but most cross-checks are dark without it. See
 | `npm test` | nothing — pure Node | yes, on every PR |
 | `npm run skycheck <url>` | Playwright + a built preview | no |
 | `npm run capcheck <url>` | Playwright + a built preview | no |
+| `npm run storecheck <url>` | Playwright + a built preview | no |
 
 `npm test` (`scripts/mathcheck.js` + `scripts/trajcheck.js`) is dependency-free
 on purpose, so it can never be the reason a contribution stalls.
 
-The two browser harnesses drive the real app and catch what unit tests can't.
+The browser harnesses drive the real app and catch what unit tests can't.
 `skycheck` walks the wizard until the sky view mounts — it exists because a
 module-scope ordering bug once shipped a black screen that no unit test could
 see. `capcheck` stubs camera and motion hardware to exercise the
-instrumented-capture path end to end. Playwright is deliberately **not** a
-declared dependency; install it when you need them:
+instrumented-capture path end to end, **twice**: once as an iPhone and once as
+an Android device, which report attitude in genuinely different ways.
+`storecheck` boots with `localStorage` blocked, the way strict privacy settings
+do. Playwright is deliberately **not** a declared dependency; install it when
+you need them:
 
 ```bash
 npm i -D playwright && npx playwright install chromium
