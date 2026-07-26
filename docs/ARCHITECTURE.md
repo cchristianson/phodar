@@ -160,9 +160,35 @@ occlusion and clutter, terrain skyline geometry, video pose tracking through
 zoom cycles, sensor sync and fusion, MP4 box layout, and full trajectory
 kinematics of a simulated 3.5 g maneuver.
 
-`skycheck` / `capcheck` (Playwright, not in CI) drive the real app for the
-classes of bug unit tests structurally cannot see. `metacheck` runs the app's
+`skycheck` / `capcheck` / `storecheck` (Playwright, not in CI) drive the real
+app for the classes of bug unit tests structurally cannot see — a module-scope
+ordering error that blanks the screen, a sensor chain that silently yields
+nothing, a browser with site storage switched off. `metacheck` runs the app's
 own metadata parser over a candidate file.
+
+## Platform paths
+
+The app is developed against an iPhone, and two things about iOS are not
+universal — so each has an explicit, tested alternative rather than an
+assumption:
+
+- **Attitude.** iOS reports `webkitCompassHeading` (already tilt-compensated to
+  the camera) and an accelerometer pointing *along* the pull. Everything else
+  reports neither: Android puts a compass-referenced `alpha` on
+  `deviceorientationabsolute` — which is rotation about the device's own axis,
+  not a camera heading — and uses the W3C accelerometer convention, the opposite
+  sign. `src/capture/pose.js` keeps the field-calibrated iOS path untouched and
+  adds `poseFromOrientation` (camera pose straight from the rotation matrix) and
+  `gravitySign` (which convention this device uses, detected by comparing the
+  accelerometer against the orientation angles — never by sniffing the user
+  agent). Both are asserted in mathcheck and driven end-to-end by `capcheck`.
+- **Storage.** `src/storageShim.js` probes `localStorage` once and falls back to
+  an in-memory map when it throws, setting `window.storageVolatile` so the app
+  can warn that nothing will survive a reload.
+
+Elsewhere the rule is feature detection with a real fallback: WebCodecs falls
+back to MediaRecorder, `requestVideoFrameCallback` to a timeout, Wake Lock and
+Web Share to nothing at all.
 
 ## Constraints that shape everything
 

@@ -78,6 +78,12 @@ alongside the video. Real caveats:
   best-looking footage.
 - Motion sensors require the **installed PWA** on iOS. In a plain Safari or
   Chrome tab the permission prompt never appears and the log comes back empty.
+- **On Android the bearing may be magnetic rather than true.** iOS's compass
+  heading is referenced to true north; the orientation sensor other platforms
+  expose may or may not have declination applied, and there is no way to ask
+  which. Phodar says so instead of guessing — declination reaches 20° in places,
+  and the sky view's terrain or star calibration is the fix. Elevation and roll
+  are unaffected.
 - Gravity is drift-free, so the sensors own *motion*; the compass is biased, so
   they never own *absolute pointing* — vision keeps the absolute frame. Don't
   blur that division.

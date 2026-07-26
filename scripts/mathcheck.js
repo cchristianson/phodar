@@ -16,7 +16,7 @@ import { STARS } from "../src/math/starcat.js";
 import { photoBasis, solveRollFov, pixToDirK, dirToPixK, solvePoseAnchors, reanchorDir, reanchorAzEl, reanchorPose } from "../src/math/projection.js";
 import { solveManualPoses, solvePose } from "../src/video/manualpose.js";
 import { rayToGround, pixelToGround, groundSpanM, groundKinematics, haversineM, bearingDeg as bearingDegGeo, groundHomography, pixelToGroundH, groundSpanH } from "../src/math/geolocate.js";
-import { poseFromGravity } from "../src/capture/pose.js";
+import { poseFromGravity, poseFromOrientation, upFromOrientation, gravitySign, poseQuality } from "../src/capture/pose.js";
 import { unit, dot, dirToAzEl } from "../src/math/geodesy.js";
 import { parseLaunches, haversineKm } from "../src/checks/launches.js";
 import { parseFireballs } from "../src/checks/fireballs.js";
@@ -38,6 +38,15 @@ const approx = (got, want, tol, msg) => {
   else console.log(`  ok   ${msg}: ${got.toFixed ? got.toFixed(2) : got}`);
   return ok;
 };
+/* plain boolean assertion + a section label — the file grew a lot of
+   hand-rolled `if (…) …; else { fails++; console.error(…) }`; these are the
+   same thing, said once */
+const ok = (cond, msg) => {
+  if (!cond) { fails++; console.error(`  FAIL ${msg}`); }
+  else console.log(`  ok   ${msg}`);
+  return !!cond;
+};
+const head = (title) => console.log(`\n— ${title} —`);
 
 // --- ENU round-trip: 2000 m due-east baseline ---
 const ref = { lat: 42.16380, lon: -123.64800, alt: 0 };
@@ -2120,6 +2129,110 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const pAz1 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90 });
   const pAz2 = poseFromGravity({ x: -g, y: 0, z: 0 }, 270, { orient: 90, elSign: -1 });
   approx(pAz2.az, pAz1.az, 0.01, "capture pose: flipping tilt does not move the bearing");
+
+  /* ---- NON-iOS SENSOR PATHS ----
+     Only iOS reports webkitCompassHeading and an accelerometer along the pull.
+     Everything else has to come out of the W3C orientation angles. */
+  head("capture pose — non-iOS sensor paths");
+
+  // up vector: the three unambiguous holds
+  let u = upFromOrientation(0, 0);
+  approx(u.z, 1, 1e-9, "orientation up: flat, screen up → +Z");
+  u = upFromOrientation(90, 0);
+  approx(u.y, 1, 1e-9, "orientation up: upright portrait → +Y");
+  u = upFromOrientation(0, 90);
+  approx(u.x, -1, 1e-9, "orientation up: rolled 90° about Y → −X");
+
+  // the closed forms must equal an EXPLICIT R = Rz(α)Rx(β)Ry(γ), everywhere
+  {
+    const mul = (A, B) => A.map((r) => [0, 1, 2].map((j) => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
+    const Rz = (a) => [[Math.cos(a), -Math.sin(a), 0], [Math.sin(a), Math.cos(a), 0], [0, 0, 1]];
+    const Rx = (a) => [[1, 0, 0], [0, Math.cos(a), -Math.sin(a)], [0, Math.sin(a), Math.cos(a)]];
+    const Ry = (a) => [[Math.cos(a), 0, Math.sin(a)], [0, 1, 0], [-Math.sin(a), 0, Math.cos(a)]];
+    let maxUp = 0, maxAz = 0, maxEl = 0, seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let i = 0; i < 2000; i++) {
+      const a = rnd() * 360, b = rnd() * 360 - 180, gm = rnd() * 180 - 90;
+      const R = mul(Rz(a / R2D), mul(Rx(b / R2D), Ry(gm / R2D)));
+      const cam = [0, 1, 2].map((k) => -R[k][2]);          // R·(0,0,−1): the back camera
+      const uu = upFromOrientation(b, gm);
+      maxUp = Math.max(maxUp, Math.abs(uu.x - R[2][0]), Math.abs(uu.y - R[2][1]), Math.abs(uu.z - R[2][2]));
+      const po = poseFromOrientation(a, b, gm);
+      const elT = Math.asin(Math.max(-1, Math.min(1, cam[2]))) * R2D;
+      maxEl = Math.max(maxEl, Math.abs(po.el - elT));
+      if (Math.abs(elT) < 89.5) {                          // azimuth is meaningless looking straight up/down
+        const azT = ((Math.atan2(cam[0], cam[1]) * R2D) % 360 + 360) % 360;
+        maxAz = Math.max(maxAz, Math.abs(((po.az - azT + 540) % 360) - 180));
+      }
+    }
+    ok(maxUp < 1e-9, `orientation up matches an explicit rotation matrix (max ${maxUp.toExponential(1)})`);
+    ok(maxAz <= 0.06, `orientation azimuth matches the explicit matrix over 2000 holds (max ${maxAz.toFixed(3)}°)`);
+    ok(maxEl <= 0.06, `orientation elevation matches the explicit matrix over 2000 holds (max ${maxEl.toFixed(3)}°)`);
+  }
+
+  // named holds — α is NOT a camera heading, which is the whole reason this exists
+  let po = poseFromOrientation(0, 90, 0);
+  approx(po.az, 0, 0.06, "orientation pose: upright portrait, α=0 → camera faces north");
+  approx(po.el, 0, 0.06, "orientation pose: upright portrait → horizon");
+  approx(poseFromOrientation(45, 90, 0).az, 315, 0.06, "orientation pose: α=45 → heading 315 (α runs the other way)");
+  approx(poseFromOrientation(0, 110, 0).el, 20, 0.06, "orientation pose: leaned back 20° → camera up 20°");
+  approx(poseFromOrientation(0, 79, 0).el, -11, 0.06, "orientation pose: leaned forward 11° → camera down 11°");
+  approx(poseFromOrientation(0, 0, -90).az, 90, 0.06, "orientation pose: landscape hold → camera east");
+  approx(poseFromOrientation(0, 0, 0).el, -90, 0.06, "orientation pose: flat on a table → camera at the floor");
+  approx(poseFromOrientation(0, 110, 0, { elSign: -1 }).el, -20, 0.06, "orientation pose: ⇅ flip inverts only elevation");
+
+  /* GRAVITY SIGN. iOS reports the vector along the pull, the W3C/Chrome
+     convention reports proper acceleration — the exact opposite. Detected by
+     comparing against the orientation angles, never by sniffing the UA. */
+  ok(gravitySign({ x: 0, y: 0, z: -g }, 0, 0) === 1, "gravity sign: iOS convention flat on a table → +1");
+  ok(gravitySign({ x: 0, y: 0, z: g }, 0, 0) === -1, "gravity sign: W3C/Chrome convention flat on a table → −1");
+  ok(gravitySign({ x: 0, y: -g, z: 0 }, 90, 0) === 1, "gravity sign: iOS convention held upright → +1");
+  ok(gravitySign({ x: 0, y: g, z: 0 }, 90, 0) === -1, "gravity sign: W3C/Chrome convention held upright → −1");
+  ok(gravitySign({ x: 20, y: 0, z: 0 }, 0, 0) === 0, "gravity sign: a swung phone can't answer → 0 (keep the last)");
+  ok(gravitySign({ x: 0, y: 0, z: -g }, null, null) === 0, "gravity sign: no orientation angles → 0");
+
+  /* Feeding a −1 device's reading through the correction must land on exactly
+     the same pose the +1 device reports — that IS the compatibility fix. */
+  {
+    /* ONE physical hold — leaned back 24°, tilted 9° — expressed both ways */
+    const B = 114, G = 9;
+    const uh = upFromOrientation(B, G);
+    const gi = { x: -uh.x * g, y: -uh.y * g, z: -uh.z * g };       // iOS: along the pull
+    const gc = { x: -gi.x, y: -gi.y, z: -gi.z };                   // W3C/Chrome: proper acceleration
+    ok(gravitySign(gi, B, G) === 1, "gravity sign: helper leaves an iOS reading alone");
+    const k = gravitySign(gc, B, G);
+    ok(k === -1, "gravity sign: the same hold read the other way is caught");
+    const a = poseFromGravity(gi, 137, { orient: 0 });
+    const b = poseFromGravity({ x: gc.x * k, y: gc.y * k, z: gc.z * k }, 137, { orient: 0 });
+    approx(b.el, a.el, 1e-9, "gravity sign: corrected Chrome reading gives the iOS elevation");
+    approx(b.roll, a.roll, 1e-9, "gravity sign: corrected Chrome reading gives the iOS roll");
+    /* and UNCORRECTED it would have been wrong by exactly the amount that
+       matters — a negated tilt, which is the whole bug */
+    const bad = poseFromGravity(gc, 137, { orient: 0 });
+    approx(bad.el, -a.el, 1e-9, "gravity sign: uncorrected, the elevation comes out negated");
+    /* the orientation path must agree with the corrected gravity path on the
+       same hold — two independent routes to one pose */
+    const po2 = poseFromOrientation(0, B, G);
+    approx(po2.el, a.el, 0.06, "orientation and corrected-gravity paths agree on elevation");
+    approx(po2.roll, a.roll, 0.06, "orientation and corrected-gravity paths agree on roll");
+  }
+
+  /* headingIsCamera: the non-iOS path resolves the CAMERA heading itself, so
+     the landscape regime correction — which exists only to undo iOS's own tilt
+     compensation — must not fire. */
+  {
+    const gl = { x: -g, y: 0, z: 0 };
+    const withRegime = poseFromGravity(gl, 270, { orient: 90 });
+    const asCamera = poseFromGravity(gl, 270, { orient: 90, headingIsCamera: true });
+    approx(asCamera.az, 270, 0.06, "headingIsCamera: an already-resolved camera heading passes through untouched");
+    ok(Math.abs(((withRegime.az - asCamera.az + 540) % 360) - 180) > 45, "headingIsCamera: it really did suppress the iOS landscape correction");
+  }
+
+  /* honest wording per path */
+  ok(/magnetic/.test(poseQuality(null, true, "orient").note), "poseQuality: the orientation path warns its bearing may be magnetic");
+  ok(poseQuality(5, true, "orient").headingOk === false, "poseQuality: no accuracy claim on the orientation path");
+  ok(poseQuality(5, true, "ios").headingOk === true, "poseQuality: iOS keeps its accuracy-backed confidence");
+  ok(/set the bearing yourself/.test(poseQuality(null, true, null).note), "poseQuality: no compass at all is said plainly");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
