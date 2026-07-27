@@ -782,12 +782,22 @@ function Section({ title, right, children, collapsible, defaultOpen = true }) {
 /* Checklist step inside an observer card: status dot + one-line summary */
 
 /* Smallest the fitted 3D model can be drawn, as a fraction of the image width
-   — the size slider's lower stop. A genuinely distant object is a handful of
-   pixels across and the fit has to be able to REACH it: at 0.0012 a 4000 px
-   frame bottomed out at ~5 px, which is already bigger than some real
-   targets. Halved to 0.0006 (~2.4 px on that frame). The scale is
-   logarithmic, so the extra octave costs no precision at the large end. */
-const SHAPE_MIN_FRAC = 0.0006;
+   — the size slider's lower stop.
+
+   Real targets are smaller than the old stops assumed. Little Grayback
+   Lookout (docs/FIELD-TESTS.md case 4) — a 14 ft cab at 4–6 miles — spans
+   about 3 px on a 4032 px frame, and that is a BUILDING; a distant light or a
+   high-altitude object is smaller still. The floor has come down 0.0012 →
+   0.0006 → 0.00025, which is ~1 px on a 4032 px frame. The scale is
+   logarithmic, so the extra range costs no precision at the large end.
+
+   Not lower than that, deliberately: below about a pixel the angular size
+   stops being a measurement and becomes a drawing. The app cannot stop you
+   marking something that small, but it does not need a slider stop that
+   pretends sub-pixel extents are measurable. When a fit is down at this end,
+   the per-observer size estimates in the report scatter widely — that spread
+   is the honest error bar and should be read as one. */
+const SHAPE_MIN_FRAC = 0.00025;
 
 /* ============================================================
    MEDIA MEASURE — photo/video + tap-to-mark angular measurement

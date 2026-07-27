@@ -64,3 +64,53 @@ still never been exercised on real hardware — only its sensor-only fallback
 has. In-app capture is ~1080p with rolling shutter and no zoom; a
 native-camera clip with a motion log would be the way to test the other half,
 and is not currently possible (iOS gives no attitude to the system camera).
+
+## Case 4 — Little Grayback Lookout, 4–6 miles out (Applegate Valley, OR · July 2026)
+The first **long-range** ground truth: a target with a published elevation and
+known dimensions, far enough away that the geometry is genuinely hard.
+
+Target: **Little Grayback Lookout** (Oregon Dept. of Forestry, ~9 mi E of Cave
+Junction) — **5,149 ft**, 14×14 ft cab. Three iPhone 14 stills from the valley
+floor, baseline **1.48 mi**, all three photos aligned **by eye** (no star or
+terrain solve).
+
+An independent ray-march through the same DEM the app uses for its skyline put
+the summit at 42.1984, −123.4936 / **5,151 ft** — 2 ft from the published
+figure, so the reference itself is trustworthy.
+
+| Observer | az error | el error | range error |
+| --- | --- | --- | --- |
+| 1 | −0.25° | −0.18° | +0.50 mi |
+| 2 | −0.80° | −0.03° | +0.49 mi |
+| 3 | −0.73° | −0.31° | +0.49 mi |
+
+Fix: **0.45 mi long** along the sight line, altitude **5,364 ft vs 5,149 ft
+(+215 ft, +4.2 %)**, size **29.3 ft** (26.9 corrected for the range error)
+against a 14 ft cab. Convergence 1.46°, range/baseline 3.7:1, rated *fair*.
+
+**The error ellipse held.** The app predicted 1σ = 3,202 ft × 142 ft with the
+long axis on bearing 52°. The actual error was **0.45 mi (2,380 ft) on bearing
+45°** — inside 1σ, along the axis it named. This is the first check of the
+uncertainty machinery against a target of known position, and it passed:
+the fix was wrong by about what the app said it would be, in the direction it
+said, and it declined to call the result better than *fair*.
+
+**Elevation source was not the limiter.** Re-running with **⛰ Use terrain
+elevation** on all three observers moved the fix **7 m** and left the altitude
+error unchanged: the phones' GPS altitudes were already within 3.6 m of the
+DEM. Observer altitude propagates ~1:1 into object altitude and barely at all
+into horizontal position, so its ceiling here was metres against a 65 m error.
+
+**Lessons.** The limiter was *differential* azimuth: the three bearings are
+biased the same way (~0.6°) but differ from each other by up to **0.55°**, and
+at 1.46° convergence that differential is what set the range. Hand placement
+to 0.25–0.80° is good work (0.8° ≈ 46 px on a 4032 px frame at 69.4°) and
+still not enough at 3.7:1. Two things beat it, in order: **break the
+collinearity** — all three observers sat on one east–west line, so every ray
+was within 5° of the others — and **⛰ Snap to ridges**, which is the ideal
+tool when the object sits *on* the skyline, as this one does.
+
+Size is the weakest output and honestly so: the structure spans ~3 px at
+4032 px, where ±1 px is ±33 %, and the per-observer estimates (20.8 / 30.8 /
+36.4 ft) disagree by 75 % — the spread IS the uncertainty, visible in the
+report without anyone having to compute it.
