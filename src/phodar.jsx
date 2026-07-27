@@ -781,6 +781,14 @@ function Section({ title, right, children, collapsible, defaultOpen = true }) {
 
 /* Checklist step inside an observer card: status dot + one-line summary */
 
+/* Smallest the fitted 3D model can be drawn, as a fraction of the image width
+   — the size slider's lower stop. A genuinely distant object is a handful of
+   pixels across and the fit has to be able to REACH it: at 0.0012 a 4000 px
+   frame bottomed out at ~5 px, which is already bigger than some real
+   targets. Halved to 0.0006 (~2.4 px on that frame). The scale is
+   logarithmic, so the extra octave costs no precision at the large end. */
+const SHAPE_MIN_FRAC = 0.0006;
+
 /* ============================================================
    MEDIA MEASURE — photo/video + tap-to-mark angular measurement
    ============================================================ */
@@ -802,6 +810,10 @@ function MediaMeasure({ src, update, wizard }) {
   const [trkGap, setTrkGap] = useState(1);  // STILL: seconds between tapped trajectory points (a photo has no frame clock)
   const [selTrk, setSelTrk] = useState(-1); // STILL: tap-selected track point (video selects by scrub position instead)
   const [trkAdjust, setTrkAdjust] = useState(false); // Track sub-mode: place points (false) vs adjust size/shape at the nearest point (true)
+  /* the object's hue lives behind its own swatch, same as the sky view's accent
+     colour — colour is set once and then never touched, while SIZE is dragged
+     constantly, so the size slider gets the whole row instead of sharing it */
+  const [objHueOpen, setObjHueOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(null);  // which colour slider is open in the Track panel: null | "obj" | "pts"
   const [selCref, setSelCref] = useState(0);         // CAM REFS: which reference feature the taps mark (index into source.camRefs)
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
@@ -1912,24 +1924,35 @@ function MediaMeasure({ src, update, wizard }) {
           )}
           {src.shapeFit && active !== "trk" && (
             <>
+              {/* SHAPE_MIN_FRAC: the smallest the model can be drawn, as a
+                  fraction of the image width. A genuinely distant object is a
+                  handful of pixels across, and the old floor bottomed out
+                  before some of them — halved so the fit can reach them. */}
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
                 <span className="microlabel" style={{ marginBottom: 0 }}>size</span>
                 <input type="range" min={0} max={1} step={0.002}
                   value={(() => {
-                    const lo = Math.log10(0.0012), hi = Math.log10(0.55);
-                    const v = Math.log10(clampN((src.shapeFit.sizeNat || 1) / (natW || 1000), 0.0012, 0.55));
+                    const lo = Math.log10(SHAPE_MIN_FRAC), hi = Math.log10(0.55);
+                    const v = Math.log10(clampN((src.shapeFit.sizeNat || 1) / (natW || 1000), SHAPE_MIN_FRAC, 0.55));
                     return (v - lo) / (hi - lo);
                   })()}
                   onChange={(e) => {
-                    const lo = Math.log10(0.0012), hi = Math.log10(0.55);
+                    const lo = Math.log10(SHAPE_MIN_FRAC), hi = Math.log10(0.55);
                     const nsf = { ...src.shapeFit, sizeNat: (natW || 1000) * Math.pow(10, lo + (+e.target.value) * (hi - lo)) };
                     syncShape(nsf); shapeLoupeFor(nsf);
                   }} style={{ flex: 1 }} />
-                <span className="microlabel" style={{ marginBottom: 0 }}>color</span>
-                <input type="range" min={0} max={360} step={2} value={src.shapeFit.hue ?? 36}
-                  onChange={(e) => updShape({ hue: +e.target.value })} style={{ width: 74 }} />
-                <span style={{ width: 14, height: 14, borderRadius: 8, flex: "0 0 auto", background: `hsl(${src.shapeFit.hue ?? 36},88%,60%)`, border: "1px solid rgba(255,255,255,.35)" }} />
+                <button title="Object colour — tap for the hue slider. It recolours the outline and the 3D model everywhere: here, in the sky view and in the report."
+                  onClick={() => setObjHueOpen((v) => !v)}
+                  style={{ width: 22, height: 22, borderRadius: 11, flex: "0 0 auto", padding: 0, background: `hsl(${src.shapeFit.hue ?? 36},88%,60%)`, border: objHueOpen ? "2px solid #fff" : "1px solid rgba(255,255,255,.35)" }} />
               </div>
+              {objHueOpen && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  <span className="microlabel" style={{ marginBottom: 0 }}>color</span>
+                  <input type="range" min={0} max={360} step={2} value={src.shapeFit.hue ?? 36}
+                    onChange={(e) => updShape({ hue: +e.target.value })} style={{ flex: 1 }} />
+                  <button className="btn sm" style={{ padding: "2px 8px" }} onClick={() => setObjHueOpen(false)}>✓</button>
+                </div>
+              )}
               {src.shapeFit.kind === "capsule" && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                   <span className="microlabel" style={{ marginBottom: 0 }}>aspect {(src.shapeFit.aspect || 3).toFixed(1)}:1</span>
