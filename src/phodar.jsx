@@ -10136,9 +10136,20 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
       if (both) {
         const pr2 = shapeProjNat(s.shapeFit);
         const colR2 = `hsl(${s.shapeFit.hue ?? 36},85%,42%)`;
-        const sw2 = Math.max(0.8, s.detailCrop.w / 240);
+        /* The SVG's viewBox IS the crop, so a stroke given in native image
+           units gets multiplied by the crop's magnification (displayWidth /
+           crop width) — and these crops are tight. The old
+           Math.max(0.8, w/240) floor was written in NATIVE units for a
+           RENDERED concern ("don't let the hairline vanish"), so on a real
+           report — a 23 px crop blown up ~14× — it drew an 11 px line around a
+           14 px object: the outline swallowed the thing it was outlining.
+           Dividing by the crop width cancels the magnification exactly, so the
+           outline is the same hairline however far the crop zooms in, and
+           needs no floor at all. Slightly more opaque to carry the thinner
+           line. */
+        const sw2 = s.detailCrop.w / 400;
         const paths2 = pr2.curves.map((c) =>
-          `<polyline fill="none" stroke="${colR2}" stroke-width="${sw2.toFixed(2)}" opacity="0.8" points="${c.map((p) => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ")}"/>`
+          `<polyline fill="none" stroke="${colR2}" stroke-width="${sw2.toFixed(4)}" opacity="0.95" points="${c.map((p) => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ")}"/>`
         ).join("");
         const kindLabel = (SHAPES.find((x) => x.k === s.shapeFit.kind) || {}).label || s.shapeFit.kind;
         const cr = s.detailCrop;
