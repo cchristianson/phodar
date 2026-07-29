@@ -5026,7 +5026,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const v = document.createElement("video");
       v.muted = true; v.playsInline = true; v.preload = "auto";
       let settled = false;
-      const wd = setTimeout(() => { if (!settled) { settled = true; rej(new Error("video load timeout")); } }, 6000);
+      /* 12 s: a long 4K clip re-decoding from a data URL can genuinely take
+         that long on a phone's first open — a 6 s bail left the world view
+         with no playback row at all (field report: "doesn't play the video").
+         A slow load can't wedge anything: the catch clears the busy lock. */
+      const wd = setTimeout(() => { if (!settled) { settled = true; rej(new Error("video load timeout")); } }, 12000);
       v.onloadeddata = () => { if (!settled) { settled = true; clearTimeout(wd); playVidRef.current = v; res(v); } }; // ref only once actually loaded
       v.onerror = () => { if (!settled) { settled = true; clearTimeout(wd); rej(new Error("video error")); } };
       v.src = source.mediaUrl;
@@ -5095,12 +5099,42 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return [times.map((t) => ({ t, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist })), "flat"];
   }, [solvedPath, source?.mediaKind, source?.sensorPath, source?.sensorSync, previewDur, alignT, pAz, pEl, pRoll, fovM, pDist]);
   const playPathRef = useRef(playPath); playPathRef.current = playPath;
-  /* read the duration once, lazily, so an unstabilized clip can be scrubbed.
-     Cheap: the element is the same one playback reuses. */
+  /* the scrubber index of the ALIGNMENT frame — where the world view lands on
+     entry and where ↺ snaps back to. The placement pose describes exactly this
+     frame, so texture and pose agree there by construction. */
+  const alignIdxOf = (path) => {
+    if (!path || !path.length) return 0;
+    let ri = 0;
+    for (let i = 0; i < path.length; i++) if (Math.abs(path[i].t - alignT) < Math.abs(path[ri].t - alignT)) ri = i;
+    return ri;
+  };
+  /* entering the world view lands the scrubber ON the alignment frame: the
+     static texture IS that frame, so the readout, the ▶ start point and the
+     picture all agree from the first glance. (Field report: the scrubber sat
+     at 0.00s under the align frame's image, and ▶ played from the wrong end.)
+     Seeded once per visit, only before the user has scrubbed anywhere. */
+  const alignSeedRef = useRef(false);
   useEffect(() => {
-    if (!open || solvedPath || source?.mediaKind !== "video" || previewDur > 0) return;
-    let dead = false;
-    ensurePlayVid().then((v) => { if (!dead && v.duration && isFinite(v.duration)) setPreviewDur(v.duration); }).catch(() => { });
+    if (!playPath || alignSeedRef.current) return;
+    alignSeedRef.current = true;
+    if (!playPose) { const ri = alignIdxOf(playPath); pendingIdxRef.current = ri; setPlayIdx(ri); }
+  }, [playPath]); // eslint-disable-line
+  /* warm the playback element as soon as the view opens — for unstabilized
+     clips this also reads the duration the preview path needs. It used to be
+     a single attempt, preview-only: a big clip that loaded slowly on first
+     open failed once and the world view never offered playback at all. Now
+     every video warms on open (first ▶ is instant instead of a cold load)
+     and a failed load retries a couple of times before giving up. */
+  useEffect(() => {
+    if (!open || source?.mediaKind !== "video") return;
+    let dead = false, tries = 0;
+    const attempt = () => {
+      if (dead) return;
+      ensurePlayVid()
+        .then((v) => { if (!dead && !solvedPath && !(previewDur > 0) && v.duration && isFinite(v.duration)) setPreviewDur(v.duration); })
+        .catch(() => { if (!dead && ++tries <= 2) setTimeout(attempt, 1500); });
+    };
+    attempt();
     return () => { dead = true; };
   }, [open, solvedPath, source?.mediaKind, source?.mediaUrl]); // eslint-disable-line
   /* i is a FLOAT sample index: playback advances in sub-sample steps and takes
@@ -5165,13 +5199,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const path = playPath || [];
     showFrame(playIdx >= path.length - 1 ? 0 : playIdx + (playPose ? 1 : 0));
   };
-  /* exit playback: re-bake the MARKED frame, then drop the pose override —
-     texture and (placement) pose agree again, exactly as before playback */
+  /* snap back to the ALIGNMENT frame: re-bake it, then drop the pose
+     override — texture and (placement) pose agree again, exactly as before
+     playback. Wired to ↺ (always visible on the playback row) and run when
+     entering place mode. */
   const exitPlayback = () => {
     playingRef.current = false; setPlaying(false);
     const refT2 = alignT;   // the static texture outside playback is the ALIGNMENT frame
-    const path = playPath || [];
-    let ri = 0; for (let i = 0; i < path.length; i++) if (Math.abs(path[i].t - refT2) < Math.abs(path[ri].t - refT2)) ri = i;
+    const ri = alignIdxOf(playPath || []);
     pendingIdxRef.current = ri;
     const v = playVidRef.current;
     if (!v) { setPlayPose(null); setPlayIdx(ri); return; }
@@ -6976,6 +7011,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
                     <input type="range" min={0} max={playPath.length - 1} step={1} value={playIdx}
                       onChange={(e) => { playingRef.current = false; setPlaying(false); showFrame(+e.target.value); }} style={{ width: "100%" }} />
+                    {/* teal ▾ = the alignment frame (same tick as the measure
+                        step's slider) — where the view lands and ↺ returns */}
+                    {playPath.length > 1 && (
+                      <span style={{ position: "absolute", left: `${(alignIdxOf(playPath) / (playPath.length - 1)) * 100}%`, top: -3, transform: "translateX(-50%)", fontSize: 8, lineHeight: 1, color: "var(--teal)", pointerEvents: "none" }}>▾</span>
+                    )}
                     {/* ⚓ anchor ticks — where the manual pose fixes sit on the clip */}
                     {fixOn && fixesNow.map((f) => {
                       const pp3 = playPath, span = (pp3[pp3.length - 1].t - pp3[0].t) || 1;
@@ -6992,7 +7032,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
                     {!solvedPath && (previewKind === "sensor" ? " · from motion log, not stabilized" : " · preview, not stabilized")}
                   </span>
-                  {playPose && !fixOn && <button className="btn sm" onClick={exitPlayback} title="Back to the marked frame at its placement pose">↺</button>}
+                  {/* always offered (not only mid-playback): after scrubbing —
+                      or returning from a tool that kept the scrubbed frame —
+                      one tap snaps back to the alignment frame (teal ▾) */}
+                  {!fixOn && <button className="btn sm" style={{ color: "var(--teal)" }} onClick={exitPlayback} title="Snap back to the alignment frame — the frame the sky placement describes">↺</button>}
                   {/* ⚓ / 🎛 / ⬇ all operate ON a solved path — their panels are
                       gated on one, so in preview mode the buttons would toggle
                       and open nothing. Hide them until there is something to
