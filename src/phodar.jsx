@@ -334,6 +334,7 @@ const css = `
 .pinmapwrap .leaflet-container{width:100%; height:100%; background:#08101F;
   font-family:var(--mono); cursor:grab;}
 .pinmapwrap .leaflet-container:active{cursor:grabbing;}
+.horizdock .leaflet-bottom{bottom:96px;}
 .pinmapwrap .leaflet-control-attribution{background:rgba(7,11,20,.55);
   color:var(--dim); font-size:8px; padding:1px 4px;}
 .pinmapwrap .leaflet-control-attribution a{color:var(--dim);}
@@ -7836,6 +7837,39 @@ function PositionEditor({ src, update, others }) {
     }, 450);
     return () => clearTimeout(id);
   }, [horizOn, posDone, src.lat, src.lon]); // eslint-disable-line
+  /* building silhouettes on the strip (near-field, where the DEM is blind):
+     OSM footprints via the same cached predictedBuildingBoxes the sky view
+     uses. One fetch per ~110 m cell, ~80 boxes of trivial math — no
+     measurable cost. Fails silently to "no buildings drawn": rural gaps and
+     Overpass hiccups look identical, and the strip is fine either way. */
+  const [bldgSil, setBldgSil] = useState(null);
+  useEffect(() => {
+    if (!horizOn || !posDone) { setBldgSil(null); return; }
+    let dead = false;
+    const id = setTimeout(() => {
+      predictedBuildingBoxes(+src.lat, +src.lon, BLDG_RADIUS_M, { capN: 90 })
+        .then((r) => {
+          if (dead) return;
+          const sil = [];
+          for (const bx of r.boxes || []) {
+            let a0 = null, lo = 0, hi = 0, dmin = Infinity;
+            for (const [e, n] of bx.ring) {
+              const d = Math.hypot(e, n); if (d < 1) continue;
+              const a = Math.atan2(e, n) * R2D;
+              if (a0 == null) a0 = a;
+              const rel = ((a - a0 + 540) % 360) - 180;
+              if (rel < lo) lo = rel; if (rel > hi) hi = rel;
+              if (d < dmin) dmin = d;
+            }
+            if (a0 == null || hi - lo > 120 || !isFinite(dmin)) continue;
+            sil.push({ azLo: a0 + lo, azHi: a0 + hi, h: bx.h, dist: dmin });
+          }
+          setBldgSil(sil);
+        })
+        .catch(() => { if (!dead) setBldgSil(null); });
+    }, 600);
+    return () => { dead = true; clearTimeout(id); };
+  }, [horizOn, posDone, src.lat, src.lon]); // eslint-disable-line
   useEffect(() => {
     const cv = horizCvRef.current;
     if (!horizOn || !cv || !horiz || !horiz.els) return;
@@ -7869,6 +7903,23 @@ function PositionEditor({ src, update, others }) {
     ctx.strokeStyle = "rgba(64,199,178,.95)"; ctx.lineWidth = 1.6; ctx.stroke();
     ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
     ctx.fillStyle = "rgba(64,199,178,.14)"; ctx.fill();
+    /* building silhouettes — amber boxes rising from the 0° line, matching
+       the sky view's wireframe colour. Height uses the camera-height slider
+       (same flat-ground assumption as the dome's building layer). */
+    if (bldgSil && bldgSil.length) {
+      ctx.strokeStyle = "rgba(199,123,20,.75)"; ctx.fillStyle = "rgba(199,123,20,.16)"; ctx.lineWidth = 1;
+      for (const bs of bldgSil) {
+        const mid = (bs.azLo + bs.azHi) / 2, half = (bs.azHi - bs.azLo) / 2;
+        const rel = ((mid - b + 540) % 360) - 180;
+        if (Math.abs(rel) > span / 2 + 15) continue;
+        const elTop = Math.atan2(bs.h - camH, bs.dist) * R2D;
+        if (elTop <= 0.05) continue;
+        const x1 = X(b + rel - half), x2 = X(b + rel + half);
+        const y0 = Y(0), y1 = Y(Math.min(elTop, hi - 0.2));
+        ctx.fillRect(x1, y1, Math.max(1.5, x2 - x1), y0 - y1);
+        ctx.strokeRect(x1, y1, Math.max(1.5, x2 - x1), y0 - y1);
+      }
+    }
     /* bearing tick + FOV edges */
     ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1;
     for (const az of [b - fovH / 2, b + fovH / 2]) { ctx.beginPath(); ctx.moveTo(X(az), 0); ctx.lineTo(X(az), cssH); ctx.stroke(); }
@@ -7883,7 +7934,7 @@ function PositionEditor({ src, update, others }) {
        terrain line (and fooled the harness's pixel scan the same way) */
     ctx.fillStyle = "#8aa"; ctx.textAlign = "left";
     ctx.fillText(`peak ${pk.toFixed(1)}°`, clampN(X(pkAz) + 4, 2, cssW - 46), clampN(Y(pk) - 4, 9, cssH - 14));
-  }, [horizOn, horiz, bearing, fovH]); // eslint-disable-line
+  }, [horizOn, horiz, bearing, fovH, bldgSil, camH]); // eslint-disable-line
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -7998,10 +8049,29 @@ function PositionEditor({ src, update, others }) {
             </div>
             {posDone && (
               <div style={{ marginTop: 8 }}>
-                <PinMap lat={+src.lat} lon={+src.lon}
-                  origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
-                  others={others} bearing={bearing} tilt={tilt} fov={fovH}
-                  onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
+                {/* the horizon strip DOCKS onto the satellite view's bottom edge
+                    (field request) — same data, but the profile sits directly
+                    under the terrain it describes. The .horizdock class lifts
+                    Leaflet's bottom controls 96px so the ODbL/Esri attribution
+                    stays visible above the strip, never covered. */}
+                <div className={horizOn ? "horizdock" : undefined} style={{ position: "relative" }}>
+                  <PinMap lat={+src.lat} lon={+src.lon}
+                    origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
+                    others={others} bearing={bearing} tilt={tilt} fov={fovH}
+                    onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
+                  <button title="Horizon preview — the terrain skyline (and OSM buildings when mapped) as seen from the pin, drawn from elevation data. Drag the pin until the profile matches the photo's ridgeline to home in on where the shot was taken. Trees aren't in the data. The amber band is the photo's field of view at the bearing set below."
+                    onClick={() => setHorizOn((v) => !v)}
+                    style={{ position: "absolute", right: 8, top: 8, zIndex: 1001, width: 34, height: 34, borderRadius: 17, padding: 0, fontSize: 16, background: horizOn ? "rgba(14,43,38,.92)" : "rgba(10,15,28,.85)", color: horizOn ? "var(--teal)" : "#fff", border: `1px solid ${horizOn ? "var(--teal)" : "rgba(255,255,255,.35)"}` }}>⛰</button>
+                  {horizOn && (
+                    <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 96, zIndex: 900, background: "#08101F", borderTop: "1px solid var(--line)" }}>
+                      {horiz && horiz.err
+                        ? <div style={{ fontSize: 10.5, color: "var(--dim)", padding: "8px 10px" }}>terrain unreachable — no preview</div>
+                        : !horiz || !horiz.els
+                          ? <div style={{ fontSize: 10.5, color: "var(--dim)", padding: "8px 10px" }}><Spin /> loading terrain…</div>
+                          : <canvas ref={horizCvRef} style={{ width: "100%", height: 96, display: "block" }} />}
+                    </div>
+                  )}
+                </div>
                 {/* aim sliders live UNDER the map so you set the ray you can see */}
                 <div style={{ marginTop: 6 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -8024,26 +8094,7 @@ function PositionEditor({ src, update, others }) {
                     ? <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>The lens metadata sets the cone width — the wedge shows how much sky the photo spans.</div>
                     : <input type="range" min={12} max={130} step={1} value={fovH} onChange={(e) => setFovH(+e.target.value)} />}
                 </div>
-                {/* ⛰ horizon preview — see the state block above for why */}
-                <div style={{ marginTop: 6 }}>
-                  <button className="btn sm" style={horizOn ? { borderColor: "var(--teal)", color: "var(--teal)" } : undefined}
-                    onClick={() => setHorizOn((v) => !v)}
-                    title="Draw the terrain horizon as seen from the pin (from elevation data). Not sure where a photo was taken? Drag the pin until this profile matches the photo's ridgeline. The shaded band is the photo's field of view at the bearing above.">
-                    ⛰ Horizon preview {horizOn ? "▴" : "▾"}
-                  </button>
-                  {horizOn && (
-                    <div style={{ marginTop: 4 }}>
-                      {horiz && horiz.err
-                        ? <div style={{ fontSize: 10.5, color: "var(--dim)" }}>terrain unreachable — no preview</div>
-                        : !horiz || !horiz.els
-                          ? <div style={{ fontSize: 10.5, color: "var(--dim)" }}><Spin /> loading terrain…</div>
-                          : <canvas ref={horizCvRef} style={{ width: "100%", height: 96, display: "block", border: "1px solid var(--line)", borderRadius: 8, background: "#08101F" }} />}
-                      <div style={{ fontSize: 9.5, color: "var(--dim)", marginTop: 2 }}>
-                        Terrain horizon from the pin — trees and buildings aren't in the elevation data. Match its shape to the photo's ridgeline to home in on where the shot was taken; it follows the pin as you drag.
-                      </div>
-                    </div>
-                  )}
-                </div>
+
                 <div style={{ marginTop: 2, position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <ML style={{ marginBottom: 1 }}>How high you looked</ML>
