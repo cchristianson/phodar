@@ -7848,10 +7848,14 @@ function PositionEditor({ src, update, others }) {
     const span = clampN(fovH * 1.9, 80, 200);                // the FOV plus context either side
     const a0 = b - span / 2;
     const X = (az) => ((az - a0) / span) * cssW;
-    /* y-scale from the window's own relief so a gentle horizon still shows shape */
+    /* y-scale from the FULL 360° skyline, not the visible window — a
+       window-local fit re-scaled on every bearing pan, so the profile
+       "breathed" vertically as you panned (field report). Fixed per
+       position, panning is now a pure horizontal translation and shapes
+       stay comparable across bearings. */
     let lo = -0.5, hi = 2;
     const el = (az) => skylineElAt(horiz.els, az);
-    for (let az = a0; az <= a0 + span; az += 0.5) { const e = el(az); if (e < lo + 0.5) lo = e - 0.5; if (e > hi - 1) hi = e + 1; }
+    for (let az = 0; az < 360; az += 0.5) { const e = el(az); if (e < lo + 0.5) lo = e - 0.5; if (e > hi - 1) hi = e + 1; }
     const Y = (e) => cssH - 12 - ((e - lo) / (hi - lo)) * (cssH - 24);
     /* FOV band behind everything */
     ctx.fillStyle = "rgba(199,123,20,.10)";
