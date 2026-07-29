@@ -7811,6 +7811,75 @@ function PositionEditor({ src, update, others }) {
   const hasFovMeta = isNum(src.meta?.fovH);
   const fovH = isNum(src.fovH) ? +src.fovH : (hasFovMeta ? +src.meta.fovH : 68);
   const setFovH = (v) => update({ fovH: +clampN(+v, 8, 160).toFixed(1) });
+  /* ⛰ HORIZON PREVIEW (opt-in, default off) — the DEM terrain horizon as seen
+     from the pin, drawn as a profile strip so a photo with a distinctive
+     ridgeline can be LOCATED by matching shapes: drag the pin (or retype the
+     coords) until the profile looks like the photo's skyline. Reuses the sky
+     view's predictedSkyline — same tiles, same ~110 m cache cell — and is
+     entirely inert until toggled on, so it adds no network traffic and no
+     failure mode for anyone who never taps it. Terrain only: trees and
+     buildings are not in the DEM, and the caption says so. */
+  const [horizOn, setHorizOn] = useState(false);
+  const [horiz, setHoriz] = useState(null);       // {els,h0} | {err} | null = loading
+  const horizCvRef = useRef(null);
+  const horizSeq = useRef(0);
+  useEffect(() => {
+    if (!horizOn || !posDone) return;
+    const seq = ++horizSeq.current;
+    setHoriz(null);
+    /* debounce past keystrokes/pin-drag jitter; the per-cell cache makes a
+       settled re-fetch of a nearby spot cheap anyway */
+    const id = setTimeout(() => {
+      predictedSkyline(+src.lat, +src.lon)
+        .then((sk) => { if (horizSeq.current === seq) setHoriz(sk); })
+        .catch((e) => { if (horizSeq.current === seq) setHoriz({ err: String((e && e.message) || e) }); });
+    }, 450);
+    return () => clearTimeout(id);
+  }, [horizOn, posDone, src.lat, src.lon]); // eslint-disable-line
+  useEffect(() => {
+    const cv = horizCvRef.current;
+    if (!horizOn || !cv || !horiz || !horiz.els) return;
+    const cssW = cv.clientWidth || 320, cssH = 96;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);   // crisp lines (loupe rule: keep the DPR backing store)
+    cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr);
+    const ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const b = isNum(bearing) ? bearing : 0;
+    const span = clampN(fovH * 1.9, 80, 200);                // the FOV plus context either side
+    const a0 = b - span / 2;
+    const X = (az) => ((az - a0) / span) * cssW;
+    /* y-scale from the window's own relief so a gentle horizon still shows shape */
+    let lo = -0.5, hi = 2;
+    const el = (az) => skylineElAt(horiz.els, az);
+    for (let az = a0; az <= a0 + span; az += 0.5) { const e = el(az); if (e < lo + 0.5) lo = e - 0.5; if (e > hi - 1) hi = e + 1; }
+    const Y = (e) => cssH - 12 - ((e - lo) / (hi - lo)) * (cssH - 24);
+    /* FOV band behind everything */
+    ctx.fillStyle = "rgba(199,123,20,.10)";
+    ctx.fillRect(X(b - fovH / 2), 0, X(b + fovH / 2) - X(b - fovH / 2), cssH);
+    /* 0° true-horizon reference */
+    ctx.strokeStyle = "#3a4a5c"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(cssW, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+    /* terrain silhouette, filled below the line */
+    ctx.beginPath();
+    for (let az = a0; az <= a0 + span; az += 0.4) { const x = X(az), y = Y(el(az)); az === a0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.strokeStyle = "rgba(64,199,178,.95)"; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
+    ctx.fillStyle = "rgba(64,199,178,.14)"; ctx.fill();
+    /* bearing tick + FOV edges */
+    ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1;
+    for (const az of [b - fovH / 2, b + fovH / 2]) { ctx.beginPath(); ctx.moveTo(X(az), 0); ctx.lineTo(X(az), cssH); ctx.stroke(); }
+    ctx.strokeStyle = "#C77B14"; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(X(b), 0); ctx.lineTo(X(b), 10); ctx.stroke();
+    /* compass letters every 45° inside the window + peak elevation label */
+    ctx.fillStyle = "#8aa"; ctx.font = "9px ui-monospace, monospace"; ctx.textAlign = "center";
+    for (let az = Math.ceil(a0 / 45) * 45; az <= a0 + span; az += 45) ctx.fillText(compass8(az), X(az), cssH - 3);
+    let pk = -99, pkAz = b;
+    for (let az = a0; az <= a0 + span; az += 0.5) { const e = el(az); if (e > pk) { pk = e; pkAz = az; } }
+    /* slate like the compass letters — a teal label reads as part of the
+       terrain line (and fooled the harness's pixel scan the same way) */
+    ctx.fillStyle = "#8aa"; ctx.textAlign = "left";
+    ctx.fillText(`peak ${pk.toFixed(1)}°`, clampN(X(pkAz) + 4, 2, cssW - 46), clampN(Y(pk) - 4, 9, cssH - 14));
+  }, [horizOn, horiz, bearing, fovH]); // eslint-disable-line
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -7950,6 +8019,26 @@ function PositionEditor({ src, update, others }) {
                   {hasFovMeta
                     ? <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>The lens metadata sets the cone width — the wedge shows how much sky the photo spans.</div>
                     : <input type="range" min={12} max={130} step={1} value={fovH} onChange={(e) => setFovH(+e.target.value)} />}
+                </div>
+                {/* ⛰ horizon preview — see the state block above for why */}
+                <div style={{ marginTop: 6 }}>
+                  <button className="btn sm" style={horizOn ? { borderColor: "var(--teal)", color: "var(--teal)" } : undefined}
+                    onClick={() => setHorizOn((v) => !v)}
+                    title="Draw the terrain horizon as seen from the pin (from elevation data). Not sure where a photo was taken? Drag the pin until this profile matches the photo's ridgeline. The shaded band is the photo's field of view at the bearing above.">
+                    ⛰ Horizon preview {horizOn ? "▴" : "▾"}
+                  </button>
+                  {horizOn && (
+                    <div style={{ marginTop: 4 }}>
+                      {horiz && horiz.err
+                        ? <div style={{ fontSize: 10.5, color: "var(--dim)" }}>terrain unreachable — no preview</div>
+                        : !horiz || !horiz.els
+                          ? <div style={{ fontSize: 10.5, color: "var(--dim)" }}><Spin /> loading terrain…</div>
+                          : <canvas ref={horizCvRef} style={{ width: "100%", height: 96, display: "block", border: "1px solid var(--line)", borderRadius: 8, background: "#08101F" }} />}
+                      <div style={{ fontSize: 9.5, color: "var(--dim)", marginTop: 2 }}>
+                        Terrain horizon from the pin — trees and buildings aren't in the elevation data. Match its shape to the photo's ridgeline to home in on where the shot was taken; it follows the pin as you drag.
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div style={{ marginTop: 2, position: "relative" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
