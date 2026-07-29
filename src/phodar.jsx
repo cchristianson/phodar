@@ -3088,9 +3088,20 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const MAXT = 1600;
   const bakeTex = (drawable, w, h) => {
     const adj = source?.imgAdj, needAdj = !imgAdjNeutral(adj);
+    /* a VIDEO element must never become the texture itself (invariant #1: the
+       warp draws a STATIC image, never a live <video>). Playback hands the
+       offscreen video straight in here, and a clip smaller than the 1600 px
+       cap with no B/C adjustment used to slip through the copy — the warp
+       then read `tex.naturalWidth || tex.width`, BOTH of which are 0 on an
+       unattached video element (the real decode size is `videoWidth`), and
+       bailed without drawing anything. Field report: a 480×640 messenger-
+       compressed clip's image "just disappears" the moment it plays —
+       reproduced deterministically in the harness (coverage 54%→0%); every
+       earlier field clip was ≥1080p and always took the canvas-copy path. */
+    const liveVid = typeof HTMLVideoElement !== "undefined" && drawable instanceof HTMLVideoElement;
     let tex = drawable;
     try {
-      if (w > MAXT || h > MAXT || needAdj) {   // draw to a canvas to downscale and/or bake the B/C adjustment in
+      if (w > MAXT || h > MAXT || needAdj || liveVid) {   // draw to a canvas to downscale, bake the B/C adjustment in, and/or snapshot a video frame
         const sc = Math.min(1, MAXT / Math.max(w, h));
         const tw = Math.round(w * sc), th = Math.round(h * sc);
         /* reuse one canvas across frames — a fresh 1600 px canvas per playback
