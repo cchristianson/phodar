@@ -7952,6 +7952,44 @@ function PositionEditor({ src, update, others }) {
      a presentation preference, not sighting data. */
   const [horiz3d, setHoriz3d] = useState(() => { try { return localStorage.getItem("phodar:horiz3d") === "1"; } catch (e) { return false; } });
   const tog3d = () => setHoriz3d((v) => { try { localStorage.setItem("phodar:horiz3d", v ? "0" : "1"); } catch (e) { } return !v; });
+  /* 📷 hold-to-compare: overlay the actual photo (video: the ALIGNMENT frame)
+     across the camera-frame box so its real skyline can be lined up against
+     the predicted one. Momentary by design — hold to peek, release to drop —
+     because the overlay hides the very prediction you're comparing against.
+     The drawable is snapshotted ONCE per media to a ≤1024 px canvas (never a
+     live element in the draw path). */
+  const [peek, setPeek] = useState(false);
+  const [, setPeekN] = useState(0);            // bumps the draw effect when the snapshot lands
+  const peekImgRef = useRef(null);
+  useEffect(() => {
+    peekImgRef.current = null; setPeekN((n) => n + 1);
+    if (!horizOn || !src.mediaUrl) return;
+    let dead = false;
+    const keep = (drawable, w, h) => {
+      if (dead || !w || !h) return;
+      const sc = Math.min(1, 1024 / Math.max(w, h));
+      const cv2 = document.createElement("canvas");
+      cv2.width = Math.round(w * sc); cv2.height = Math.round(h * sc);
+      cv2.getContext("2d").drawImage(drawable, 0, 0, cv2.width, cv2.height);
+      peekImgRef.current = cv2; setPeekN((n) => n + 1);
+    };
+    if (src.mediaKind === "video") {
+      const v = document.createElement("video");
+      v.muted = true; v.playsInline = true; v.preload = "auto";
+      const t = isNum(src.alignT) ? +src.alignT : isNum(src.A?.videoTime) ? +src.A.videoTime : 0;
+      v.onloadeddata = () => { try { v.currentTime = t > 0.01 ? t : Math.min(0.04, (v.duration || 1) / 4); } catch (e) { } };
+      v.onseeked = () => keep(v, v.videoWidth, v.videoHeight);
+      v.src = src.mediaUrl;
+      return () => { dead = true; v.removeAttribute("src"); try { v.load(); } catch (e) { } };
+    }
+    const im = new Image();
+    im.onload = () => keep(im, im.naturalWidth, im.naturalHeight);
+    im.src = src.mediaUrl;
+    return () => { dead = true; };
+  }, [horizOn, src.mediaUrl, src.mediaKind, src.alignT]); // eslint-disable-line
+  /* vertical FOV from the photo's own aspect (tangent-scaled — invariant #2);
+     4:3 landscape assumed when there is no media to measure */
+  const fovV = 2 * Math.atan(Math.tan((fovH * D2R) / 2) * (src.natH > 0 && src.natW > 0 ? src.natH / src.natW : 0.75)) * R2D;
   /* the raw DEM sampler (same cached promise predictedSkyline uses — no extra
      tiles) + the imagery mosaics, fetched only once 3D mode is actually on */
   const [dem, setDem] = useState(null);
@@ -8030,7 +8068,27 @@ function PositionEditor({ src, update, others }) {
     let lo = -0.5, hi = 2;
     const el = (az) => skylineElAt(horiz.els, az);
     for (let az = 0; az < 360; az += 0.5) { const e = el(az); if (e < lo + 0.5) lo = e - 0.5; if (e > hi - 1) hi = e + 1; }
+    /* the CAMERA FRAME box: bearing ± fovH/2 across, tilt ± fovV/2 up. The
+       y-range INCLUDES it, so "how high you looked" visibly re-frames the
+       strip (field ask) — aim higher and the ridge sinks toward the bottom,
+       exactly as it would in the viewfinder — and the 📷 overlay maps 1:1
+       onto the box at the same degrees-per-pixel as the terrain. Bearing
+       pans still translate only (tilt/FOV fixed ⇒ scale fixed), so the
+       pan-stability fix holds. */
+    const boxTop = tilt + fovV / 2, boxBot = tilt - fovV / 2;
+    lo = Math.min(lo, boxBot - 0.5); hi = Math.max(hi, boxTop + 0.5);
     const Y = (e) => cssH - 12 - ((e - lo) / (hi - lo)) * (cssH - 24);
+    const camBox = (Ymap) => {
+      const bx1 = X(b - fovH / 2), bx2 = X(b + fovH / 2), byT = Ymap(boxTop), byB = Ymap(boxBot);
+      if (peek && peekImgRef.current) {
+        ctx.globalAlpha = 0.7;
+        try { ctx.drawImage(peekImgRef.current, bx1, byT, bx2 - bx1, byB - byT); } catch (e) { }
+        ctx.globalAlpha = 1;
+      }
+      ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      for (const yy of [byT, byB]) { ctx.beginPath(); ctx.moveTo(bx1, yy); ctx.lineTo(bx2, yy); ctx.stroke(); }
+      ctx.setLineDash([]);
+    };
     /* buildings visible in this window, sorted FAR→NEAR (painter's algorithm:
        a near box paints OVER a far one) and colour-shaded by distance — near
        bright warm amber → far dark umber — so overlaps read as depth in both
@@ -8060,7 +8118,7 @@ function PositionEditor({ src, update, others }) {
          the near hill (unlike the calibration skyline, where near samples
          are resolution noise poisoning a running max — here a spurious berm
          just colours a couple of columns). ---------- */
-      const lo2 = -6, hi2 = Math.max(3, hi + 1.5);
+      const lo2 = Math.min(-6, boxBot - 1), hi2 = Math.max(3, hi + 1.5);   // hi already includes boxTop
       const Y2 = (e) => ((hi2 - e) / (hi2 - lo2)) * cssH;
       const sky = ctx.createLinearGradient(0, 0, 0, cssH);
       sky.addColorStop(0, "#0A1526"); sky.addColorStop(1, "#182B45");
@@ -8113,6 +8171,7 @@ function PositionEditor({ src, update, others }) {
         ctx.fillStyle = "rgba(255,255,255,.28)"; ctx.fillRect(x1, y1, w, 1.2);
         ctx.strokeStyle = "rgba(8,16,31,.8)"; ctx.lineWidth = 0.8; ctx.strokeRect(x1, y1, w, y0 - y1);
       }
+      camBox(Y2);
       /* FOV edges + bearing tick + compass letters over the vista */
       ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1;
       for (const az of [b - fovH / 2, b + fovH / 2]) { ctx.beginPath(); ctx.moveTo(X(az), 0); ctx.lineTo(X(az), cssH); ctx.stroke(); }
@@ -8134,6 +8193,9 @@ function PositionEditor({ src, update, others }) {
     /* 0° true-horizon reference */
     ctx.strokeStyle = "#3a4a5c"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(cssW, Y(0)); ctx.stroke(); ctx.setLineDash([]);
+    /* camera box + 📷 overlay go UNDER the silhouette, so the teal predicted
+       line stays on top of the photo — that line is what you're matching */
+    camBox(Y);
     /* terrain silhouette, filled below the line */
     ctx.beginPath();
     for (let az = a0; az <= a0 + span; az += 0.4) { const x = X(az), y = Y(el(az)); az === a0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
@@ -8163,7 +8225,7 @@ function PositionEditor({ src, update, others }) {
        terrain line (and fooled the harness's pixel scan the same way) */
     ctx.fillStyle = "#8aa"; ctx.textAlign = "left";
     ctx.fillText(`peak ${pk.toFixed(1)}°`, clampN(X(pkAz) + 4, 2, cssW - 46), clampN(Y(pk) - 4, 9, cssH - 14));
-  }, [horizOn, horiz, bearing, fovH, bldgSil, camH, horiz3d, dem, imgMos]); // eslint-disable-line
+  }, [horizOn, horiz, bearing, fovH, fovV, tilt, bldgSil, camH, horiz3d, dem, imgMos, peek]); // eslint-disable-line
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -8296,12 +8358,25 @@ function PositionEditor({ src, update, others }) {
                         : !horiz || !horiz.els
                           ? <div style={{ fontSize: 10.5, color: "var(--dim)", padding: "8px 10px" }}><Spin /> loading terrain…</div>
                           : <canvas ref={horizCvRef} style={{ width: "100%", height: 96, display: "block" }} />}
-                      {/* profile ⇄ 3D toggle — a pill INSIDE the strip so it can't
-                          collide with Leaflet controls or the lifted attribution */}
-                      <button onClick={tog3d}
-                        title={horiz3d ? "Back to the flat elevation profile" : "3D vista — the same terrain ray-marched into a perspective view, textured with satellite imagery once it loads"}
-                        style={{ position: "absolute", left: 6, top: 6, zIndex: 5, fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "rgba(10,15,28,.85)", color: horiz3d ? "var(--teal)" : "#9ab", border: "1px solid rgba(255,255,255,.25)" }}>
-                        {horiz3d ? "▤ profile" : "▲ 3D"}</button>
+                      {/* pills INSIDE the strip so they can't collide with
+                          Leaflet controls or the lifted attribution */}
+                      <div style={{ position: "absolute", left: 6, top: 6, zIndex: 5, display: "flex", gap: 4 }}>
+                        <button onClick={tog3d}
+                          title={horiz3d ? "Back to the flat elevation profile" : "3D vista — the same terrain ray-marched into a perspective view, textured with satellite imagery once it loads"}
+                          style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "rgba(10,15,28,.85)", color: horiz3d ? "var(--teal)" : "#9ab", border: "1px solid rgba(255,255,255,.25)" }}>
+                          {horiz3d ? "▤ profile" : "▲ 3D"}</button>
+                        {/* momentary by design: hold to compare the photo against
+                            the prediction, release to get the prediction back */}
+                        {src.mediaUrl && (
+                          <button
+                            title="Hold to overlay your photo (video: the alignment frame) across the dashed camera-frame box — line its skyline up with the predicted one, then release"
+                            onPointerDown={(e) => { e.preventDefault(); setPeek(true); }}
+                            onPointerUp={() => setPeek(false)} onPointerLeave={() => setPeek(false)} onPointerCancel={() => setPeek(false)}
+                            onContextMenu={(e) => e.preventDefault()}
+                            style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: peek ? "rgba(58,43,16,.92)" : "rgba(10,15,28,.85)", color: peek ? "var(--amber)" : "#9ab", border: `1px solid ${peek ? "var(--amber)" : "rgba(255,255,255,.25)"}`, touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}>
+                            📷 hold</button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
