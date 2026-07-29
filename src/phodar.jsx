@@ -5739,6 +5739,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         /* Sun & Moon at true angular size (0.53°) */
         const bodyR = Math.max(OUT_W * Math.tan((0.53 * RAD) / 2) / (2 * tH), 5 * lw);
         if (sun.alt > -1) { const q = P(sun.az, sun.alt); if (q) { ctx.shadowColor = "rgba(255,214,90,.85)"; ctx.shadowBlur = bodyR * 1.2; ctx.fillStyle = "#ffd76a"; ctx.beginPath(); ctx.arc(q[0], q[1], bodyR, 0, 7); ctx.fill(); ctx.shadowBlur = 0; } }
+        /* below the horizon the Sun still burns in ghosted + labeled (mirrors
+           the dome) — its true position under the horizon is honest data */
+        else { const q = P(sun.az, sun.alt); if (q) { ctx.globalAlpha = 0.4; ctx.fillStyle = "#ffd76a"; ctx.beginPath(); ctx.arc(q[0], q[1], bodyR, 0, 7); ctx.fill(); ctx.globalAlpha = 1; text("☀ below horizon", q[0], q[1] + bodyR + 10 * lw, "rgba(255,215,106,.7)", Math.max(8, lfs - 1)); } }
         if (moon.alt > -1) { const q = P(moon.az, moon.alt); if (q) { ctx.shadowColor = "rgba(220,230,250,.5)"; ctx.shadowBlur = bodyR * 0.8; ctx.fillStyle = "#e6ebf5"; ctx.beginPath(); ctx.arc(q[0], q[1], bodyR, 0, 7); ctx.fill(); ctx.shadowBlur = 0; } }
         /* satellites: dotted pass trails + diamond markers with labels */
         for (const s of satView) {
@@ -6257,10 +6260,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </React.Fragment>
         ))}
 
-        {/* Sun & Moon — calibration anchors at their true positions */}
-        {sunProj.inFront && sun.alt > -1 && (
-          <div style={{ position: "absolute", left: (sunProj.x * 100) + "%", top: (sunProj.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center" }}>
+        {/* Sun & Moon — calibration anchors at their true positions. The Sun
+            draws at night too (field ask): ghosted below the horizon, with a
+            caption saying so — knowing where it sits under the horizon
+            explains twilight glow direction and sanity-checks a night
+            bearing. It stays OUT of the calibration-anchor list below 0.5°
+            (you can't photograph it there). */}
+        {sunProj.inFront && (
+          <div style={{ position: "absolute", left: (sunProj.x * 100) + "%", top: (sunProj.y * 100) + "%", transform: "translate(-50%,-50%)", pointerEvents: "none", textAlign: "center", opacity: sun.alt > -1 ? 1 : 0.4 }}>
             <SunDiscA width={bodyPx} />
+            {sun.alt <= -1 && (
+              <div style={{ fontSize: 8, color: "#8aa", fontFamily: "var(--mono)", marginTop: 1, whiteSpace: "nowrap" }}>☀ {Math.abs(sun.alt).toFixed(0)}° below horizon</div>
+            )}
           </div>
         )}
         {moonProj.inFront && moon.alt > -1 && (
@@ -6680,7 +6691,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         <div style={{ display: "flex", gap: 6, marginTop: 8, pointerEvents: "auto", flexWrap: "wrap" }}>
           {/* celestial group first (sun · moon · stars · satellites · Starlink),
              then air traffic, then terrain, then weather */}
-          {sun.alt > -1 && <button className="btn sm" title={`Sun ${fmtBody(sun)} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(sun)}>☀</button>}
+          {/* the ☀ chip stays at night — dimmed, and centering aims at where
+              the Sun sits under the horizon (view tilt clamps; the title
+              carries the exact elevation) */}
+          <button className="btn sm" title={`Sun ${fmtBody(sun)}${sun.alt <= -1 ? " · below the horizon" : ""} — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: sun.alt > -1 ? undefined : "var(--dim)" }} onClick={() => recenter(sun)}>☀</button>
           {moon.alt > -1 && <button className="btn sm" title={`Moon ${fmtBody(moon)} · ${Math.round(moon.frac * 100)}% lit — tap to center`} style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px" }} onClick={() => recenter(moon)}>☾</button>}
           <button className="btn sm" title="Stars & planets: auto on at night, off by day — tap to force on/off"
             style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: starMode === "off" ? "var(--dim)" : (starMode === "on" || limMag > -4) ? "#dfe8ff" : "var(--dim)" }}
