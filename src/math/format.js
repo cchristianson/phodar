@@ -36,4 +36,4 @@ export function fmtSpeed(ms) {
   return `${n1(ms)} m/s · ${n1(ms * 3.6)} km/h · ${n1(ms * 2.23694)} mph`;
 }
 export const fmtDeg = (d) => (isFinite(d) ? `${(+d).toFixed(2)}°` : "—");
-export const compass8 = (h) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(h / 45) % 8];
+export const compass8 = (h) => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][((Math.round(h / 45) % 8) + 8) % 8]; // wrap-safe for negative headings (the horizon strip's window crosses 0°)
