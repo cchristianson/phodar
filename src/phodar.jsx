@@ -7942,7 +7942,12 @@ function PositionEditor({ src, update, others }) {
      entirely inert until toggled on, so it adds no network traffic and no
      failure mode for anyone who never taps it. Terrain only: trees and
      buildings are not in the DEM, and the caption says so. */
-  const [horizOn, setHorizOn] = useState(false);
+  /* DEFAULT ON (field decision) — the preview earned its place; anyone who
+     turns it off stays off, sticky per device. Everything downstream is
+     still fail-soft ("terrain unreachable — no preview"), so default-on
+     adds no failure mode, just the tile fetches. */
+  const [horizOn, setHorizOn] = useState(() => { try { return localStorage.getItem("phodar:horizOn") !== "0"; } catch (e) { return true; } });
+  const togHoriz = () => setHorizOn((v) => { try { localStorage.setItem("phodar:horizOn", v ? "0" : "1"); } catch (e) { } return !v; });
   const [horiz, setHoriz] = useState(null);       // {els,h0} | {err} | null = loading
   const horizCvRef = useRef(null);
   const horizSeq = useRef(0);
@@ -7950,7 +7955,7 @@ function PositionEditor({ src, update, others }) {
      view, textured from satellite tiles when they load (fail-soft to
      hypsometric shading, then to the flat silhouette). Sticky per device:
      a presentation preference, not sighting data. */
-  const [horiz3d, setHoriz3d] = useState(() => { try { return localStorage.getItem("phodar:horiz3d") === "1"; } catch (e) { return false; } });
+  const [horiz3d, setHoriz3d] = useState(() => { try { return localStorage.getItem("phodar:horiz3d") !== "0"; } catch (e) { return true; } });   // 3D vista default on (field decision); sticky off
   const tog3d = () => setHoriz3d((v) => { try { localStorage.setItem("phodar:horiz3d", v ? "0" : "1"); } catch (e) { } return !v; });
   /* 📷 hold-to-compare: overlay the actual photo (video: the ALIGNMENT frame)
      across the camera-frame box so its real skyline can be lined up against
@@ -8349,7 +8354,7 @@ function PositionEditor({ src, update, others }) {
                   <PinMap lat={+src.lat} lon={+src.lon}
                     origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
                     others={others} bearing={bearing} tilt={tilt} fov={fovH}
-                    horizOn={horizOn} onHoriz={() => setHorizOn((v) => !v)}
+                    horizOn={horizOn} onHoriz={togHoriz}
                     onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
                   {horizOn && (
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 96, zIndex: 900, background: "#08101F", borderTop: "1px solid var(--line)" }}>
