@@ -32,7 +32,7 @@ import { aperture, relMag, colorDesc } from "./checks/photometry.js";
 import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
-import { predictedSkyline, skylineElAt, demElevation, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
+import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
@@ -781,6 +781,58 @@ function Section({ title, right, children, collapsible, defaultOpen = true }) {
 }
 
 /* Checklist step inside an observer card: status dot + one-line summary */
+
+/* ============================================================
+   IMAGERY MOSAIC — satellite pixels for the horizon preview's 3D vista.
+   Ladder per tile: the report's same-origin /api/tile proxy (never taints
+   the canvas) → direct Esri with crossOrigin (taints only if Esri omits
+   CORS headers, in which case getImageData throws and the whole mosaic
+   resolves null) → null, and the renderer falls back to hypsometric
+   shading. So the vista NEVER breaks — it just loses its texture.
+   ============================================================ */
+const t2x = (lon, z) => ((lon + 180) / 360) * Math.pow(2, z);
+const t2y = (lat, z) => { const r = lat * D2R; return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * Math.pow(2, z); };
+const loadTileImg = (z, y, x) => new Promise((res) => {
+  let done = false; const fin = (v) => { if (!done) { done = true; res(v); } };
+  setTimeout(() => fin(null), 12000);
+  const tryUrl = (url, cross, next) => {
+    const im = new Image(); if (cross) im.crossOrigin = "anonymous";
+    im.onload = () => fin(im);
+    im.onerror = () => (next ? next() : fin(null));
+    im.src = url;
+  };
+  tryUrl(`/api/tile/img/${z}/${y}/${x}`, false, () =>
+    tryUrl(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, true, null));
+});
+const _imgMosCache = new Map();
+function imageryMosaic(lat, lon, z, pad) {
+  const cx = Math.floor(t2x(lon, z)), cy = Math.floor(t2y(lat, z));
+  const key = `${z}/${cx}/${cy}/${pad}`;
+  if (_imgMosCache.has(key)) return _imgMosCache.get(key);
+  const p = (async () => {
+    const n = 2 * pad + 1, TS = 256;
+    const cv = document.createElement("canvas"); cv.width = n * TS; cv.height = n * TS;
+    const c2 = cv.getContext("2d", { willReadFrequently: true });
+    let any = false;
+    await Promise.all([].concat(...Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (async () => {
+      const im = await loadTileImg(z, cy - pad + j, cx - pad + i);
+      if (im) { c2.drawImage(im, i * TS, j * TS); any = true; }
+    })()))));
+    if (!any) return null;
+    let data;
+    try { data = c2.getImageData(0, 0, cv.width, cv.height).data; } catch (e) { return null; }  // CORS taint → untextured
+    return { z, x0: cx - pad, y0: cy - pad, W: cv.width, H: cv.height, data };
+  })();
+  _imgMosCache.set(key, p); p.catch(() => _imgMosCache.delete(key));
+  return p;
+}
+function mosaicColor(m, la, lo) {
+  if (!m) return null;
+  const px = Math.floor((t2x(lo, m.z) - m.x0) * 256), py = Math.floor((t2y(la, m.z) - m.y0) * 256);
+  if (px < 0 || py < 0 || px >= m.W || py >= m.H) return null;
+  const i = (py * m.W + px) * 4;
+  return [m.data[i], m.data[i + 1], m.data[i + 2]];
+}
 
 /* Smallest the fitted 3D model can be drawn, as a fraction of the image width
    — the size slider's lower stop.
@@ -7393,7 +7445,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
    Imagery by default (a rooftop is a better anchor than a street
    name), OSM street as the toggle.
    ============================================================ */
-function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
+function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizOn, onHoriz }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef(null);     // {sat, street, trans, ref}
@@ -7600,6 +7652,8 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov }) {
         <div style={{ display: "flex", gap: 4 }}>
           <button className={"btn sm" + (moveMode ? " amber" : "")} onClick={() => setMoveMode((v) => !v)} title={moveMode ? "Repositioning — the pin follows the map centre; tap to lock it and look around freely" : "Pan/zoom moves the view only; tap to move your pin"}>✥ Move</button>
           <button className="btn sm" onClick={() => setBaseSat((s) => !s)}>{baseSat ? "🗺 street" : "🛰 sat"}</button>
+          {onHoriz && <button className={"btn sm" + (horizOn ? " teal" : "")} onClick={onHoriz}
+            title="Horizon preview — the terrain skyline (and OSM buildings where mapped) as seen from the pin, docked to the map's bottom edge. Drag the pin until the profile matches the photo's ridgeline to home in on where a shot was taken. Trees aren't in the elevation data.">⛰</button>}
           <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomOut()}>−</button>
           <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomIn()}>+</button>
         </div>
@@ -7824,6 +7878,24 @@ function PositionEditor({ src, update, others }) {
   const [horiz, setHoriz] = useState(null);       // {els,h0} | {err} | null = loading
   const horizCvRef = useRef(null);
   const horizSeq = useRef(0);
+  /* ▲ 3D vista mode — the same terrain ray-marched into a little perspective
+     view, textured from satellite tiles when they load (fail-soft to
+     hypsometric shading, then to the flat silhouette). Sticky per device:
+     a presentation preference, not sighting data. */
+  const [horiz3d, setHoriz3d] = useState(() => { try { return localStorage.getItem("phodar:horiz3d") === "1"; } catch (e) { return false; } });
+  const tog3d = () => setHoriz3d((v) => { try { localStorage.setItem("phodar:horiz3d", v ? "0" : "1"); } catch (e) { } return !v; });
+  /* the raw DEM sampler (same cached promise predictedSkyline uses — no extra
+     tiles) + the imagery mosaics, fetched only once 3D mode is actually on */
+  const [dem, setDem] = useState(null);
+  const [imgMos, setImgMos] = useState(null);     // [fineMosaic, coarseMosaic]
+  useEffect(() => {
+    if (!horizOn || !horiz3d || !posDone) return;
+    let dead = false;
+    demSampler(+src.lat, +src.lon).then((d) => { if (!dead) setDem(d); }).catch(() => { });
+    Promise.all([imageryMosaic(+src.lat, +src.lon, 13, 1), imageryMosaic(+src.lat, +src.lon, 10, 1)])
+      .then((ms) => { if (!dead) setImgMos(ms); }).catch(() => { });
+    return () => { dead = true; };
+  }, [horizOn, horiz3d, posDone, src.lat, src.lon]); // eslint-disable-line
   useEffect(() => {
     if (!horizOn || !posDone) return;
     const seq = ++horizSeq.current;
@@ -7891,6 +7963,103 @@ function PositionEditor({ src, update, others }) {
     const el = (az) => skylineElAt(horiz.els, az);
     for (let az = 0; az < 360; az += 0.5) { const e = el(az); if (e < lo + 0.5) lo = e - 0.5; if (e > hi - 1) hi = e + 1; }
     const Y = (e) => cssH - 12 - ((e - lo) / (hi - lo)) * (cssH - 24);
+    /* buildings visible in this window, sorted FAR→NEAR (painter's algorithm:
+       a near box paints OVER a far one) and colour-shaded by distance — near
+       bright warm amber → far dark umber — so overlaps read as depth in both
+       modes. Height uses the camera-height slider (same flat-ground
+       assumption as the dome's building layer). */
+    const bldgs = [];
+    if (bldgSil && bldgSil.length) {
+      for (const bs of bldgSil) {
+        const mid = (bs.azLo + bs.azHi) / 2, half = (bs.azHi - bs.azLo) / 2;
+        const rel = ((mid - b + 540) % 360) - 180;
+        if (Math.abs(rel) > span / 2 + 15) continue;
+        const elTop = Math.atan2(bs.h - camH, bs.dist) * R2D;
+        if (elTop <= 0.05) continue;
+        bldgs.push({ rel, half, elTop, dist: bs.dist });
+      }
+      bldgs.sort((u, v) => v.dist - u.dist);
+    }
+    const bCol = (dist, a) => {
+      const t = clampN((dist - 50) / 600, 0, 1);
+      return `rgba(${Math.round(235 - 105 * t)},${Math.round(160 - 75 * t)},${Math.round(50 - 30 * t)},${a})`;
+    };
+    if (horiz3d) {
+      /* ---------- ▲ 3D VISTA — per-column ray march through the DEM,
+         satellite-textured when the imagery mosaic has loaded. Same
+         curvature+refraction formula as skylineFromSampler (k=0.13) and the
+         same sea-level clamp; the march starts at 30 m because a vista WANTS
+         the near hill (unlike the calibration skyline, where near samples
+         are resolution noise poisoning a running max — here a spurious berm
+         just colours a couple of columns). ---------- */
+      const lo2 = -6, hi2 = Math.max(3, hi + 1.5);
+      const Y2 = (e) => ((hi2 - e) / (hi2 - lo2)) * cssH;
+      const sky = ctx.createLinearGradient(0, 0, 0, cssH);
+      sky.addColorStop(0, "#0A1526"); sky.addColorStop(1, "#182B45");
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, cssW, cssH);
+      let credit = false;
+      if (dem) {
+        const eye = Math.max(0, dem.h0) + Math.max(1.6, camH);
+        const mosF = imgMos ? imgMos[0] : null, mosC = imgMos ? imgMos[1] : null;
+        const colStep = 2, K = 0.13, R = 6371000;
+        for (let px = 0; px <= cssW; px += colStep) {
+          const azr = (a0 + (px / cssW) * span) * D2R, sa = Math.sin(azr), ca = Math.cos(azr);
+          let prevY = cssH;   // occlusion floor — nearer terrain has painted up to here
+          for (let d = 30; d < 90000; d *= 1.03) {
+            const e2 = sa * d, n2 = ca * d;
+            const h = dem.sampleEN(e2, n2);
+            if (h == null) continue;
+            const hs = Math.max(0, h);   // bathymetry → visible sea surface
+            const elv = Math.atan2(hs - eye - (d * d * (1 - K)) / (2 * R), d) * R2D;
+            const y = Y2(elv);
+            if (y >= prevY) continue;    // hidden behind nearer terrain
+            const la = +src.lat + n2 / dem.mLat, lo3 = +src.lon + e2 / dem.mLon;
+            let col = mosaicColor(mosF, la, lo3) || mosaicColor(mosC, la, lo3);
+            if (col) credit = true;
+            else {
+              /* hypsometric fallback: greener low, grey-brown high */
+              const t = clampN((hs - Math.max(0, dem.h0)) / 900, -0.4, 1);
+              col = [70 + 60 * Math.max(0, t), 96 - 18 * t, 60 - 12 * t];
+            }
+            /* distance haze toward the sky colour */
+            const hz = clampN(d / 60000, 0, 0.72);
+            ctx.fillStyle = `rgb(${Math.round(col[0] * (1 - hz) + 24 * hz)},${Math.round(col[1] * (1 - hz) + 43 * hz)},${Math.round(col[2] * (1 - hz) + 69 * hz)})`;
+            ctx.fillRect(px, y, colStep, prevY - y);
+            prevY = y;
+          }
+        }
+      } else {
+        /* DEM grid still loading — flat silhouette from the skyline so the
+           toggle answers immediately */
+        ctx.beginPath();
+        for (let az = a0; az <= a0 + span; az += 0.4) { const x = X(az), y = Y2(el(az)); az === a0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
+        ctx.fillStyle = "#243447"; ctx.fill();
+      }
+      /* buildings: solid distance-shaded slabs, near over far, with a roof
+         catch-light so stacked boxes separate */
+      for (const bg of bldgs) {
+        const x1 = X(b + bg.rel - bg.half), x2 = X(b + bg.rel + bg.half);
+        const w = Math.max(1.5, x2 - x1), y0 = Y2(0), y1 = Y2(Math.min(bg.elTop, hi2 - 0.2));
+        ctx.fillStyle = bCol(bg.dist, 0.92); ctx.fillRect(x1, y1, w, y0 - y1);
+        ctx.fillStyle = "rgba(255,255,255,.28)"; ctx.fillRect(x1, y1, w, 1.2);
+        ctx.strokeStyle = "rgba(8,16,31,.8)"; ctx.lineWidth = 0.8; ctx.strokeRect(x1, y1, w, y0 - y1);
+      }
+      /* FOV edges + bearing tick + compass letters over the vista */
+      ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1;
+      for (const az of [b - fovH / 2, b + fovH / 2]) { ctx.beginPath(); ctx.moveTo(X(az), 0); ctx.lineTo(X(az), cssH); ctx.stroke(); }
+      ctx.strokeStyle = "#C77B14"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(X(b), 0); ctx.lineTo(X(b), 10); ctx.stroke();
+      ctx.fillStyle = "#cdd6e4"; ctx.font = "9px ui-monospace, monospace"; ctx.textAlign = "center";
+      for (let az = Math.ceil(a0 / 45) * 45; az <= a0 + span; az += 45) ctx.fillText(compass8(az), X(az), cssH - 3);
+      if (credit) {
+        /* Esri requires visible attribution wherever its pixels appear */
+        ctx.textAlign = "right"; ctx.fillStyle = "rgba(255,255,255,.6)"; ctx.font = "7px ui-monospace, monospace";
+        ctx.fillText("© Esri, Maxar, Earthstar Geographics", cssW - 3, 8);
+      }
+      return;
+    }
+    /* ---------- ▤ PROFILE (flat elevation strip) ---------- */
     /* FOV band behind everything */
     ctx.fillStyle = "rgba(199,123,20,.10)";
     ctx.fillRect(X(b - fovH / 2), 0, X(b + fovH / 2) - X(b - fovH / 2), cssH);
@@ -7903,22 +8072,14 @@ function PositionEditor({ src, update, others }) {
     ctx.strokeStyle = "rgba(64,199,178,.95)"; ctx.lineWidth = 1.6; ctx.stroke();
     ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
     ctx.fillStyle = "rgba(64,199,178,.14)"; ctx.fill();
-    /* building silhouettes — amber boxes rising from the 0° line, matching
-       the sky view's wireframe colour. Height uses the camera-height slider
-       (same flat-ground assumption as the dome's building layer). */
-    if (bldgSil && bldgSil.length) {
-      ctx.strokeStyle = "rgba(199,123,20,.75)"; ctx.fillStyle = "rgba(199,123,20,.16)"; ctx.lineWidth = 1;
-      for (const bs of bldgSil) {
-        const mid = (bs.azLo + bs.azHi) / 2, half = (bs.azHi - bs.azLo) / 2;
-        const rel = ((mid - b + 540) % 360) - 180;
-        if (Math.abs(rel) > span / 2 + 15) continue;
-        const elTop = Math.atan2(bs.h - camH, bs.dist) * R2D;
-        if (elTop <= 0.05) continue;
-        const x1 = X(b + rel - half), x2 = X(b + rel + half);
-        const y0 = Y(0), y1 = Y(Math.min(elTop, hi - 0.2));
-        ctx.fillRect(x1, y1, Math.max(1.5, x2 - x1), y0 - y1);
-        ctx.strokeRect(x1, y1, Math.max(1.5, x2 - x1), y0 - y1);
-      }
+    /* building silhouettes — the same far→near, distance-shaded boxes as the
+       vista, translucent here so the terrain line stays readable through them */
+    ctx.lineWidth = 1;
+    for (const bg of bldgs) {
+      const x1 = X(b + bg.rel - bg.half), x2 = X(b + bg.rel + bg.half);
+      const w = Math.max(1.5, x2 - x1), y0 = Y(0), y1 = Y(Math.min(bg.elTop, hi - 0.2));
+      ctx.fillStyle = bCol(bg.dist, 0.30); ctx.fillRect(x1, y1, w, y0 - y1);
+      ctx.strokeStyle = bCol(bg.dist, 0.85); ctx.strokeRect(x1, y1, w, y0 - y1);
     }
     /* bearing tick + FOV edges */
     ctx.strokeStyle = "rgba(199,123,20,.8)"; ctx.lineWidth = 1;
@@ -7934,7 +8095,7 @@ function PositionEditor({ src, update, others }) {
        terrain line (and fooled the harness's pixel scan the same way) */
     ctx.fillStyle = "#8aa"; ctx.textAlign = "left";
     ctx.fillText(`peak ${pk.toFixed(1)}°`, clampN(X(pkAz) + 4, 2, cssW - 46), clampN(Y(pk) - 4, 9, cssH - 14));
-  }, [horizOn, horiz, bearing, fovH, bldgSil, camH]); // eslint-disable-line
+  }, [horizOn, horiz, bearing, fovH, bldgSil, camH, horiz3d, dem, imgMos]); // eslint-disable-line
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */
@@ -8058,10 +8219,8 @@ function PositionEditor({ src, update, others }) {
                   <PinMap lat={+src.lat} lon={+src.lon}
                     origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
                     others={others} bearing={bearing} tilt={tilt} fov={fovH}
+                    horizOn={horizOn} onHoriz={() => setHorizOn((v) => !v)}
                     onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
-                  <button title="Horizon preview — the terrain skyline (and OSM buildings when mapped) as seen from the pin, drawn from elevation data. Drag the pin until the profile matches the photo's ridgeline to home in on where the shot was taken. Trees aren't in the data. The amber band is the photo's field of view at the bearing set below."
-                    onClick={() => setHorizOn((v) => !v)}
-                    style={{ position: "absolute", right: 8, top: 8, zIndex: 1001, width: 34, height: 34, borderRadius: 17, padding: 0, fontSize: 16, background: horizOn ? "rgba(14,43,38,.92)" : "rgba(10,15,28,.85)", color: horizOn ? "var(--teal)" : "#fff", border: `1px solid ${horizOn ? "var(--teal)" : "rgba(255,255,255,.35)"}` }}>⛰</button>
                   {horizOn && (
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 96, zIndex: 900, background: "#08101F", borderTop: "1px solid var(--line)" }}>
                       {horiz && horiz.err
@@ -8069,6 +8228,12 @@ function PositionEditor({ src, update, others }) {
                         : !horiz || !horiz.els
                           ? <div style={{ fontSize: 10.5, color: "var(--dim)", padding: "8px 10px" }}><Spin /> loading terrain…</div>
                           : <canvas ref={horizCvRef} style={{ width: "100%", height: 96, display: "block" }} />}
+                      {/* profile ⇄ 3D toggle — a pill INSIDE the strip so it can't
+                          collide with Leaflet controls or the lifted attribution */}
+                      <button onClick={tog3d}
+                        title={horiz3d ? "Back to the flat elevation profile" : "3D vista — the same terrain ray-marched into a perspective view, textured with satellite imagery once it loads"}
+                        style={{ position: "absolute", left: 6, top: 6, zIndex: 5, fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "rgba(10,15,28,.85)", color: horiz3d ? "var(--teal)" : "#9ab", border: "1px solid rgba(255,255,255,.25)" }}>
+                        {horiz3d ? "▤ profile" : "▲ 3D"}</button>
                     </div>
                   )}
                 </div>
