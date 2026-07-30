@@ -18,6 +18,7 @@ export const SHAPES = [
   { k: "saucer", label: "🛸 Saucer" },
   { k: "capsule", label: "💊 Tic-tac" },
   { k: "tri", label: "▲ Triangle" },
+  { k: "cube", label: "⬛ Cube" },
   { k: "plane", label: "✈ Jet" },
   { k: "prop", label: "🛩 Small plane" },
   { k: "heli", label: "🚁 Helicopter" },
@@ -274,6 +275,25 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
         return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * 0.62 * tent)];
       }));
     }
+  } else if (kind === "cube") {
+    /* CUBE ↔ DIAMOND. `squash` tapers the top and bottom faces toward the
+       vertical axis while the waist stays put, so the solid sweeps
+       continuously from a cube (0) through a truncated gem to a square
+       bipyramid (1) — the shape people mean by "diamond". Edge = 1 at
+       squash 0, so a face-on cube spans the same as an orb's diameter.
+       The waist ring is what makes the morph well-defined: without it the
+       side edges would be straight lines from a shrunken top corner to a
+       shrunken bottom corner, which is a frustum pair, not a diamond. */
+    const q = Math.max(0, Math.min(1, opts && isFinite(opts.squash) ? opts.squash : 0));
+    const h = 0.5, m = 0.5, a = m * (1 - q);        // half-height, waist half-width, cap half-width
+    const sq = (r, z) => [[r, r, z], [r, -r, z], [-r, -r, z], [-r, r, z], [r, r, z]];
+    /* a collapsed cap is a point — drawing its degenerate square would leave a
+       dot artefact at the apex, and drawing the waist on an un-squashed cube
+       would band it with a line that isn't an edge */
+    if (a > 0.005) C.push(sq(a, h), sq(a, -h));
+    if (q > 0.01) C.push(sq(m, 0));
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]])
+      C.push([[sx * a, sy * a, h], [sx * m, sy * m, 0], [sx * a, sy * a, -h]]);
   } else { // tri — thin equilateral plate
     const R = 0.5774, th = 0.05;
     const v = [90, 210, 330].map((d) => [Math.cos(d * D2R) * R, Math.sin(d * D2R) * R]);
@@ -287,7 +307,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), cube: mul3(rotX3(26), rotZ3(35)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);

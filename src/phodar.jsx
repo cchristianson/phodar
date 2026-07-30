@@ -507,7 +507,7 @@ const HELP_SECTIONS = [
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
-        { t: "aspect / spin / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, bird wing width & fore/aft, jellyfish tendril length." },
+        { t: "aspect / spin / squash / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), bird wing width & fore/aft, jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
@@ -2290,7 +2290,7 @@ function MediaMeasure({ src, update, wizard }) {
                     onChange={(e) => { const nsf = { ...src.shapeFit, aspect: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
               )}
-              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "prop" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
+              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "cube" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "prop" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                   <span className="microlabel" style={{ marginBottom: 0 }}>spin</span>
                   <input type="range" min={-180} max={180} step={1} value={src.shapeFit.roll || 0}
@@ -2310,6 +2310,18 @@ function MediaMeasure({ src, update, wizard }) {
                       onChange={(e) => { const nsf = { ...src.shapeFit, wingX: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                   </div>
                 </>
+              )}
+              {src.shapeFit.kind === "cube" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  {/* 0 = cube, 1 = diamond (square bipyramid); everything between
+                      is a truncated gem, which is what most "diamond-shaped
+                      craft" reports actually look like */}
+                  <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>
+                    squash {(src.shapeFit.squash ?? 0) < 0.02 ? "cube" : (src.shapeFit.squash ?? 0) > 0.98 ? "diamond" : (src.shapeFit.squash ?? 0).toFixed(2)}
+                  </span>
+                  <input type="range" min={0} max={1} step={0.02} value={src.shapeFit.squash ?? 0}
+                    onChange={(e) => { const nsf = { ...src.shapeFit, squash: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                </div>
               )}
               {src.shapeFit.kind === "jelly" && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
@@ -10628,6 +10640,7 @@ const SHAPE_VIEWS = {
   saucer: [["Top", "x", "y", "diameter", "diameter"], ["Side", "x", "z", "diameter", "height"]],
   capsule: [["Side", "x", "z", "length", "diameter"], ["End", "y", "z", "diameter", "diameter"]],
   tri: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "thickness"]],
+  cube: [["Side", "x", "z", "width", "height"], ["Top", "x", "y", "width", "depth"]],
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   prop: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   heli: [["Top", "x", "y", "length", "rotor span"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "rotor span", "height"]],

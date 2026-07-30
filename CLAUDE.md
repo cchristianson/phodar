@@ -53,9 +53,22 @@ comments, in this order:
    prints what the app will actually see (position / bearing / FOV) plus
    Overpass + F4map links for the spot — use it before building a test around
    a photo, since most web images have EXIF stripped.
-2. **3D shape system** — `SHAPES`, `shapeWire` (orb/saucer/capsule/tri/plane/
-   bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
+2. **3D shape system** — `SHAPES`, `shapeWire` (orb/saucer/capsule/tri/cube/
+   plane/bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
+   Per-shape params ride on the `shapeFit` object and reach `shapeWire` as its
+   `opts` (capsule `aspect`, bird `wing`/`wingX`, jelly `tent`, cube `squash`),
+   so a new one needs no plumbing — but a new KIND must be registered in four
+   places or it half-works: `SHAPES` (picker), `SHAPE_R0` (default 3/4 pose),
+   `shapeWire` (geometry) and `SHAPE_VIEWS` in phodar.jsx (the report's
+   dimensioned 3-view, which silently renders nothing without an entry).
+   **Cube ↔ diamond**: `squash` ∈ [0,1] tapers the top and bottom faces toward
+   the axis while the waist stays put — 0 is a cube, 1 is a square bipyramid
+   (the "diamond"), and the middle is a truncated gem. The waist ring is what
+   makes it a diamond rather than a pair of frustums, and it's suppressed at
+   squash 0 (it would band a plain cube with a non-edge) as are the collapsed
+   caps at squash 1 (they'd leave a dot at each apex). Asserted in mathcheck by
+   corner set + extents + monotone taper, not by eye.
 3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
    pinch-zoom, loupe, brightness/contrast), `PositionEditor` + `PinMap` (Leaflet),
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt
