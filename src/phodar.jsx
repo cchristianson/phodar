@@ -1745,6 +1745,57 @@ function MediaMeasure({ src, update, wizard }) {
     if (el && media?.kind === "video") { el.currentTime = t; setVidT(t); }
   };
 
+  /* 💾 SAVE THE CLIP TO THE CAMERA ROLL. A web app CANNOT write to the Photos
+     library — no browser exposes an API for it. What it CAN do is hand the file
+     to the OS share sheet, whose "Save Video" action drops it straight into the
+     camera roll: one extra tap, and the only real route on iOS. This matters
+     most for an in-app instrumented recording, which otherwise lives ONLY in
+     the app's IndexedDB — clear the site data and the footage is gone. Falls
+     back to a download (Files › Share › Save Video) where sharing files isn't
+     supported. Deliberately NOT automatic: share() needs a real user gesture,
+     and the recording finalises asynchronously after the Stop tap, so the
+     gesture is already spent by the time the file exists. */
+  const [rollMsg, setRollMsg] = useState("");
+  const [rollBusy, setRollBusy] = useState(false);
+  const saveToRoll = async () => {
+    if (!media || rollBusy) return;
+    setRollBusy(true); setRollMsg("");
+    try {
+      /* the File the recording/upload arrived as — no await before share(), so
+         the user gesture that opened the sheet is still valid. Only a source
+         re-attached after a reload needs the blob read back. */
+      let f = fileRef.current instanceof File ? fileRef.current : null;
+      if (!f) {
+        const b = await (await fetch(src.mediaUrl)).blob();
+        f = new File([b], "clip", { type: b.type || (isVid ? "video/mp4" : "image/jpeg") });
+      }
+      const type = f.type || (isVid ? "video/mp4" : "image/jpeg");
+      const ext = /mp4/.test(type) ? "mp4" : /quicktime/.test(type) ? "mov" : /webm/.test(type) ? "webm" : /png/.test(type) ? "png" : isVid ? "mp4" : "jpg";
+      const d = new Date(isNum(src.whenMs) ? +src.whenMs : Date.now());
+      const p2 = (n) => String(n).padStart(2, "0");
+      const name = `phodar-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.${ext}`;
+      const file = new File([f], name, { type });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "PHODAR clip" });
+        update({ rollSaved: true });
+        /* honest about the format: iOS Photos takes mp4/mov, not webm — the
+           in-app recorder picks mp4 first on Safari, so an iPhone clip is fine,
+           but a Chrome/Firefox recording is webm and Photos will refuse it. */
+        setRollMsg(/webm/.test(type)
+          ? "✓ handed to the share sheet — heads up, Photos won't take .webm; on iPhone the in-app recorder writes .mp4, which it will."
+          : "✓ handed to the share sheet — choose “Save Video” to put it in your camera roll.");
+      } else if (download(name, file, type)) {
+        update({ rollSaved: true });
+        setRollMsg("✓ downloaded — open it in Files and tap Share › Save Video to add it to Photos (this browser can't hand files to the share sheet).");
+      } else setRollMsg("Couldn't hand the file off — this browser blocks both sharing and downloads.");
+    } catch (e) {
+      if (e && e.name === "AbortError") setRollMsg("");     // sheet dismissed — not an error
+      else setRollMsg("Couldn't read the clip back to save it: " + ((e && e.message) || e));
+    } finally { setRollBusy(false); }
+  };
+  /* an in-app recording exists nowhere else yet — say so once, plainly */
+  const rollNag = !!media && !!src.meta?.sensor && !src.rollSaved;
+
   /* ✂ CLIP TRIM (video) — iPhone-style handles on a bar under the scrubber.
      Non-destructive (see trimOf): the discarded ends are simply never
      sampled, so ⤢ full brings them back untouched. Trimming is the single
@@ -1996,6 +2047,12 @@ function MediaMeasure({ src, update, wizard }) {
             dropped, so the fresh file can be solved again from scratch. This
             is also the answer for an imported sighting, whose share file
             carries all the measurements but never the video itself. */}
+        {(isVid || src.meta?.sensor) && media && (
+          <button className={"btn sm" + (rollNag ? " amber" : "")} disabled={rollBusy} onClick={saveToRoll}
+            title="Save this clip to your camera roll. A web app can't write to Photos directly, so this hands the file to the system share sheet — choose “Save Video” there. An in-app recording lives only inside the app until you do.">
+            {rollBusy ? "💾 …" : src.rollSaved ? "💾 Saved ✓" : "💾 Save to camera roll"}
+          </button>
+        )}
         {media && (
           <label className="btn sm" style={{ display: "inline-block" }} title="Re-attach the SAME clip and keep every measurement — object placement, track waypoints, alignment frame and sky placement all stay. Only the solved stabilization is dropped, so you can stabilize the fresh file again.">
             ⟳ Re-attach · keep marks
@@ -2036,6 +2093,14 @@ function MediaMeasure({ src, update, wizard }) {
       </div>
 
       {loadErr && <div className="warn">{loadErr}</div>}
+      {/* an in-app recording is NOT in the camera roll until it's shared out —
+          the footage would die with the site data, so say it once, plainly */}
+      {rollNag && !loadErr && (
+        <div style={{ fontSize: 10.5, color: "var(--amber)", marginTop: 6, lineHeight: 1.45 }}>
+          Recorded in the app — this clip isn't in your camera roll yet. 💾 saves a copy out (a web app can't write to Photos directly, so it goes through the share sheet: choose “Save Video”).
+        </div>
+      )}
+      {rollMsg && <div style={{ fontSize: 10.5, color: rollMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, lineHeight: 1.45 }}>{rollMsg}</div>}
       {loading && !natW && (
         <div style={{ marginTop: 10, padding: "18px 12px", border: "1px dashed var(--line)", borderRadius: 10, textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
           <Spin style={{ marginRight: 6 }} />Loading media
@@ -9132,7 +9197,8 @@ function SensorCapture({ onCapture, onClose }) {
                   Logs the phone's tilt, roll and bearing continuously — the stabilizer then has a
                   drift-free reference in every frame, and frames with nothing to track stop freezing.
                   <b style={{ color: "#cde" }}> Records at ~1080p with no zoom</b>, so use it when the
-                  measurement matters more than the footage.
+                  measurement matters more than the footage. The clip is saved into Phodar — use
+                  <b style={{ color: "#cde" }}> 💾 Save to camera roll</b> on the next screen to keep a copy in Photos.
                 </>}
                 {!gps && <b onClick={askGps} style={{ color: "var(--amber)", display: "block", marginTop: lean ? 0 : 3, fontSize: lean ? 10 : 9, cursor: "pointer" }}>
                   No position yet — a recorded clip carries no EXIF, so tap here for a fix

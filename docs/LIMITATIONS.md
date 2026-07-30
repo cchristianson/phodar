@@ -93,6 +93,13 @@ alongside the video. Real caveats:
   instead.
 - An instrumented clip still needs a stabilize pass before world-locked
   playback.
+- **The recording is not in your camera roll.** It lives in the browser's
+  storage for this site, so clearing site data deletes the footage. No browser
+  can write to the Photos library, so **💾 Save to camera roll** hands the file
+  to the system share sheet ("Save Video" on iOS) — one extra tap, and the only
+  route available. It can't be automatic: sharing requires a live user gesture
+  and the file only exists a moment after you tap Stop. Photos also refuses
+  `.webm`, which is what non-Safari browsers record.
 
 ## Cross-checks
 
