@@ -904,9 +904,21 @@ terrain stay frozen and only the object moves. Build ladder:
    pointercancel are the real end conditions.
    **"The trim won't toggle off"**: it did close — but the ✂ button stayed
    amber with a ✓ whenever a trim existed, so open and closed looked
-   IDENTICAL. Open is now amber "✂ ✕" (an active mode), closed-with-a-trim is
-   a teal "✂ ✓" badge (a settled value), untrimmed is plain. Toggling is
-   visible again.
+   IDENTICAL.
+   **"The clip toggle is inverted"** (the follow-up to that fix, and the rule
+   worth keeping): the ✂ button carries TWO INDEPENDENT bits — is the editor
+   open, and is the clip trimmed — and the first attempt spent one glyph slot on
+   each of two DIFFERENT kinds of thing: "✕" meaning *tap to close* (an ACTION)
+   and "✓" meaning *a trim exists* (a STATE). Sharing a slot, they can only
+   contradict: ✓ appeared ONLY while the editor was closed and ✕ ONLY while it
+   was open, i.e. exactly backwards from every other use of those glyphs in the
+   app — and a real trim went INVISIBLE whenever the editor was open, because
+   the ✕ took its place. Now both signals describe state and nothing else:
+   **fill = the editor is open** (filled amber, the active-input colour; plain
+   or teal-outline when shut) and **✓ = this clip is trimmed**, shown open or
+   shut. All four states are visually distinct, asserted by MEANING in the
+   harness (a ✕ anywhere on the button fails; a ✓ must track the trim, never
+   the open/closed state) rather than against the literal label.
    **"I lost some of the first bit I didn't clip off" — DIAGNOSED, NOT A DATA
    BUG**: a SOLVED path describes the span it was solved over, and `solvedPath`
    fed playback/export straight from `source.posePath`. So widening a trim after
