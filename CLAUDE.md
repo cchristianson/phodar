@@ -840,6 +840,22 @@ terrain stay frozen and only the object moves. Build ladder:
    lens switching or optical zoom, so this is a MEASUREMENT mode, not the
    way to shoot the best-looking evidence. UNTESTED ON A DEVICE — the
    sensor half cannot be exercised in CI.
+   **💾 SAVE TO CAMERA ROLL: DONE (as far as the platform allows)** — an in-app
+   recording lives ONLY in the app's IndexedDB, so clearing site data destroys
+   the footage. No browser can write to the Photos library, so `saveToRoll`
+   hands the File to `navigator.share({files})` — on iOS the sheet's "Save
+   Video" lands it in the camera roll — and falls back to a download (Files ›
+   Share › Save Video) where file sharing is unsupported. NOT automatic and
+   can't be: share() needs a live user gesture and the recording finalises
+   asynchronously after the Stop tap, so the gesture is already spent. The
+   primary path passes `fileRef.current` with NO await before share(), which
+   is what keeps the gesture valid; only a post-reload source reads the blob
+   back first. Marked `source.rollSaved` on a non-aborted share; an unsaved
+   in-app clip is nagged in amber. Format honesty: Photos accepts mp4/mov and
+   refuses webm — Safari's recorder picks mp4 first so an iPhone clip is fine,
+   but a Chrome/Firefox recording is webm and the message says so instead of
+   telling the user to tap a save that would fail.
+
 **✂ NON-DESTRUCTIVE CLIP TRIM (`source.trim = {t0,t1}`): DONE** — measure-step
    handles (drag either end like the native iPhone editor; ⟨ start / end ⟩ set
    the edge at the playhead; ⤢ full restores). The pixels are NEVER re-encoded
