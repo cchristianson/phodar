@@ -17,6 +17,15 @@ true span and inside the owner's height estimate).
   triangulation recovery, ENU round-trips, angular-size → span, the
   elevation-convergence fix, and full trajectory-kinematics recovery of a
   simulated 3.5 g maneuver by driving `analyzeTracks` directly.
+- `npm run helpcheck` — guards the in-app "?" manual (`HELP_SECTIONS`), which is
+  the ONLY documentation a user gets and drifts silently: a feature ships, the
+  manual never mentions it, nothing fails. It sweeps every distinctive glyph
+  that appears on a button, a list of named features keyed on the code that
+  implements them, and the shape picker, and fails on anything undocumented.
+  A control that needs no entry (close ✕, nudge arrow) goes in the script's
+  `STRUCTURAL` list **with a reason**, so skipping the docs is a decision.
+  **Run it after adding any control.** It found five undocumented features the
+  first time it ran that a by-hand audit had already missed.
 
 ## Layout
 The **math core is now extracted** into `src/math/` (pure ES modules, no React,

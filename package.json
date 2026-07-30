@@ -35,7 +35,8 @@
     "skycheck": "node scripts/skycheck.mjs",
     "capcheck": "node scripts/capcheck.mjs",
     "storecheck": "node scripts/storecheck.mjs",
-    "test": "node scripts/mathcheck.js && node scripts/trajcheck.js && echo ALL-MATH-CHECKS-PASS"
+    "test": "node scripts/mathcheck.js && node scripts/trajcheck.js && echo ALL-MATH-CHECKS-PASS",
+    "helpcheck": "node scripts/helpcheck.mjs"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
