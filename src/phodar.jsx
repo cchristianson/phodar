@@ -1802,8 +1802,24 @@ function MediaMeasure({ src, update, wizard }) {
      biggest quality lever on a real clip — the whip-pan while the phone comes
      up and the blurred tail are exactly the frames that break the tracker. */
   const trim = trimOf(src, vidDur);
+  const [trimOn, setTrimOn] = useState(false); // ✂ is a MODE — the bar costs vertical space
   const trimBarRef = useRef(null);
   const trimDragRef = useRef(null);            // "t0" | "t1" while a handle is down
+  /* A SOLVED path describes the span it was solved over. Widening the trim
+     afterwards cannot extend it, and playback/export keep using the solved
+     span — which reads exactly like the field report: "I seem to have lost
+     some of the first bit I didn't clip off… if you drag it into the empty
+     area it doesn't recover what was clipped." Nothing was lost; the SOLVE is
+     just narrower than the clip. Say so and offer the one fix (re-stabilize)
+     instead of leaving it to feel like corruption. */
+  const solvedSpan = (() => {
+    const pp = src.posePath;
+    if (!Array.isArray(pp) || pp.length < 2) return null;
+    let a = Infinity, b = -Infinity;
+    for (const p of pp) { if (isNum(p?.t)) { if (+p.t < a) a = +p.t; if (+p.t > b) b = +p.t; } }
+    return isFinite(a) && b > a + 0.05 ? { t0: a, t1: b } : null;
+  })();
+  const solveShort = !!solvedSpan && vidDur > 0 && (solvedSpan.t0 > trim.t0 + 0.3 || solvedSpan.t1 < trim.t1 - 0.3);
   const setTrim = (a0, b0) => {
     const d = vidDur || 0;
     if (!(d > 0.25)) return;
@@ -1830,9 +1846,26 @@ function MediaMeasure({ src, update, wizard }) {
     return clampN(((e.clientX - r.left) / Math.max(1, r.width)) * vidDur, 0, vidDur);
   };
   const onTrimDown = (which) => (e) => {
-    e.preventDefault(); e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();   // an exact grab beats the nearest-edge fallback
     trimDragRef.current = which;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
+  };
+  /* GRAB FROM ANYWHERE ON THE BAR — press in the dimmed, trimmed-away region
+     and the nearest edge jumps to your finger, which is how you pull a clipped
+     end back out (field report: "if you drag it into the empty area it doesn't
+     recover"). The handles were also simply too small to hit, so this is the
+     primary interaction now and the handles are just the precise version. */
+  const onBarDown = (e) => {
+    if (trimDragRef.current) return;
+    const t = trimAt(e);
+    if (t == null) return;
+    e.preventDefault();
+    const which = Math.abs(t - trim.t0) <= Math.abs(t - trim.t1) ? "t0" : "t1";
+    trimDragRef.current = which;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
+    if (which === "t0") setTrim(Math.min(t, trim.t1 - 0.2), trim.t1);
+    else setTrim(trim.t0, Math.max(t, trim.t0 + 0.2));
+    seek(t);
   };
   const onTrimMove = (e) => {
     if (!trimDragRef.current) return;
@@ -2035,11 +2068,22 @@ function MediaMeasure({ src, update, wizard }) {
     <div>
       {capOpen && <SensorCapture onCapture={applyCapture} onClose={() => setCapOpen(false)} />}
       <ML>Photo / video (optional — used to measure angular size)</ML>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <label className="btn sm amber" style={{ display: "inline-block" }}>
-          {media ? "Replace media" : "Load photo or video"}
+      {/* ONE ROW for every media action (field ask — vertical space on a phone
+          is the scarcest thing on this step): replace · save-out · re-attach ·
+          capture · trim. Only Replace carries a word; the rest are icons with
+          titles, which is what makes them fit at 430 px. */}
+      <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
+        <label className="btn sm amber" style={{ display: "inline-block", padding: "6px 9px", whiteSpace: "nowrap", flex: "0 1 auto", overflow: "hidden" }}>
+          {media ? "Replace" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
+        {(isVid || src.meta?.sensor) && media && (
+          <button className={"btn sm" + (rollNag ? " amber" : "")} disabled={rollBusy} onClick={saveToRoll}
+            style={{ padding: "6px 9px", flex: "0 0 auto" }}
+            title={src.rollSaved ? "Saved out once already — tap to hand it to the share sheet again." : "Save this clip to your camera roll. A web app can't write to Photos directly, so this hands the file to the system share sheet — choose “Save Video” there. An in-app recording lives only inside the app until you do."}>
+            {rollBusy ? "💾…" : src.rollSaved ? "💾✓" : "💾"}
+          </button>
+        )}
         {/* RE-ATTACH keeping the work: load the same clip (or a re-encode of
             it) back over an existing analysis. Everything that describes the
             footage stays — object placement, track waypoints, alignment frame,
@@ -2047,22 +2091,28 @@ function MediaMeasure({ src, update, wizard }) {
             dropped, so the fresh file can be solved again from scratch. This
             is also the answer for an imported sighting, whose share file
             carries all the measurements but never the video itself. */}
-        {(isVid || src.meta?.sensor) && media && (
-          <button className={"btn sm" + (rollNag ? " amber" : "")} disabled={rollBusy} onClick={saveToRoll}
-            title="Save this clip to your camera roll. A web app can't write to Photos directly, so this hands the file to the system share sheet — choose “Save Video” there. An in-app recording lives only inside the app until you do.">
-            {rollBusy ? "💾 …" : src.rollSaved ? "💾 Saved ✓" : "💾 Save to camera roll"}
-          </button>
-        )}
         {media && (
-          <label className="btn sm" style={{ display: "inline-block" }} title="Re-attach the SAME clip and keep every measurement — object placement, track waypoints, alignment frame and sky placement all stay. Only the solved stabilization is dropped, so you can stabilize the fresh file again.">
-            ⟳ Re-attach · keep marks
+          <label className="btn sm" style={{ display: "inline-block", padding: "6px 9px", flex: "0 0 auto" }} title="Re-attach the SAME file and keep every measurement — object placement, track waypoints, alignment frame and sky placement all stay. Only the solved stabilization is dropped, so you can stabilize the fresh file again. Also the way to give an imported sighting its video back.">
+            ⟳
             <input type="file" accept="image/*,video/*" style={{ display: "none" }}
               onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) ingestFile(f, { keep: true }); }} />
           </label>
         )}
         {ENABLE_CAPTURE && (
-          <button className="btn sm" title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷 Capture{media ? "" : " with sensors"}</button>
+          <button className="btn sm" style={{ padding: "6px 9px", flex: "0 0 auto" }} title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷{media ? "" : " Capture with sensors"}</button>
         )}
+        {/* ✂ TRIM is a MODE now — the bar only appears while it's on */}
+        {media && isVid && vidDur > 0.3 && (
+          <button className={"btn sm" + (trimOn || trim.on ? " amber" : "")} style={{ padding: "6px 9px", flex: "0 0 auto" }}
+            onClick={() => setTrimOn((v) => !v)}
+            title="Trim the clip — drag either end of the bar to cut off the start or the finish. Nothing is deleted or re-encoded; only the kept span is analysed, played and exported, and ⤢ full brings the whole clip back.">
+            ✂{trim.on ? " ✓" : ""}
+          </button>
+        )}
+      </div>
+      {/* the tap-MODE selector is not a media action — its own line, so the
+          media row above can stay nowrap without being squeezed */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
         {media && wizard ? (
           /* explicit MODE TOGGLE — tapping the photo either places/rotates the
              3D object (measures size) or drops trajectory track points. A
@@ -2528,21 +2578,27 @@ function MediaMeasure({ src, update, wizard }) {
                 <input type="range" min={trim.t0} max={vidDur > 0 ? trim.t1 : 0} step={0.033} value={clampN(vidT, trim.t0, vidDur > 0 ? trim.t1 : 0)}
                   onChange={(e) => seek(+e.target.value)} />
               </div>
-              {/* ✂ TRIM BAR — drag either handle like the native video editor.
-                  The discarded ends dim, the kept span keeps its amber frame,
-                  the white line is the playhead. Nothing is re-encoded. */}
-              {vidDur > 0.3 && (
+              {/* ✂ TRIM BAR (only in ✂ mode) — press ANYWHERE, including the
+                  dimmed trimmed-away region, and the nearest end jumps to your
+                  finger; the fat handles are the precise grab. The discarded
+                  ends dim, the kept span keeps its amber frame, the white line
+                  is the playhead. Nothing is deleted or re-encoded. */}
+              {vidDur > 0.3 && trimOn && (
                 <div style={{ marginTop: 2 }}>
-                  <div ref={trimBarRef} style={{ position: "relative", height: 24, borderRadius: 7, background: "rgba(10,15,28,.92)", border: "1px solid var(--line)", touchAction: "none", marginTop: 6 }}
+                  <div ref={trimBarRef} style={{ position: "relative", height: 38, borderRadius: 8, background: "rgba(10,15,28,.92)", border: "1px solid var(--line)", touchAction: "none", marginTop: 8, cursor: "ew-resize" }}
+                    onPointerDown={onBarDown}
                     onPointerMove={onTrimMove} onPointerUp={onTrimUp} onPointerCancel={onTrimUp} onPointerLeave={onTrimUp}>
-                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.6)", borderRadius: "6px 0 0 6px", pointerEvents: "none" }} />
-                    <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.6)", borderRadius: "0 6px 6px 0", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "7px 0 0 7px", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "0 7px 7px 0", pointerEvents: "none" }} />
                     <div style={{ position: "absolute", left: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, right: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, top: 0, bottom: 0, border: "1.5px solid var(--amber)", borderRadius: 4, background: "rgba(245,169,63,.10)", pointerEvents: "none" }} />
                     <div style={{ position: "absolute", left: `${clampN((vidT / vidDur) * 100, 0, 100)}%`, top: 2, bottom: 2, width: 2, marginLeft: -1, background: "#fff", opacity: 0.85, pointerEvents: "none" }} />
+                    {/* 44 px hit zone — the old 30 px one was genuinely hard to
+                        grab on a phone (field report), and it's the reason a
+                        drag often did nothing at all */}
                     {[["t0", trim.t0, "⟨"], ["t1", trim.t1, "⟩"]].map(([w, tv, gl]) => (
                       <div key={w} onPointerDown={onTrimDown(w)} title={w === "t0" ? "Drag to trim the start" : "Drag to trim the end"}
-                        style={{ position: "absolute", left: `${clampN((tv / vidDur) * 100, 0, 100)}%`, top: -7, bottom: -7, width: 30, marginLeft: -15, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", cursor: "ew-resize" }}>
-                        <div style={{ width: 13, height: 30, borderRadius: 4, background: "var(--amber)", color: "#1a1206", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 4px rgba(0,0,0,.55)" }}>{gl}</div>
+                        style={{ position: "absolute", left: `${clampN((tv / vidDur) * 100, 0, 100)}%`, top: -10, bottom: -10, width: 44, marginLeft: -22, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", cursor: "ew-resize", zIndex: 3 }}>
+                        <div style={{ width: 18, height: 46, borderRadius: 5, background: "var(--amber)", color: "#1a1206", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 5px rgba(0,0,0,.6)" }}>{gl}</div>
                       </div>
                     ))}
                   </div>
@@ -2554,7 +2610,15 @@ function MediaMeasure({ src, update, wizard }) {
                     <button className="btn sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(trim.t0, vidT)} title="Trim the end to the frame you're on">end ⟩</button>
                     {trim.on && <button className="btn sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(0, vidDur)} title="Use the whole clip again — the trim is non-destructive, nothing was thrown away">⤢ full</button>}
                   </div>
-                  {trim.on && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>Only the kept span is analysed, played and exported — re-stabilize to solve it. Nothing is deleted; ⤢ full restores the clip.</div>}
+                  {trim.on && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>Press anywhere on the bar to pull the nearest end there. Only the kept span is analysed, played and exported — nothing is deleted, and ⤢ full restores the whole clip.</div>}
+                  {/* THE "lost the first bit" CASE, named: the solve is older
+                      and narrower than the clip, so playback/export still stop
+                      where the solve stops however far the handles are pulled */}
+                  {solveShort && (
+                    <div className="warn" style={{ marginTop: 6, fontSize: 10.5 }}>
+                      The stabilization only covers {solvedSpan.t0.toFixed(2)}–{solvedSpan.t1.toFixed(2)}s, inside the span you're keeping — so playback and export still stop there, however far you drag the handles. Nothing was lost from the file; <b>re-stabilize in the sky view</b> to solve the whole kept span.
+                    </div>
+                  )}
                 </div>
               )}
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -5302,7 +5366,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      frames, the smoothing sliders, export, the trajectory overlay — stays
      gated on source.posePath and is unreachable until you stabilize. */
   const [previewDur, setPreviewDur] = useState(0);
-  const solvedPath = Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
+  /* ✂ the solved path is RESTRICTED to the kept span for playback and export:
+     after a trim, frames outside it are no longer part of the sighting even
+     though the older solve still covers them. The stored path keeps every
+     sample (the trim stays non-destructive) — this is only what gets played
+     and rendered. The opposite case (a solve NARROWER than the trim) can't be
+     fixed by filtering and is called out instead, below. */
+  const solvedAll = Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
+  const solvedPath = useMemo(() => {
+    if (!solvedAll) return null;
+    if (!trimS.on) return solvedAll;
+    const f = solvedAll.filter((p) => inTrim(p.t));
+    return f.length > 1 ? f : solvedAll;
+  }, [solvedAll, source?.trim]); // eslint-disable-line
+  /* the solve stops short of the kept span — playback/export stop there too,
+     which is what "the trim lost the first bit" actually looks like */
+  const solveShort = !!solvedAll && trimS.on && isFinite(trimS.t1) && (() => {
+    let a = Infinity, b = -Infinity;
+    for (const p of solvedAll) { if (isNum(p?.t)) { if (+p.t < a) a = +p.t; if (+p.t > b) b = +p.t; } }
+    return isFinite(a) && (a > trimS.t0 + 0.3 || b < trimS.t1 - 0.3);
+  })();
   /* An INSTRUMENTED clip already knows where it was pointing: the recording
      logged the phone's own attitude at ~25 Hz. So the preview does not have to
      be a still frame on a fixed pose — build it from the log and the clip is
@@ -7322,6 +7405,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: !solvedPath ? "var(--amber)" : playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
                     {!solvedPath && (previewKind === "sensor" ? " · from motion log, not stabilized" : " · preview, not stabilized")}
+                    {solveShort && <span style={{ color: "var(--amber)" }}> · ✂ solve is narrower than the trim — re-stabilize</span>}
                   </span>
                   {/* always offered (not only mid-playback): after scrubbing —
                       or returning from a tool that kept the scrubbed frame —
