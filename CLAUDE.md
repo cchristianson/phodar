@@ -877,6 +877,22 @@ terrain stay frozen and only the object moves. Build ladder:
    why drags appeared to do nothing). All five media controls (Replace · 💾 ·
    ⟳ · 📷 · ✂) share ONE nowrap row; the tap-mode selector was moved to its
    own line because with nowrap it overflowed.
+   **TRIM DRAG SMOOTHNESS (invariant #7, violated then fixed)**: the first
+   version called `setTrim()` — a source write + autosave + a video seek — on
+   EVERY pointermove, i.e. ~120 of each per second on a 120 Hz phone, which is
+   exactly the flood invariant #7 exists to prevent ("the trim sliders don't
+   really work, or at least not smoothly"). Now a gesture moves only
+   `dragTrim` (display state, rAF-coalesced), seeks are paced at ~90 ms, and
+   the source is written ONCE on release. Measured: 40 pointermoves → 0 writes
+   during, 1 on release, 8 seeks. `onPointerLeave` was ALSO removed from the
+   end-of-gesture handlers — the bar is 38 px tall, a finger strays off it
+   constantly, and aborting there was the other half of the jank; pointerup /
+   pointercancel are the real end conditions.
+   **"The trim won't toggle off"**: it did close — but the ✂ button stayed
+   amber with a ✓ whenever a trim existed, so open and closed looked
+   IDENTICAL. Open is now amber "✂ ✕" (an active mode), closed-with-a-trim is
+   a teal "✂ ✓" badge (a settled value), untrimmed is plain. Toggling is
+   visible again.
    **"I lost some of the first bit I didn't clip off" — DIAGNOSED, NOT A DATA
    BUG**: a SOLVED path describes the span it was solved over, and `solvedPath`
    fed playback/export straight from `source.posePath`. So widening a trim after
