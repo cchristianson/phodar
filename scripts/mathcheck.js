@@ -24,7 +24,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
-import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt } from "../src/shapes.js";
+import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0 } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -1355,6 +1355,45 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const none = sampleShapeAt([{ t: 0, x: 1, y: 1 }], sf, 1);
     approx(none.wpx == null ? 1 : 0, 1, 0, "sampleShapeAt: no size marks ⇒ wpx null (caller uses fitted size)");
     approx(Math.max(...I3.map((v, i) => Math.abs(v - none.rotM[i]))) < 1e-9 ? 1 : 0, 1, 0, "sampleShapeAt: no attitude marks ⇒ fitted rotM");
+
+    /* CUBE ↔ DIAMOND (squash). The solid must actually BE a cube at 0 and a
+       square bipyramid at 1, not merely look like one: check the corner set,
+       the extents, and that the cap tapers monotonically in between. */
+    const pts = (q) => shapeWire("cube", null, { squash: q }).flat();
+    const ext = (P, i) => Math.max(...P.map((p) => p[i])) - Math.min(...P.map((p) => p[i]));
+    const c0 = pts(0);
+    approx(Math.abs(ext(c0, 0) - 1) < 1e-9 && Math.abs(ext(c0, 1) - 1) < 1e-9 && Math.abs(ext(c0, 2) - 1) < 1e-9 ? 1 : 0, 1, 0,
+      "cube: squash 0 is a unit cube (1×1×1 extents)");
+    // exactly 8 distinct corners, all at |x|=|y|=|z|=0.5
+    const uniq = (P) => [...new Set(P.map((p) => p.map((v) => v.toFixed(4)).join(",")))];
+    const corners0 = uniq(c0.filter((p) => Math.abs(Math.abs(p[2]) - 0.5) < 1e-9));
+    approx(corners0.length, 8, 0, "cube: squash 0 has exactly 8 corners");
+    approx(c0.every((p) => Math.abs(Math.abs(p[0]) - 0.5) < 1e-9 && Math.abs(Math.abs(p[1]) - 0.5) < 1e-9) ? 1 : 0, 1, 0,
+      "cube: squash 0 has no waist ring (every point is on a cube corner column)");
+    const c1 = pts(1);
+    approx(Math.abs(ext(c1, 2) - 1) < 1e-9 ? 1 : 0, 1, 0, "diamond: squash 1 keeps the full height");
+    // the caps have collapsed onto the axis → the only points at |z|=0.5 are the apexes
+    const apex = uniq(c1.filter((p) => Math.abs(Math.abs(p[2]) - 0.5) < 1e-9));
+    approx(apex.length, 2, 0, "diamond: squash 1 collapses the top and bottom faces to single apexes");
+    approx(c1.filter((p) => Math.abs(p[2]) < 1e-9).length > 0 && uniq(c1.filter((p) => Math.abs(p[2]) < 1e-9)).length === 4 ? 1 : 0, 1, 0,
+      "diamond: squash 1 has a 4-corner waist (square bipyramid = the diamond silhouette)");
+    // monotone taper: the cap half-width shrinks as squash grows, and the waist never moves
+    const capW = (q) => { const P = pts(q).filter((p) => Math.abs(p[2] - 0.5) < 1e-9); return Math.max(...P.map((p) => Math.abs(p[0]))); };
+    const caps = [0, 0.25, 0.5, 0.75, 1].map(capW);
+    approx(caps.every((v, i) => i === 0 || v < caps[i - 1] + 1e-9) && Math.abs(caps[0] - 0.5) < 1e-9 && caps[4] < 1e-9 ? 1 : 0, 1, 0,
+      `cube→diamond: cap tapers monotonically 0.5→0 (${caps.map((v) => v.toFixed(3)).join(" ")})`);
+    [0.25, 0.5, 0.75].forEach((q) => {
+      const P = pts(q);
+      approx(Math.abs(ext(P, 0) - 1) < 1e-9 && Math.abs(ext(P, 2) - 1) < 1e-9 ? 1 : 0, 1, 0, `cube→diamond: squash ${q} keeps the waist and height (extents 1×1)`);
+    });
+    // out-of-range and missing values must not produce a degenerate solid
+    [undefined, NaN, -3, 7].forEach((q) => {
+      const P = shapeWire("cube", null, q === undefined ? undefined : { squash: q }).flat();
+      approx(P.length > 0 && Math.abs(ext(P, 2) - 1) < 1e-9 ? 1 : 0, 1, 0, `cube: squash ${String(q)} clamps to a valid solid`);
+    });
+    // registered everywhere a shape has to be
+    approx(SHAPES.some((s) => s.k === "cube") ? 1 : 0, 1, 0, "cube: listed in the shape picker");
+    approx(SHAPE_R0().cube && SHAPE_R0().cube.length === 9 ? 1 : 0, 1, 0, "cube: has a default 3/4 pose");
     // baseline injection: the FIT is an implicit keyframe at markT (wFit,
     // shapeFit.rotM) so a SINGLE adjustment RAMPS from the fit instead of
     // going constant — "changes transition from changes, not from un-adjusted
