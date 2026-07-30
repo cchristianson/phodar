@@ -1805,6 +1805,17 @@ function MediaMeasure({ src, update, wizard }) {
   const [trimOn, setTrimOn] = useState(false); // ✂ is a MODE — the bar costs vertical space
   const trimBarRef = useRef(null);
   const trimDragRef = useRef(null);            // "t0" | "t1" while a handle is down
+  /* LIVE DRAG STATE, display-only. The first version called setTrim() — a
+     source write + autosave + a video seek — on EVERY pointermove, which on a
+     120 Hz phone is ~120 of each per second: exactly the flood invariant #7
+     exists to prevent, and why the handles felt sticky and imprecise (field
+     report: "the trim sliders don't really work, or at least not smoothly").
+     Now a drag only moves `dragTrim`, rAF-coalesced, and the source is written
+     ONCE on release. */
+  const [dragTrim, setDragTrim] = useState(null);
+  const dragRaf = useRef(0);
+  const dragPend = useRef(null);
+  const seekAtRef = useRef(0);
   /* A SOLVED path describes the span it was solved over. Widening the trim
      afterwards cannot extend it, and playback/export keep using the solved
      span — which reads exactly like the field report: "I seem to have lost
@@ -1820,6 +1831,7 @@ function MediaMeasure({ src, update, wizard }) {
     return isFinite(a) && b > a + 0.05 ? { t0: a, t1: b } : null;
   })();
   const solveShort = !!solvedSpan && vidDur > 0 && (solvedSpan.t0 > trim.t0 + 0.3 || solvedSpan.t1 < trim.t1 - 0.3);
+  const trimView = dragTrim || trim;   // the bar follows the finger; `trim` is the committed value
   const setTrim = (a0, b0) => {
     const d = vidDur || 0;
     if (!(d > 0.25)) return;
@@ -1847,8 +1859,9 @@ function MediaMeasure({ src, update, wizard }) {
   };
   const onTrimDown = (which) => (e) => {
     e.preventDefault(); e.stopPropagation();   // an exact grab beats the nearest-edge fallback
-    trimDragRef.current = which;
+    const t = trimAt(e);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
+    trimGrab(which, t == null ? (which === "t0" ? trim.t0 : trim.t1) : t);
   };
   /* GRAB FROM ANYWHERE ON THE BAR — press in the dimmed, trimmed-away region
      and the nearest edge jumps to your finger, which is how you pull a clipped
@@ -1861,21 +1874,51 @@ function MediaMeasure({ src, update, wizard }) {
     if (t == null) return;
     e.preventDefault();
     const which = Math.abs(t - trim.t0) <= Math.abs(t - trim.t1) ? "t0" : "t1";
-    trimDragRef.current = which;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
-    if (which === "t0") setTrim(Math.min(t, trim.t1 - 0.2), trim.t1);
-    else setTrim(trim.t0, Math.max(t, trim.t0 + 0.2));
-    seek(t);
+    trimGrab(which, t);
+  };
+  /* start a gesture at time t on `which` edge — shared by the handles and by
+     press-anywhere, so both feel identical */
+  const trimGrab = (which, t) => {
+    trimDragRef.current = which;
+    const base = dragPend.current || { t0: trim.t0, t1: trim.t1 };
+    const next = which === "t0"
+      ? { t0: clampN(t, 0, base.t1 - 0.2), t1: base.t1 }
+      : { t0: base.t0, t1: clampN(t, base.t0 + 0.2, vidDur || base.t0 + 0.2) };
+    dragPend.current = next;
+    setDragTrim(next);
+    seekAtRef.current = Date.now();
+    seek(which === "t0" ? next.t0 : next.t1);
   };
   const onTrimMove = (e) => {
     if (!trimDragRef.current) return;
     const t = trimAt(e);
     if (t == null) return;
-    if (trimDragRef.current === "t0") setTrim(Math.min(t, trim.t1 - 0.2), trim.t1);
-    else setTrim(trim.t0, Math.max(t, trim.t0 + 0.2));
-    seek(t);                                   // the frame under the handle, like the native editor
+    const which = trimDragRef.current;
+    const base = dragPend.current || { t0: trim.t0, t1: trim.t1 };
+    dragPend.current = which === "t0"
+      ? { t0: clampN(t, 0, base.t1 - 0.2), t1: base.t1 }
+      : { t0: base.t0, t1: clampN(t, base.t0 + 0.2, vidDur || base.t0 + 0.2) };
+    if (dragRaf.current) return;               // one visual update per frame, never per event
+    dragRaf.current = requestAnimationFrame(() => {
+      dragRaf.current = 0;
+      const p = dragPend.current;
+      if (!p || !trimDragRef.current) return;
+      setDragTrim(p);
+      /* show the frame under the moving edge, PACED — a seek per event stalls
+         the iOS decoder (the same reason playback scrubbing is paced) */
+      const now = Date.now();
+      if (now - seekAtRef.current > 90) { seekAtRef.current = now; seek(trimDragRef.current === "t0" ? p.t0 : p.t1); }
+    });
   };
-  const onTrimUp = () => { trimDragRef.current = null; };
+  const onTrimUp = () => {
+    if (!trimDragRef.current) return;
+    if (dragRaf.current) { cancelAnimationFrame(dragRaf.current); dragRaf.current = 0; }
+    const p = dragPend.current;
+    trimDragRef.current = null; dragPend.current = null;
+    setDragTrim(null);
+    if (p) setTrim(p.t0, p.t1);                // ONE source write for the whole gesture
+  };
 
   const ang = angSizeFromPoints(src.A.p1, src.A.p2, natW, natH, +src.fovH);
   /* --- per-frame apparent size: resize the fitted shape ON a track point's
@@ -2102,11 +2145,21 @@ function MediaMeasure({ src, update, wizard }) {
           <button className="btn sm" style={{ padding: "6px 9px", flex: "0 0 auto" }} title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷{media ? "" : " Capture with sensors"}</button>
         )}
         {/* ✂ TRIM is a MODE now — the bar only appears while it's on */}
+        {/* OPEN is amber (an active mode); CLOSED-but-trimmed is a teal ✓ badge
+            (a settled value — the app's colour language). They used to look
+            identical, so closing the panel looked like nothing had happened,
+            which read as "the trim won't toggle off" (field report). A JSX
+            comment cannot sit in the expression slot after `&& (` — it parses
+            as an object literal and breaks the build. */}
         {media && isVid && vidDur > 0.3 && (
-          <button className={"btn sm" + (trimOn || trim.on ? " amber" : "")} style={{ padding: "6px 9px", flex: "0 0 auto" }}
+          <button className={"btn sm" + (trimOn ? " amber" : "")} style={{ padding: "6px 9px", flex: "0 0 auto", ...(trimOn ? null : trim.on ? { color: "var(--teal)", borderColor: "#2A6157" } : null) }}
             onClick={() => setTrimOn((v) => !v)}
-            title="Trim the clip — drag either end of the bar to cut off the start or the finish. Nothing is deleted or re-encoded; only the kept span is analysed, played and exported, and ⤢ full brings the whole clip back.">
-            ✂{trim.on ? " ✓" : ""}
+            title={trimOn
+              ? "Close the trim editor. The trim itself stays — use ⤢ full inside the editor to put the whole clip back."
+              : trim.on
+                ? `Trimmed to ${trim.t0.toFixed(2)}–${trim.t1.toFixed(2)}s — tap to edit or to restore the whole clip.`
+                : "Trim the clip — drag either end of the bar (or press anywhere on it) to cut off the start or the finish. Nothing is deleted or re-encoded; only the kept span is analysed, played and exported."}>
+            ✂{trimOn ? " ✕" : trim.on ? " ✓" : ""}
           </button>
         )}
       </div>
@@ -2587,15 +2640,19 @@ function MediaMeasure({ src, update, wizard }) {
                 <div style={{ marginTop: 2 }}>
                   <div ref={trimBarRef} style={{ position: "relative", height: 38, borderRadius: 8, background: "rgba(10,15,28,.92)", border: "1px solid var(--line)", touchAction: "none", marginTop: 8, cursor: "ew-resize" }}
                     onPointerDown={onBarDown}
-                    onPointerMove={onTrimMove} onPointerUp={onTrimUp} onPointerCancel={onTrimUp} onPointerLeave={onTrimUp}>
-                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "7px 0 0 7px", pointerEvents: "none" }} />
-                    <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "0 7px 7px 0", pointerEvents: "none" }} />
-                    <div style={{ position: "absolute", left: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, right: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, top: 0, bottom: 0, border: "1.5px solid var(--amber)", borderRadius: 4, background: "rgba(245,169,63,.10)", pointerEvents: "none" }} />
+                    /* NO onPointerLeave: the bar is 38 px tall, a finger strays
+                       off it constantly, and aborting the gesture there was
+                       half of "the sliders don't work smoothly". pointerup /
+                       pointercancel are the real end conditions. */
+                    onPointerMove={onTrimMove} onPointerUp={onTrimUp} onPointerCancel={onTrimUp}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${clampN((trimView.t0 / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "7px 0 0 7px", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${clampN(((vidDur - trimView.t1) / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.62)", borderRadius: "0 7px 7px 0", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", left: `${clampN((trimView.t0 / vidDur) * 100, 0, 100)}%`, right: `${clampN(((vidDur - trimView.t1) / vidDur) * 100, 0, 100)}%`, top: 0, bottom: 0, border: "1.5px solid var(--amber)", borderRadius: 4, background: "rgba(245,169,63,.10)", pointerEvents: "none" }} />
                     <div style={{ position: "absolute", left: `${clampN((vidT / vidDur) * 100, 0, 100)}%`, top: 2, bottom: 2, width: 2, marginLeft: -1, background: "#fff", opacity: 0.85, pointerEvents: "none" }} />
                     {/* 44 px hit zone — the old 30 px one was genuinely hard to
                         grab on a phone (field report), and it's the reason a
                         drag often did nothing at all */}
-                    {[["t0", trim.t0, "⟨"], ["t1", trim.t1, "⟩"]].map(([w, tv, gl]) => (
+                    {[["t0", trimView.t0, "⟨"], ["t1", trimView.t1, "⟩"]].map(([w, tv, gl]) => (
                       <div key={w} onPointerDown={onTrimDown(w)} title={w === "t0" ? "Drag to trim the start" : "Drag to trim the end"}
                         style={{ position: "absolute", left: `${clampN((tv / vidDur) * 100, 0, 100)}%`, top: -10, bottom: -10, width: 44, marginLeft: -22, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", cursor: "ew-resize", zIndex: 3 }}>
                         <div style={{ width: 18, height: 46, borderRadius: 5, background: "var(--amber)", color: "#1a1206", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 5px rgba(0,0,0,.6)" }}>{gl}</div>
@@ -2603,8 +2660,8 @@ function MediaMeasure({ src, update, wizard }) {
                     ))}
                   </div>
                   <div style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 4 }}>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: trim.on ? "var(--amber)" : "var(--dim)" }}>
-                      ✂ {trim.on ? `${trim.t0.toFixed(2)}–${trim.t1.toFixed(2)}s · ${trim.span.toFixed(1)}s of ${vidDur.toFixed(1)}s` : `full clip · ${vidDur.toFixed(1)}s`}
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: trim.on || dragTrim ? "var(--amber)" : "var(--dim)" }}>
+                      ✂ {trim.on || dragTrim ? `${trimView.t0.toFixed(2)}–${trimView.t1.toFixed(2)}s · ${(trimView.t1 - trimView.t0).toFixed(1)}s of ${vidDur.toFixed(1)}s` : `full clip · ${vidDur.toFixed(1)}s`}
                     </span>
                     <button className="btn sm" style={{ marginLeft: "auto", padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(vidT, trim.t1)} title="Trim the start to the frame you're on">⟨ start</button>
                     <button className="btn sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(trim.t0, vidT)} title="Trim the end to the frame you're on">end ⟩</button>
