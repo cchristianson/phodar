@@ -11699,7 +11699,9 @@ function WizDots({ n, style }) {
 
 function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel, help }) {
   return (
-    <div style={{ padding: "14px 12px 96px" }}>
+    /* no 96 px bottom reserve any more — the footer below is STICKY, so it
+       occupies real space in the flow instead of floating over the content */
+    <div style={{ padding: "14px 12px 10px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <button className="btn sm" onClick={onBack}>‹</button>
         <div>
@@ -11709,7 +11711,18 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
         {help && <HelpButton section={help} style={{ marginLeft: "auto" }} />}
       </div>
       <div className="card" style={{ margin: 0 }}>{children}</div>
-      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 40, padding: "10px 12px calc(12px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.96) 60%, rgba(7,11,20,0))" }}>
+      {/* STICKY, NOT FIXED. On iOS a fixed element is positioned against the
+          LAYOUT viewport, so the instant the visual viewport diverges from it —
+          a stray two-finger pinch (iOS Safari has ignored `user-scalable=no`
+          since iOS 10, so the page CAN be zoomed), the URL bar collapsing, a
+          focused input shifting the page — it renders at a stale, arbitrary
+          spot. That is the "Next button ends up all over the screen instead of
+          at the bottom" field report. A sticky element lives in normal flow and
+          is laid out by the same scrollport as the content, so it can only ever
+          be at the bottom of the page; a zoom scales it WITH the content
+          instead of stranding it. Negative side margins keep the gradient
+          edge-to-edge inside the padded step. */}
+      <div style={{ position: "sticky", bottom: 0, zIndex: 40, marginTop: 10, marginLeft: -12, marginRight: -12, padding: "10px 12px calc(10px + env(safe-area-inset-bottom))", background: "linear-gradient(0deg, rgba(7,11,20,.96) 60%, rgba(7,11,20,0))" }}>
         <div style={{ maxWidth: 520, margin: "0 auto" }}>
           <button className="btn amber" disabled={nextDisabled} style={{ width: "100%", padding: 13, opacity: nextDisabled ? 0.45 : 1 }} onClick={nextDisabled ? undefined : onNext}>
             {nextDisabled ? (disabledLabel || "Complete this step to continue") : (nextLabel || "Next →")}

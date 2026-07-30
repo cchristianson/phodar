@@ -117,6 +117,20 @@ comments, in this order:
    MBs; localStorage caps ~5 MB). Images/videos persist in IndexedDB via
    `src/mediaStore.js` keyed by source id, re-attached on boot; removal,
    new-sighting and reset clear their entries.
+9. **Never `position: fixed` for chrome inside a scrolling page — use
+   `position: sticky`.** On iOS a fixed element resolves against the LAYOUT
+   viewport, so the moment the visual viewport diverges from it — a stray
+   two-finger pinch (Safari has ignored `user-scalable=no` since iOS 10, so the
+   page CAN be zoomed), the URL bar collapsing, a focused input shifting the
+   page — it renders at a stale, arbitrary spot. Field report: "the next button
+   ends up all over the screen instead of at the bottom where it belongs".
+   `WizStep`'s footer is sticky and therefore laid out by the same scrollport as
+   the content, so it can only ever be at the bottom; a zoom scales it WITH the
+   page. Fixed is still correct for `inset: 0` FULL-SCREEN overlays (the sky
+   view, modals) — those cover the viewport and lock scrolling, so there is no
+   stale offset to be wrong about. Asserted in a scratchpad harness that
+   reproduces the stranding with a control fixed bar under a transformed
+   ancestor.
 
 ## Image brightness/contrast (display-only, non-destructive)
 `source.imgAdj = {bri, con}` (percentages, 100 = neutral) is a DISPLAY aid set on
