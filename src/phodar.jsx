@@ -834,6 +834,26 @@ function mosaicColor(m, la, lo) {
   return [m.data[i], m.data[i + 1], m.data[i + 2]];
 }
 
+/* ============================================================
+   NON-DESTRUCTIVE CLIP TRIM — `source.trim = {t0,t1}` in seconds into the
+   ORIGINAL file. The pixels are never re-encoded (a phone can't do that well,
+   and a re-encode would throw away the evidence), so every consumer simply
+   restricts the span it SAMPLES: the measure-step scrubber, the stabilize
+   walk, the preview path, the export, the report. That makes a trim free,
+   reversible at any moment, and impossible to lose data to.
+   `dur` may be null when the media duration isn't known yet (the sky view
+   learns it lazily) — the stored bounds still apply.
+   ============================================================ */
+const trimOf = (s, dur) => {
+  const d = isNum(dur) && dur > 0.05 ? +dur : null;
+  const tr = s && s.trim;
+  const hasT = !!tr && isNum(tr.t0) && isNum(tr.t1) && +tr.t1 > +tr.t0 + 0.05;
+  let t0 = hasT ? Math.max(0, +tr.t0) : 0;
+  let t1 = hasT ? +tr.t1 : (d != null ? d : Infinity);
+  if (d != null) { t0 = clampN(t0, 0, Math.max(0, d - 0.05)); t1 = Math.min(t1, d); }
+  return { t0, t1, span: t1 - t0, on: hasT };
+};
+
 /* Smallest the fitted 3D model can be drawn, as a fraction of the image width
    — the size slider's lower stop.
 
@@ -1061,11 +1081,22 @@ function MediaMeasure({ src, update, wizard }) {
     }
     fileRef.current = f; setTriedData(url.startsWith("data:"));
     trkHistRef.current = []; // new media is a fresh start — don't let Undo reach back into the old clip's track
+    /* KEEP-THE-WORK re-attach (opts.keep, or an imported sighting whose data
+       arrived without its media — the share JSON never carries pixels): the
+       marks, waypoints, alignment frame and sky placement all describe THIS
+       clip, so wiping them on re-upload threw away the expensive part. The
+       SOLVED artefacts are dropped either way: they're cheap to regenerate
+       and the only thing that would be wrong if the new file differs. */
+    const hasWork = !!(src.A?.p1 || src.A?.p2 || (src.track || []).length || src.shapeFit);
+    const keepWork = !!opts.keep || (!src.mediaUrl && hasWork);
     update({
       mediaUrl: url, mediaKind: kind, mediaNorm: false,
       natW: null, natH: null, meta: null, capture: null,
-      A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [],
+      ...(keepWork
+        ? { posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null }
+        : { A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [], trim: null }),
     });
+    if (keepWork) { mediaDel(src.id + ":stab"); setLoadErr(""); }
     if (kind === "video") mediaPut(src.id, { kind: "video", data: f }); // survives reload via IndexedDB
     const sp = opts.sensorPose || null;
     /* instrumented capture: the continuous attitude log rides on the source and
@@ -1714,6 +1745,54 @@ function MediaMeasure({ src, update, wizard }) {
     if (el && media?.kind === "video") { el.currentTime = t; setVidT(t); }
   };
 
+  /* ✂ CLIP TRIM (video) — iPhone-style handles on a bar under the scrubber.
+     Non-destructive (see trimOf): the discarded ends are simply never
+     sampled, so ⤢ full brings them back untouched. Trimming is the single
+     biggest quality lever on a real clip — the whip-pan while the phone comes
+     up and the blurred tail are exactly the frames that break the tracker. */
+  const trim = trimOf(src, vidDur);
+  const trimBarRef = useRef(null);
+  const trimDragRef = useRef(null);            // "t0" | "t1" while a handle is down
+  const setTrim = (a0, b0) => {
+    const d = vidDur || 0;
+    if (!(d > 0.25)) return;
+    const a = clampN(a0, 0, Math.max(0, d - 0.2));
+    const b = clampN(b0, a + 0.2, d);
+    const full = a <= 0.001 && b >= d - 0.001;
+    const patch = { trim: full ? null : { t0: +a.toFixed(3), t1: +b.toFixed(3) } };
+    /* the ALIGNMENT and OBJECT frames must stay inside the kept span — a pose
+       (or an object template) on a discarded frame has nothing to describe */
+    if (isNum(src.alignT) && (+src.alignT < a || +src.alignT > b)) patch.alignT = +clampN(+src.alignT, a, b).toFixed(3);
+    if (isNum(src.A?.videoTime) && (+src.A.videoTime < a || +src.A.videoTime > b)) {
+      const vt = +clampN(+src.A.videoTime, a, b).toFixed(3);
+      patch.A = { ...src.A, videoTime: vt, t: vt.toFixed(2) };
+    }
+    update(patch);
+    if (vidT < a - 1e-6 || vidT > b + 1e-6) seek(clampN(vidT, a, b));
+  };
+  /* live rect on EVERY event — a cached one goes stale inside one gesture
+     (iOS bounce scroll, header height, transforms). Invariant, not a style. */
+  const trimAt = (e) => {
+    const el = trimBarRef.current;
+    if (!el || !(vidDur > 0)) return null;
+    const r = el.getBoundingClientRect();
+    return clampN(((e.clientX - r.left) / Math.max(1, r.width)) * vidDur, 0, vidDur);
+  };
+  const onTrimDown = (which) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    trimDragRef.current = which;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { }
+  };
+  const onTrimMove = (e) => {
+    if (!trimDragRef.current) return;
+    const t = trimAt(e);
+    if (t == null) return;
+    if (trimDragRef.current === "t0") setTrim(Math.min(t, trim.t1 - 0.2), trim.t1);
+    else setTrim(trim.t0, Math.max(t, trim.t0 + 0.2));
+    seek(t);                                   // the frame under the handle, like the native editor
+  };
+  const onTrimUp = () => { trimDragRef.current = null; };
+
   const ang = angSizeFromPoints(src.A.p1, src.A.p2, natW, natH, +src.fovH);
   /* --- per-frame apparent size: resize the fitted shape ON a track point's
      own video frame. The size CHANGE across frames is what recovers the
@@ -1910,6 +1989,20 @@ function MediaMeasure({ src, update, wizard }) {
           {media ? "Replace media" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
+        {/* RE-ATTACH keeping the work: load the same clip (or a re-encode of
+            it) back over an existing analysis. Everything that describes the
+            footage stays — object placement, track waypoints, alignment frame,
+            sky placement, motion log — and only the solved stabilization is
+            dropped, so the fresh file can be solved again from scratch. This
+            is also the answer for an imported sighting, whose share file
+            carries all the measurements but never the video itself. */}
+        {media && (
+          <label className="btn sm" style={{ display: "inline-block" }} title="Re-attach the SAME clip and keep every measurement — object placement, track waypoints, alignment frame and sky placement all stay. Only the solved stabilization is dropped, so you can stabilize the fresh file again.">
+            ⟳ Re-attach · keep marks
+            <input type="file" accept="image/*,video/*" style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if (f) ingestFile(f, { keep: true }); }} />
+          </label>
+        )}
         {ENABLE_CAPTURE && (
           <button className="btn sm" title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷 Capture{media ? "" : " with sensors"}</button>
         )}
@@ -2345,21 +2438,60 @@ function MediaMeasure({ src, update, wizard }) {
                   find your way back to where things were placed */}
               <div style={{ position: "relative" }}>
                 {vidDur > 0 && (
+                  /* ticks map to the SCRUBBER's span (the kept range), so they
+                     stay under the frames they mark after a trim */
                   <div style={{ position: "absolute", left: 8, right: 8, top: -5, height: 6, pointerEvents: "none" }}>
-                    {(src.track || []).filter((p) => isNum(p.t)).map((p, i) => (
-                      <span key={"tk" + i} style={{ position: "absolute", left: `${clampN((p.t / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", width: 5, height: 5, borderRadius: 3, background: "var(--track)", display: "block" }} />
-                    ))}
-                    {isNum(src.A?.videoTime) && (
-                      <span style={{ position: "absolute", left: `${clampN((+src.A.videoTime / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", color: "var(--amber)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
-                    )}
-                    {isNum(src.alignT) && (
-                      <span style={{ position: "absolute", left: `${clampN((+src.alignT / vidDur) * 100, 0, 100)}%`, transform: "translateX(-50%)", color: "var(--teal)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
-                    )}
+                    {(() => {
+                      const pct = (t) => ((t - trim.t0) / Math.max(1e-6, trim.span)) * 100;
+                      const inSpan = (t) => t >= trim.t0 - 1e-6 && t <= trim.t1 + 1e-6;
+                      return (
+                        <>
+                          {(src.track || []).filter((p) => isNum(p.t) && inSpan(+p.t)).map((p, i) => (
+                            <span key={"tk" + i} style={{ position: "absolute", left: `${clampN(pct(+p.t), 0, 100)}%`, transform: "translateX(-50%)", width: 5, height: 5, borderRadius: 3, background: "var(--track)", display: "block" }} />
+                          ))}
+                          {isNum(src.A?.videoTime) && inSpan(+src.A.videoTime) && (
+                            <span style={{ position: "absolute", left: `${clampN(pct(+src.A.videoTime), 0, 100)}%`, transform: "translateX(-50%)", color: "var(--amber)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
+                          )}
+                          {isNum(src.alignT) && inSpan(+src.alignT) && (
+                            <span style={{ position: "absolute", left: `${clampN(pct(+src.alignT), 0, 100)}%`, transform: "translateX(-50%)", color: "var(--teal)", fontSize: 9, lineHeight: "6px", display: "block" }}>▾</span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
-                <input type="range" min={0} max={vidDur || 0} step={0.033} value={vidT}
+                <input type="range" min={trim.t0} max={vidDur > 0 ? trim.t1 : 0} step={0.033} value={clampN(vidT, trim.t0, vidDur > 0 ? trim.t1 : 0)}
                   onChange={(e) => seek(+e.target.value)} />
               </div>
+              {/* ✂ TRIM BAR — drag either handle like the native video editor.
+                  The discarded ends dim, the kept span keeps its amber frame,
+                  the white line is the playhead. Nothing is re-encoded. */}
+              {vidDur > 0.3 && (
+                <div style={{ marginTop: 2 }}>
+                  <div ref={trimBarRef} style={{ position: "relative", height: 24, borderRadius: 7, background: "rgba(10,15,28,.92)", border: "1px solid var(--line)", touchAction: "none", marginTop: 6 }}
+                    onPointerMove={onTrimMove} onPointerUp={onTrimUp} onPointerCancel={onTrimUp} onPointerLeave={onTrimUp}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.6)", borderRadius: "6px 0 0 6px", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, background: "rgba(0,0,0,.6)", borderRadius: "0 6px 6px 0", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", left: `${clampN((trim.t0 / vidDur) * 100, 0, 100)}%`, right: `${clampN(((vidDur - trim.t1) / vidDur) * 100, 0, 100)}%`, top: 0, bottom: 0, border: "1.5px solid var(--amber)", borderRadius: 4, background: "rgba(245,169,63,.10)", pointerEvents: "none" }} />
+                    <div style={{ position: "absolute", left: `${clampN((vidT / vidDur) * 100, 0, 100)}%`, top: 2, bottom: 2, width: 2, marginLeft: -1, background: "#fff", opacity: 0.85, pointerEvents: "none" }} />
+                    {[["t0", trim.t0, "⟨"], ["t1", trim.t1, "⟩"]].map(([w, tv, gl]) => (
+                      <div key={w} onPointerDown={onTrimDown(w)} title={w === "t0" ? "Drag to trim the start" : "Drag to trim the end"}
+                        style={{ position: "absolute", left: `${clampN((tv / vidDur) * 100, 0, 100)}%`, top: -7, bottom: -7, width: 30, marginLeft: -15, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", cursor: "ew-resize" }}>
+                        <div style={{ width: 13, height: 30, borderRadius: 4, background: "var(--amber)", color: "#1a1206", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 4px rgba(0,0,0,.55)" }}>{gl}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 5, alignItems: "center", marginTop: 4 }}>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: trim.on ? "var(--amber)" : "var(--dim)" }}>
+                      ✂ {trim.on ? `${trim.t0.toFixed(2)}–${trim.t1.toFixed(2)}s · ${trim.span.toFixed(1)}s of ${vidDur.toFixed(1)}s` : `full clip · ${vidDur.toFixed(1)}s`}
+                    </span>
+                    <button className="btn sm" style={{ marginLeft: "auto", padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(vidT, trim.t1)} title="Trim the start to the frame you're on">⟨ start</button>
+                    <button className="btn sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(trim.t0, vidT)} title="Trim the end to the frame you're on">end ⟩</button>
+                    {trim.on && <button className="btn sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => setTrim(0, vidDur)} title="Use the whole clip again — the trim is non-destructive, nothing was thrown away">⤢ full</button>}
+                  </div>
+                  {trim.on && <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 2 }}>Only the kept span is analysed, played and exported — re-stabilize to solve it. Nothing is deleted; ⤢ full restores the clip.</div>}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
@@ -4129,8 +4261,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      describes; scrubbable in place mode) vs the MARKED frame (where the
      object was fitted). They default to the same frame; when decoupled, the
      marks' true pose comes from the solved camera path at their own time. */
-  const alignT = isNum(source?.alignT) ? +source.alignT : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0);
-  const markT = isNum(source?.A?.videoTime) ? +source.A.videoTime : alignT;
+  /* both reference frames live INSIDE the kept span — a pose (or an object
+     template) on a trimmed-away frame has nothing to describe. The measure
+     step clamps them when the trim moves; this also covers a sighting
+     imported with a trim already on it. */
+  const trimS = trimOf(source, null);
+  const inTrim = (t) => isNum(t) && t >= trimS.t0 - 1e-6 && t <= trimS.t1 + 1e-6;
+  const alignT = clampN(isNum(source?.alignT) ? +source.alignT : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0), trimS.t0, isFinite(trimS.t1) ? trimS.t1 : 1e9);
+  const markT = clampN(isNum(source?.A?.videoTime) ? +source.A.videoTime : alignT, trimS.t0, isFinite(trimS.t1) ? trimS.t1 : 1e9);
   /* MARKED-frame pixel → world dir. The object marks/track pixels live on the
      MARKED frame, so their sky position is fixed by that frame's pose. During
      stabilized playback pixDir follows the playing frame's pose (playPose) —
@@ -4157,7 +4295,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (Array.isArray(op) && op.length > 1) return op;
     const pp = source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null;
     if (!pp || !source?.natW) return null;
-    const pts = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y)).sort((a, b) => a.t - b.t);
+    const pts = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y) && inTrim(+q.t)).sort((a, b) => a.t - b.t);
     if (pts.length < 2) return null;
     const out = [];
     for (const q of pts) {
@@ -4167,7 +4305,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       out.push({ t: +q.t, az: +ae.az.toFixed(3), el: +ae.el.toFixed(3) });
     }
     return out.length > 1 ? out : null;
-  }, [source?.objPath, source?.posePath, source?.track, source?.natW, source?.natH, source?.mediaKind]);
+  }, [source?.objPath, source?.posePath, source?.track, source?.trim, source?.natW, source?.natH, source?.mediaKind]);
 
   /* known sky objects usable as calibration anchors (bright + labeled) */
   const skyRefs = (() => {
@@ -4713,8 +4851,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* sample cadence: every 0.25 s, capped ~140 samples on long clips — small
          inter-frame rotation keeps the NCC search tight, and pose is angular so
          the path interpolates cleanly between samples */
-      const dt = Math.max(0.25, dur / 140);
-      const times = []; for (let t = 0; t <= dur - 0.005; t += dt) times.push(+t.toFixed(3));
+      /* ✂ TRIM: solve only the kept span. The discarded ends are exactly the
+         frames the witness judged useless — the whip-pan while the phone comes
+         up, the blurred tail — and they are the ones that break the tracker,
+         so trimming is a real quality lever, not just tidiness. */
+      const trS = trimOf(source, dur);
+      const dt = Math.max(0.25, trS.span / 140);
+      const times = []; for (let t = trS.t0; t <= trS.t1 - 0.005; t += dt) times.push(+t.toFixed(3));
+      if (times.length && times[times.length - 1] < trS.t1 - dt * 0.5) times.push(+trS.t1.toFixed(3));
       /* track at ≤768 px — pose is resolution-independent (FOV normalizes it),
          so the low-res path applies verbatim to the 1600 px playback texture */
       const TW = Math.min(768, source.natW), sc = TW / source.natW, TH = Math.max(40, Math.round(source.natH * sc));
@@ -4920,7 +5064,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const ae0 = dirToAzEl(objSeed.g);
         objPath.push({ t: +markT.toFixed(3), az: +ae0.az.toFixed(3), el: +ae0.el.toFixed(3), q: 1 });
         guides = (source.track || [])
-          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
+          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y) && p.t >= trS.t0 - 1e-6 && p.t <= trS.t1 + 1e-6)
           .map((p) => {
             const ps = posePathAt(path, +p.t);
             return { t: +p.t, g: pixToDirK(+p.x, +p.y, source.natW, source.natH, ps.az, ps.el, ps.roll || 0, ps.fov, ps.k || 0) };
@@ -4984,7 +5128,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          delta field (snapDirsToAnchors), keeping the matcher's detail
          between taps. This is what keeps the playback wireframe ON the
          object wherever the user actually marked it. */
-      if (guides.length && objPath.length > 1) {
+      if (guides.length && objPath.length > 1) {   // guides are already span-filtered
         const anchors = guides.map((g2) => { const ae2 = dirToAzEl(g2.g); return { t: g2.t, az: ae2.az, el: ae2.el }; });
         const snapped = snapDirsToAnchors(objPath, anchors);
         objPath.length = 0; objPath.push(...snapped);
@@ -5011,6 +5155,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
+      const trimNote = trS.on ? ` · ✂ trimmed span only (${trS.t0.toFixed(1)}–${trS.t1.toFixed(1)}s of ${dur.toFixed(1)}s)` : "";
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
@@ -5020,7 +5165,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
@@ -5108,8 +5253,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [playPath, previewKind] = useMemo(() => {
     if (solvedPath) return [solvedPath, null];
     if (source?.mediaKind !== "video" || !(previewDur > 0.1)) return [null, null];
+    const trP = trimOf(source, previewDur);
     const times = [];
-    for (let t = 0; t < previewDur - 0.02; t += 0.25) times.push(+t.toFixed(3));
+    for (let t = trP.t0; t < trP.t1 - 0.02; t += 0.25) times.push(+t.toFixed(3));
     if (times.length < 2) return [null, null];
     const log = source?.sensorPath;
     if (Array.isArray(log) && log.length > 4) {
@@ -5120,7 +5266,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     /* no log: one pose for every frame, so the dome cannot world-lock anything
        and the footage moves against a fixed sky exactly as the camera moved */
     return [times.map((t) => ({ t, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist })), "flat"];
-  }, [solvedPath, source?.mediaKind, source?.sensorPath, source?.sensorSync, previewDur, alignT, pAz, pEl, pRoll, fovM, pDist]);
+  }, [solvedPath, source?.mediaKind, source?.sensorPath, source?.sensorSync, source?.trim, previewDur, alignT, pAz, pEl, pRoll, fovM, pDist]);
   const playPathRef = useRef(playPath); playPathRef.current = playPath;
   /* the scrubber index of the ALIGNMENT frame — where the world view lands on
      entry and where ↺ snaps back to. The placement pose describes exactly this
@@ -5239,6 +5385,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setPlayPose(null); setPlayIdx(ri); seekBusyRef.current = false; // drop the override regardless — never leave the lock stuck
     });
   };
+  /* ✕ CLEAR STABILIZATION — drop every solved artefact and go back to the
+     ORIGINAL clip, keeping the measurements: object placement, track
+     waypoints, alignment frame, sky placement and the motion log all stay.
+     Distinct from ↶ Undo, which is one level and only right after a run;
+     this is the permanent "start the video analysis over" button, and it's
+     what makes re-stabilizing after a ✂ trim a clean slate. */
+  const clearStab = () => {
+    if (!source || !update) return;
+    playingRef.current = false; setPlaying(false); setPlayPose(null);
+    setFixOn(false); setSmoothOpen(false); setExportMenu(false);
+    update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null });
+    mediaDel(source.id + ":stab");   // any exported render described the old solve
+    setFlash("✕ stabilization cleared — the original clip, your marks, waypoints and alignment are untouched. 🎞 Stabilize to solve it again.");
+  };
+
   /* ⬇ EXPORT the stabilized clip — every video frame rendered through the
      mesh warp at its own (interpolated) pose from a FIXED virtual camera that
      frames the whole path, with a burned-in az/el grid + pose readout, and
@@ -5309,7 +5470,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          pinned to the taps across smoothing and ⚓ anchor changes alike */
       if (source.natW && Array.isArray(source.track)) {
         const anchors = source.track
-          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
+          .filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y) && inTrim(+p.t))
           .map((p) => {
             const ps = posePathAt(patch.posePath, +p.t);
             return ps && isNum(ps.az) ? { t: +p.t, ...dirToAzEl(pixToDirK(+p.x, +p.y, source.natW, source.natH, ps.az, ps.el, ps.roll || 0, ps.fov, ps.k || 0)) } : null;
@@ -6551,7 +6712,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const ppSrc = (fixOn && fixPreview) || source.posePath;
           const pp2 = source.mediaKind === "video" && Array.isArray(ppSrc) && ppSrc.length > 1 ? ppSrc : null;
           if (pp2 && source.natW) {
-            const ptsT = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y)).sort((a, b) => a.t - b.t);
+            const ptsT = [...(source.track || [])].filter((q) => isNum(q.t) && isNum(q.x) && isNum(q.y) && inTrim(+q.t)).sort((a, b) => a.t - b.t);
             const conv = ptsT.map((q) => {
               const ps2 = posePathAt(pp2, +q.t);
               return ps2 && isNum(ps2.az) ? { d: pixToDirK(+q.x, +q.y, source.natW, source.natH, ps2.az, ps2.el, ps2.roll || 0, ps2.fov, ps2.k || 0) } : null;
@@ -6995,6 +7156,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                         : "Remove the stabilization — back to the original clip. (Recorded before undo existed, so there is no earlier solve to return to.)"}
                       onClick={undoStabilize}>↶ Undo</button>
                   )}
+                  {/* ✕ CLEAR — the permanent version of Undo: back to the
+                      ORIGINAL clip with every measurement intact, whatever the
+                      history. Undo only reaches one run back; this always
+                      works, and it's the clean slate to re-stabilize after a
+                      ✂ trim or a ⟳ re-attach. */}
+                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+                    <button className="btn sm" style={{ flex: "0 0 auto", color: "var(--red)" }}
+                      title="Remove the stabilization for good and go back to the original clip. Your object placement, track waypoints, alignment frame and sky placement all stay — only the solved camera path and object track are dropped, so you can stabilize again from scratch."
+                      onClick={clearStab}>✕ clear</button>
+                  )}
                   {/* MANUAL solve: only when the clip has hand-marked camera refs
                       (the auto pass couldn't do it) — solves instantly from marks,
                       then a smoothing slider pops up to tune the result live */}
@@ -7091,17 +7262,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       or returning from a tool that kept the scrubbed frame —
                       one tap snaps back to the alignment frame (teal ▾) */}
                   {!fixOn && <button className="btn sm" style={{ color: "var(--teal)" }} onClick={exitPlayback} title="Snap back to the alignment frame — the frame the sky placement describes">↺</button>}
-                  {/* ⬇ export works on ANY playable path (solved, sensor
-                      preview, or flat) — the render is only as world-locked
-                      as the path it draws, and the menu says which. ⚓ / 🎛
-                      still operate ON a solved path — their panels are gated
-                      on one, so in preview mode they would open nothing. */}
-                  <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
-                    title={solvedPath
-                      ? "Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera. Tap again to cancel."
-                      : "Export WITHOUT stabilizing: every frame rendered at the preview path's pose (the motion log's, for an instrumented clip — often all you need) from a fixed camera. Tap again to cancel."}>
-                    {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
-                  </button>
+                  {/* ⚓ / 🎛 / ⬇ are MUTUALLY EXCLUSIVE — each opens a panel
+                      below the row, so two at once fought for the same space
+                      and left an orphan open (field ask: one at a time). Every
+                      one of them closes the other two. ⬇ sits at the FAR
+                      RIGHT (field ask); ⚓ / 🎛 operate ON a solved path, so
+                      they only appear once there is one, while ⬇ works on any
+                      playable path — the render is just as world-locked as the
+                      path it draws, and its menu says which. */}
                   {solvedPath && <>
                   <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                     onClick={() => {
@@ -7111,9 +7279,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       setFixOn((o) => !o);
                     }}
                     title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
-                  <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
+                  <button className="btn sm" style={smoothOpen ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                    onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
                     title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎛</button>
                   </>}
+                  <button className="btn sm teal" style={exportMenu ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
+                    onClick={() => { if (exporting) { exportStabilized(); return; } setFixOn(false); setSmoothOpen(false); setExportMenu((m) => !m); }}
+                    title={solvedPath
+                      ? "Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera. Tap again to cancel."
+                      : "Export WITHOUT stabilizing: every frame rendered at the preview path's pose (the motion log's, for an instrumented clip — often all you need) from a fixed camera. Tap again to cancel."}>
+                    {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
+                  </button>
                 </div>
               </div>
             )}
@@ -10894,6 +11070,7 @@ ${momStrip}`;
         blocks.push(`${vids.length > 1 ? `<h3>${e2(s.name || "Observer " + (vi + 1))}</h3>` : ""}
 <p class="lead"><b>Measured angular motion:</b> the object swept <b>${vk.sweep.toFixed(1)}°</b> of sky over <b>${vk.dur.toFixed(1)} s</b> (${vk.n} tracked frames), averaging <b>${vk.avgOmega.toFixed(2)}°/s</b> and peaking at <b>${vk.peakOmega.toFixed(2)}°/s</b>. ${angLine}${held ? ` <span class="cap">(${held} frame${held > 1 ? "s" : ""} held on the guide, not pixel-locked.)</span>` : ""}</p>
 ${rateSvg}
+${isNum(s.trim?.t0) && isNum(s.trim?.t1) ? `<p class="cap" style="margin-top:6px">Analysed span: <b>${(+s.trim.t0).toFixed(2)}–${(+s.trim.t1).toFixed(2)} s</b> of the clip — the witness trimmed the ends, so the figures above describe that span only. The original recording is unaltered.</p>` : ""}
 <p class="cap" style="margin-top:8px">Angular position &amp; rate are measured directly from the world-locked track — no distance needed. Linear size and speed below follow only once a distance is assumed${fixDist ? " (here fixed by triangulation)" : ""}:</p>
 <table><tr><th>Assumed distance</th><th>True size</th><th>Avg speed</th><th>Peak speed</th><th>Path length</th></tr>${distRows}</table>
 ${fixDist ? "" : `<p class="cap">Single viewpoint — distance is unknown, so the row you believe fixes everything else. A second observer's video triangulates the true distance and collapses this to one row.</p>`}
