@@ -905,20 +905,21 @@ terrain stay frozen and only the object moves. Build ladder:
    **"The trim won't toggle off"**: it did close — but the ✂ button stayed
    amber with a ✓ whenever a trim existed, so open and closed looked
    IDENTICAL.
-   **"The clip toggle is inverted"** (the follow-up to that fix, and the rule
-   worth keeping): the ✂ button carries TWO INDEPENDENT bits — is the editor
-   open, and is the clip trimmed — and the first attempt spent one glyph slot on
-   each of two DIFFERENT kinds of thing: "✕" meaning *tap to close* (an ACTION)
-   and "✓" meaning *a trim exists* (a STATE). Sharing a slot, they can only
-   contradict: ✓ appeared ONLY while the editor was closed and ✕ ONLY while it
-   was open, i.e. exactly backwards from every other use of those glyphs in the
-   app — and a real trim went INVISIBLE whenever the editor was open, because
-   the ✕ took its place. Now both signals describe state and nothing else:
-   **fill = the editor is open** (filled amber, the active-input colour; plain
-   or teal-outline when shut) and **✓ = this clip is trimmed**, shown open or
-   shut. All four states are visually distinct, asserted by MEANING in the
-   harness (a ✕ anywhere on the button fails; a ✓ must track the trim, never
-   the open/closed state) rather than against the literal label.
+   **"The clip toggle is inverted" → ✂ IS A PLAIN TOGGLE. ONE signal, the
+   highlight: lit while the trim editor is open, unlit while it's shut, in every
+   trim state.** No glyph badges, no second colour. Two rejected attempts, both
+   worth not repeating: (a) a "✕" for *tap to close* (an ACTION) sharing the
+   label slot with a "✓" for *a trim exists* (a STATE) — sharing a slot they can
+   only contradict, so ✓ showed ONLY while closed and ✕ ONLY while open, exactly
+   backwards from every other use of those glyphs, and a real trim went
+   invisible behind the ✕; (b) dropping the ✕ but keeping the ✓ plus a teal
+   outline for trimmed-but-closed — still wrong, because that is a HIGHLIGHT on
+   the OFF state. A mode button answers one question (is the mode on) and the
+   highlight is the whole answer; the kept span belongs in the tooltip and the
+   bar's own readout, not smuggled into the toggle. Asserted by MEANING in the
+   harness — no ✕ in any state, a bare "✂" label, and exactly TWO distinct looks
+   across all four (open/closed × trimmed/untrimmed) — rather than against
+   whatever label happens to be in the source.
    **"I lost some of the first bit I didn't clip off" — DIAGNOSED, NOT A DATA
    BUG**: a SOLVED path describes the span it was solved over, and `solvedPath`
    fed playback/export straight from `source.posePath`. So widening a trim after
