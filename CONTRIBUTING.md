@@ -35,12 +35,22 @@ The second process is optional, but most cross-checks are dark without it. See
 | Command | Needs | Runs in CI |
 | --- | --- | --- |
 | `npm test` | nothing — pure Node | yes, on every PR |
+| `npm run helpcheck` | nothing — pure Node | no |
 | `npm run skycheck <url>` | Playwright + a built preview | no |
 | `npm run capcheck <url>` | Playwright + a built preview | no |
 | `npm run storecheck <url>` | Playwright + a built preview | no |
 
 `npm test` (`scripts/mathcheck.js` + `scripts/trajcheck.js`) is dependency-free
 on purpose, so it can never be the reason a contribution stalls.
+
+`npm run helpcheck` guards the in-app manual. The "?" overlay (`HELP_SECTIONS`)
+is the only documentation a user ever gets, and it drifts silently — a feature
+ships, the manual doesn't mention it, and nothing fails. The check sweeps every
+distinctive glyph that appears on a button, plus a list of named features keyed
+on the code that implements them, plus the shape picker, and fails if any of
+them is undocumented. If you add a control that genuinely needs no manual entry
+(a close ✕, a nudge arrow), list its glyph in `STRUCTURAL` **with a reason** —
+so skipping the docs is a decision rather than an oversight.
 
 The browser harnesses drive the real app and catch what unit tests can't.
 `skycheck` walks the wizard until the sky view mounts — it exists because a
