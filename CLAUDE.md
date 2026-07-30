@@ -840,6 +840,32 @@ terrain stay frozen and only the object moves. Build ladder:
    lens switching or optical zoom, so this is a MEASUREMENT mode, not the
    way to shoot the best-looking evidence. UNTESTED ON A DEVICE — the
    sensor half cannot be exercised in CI.
+**✂ NON-DESTRUCTIVE CLIP TRIM (`source.trim = {t0,t1}`): DONE** — measure-step
+   handles (drag either end like the native iPhone editor; ⟨ start / end ⟩ set
+   the edge at the playhead; ⤢ full restores). The pixels are NEVER re-encoded
+   — `trimOf(src, dur)` returns the kept span and every consumer restricts what
+   it SAMPLES: the frame scrubber's min/max and its ticks, the stabilize walk's
+   `times` (and its cadence divisor), the preview path, the export (it follows
+   the path), the report (which states the analysed span). So a trim is free,
+   reversible, and cannot lose data. Both reference frames are clamped INTO the
+   span (a pose on a discarded frame describes nothing) and waypoints outside it
+   are ignored by the guide, followPath, the trajectory overlay and the
+   waypoint snap. This is a real quality lever, not tidiness: the whip-pan while
+   the phone comes up and the blurred tail are exactly the frames that break
+   the tracker.
+   **✕ CLEAR STABILIZATION + ⟳ RE-ATTACH: DONE** — `clearStab` drops every
+   solved artefact (posePath/objPath/raws/poseFixes/sensorSync/preStab + the
+   cached render) and returns to the original clip with all MEASUREMENTS intact;
+   ↶ Undo remains the one-level "back to the previous solve". `ingestFile`
+   gained `opts.keep`: re-attach the same clip (⟳ button) and the object
+   placement, waypoints, alignment frame, sky placement and motion log all
+   survive while only the solved paths are dropped — which is also the automatic
+   behaviour when media arrives for a source that already HAS work and no
+   `mediaUrl` (an imported sighting: the share file carries every measurement
+   but never the video, and the old code wiped the marks on upload).
+   **Playback row is ONE-MODE-AT-A-TIME** — ⚓ / 🎛 / ⬇ each open a panel below
+   the row, so each now closes the other two, and ⬇ sits at the FAR RIGHT
+   (field asks). ⬇ works on any playable path; ⚓ / 🎛 need a solved one.
 5. Rolling-shutter per-row pose correction; OIS/EIS = slowly-varying FOV term
    in the solve. Endgame: PWA/native capture logging gyro @100+ Hz, fused
    with absolute references (complementary filter).
