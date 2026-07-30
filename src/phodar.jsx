@@ -2144,22 +2144,31 @@ function MediaMeasure({ src, update, wizard }) {
         {ENABLE_CAPTURE && (
           <button className="btn sm" style={{ padding: "6px 9px", flex: "0 0 auto" }} title="Shoot the sighting in-app so the phone records the up/down angle, roll and heading EXIF leaves out" onClick={() => setCapOpen(true)}>📷{media ? "" : " Capture with sensors"}</button>
         )}
-        {/* ✂ TRIM is a MODE now — the bar only appears while it's on */}
-        {/* OPEN is amber (an active mode); CLOSED-but-trimmed is a teal ✓ badge
-            (a settled value — the app's colour language). They used to look
-            identical, so closing the panel looked like nothing had happened,
-            which read as "the trim won't toggle off" (field report). A JSX
-            comment cannot sit in the expression slot after `&& (` — it parses
-            as an object literal and breaks the build. */}
+        {/* ✂ TRIM is a MODE — the bar only appears while it's on. TWO
+            INDEPENDENT bits are shown, and each glyph/colour describes STATE,
+            never what a tap would do:
+              FILL  = the editor is open (filled amber, the app's active-input
+                      colour) vs closed (plain, or teal outline = settled value)
+              ✓     = this clip IS trimmed — shown whether the editor is open
+                      or shut
+            It used to put a "✕" (tap-to-close, an ACTION) in the same slot as
+            the "✓" (a trim exists, a STATE). Mixing the two inverted the button
+            against every other use of those glyphs in the app — ✓ appeared only
+            while the editor was CLOSED and ✕ only while it was OPEN — and it
+            also hid a real trim behind the ✕ whenever the editor was open
+            (field report: "the clip toggle is inverted"). A JSX comment cannot
+            sit in the expression slot after `&& (` — it parses as an object
+            literal and breaks the build. */}
         {media && isVid && vidDur > 0.3 && (
-          <button className={"btn sm" + (trimOn ? " amber" : "")} style={{ padding: "6px 9px", flex: "0 0 auto", ...(trimOn ? null : trim.on ? { color: "var(--teal)", borderColor: "#2A6157" } : null) }}
+          <button className={"btn sm" + (trimOn ? " amber" : "")} style={{ padding: "6px 9px", flex: "0 0 auto", ...(!trimOn && trim.on ? { color: "var(--teal)", borderColor: "#2A6157" } : null) }}
             onClick={() => setTrimOn((v) => !v)}
-            title={trimOn
-              ? "Close the trim editor. The trim itself stays — use ⤢ full inside the editor to put the whole clip back."
-              : trim.on
-                ? `Trimmed to ${trim.t0.toFixed(2)}–${trim.t1.toFixed(2)}s — tap to edit or to restore the whole clip.`
-                : "Trim the clip — drag either end of the bar (or press anywhere on it) to cut off the start or the finish. Nothing is deleted or re-encoded; only the kept span is analysed, played and exported."}>
-            ✂{trimOn ? " ✕" : trim.on ? " ✓" : ""}
+            title={(trim.on
+              ? `Trimmed to ${trim.t0.toFixed(2)}–${trim.t1.toFixed(2)}s of ${vidDur.toFixed(2)}s. `
+              : "The whole clip is being used. ")
+              + (trimOn
+                ? "Tap to close the trim editor — the trim itself stays either way (⤢ full inside the editor puts the whole clip back)."
+                : "Tap to open the trim editor: drag either end of the bar, or press anywhere on it, to cut off the start or the finish. Nothing is deleted or re-encoded; only the kept span is analysed, played and exported.")}>
+            ✂{trim.on ? " ✓" : ""}
           </button>
         )}
       </div>
