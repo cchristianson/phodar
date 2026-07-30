@@ -869,6 +869,23 @@ terrain stay frozen and only the object moves. Build ladder:
    waypoint snap. This is a real quality lever, not tidiness: the whip-pan while
    the phone comes up and the blurred tail are exactly the frames that break
    the tracker.
+   **TRIM UI v2 (field asks + a diagnosed "glitch")**: ✂ is a MODE toggled from
+   the media row (the bar costs vertical space); pressing ANYWHERE on the bar
+   pulls the NEAREST end to your finger — including the dimmed trimmed-away
+   region, which is how a clipped end comes back — and the handles are 44 px
+   hit zones (the 30 px ones were genuinely un-grabbable on a phone, which is
+   why drags appeared to do nothing). All five media controls (Replace · 💾 ·
+   ⟳ · 📷 · ✂) share ONE nowrap row; the tap-mode selector was moved to its
+   own line because with nowrap it overflowed.
+   **"I lost some of the first bit I didn't clip off" — DIAGNOSED, NOT A DATA
+   BUG**: a SOLVED path describes the span it was solved over, and `solvedPath`
+   fed playback/export straight from `source.posePath`. So widening a trim after
+   stabilizing could not extend playback (dragging the handle out "didn't
+   recover" anything) and narrowing it still played discarded frames. Fixes:
+   playback/export now RESTRICT the solved path to the kept span (the stored
+   path keeps every sample — the trim stays non-destructive), and when the solve
+   is NARROWER than the kept span both the measure step and the playback row say
+   so and point at re-stabilize, instead of leaving it to read as corruption.
    **✕ CLEAR STABILIZATION + ⟳ RE-ATTACH: DONE** — `clearStab` drops every
    solved artefact (posePath/objPath/raws/poseFixes/sensorSync/preStab + the
    cached render) and returns to the original clip with all MEASUREMENTS intact;
