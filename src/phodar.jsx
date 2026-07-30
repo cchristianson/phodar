@@ -4841,6 +4841,58 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       /* honesty: frames with too few background references held the previous
          pose instead of fabricating a lock — say so when it's a lot of them */
       const weak = path.filter((p) => p.n < 6).length;
+      /* INSTRUMENTED CLIP — MUST RUN BEFORE THE OBJECT PASS. The object pass
+         bakes pixel matches into WORLD directions through these poses; when
+         this block ran after it, a sensor-only rebuild replaced the camera
+         path but the objPath kept conversions through the DISCARDED visual
+         solve (field case: a carefully-tracked plane's trajectory scattered
+         across the whole compass because the rejected visual path pointed
+         50° away with a 3× wrong FOV). Recover the log's clock offset
+         against THIS solve
+         (the gap between "start recording" and the first encoded frame is
+         device-specific), then fuse — vision keeps the absolute frame, the
+         sensors carry the frames vision couldn't hold. Sync compares only the
+         SHAPE of the motion, so the compass bias can't drag the placement. */
+      let sensorNote = "", sensorSync = null;
+      if (Array.isArray(source?.sensorPath) && source.sensorPath.length > 4) {
+        const log = source.sensorPath;
+        /* DID THE VISION ACTUALLY TRACK? Inlier count says nothing about that —
+           a tracker that loses the scene and re-acquires on whatever drifted in
+           reports a confident solve that barely moves. Field case: the phone
+           swept 95° (gravity agrees: 27° of elevation with it) while the solve
+           reported 11.5° at 34-46 inliers, so every frame passed as "strong"
+           and the sensors were never consulted. Gravity can't be wrong about
+           that, so compare how far each source says the camera travelled. */
+        const dis = motionDisagreement(path, log, 0);
+        if (dis && dis.sen > 15 && dis.ratio < 0.45) {
+          /* the log is the better witness for MOTION — but the absolute frame
+             still comes from the placement, so the compass bias cancels */
+          const anchor = { t: refT, az: refPose.az, el: refPose.el, roll: refPose.roll, fov: refPose.fov, k: refPose.k || 0 };
+          const only = sensorOnlyPath(log, path.map((p) => p.t), anchor, { offset: 0 });
+          if (only) {
+            for (let i2 = 0; i2 < path.length; i2++) path[i2] = { ...path[i2], ...only[i2] };
+            /* the raw log carries ~20 Hz compass jitter — apply the same
+               steadiness smoothing the visual path got (measured on the
+               field plane clip: the 0.25 s grid + this pass beats sampling
+               the log densely, which just reproduces the compass noise) */
+            smoothPathAt(path, isNum(source?.smoothCam) ? +source.smoothCam : 0.25);
+            sensorSync = { offset: 0, mode: "sensor", vis: dis.vis, sen: dis.sen };
+            sensorNote = ` · ⚠ the tracker lost the scene (it followed ${dis.vis.toFixed(0)}° while the phone turned ${dis.sen.toFixed(0)}°) — using the RECORDED MOTION instead, anchored to your alignment`;
+          }
+        } else {
+          sensorSync = syncSensor(log, path, { range: 2, step: 0.02 });
+          /* a railed or hopeless sync is worse than none — don't fuse on it */
+          const bad = !sensorSync || sensorSync.conf < 0.45 || Math.abs(sensorSync.offset) > 1.9;
+          if (bad) { sensorNote = " · motion log couldn't be matched to the clip — visual solve used alone"; sensorSync = null; }
+          else {
+            const fused = fuseSensorVisual(path, log, { offset: sensorSync.offset });
+            const st = fuseStats(fused);
+            for (let i2 = 0; i2 < path.length; i2++) path[i2] = fused[i2];
+            const carried = (st.s || 0) + (st.b || 0);
+            sensorNote = ` · motion log synced ${sensorSync.offset >= 0 ? "+" : ""}${sensorSync.offset.toFixed(2)}s (${Math.round(sensorSync.conf * 100)}% confident)${carried ? `, ${carried} weak frame${carried > 1 ? "s" : ""} carried on the phone's own attitude` : ""}${st.h ? `, ${st.h} still held` : ""}`;
+          }
+        }
+      }
       /* ---- OBJECT PASS (second pass, after the camera path is final) ----
          The camera poses are now despiked+smoothed, so every conversion uses
          the best estimates — and every measure-step TRACK point ({t,x,y}:
@@ -4952,46 +5004,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           return { ...p, ang: +(2 * Math.atan((+p.wpx / 2) / fpxT) * R2D).toFixed(5) };
         })
         : null;
-      /* INSTRUMENTED CLIP: recover the log's clock offset against THIS solve
-         (the gap between "start recording" and the first encoded frame is
-         device-specific), then fuse — vision keeps the absolute frame, the
-         sensors carry the frames vision couldn't hold. Sync compares only the
-         SHAPE of the motion, so the compass bias can't drag the placement. */
-      let sensorNote = "", sensorSync = null;
-      if (Array.isArray(source?.sensorPath) && source.sensorPath.length > 4) {
-        const log = source.sensorPath;
-        /* DID THE VISION ACTUALLY TRACK? Inlier count says nothing about that —
-           a tracker that loses the scene and re-acquires on whatever drifted in
-           reports a confident solve that barely moves. Field case: the phone
-           swept 95° (gravity agrees: 27° of elevation with it) while the solve
-           reported 11.5° at 34-46 inliers, so every frame passed as "strong"
-           and the sensors were never consulted. Gravity can't be wrong about
-           that, so compare how far each source says the camera travelled. */
-        const dis = motionDisagreement(path, log, 0);
-        if (dis && dis.sen > 15 && dis.ratio < 0.45) {
-          /* the log is the better witness for MOTION — but the absolute frame
-             still comes from the placement, so the compass bias cancels */
-          const anchor = { t: refT, az: refPose.az, el: refPose.el, roll: refPose.roll, fov: refPose.fov, k: refPose.k || 0 };
-          const only = sensorOnlyPath(log, path.map((p) => p.t), anchor, { offset: 0 });
-          if (only) {
-            for (let i2 = 0; i2 < path.length; i2++) path[i2] = { ...path[i2], ...only[i2] };
-            sensorSync = { offset: 0, mode: "sensor", vis: dis.vis, sen: dis.sen };
-            sensorNote = ` · ⚠ the tracker lost the scene (it followed ${dis.vis.toFixed(0)}° while the phone turned ${dis.sen.toFixed(0)}°) — using the RECORDED MOTION instead, anchored to your alignment`;
-          }
-        } else {
-          sensorSync = syncSensor(log, path, { range: 2, step: 0.02 });
-          /* a railed or hopeless sync is worse than none — don't fuse on it */
-          const bad = !sensorSync || sensorSync.conf < 0.45 || Math.abs(sensorSync.offset) > 1.9;
-          if (bad) { sensorNote = " · motion log couldn't be matched to the clip — visual solve used alone"; sensorSync = null; }
-          else {
-            const fused = fuseSensorVisual(path, log, { offset: sensorSync.offset });
-            const st = fuseStats(fused);
-            for (let i2 = 0; i2 < path.length; i2++) path[i2] = fused[i2];
-            const carried = (st.s || 0) + (st.b || 0);
-            sensorNote = ` · motion log synced ${sensorSync.offset >= 0 ? "+" : ""}${sensorSync.offset.toFixed(2)}s (${Math.round(sensorSync.conf * 100)}% confident)${carried ? `, ${carried} weak frame${carried > 1 ? "s" : ""} carried on the phone's own attitude` : ""}${st.h ? `, ${st.h} still held` : ""}`;
-          }
-        }
-      }
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
       if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
@@ -5268,9 +5280,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
        the tracker solved weakly or held, so they stop freezing. Re-applied
        here (not just in the walk) so smoothing and ⚓ anchors compose with it. */
     if (Array.isArray(source.sensorPath) && source.sensorPath.length > 4 && source.sensorSync) {
-      /* sensor-only clips were already rebuilt from the log at stabilize time
-         and must not be re-fused against a solve that never tracked */
-      if (source.sensorSync.mode !== "sensor") base = fuseSensorVisual(base, source.sensorPath, { offset: isNum(source.sensorSync.offset) ? +source.sensorSync.offset : 0 });
+      if (source.sensorSync.mode === "sensor") {
+        /* sensor-only clips: the visual solve never tracked, so REBUILD from
+           the log exactly as the walk did. The old code merely skipped the
+           fusion here — which silently fell back to the raw VISUAL path, so
+           one touch of a smoothing slider resurrected the very solve the
+           walk had rejected (field case: the plane clip's 322° sweep would
+           collapse back to the tracker's 21°). */
+        const anchor = { t: alignT, az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
+        const only = sensorOnlyPath(source.sensorPath, base.map((p) => p.t), anchor, { offset: isNum(source.sensorSync.offset) ? +source.sensorSync.offset : 0 });
+        if (only && only.length === base.length) {
+          base = base.map((p, i) => ({ ...p, ...only[i] }));
+          smoothPathAt(base, camS);   // same steadiness treatment as the walk
+        }
+      } else {
+        base = fuseSensorVisual(base, source.sensorPath, { offset: isNum(source.sensorSync.offset) ? +source.sensorSync.offset : 0 });
+      }
     }
     const fx = Array.isArray(fixes) ? fixes.filter((f) => isNum(f?.t) && isNum(f?.az)) : [];
     patch.posePath = fx.length ? applyPoseFixes(base, fx) : base;
@@ -5402,8 +5427,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      FOV, full source resolution) */
   const exportStabilized = async (mode) => {
     if (typeof mode !== "string") mode = "view";
-    const path = source?.posePath;
-    if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 stabilize first, then export"); return; }
+    /* a solved path when there is one; otherwise the SAME preview path the
+       scrubber plays — sensor-derived for instrumented clips, flat placement
+       poses otherwise. Export no longer requires a stabilize run (field ask:
+       on the plane clip the sensor path was already better than what the
+       visual stabilizer could add). */
+    const path = (Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null) || playPathRef.current;
+    if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 open the clip in look mode first — no playable path yet"); return; }
     if (typeof MediaRecorder === "undefined") { setFlash("⬇ this browser can't record video (no MediaRecorder)"); return; }
     if (mode === "crop" && !(source?.A?.p1 && source?.A?.p2)) { setFlash("◎ the object close-up needs the object marked on the measure step"); return; }
     if (exporting) { exportAbortRef.current++; return; }  // tap again = cancel
@@ -7061,10 +7091,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       or returning from a tool that kept the scrubbed frame —
                       one tap snaps back to the alignment frame (teal ▾) */}
                   {!fixOn && <button className="btn sm" style={{ color: "var(--teal)" }} onClick={exitPlayback} title="Snap back to the alignment frame — the frame the sky placement describes">↺</button>}
-                  {/* ⚓ / 🎛 / ⬇ all operate ON a solved path — their panels are
-                      gated on one, so in preview mode the buttons would toggle
-                      and open nothing. Hide them until there is something to
-                      correct, smooth or render. */}
+                  {/* ⬇ export works on ANY playable path (solved, sensor
+                      preview, or flat) — the render is only as world-locked
+                      as the path it draws, and the menu says which. ⚓ / 🎛
+                      still operate ON a solved path — their panels are gated
+                      on one, so in preview mode they would open nothing. */}
+                  <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
+                    title={solvedPath
+                      ? "Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera. Tap again to cancel."
+                      : "Export WITHOUT stabilizing: every frame rendered at the preview path's pose (the motion log's, for an instrumented clip — often all you need) from a fixed camera. Tap again to cancel."}>
+                    {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
+                  </button>
                   {solvedPath && <>
                   <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                     onClick={() => {
@@ -7076,10 +7113,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
                   <button className="btn sm" onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
                     title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎛</button>
-                  <button className="btn sm teal" onClick={() => { if (exporting) exportStabilized(); else setExportMenu((m) => !m); }}
-                    title="Export the world-locked clip as a video file: every frame rendered at its own solved pose from a fixed camera, with the az/el grid burned in. Tap again to cancel.">
-                    {exporting ? `${Math.round(exporting * 100)}%` : "⬇"}
-                  </button>
                   </>}
                 </div>
               </div>
@@ -7162,7 +7195,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               </div>
             )}
-            {exportMenu && !exporting && !calibOn && pMode !== "place" && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+            {exportMenu && !exporting && !calibOn && pMode !== "place" && source?.mediaKind === "video" && playPath && playPath.length > 1 && (
               <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
                 {[
                   ["view", "▣ World view", "the dome framing shown in playback — grid + all visible sky layers burned in"],
