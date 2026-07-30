@@ -2731,10 +2731,33 @@ function MediaMeasure({ src, update, wizard }) {
                   )}
                 </div>
               )}
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)" }}>{vidT.toFixed(2)}s</span>
+                {/* CAM-REF SELECTORS live on the frame row, not down in the
+                    panel: marking a ref IS scrubbing — you pick a slot, step a
+                    frame, tap the feature, step again — so the slot chips and
+                    the frame steppers belong under the same finger. They also
+                    sat BELOW the panel's explanation, which pushed the only
+                    controls you actually touch off the bottom of a phone
+                    (field report). Compact "+" (not "+ Ref") so a couple of
+                    refs still share the row; it wraps rather than overflowing
+                    once there are several. */}
+                {active === "cref" && isVid && (<>
+                  {camRefs.map((r, i) => {
+                    const on = i === selCref, marked = !!crefAtFrame(r), hue = (i * 47) % 360;
+                    return (
+                      <button key={i} className="btn sm" onClick={() => setSelCref(i)}
+                        title={`Reference ${i + 1}${marked ? " — marked on this frame" : " — not marked on this frame"}`}
+                        style={{ padding: "4px 7px", fontWeight: on ? 700 : 500, borderColor: `hsl(${hue},70%,50%)`, color: `hsl(${hue},85%,65%)`, background: on ? `hsla(${hue},70%,45%,.22)` : "transparent" }}>
+                        {i + 1}{marked ? " ●" : " ○"}<span style={{ fontSize: 9, color: "var(--dim)" }}> {(r.marks || []).filter((m) => isNum(m.x)).length}</span>
+                      </button>
+                    );
+                  })}
+                  <button className="btn sm green" onClick={addCref} style={{ padding: "4px 8px" }} title="Add another reference feature">+</button>
+                  {camRefs.length > 0 && <button className="btn sm" onClick={() => delCref(selCref)} style={{ padding: "4px 7px" }} title="Delete the selected reference">🗑</button>}
+                </>)}
                 {wizard ? (
                   /* the ALIGNMENT frame is chosen HERE (cheap scrubbing) — the
                      sky view bakes it and the world alignment describes it.
@@ -2763,23 +2786,16 @@ function MediaMeasure({ src, update, wizard }) {
                 const hereCount = camRefs.filter((r) => crefAtFrame(r)).length;
                 return (
                   <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--green)", borderRadius: 10, background: "rgba(90,200,140,.06)" }}>
-                    <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.4 }}>
-                      For a clip the auto stabilizer can't do: mark the SAME fixed feature — a cloud edge, a star, a ground light, the horizon — on several frames (scrub between them). Tap to place, or <b>drag for a magnifier</b> on faint features. Mark 3–5 features, spread across the frame, on the align frame and a handful of others. If one pans out of view, add a fresh one — it hands off as long as it <b>overlaps an existing ref on ≥1 frame</b>. <b>Never clouds that drift.</b> Then <b>Solve from marks</b> in the sky view (a smoothing slider pops up to average out imperfect placement).
+                    {/* Condensed from a 9-line paragraph. Everything that
+                        CHANGES WHAT YOU DO is kept — what to mark, what not to
+                        mark, how many, where, the hand-off rule, and where the
+                        solve lives. The one thing dropped is the aside about
+                        the smoothing slider, which appears on its own when you
+                        solve and is covered in the ? manual. */}
+                    <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 6, lineHeight: 1.45 }}>
+                      When auto-stabilize can't lock on: tap the <b>same fixed feature</b> — cloud edge, star, ground light, horizon — on several frames (scrub between; drag for a magnifier). Best is <b>3–5 features spread across the frame</b>, on the align frame plus a few others. <b>Never drifting clouds.</b> A replacement ref must overlap an existing one on ≥1 frame. Then <b>Solve from marks</b> in the sky view.
                     </div>
-                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                      {camRefs.map((r, i) => {
-                        const on = i === selCref, marked = !!crefAtFrame(r), hue = (i * 47) % 360;
-                        return (
-                          <button key={i} className="btn sm" onClick={() => setSelCref(i)}
-                            style={{ padding: "4px 9px", fontWeight: on ? 700 : 500, borderColor: `hsl(${hue},70%,50%)`, color: `hsl(${hue},85%,65%)`, background: on ? `hsla(${hue},70%,45%,.22)` : "transparent" }}>
-                            {i + 1}{marked ? " ●" : " ○"}<span style={{ fontSize: 9, color: "var(--dim)" }}> {(r.marks || []).filter((m) => isNum(m.x)).length}</span>
-                          </button>
-                        );
-                      })}
-                      <button className="btn sm green" onClick={addCref} style={{ padding: "4px 9px" }}>+ Ref</button>
-                      {camRefs.length > 0 && <button className="btn sm" onClick={() => delCref(selCref)} style={{ padding: "4px 9px" }} title="Delete the selected reference">🗑</button>}
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 6 }}>
+                    <div style={{ fontSize: 10, color: "var(--dim)" }}>
                       {camRefs.length} ref{camRefs.length === 1 ? "" : "s"} · {kf.size} frame{kf.size === 1 ? "" : "s"} marked · {hereCount} on this frame{isNum(src.alignT) ? "" : " · set an align frame (⛰) first"}
                     </div>
                   </div>
