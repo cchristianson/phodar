@@ -36,7 +36,8 @@
     "capcheck": "node scripts/capcheck.mjs",
     "storecheck": "node scripts/storecheck.mjs",
     "test": "node scripts/mathcheck.js && node scripts/trajcheck.js && echo ALL-MATH-CHECKS-PASS",
-    "helpcheck": "node scripts/helpcheck.mjs"
+    "helpcheck": "node scripts/helpcheck.mjs",
+    "mathaudit": "node scripts/mathaudit.mjs"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
