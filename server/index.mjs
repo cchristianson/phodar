@@ -515,6 +515,13 @@ async function apiLive(q, res) {
     ["airplanes.live", fetchAdsbxFeed(`https://api.airplanes.live/v2/point/${lat}/${lon}/${R}`, "airplanes.live")],
     ["adsb.lol", fetchAdsbxFeed(`https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${R}`, "adsb.lol")],
     ["adsb.fi", fetchAdsbxFeed(`https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${R}`, "adsb.fi")],
+    /* another independent community network, same ADSBx-v2 shape. Every one of
+       these has a DIFFERENT set of volunteer receivers, and low-flying light
+       aircraft are exactly the targets a distant receiver loses to the horizon
+       (a plane at 2,000 ft AGL is line-of-sight to ~55 nm on flat ground, far
+       less across a valley), so unioning one more network is the cheapest real
+       coverage gain available without a receiver of your own. */
+    ["adsb.one", fetchAdsbxFeed(`https://api.adsb.one/v2/point/${lat}/${lon}/${R}`, "adsb.one")],
     ["opensky", fetchOpenSky(lat, lon, nm)],
   ];
   const settled = await Promise.allSettled(feeds.map(([, p]) => p));

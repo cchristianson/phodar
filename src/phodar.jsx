@@ -655,7 +655,10 @@ const HELP_SECTIONS = [
         { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
       ]},
     ],
-    tips: ["“No ADS-B aircraft in range” rules out airliners, not everything — some military and older light aircraft carry no transponder. Phodar says so rather than overclaiming."],
+    tips: [
+      "“No ADS-B aircraft in range” rules out ADS-B traffic, not aircraft. Phodar queries volunteer 1090 MHz networks, which miss two whole classes: aircraft not transmitting ADS-B at all (in the US it's only required in Class A/B/C, above 10,000 ft and inside the Mode C veil — so a light aircraft on a local flight often carries none, and anything without an electrical system is permanently exempt), and aircraft flying too low for the nearest volunteer receiver to see over the horizon.",
+      "That is why a small plane can be missing here and still show on a commercial tracker: those blend in multilateration across a much denser receiver network, plus FAA radar feeds, neither of which any open network provides. If you want the traffic over YOUR house accounted for, the real answer is a receiver at your house — see docs/DATA-SOURCES.md.",
+    ],
   },
   {
     id: "report", icon: "📄", title: "Report & share",
@@ -10129,8 +10132,15 @@ function AdsbCheck({ sources }) {
           </div>
           {data.cands.length === 0 && (
             <div className="ok" style={{ marginTop: 8 }}>
-              No transponder-equipped aircraft in range right now. (Some military and older light
-              aircraft carry no ADS-B — absence here rules out airliners, not everything.)
+              <b>No ADS-B aircraft in range</b> — which is not the same as no aircraft.
+              These are volunteer 1090 MHz networks, so two things are invisible to them:
+              a plane that isn't transmitting ADS-B at all (in US airspace it's only
+              required in Class A/B/C, above 10,000 ft and inside the Mode C veil — a
+              local flight below that, or anything without an electrical system, may
+              carry none), and a plane too low for the nearest volunteer receiver's
+              horizon. Commercial trackers can still show those from multilateration
+              and FAA radar feeds that no open network has. <b>Absence here rules out
+              ADS-B traffic, not aircraft.</b>
             </div>
           )}
           {data.cands.slice(0, 8).map((c) => {
