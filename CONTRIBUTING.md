@@ -36,6 +36,7 @@ The second process is optional, but most cross-checks are dark without it. See
 | --- | --- | --- |
 | `npm test` | nothing — pure Node | yes, on every PR |
 | `npm run helpcheck` | nothing — pure Node | no |
+| `npm run mathaudit` | nothing — pure Node | no |
 | `npm run skycheck <url>` | Playwright + a built preview | no |
 | `npm run capcheck <url>` | Playwright + a built preview | no |
 | `npm run storecheck <url>` | Playwright + a built preview | no |
@@ -51,6 +52,13 @@ on the code that implements them, plus the shape picker, and fails if any of
 them is undocumented. If you add a control that genuinely needs no manual entry
 (a close ✕, a nudge arrow), list its glyph in `STRUCTURAL` **with a reason** —
 so skipping the docs is a decision rather than an oversight.
+
+`npm run mathaudit` measures the shipped math against exact WGS84 ground truth
+and independent astronomical references, and prints the size of every
+systematic error it finds. It is a **report, not a gate** — it never fails —
+because its job is to make model error measurable rather than arguable. The
+findings are written up in [docs/MATH-AUDIT.md](docs/MATH-AUDIT.md); if you fix
+one, re-run it and the corresponding rows should collapse toward zero.
 
 The browser harnesses drive the real app and catch what unit tests can't.
 `skycheck` walks the wizard until the sky view mounts — it exists because a

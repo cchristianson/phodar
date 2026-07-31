@@ -5,6 +5,30 @@ that to the app itself: what it does badly, with numbers where they were
 measured. Most of these are surfaced in the app or the report as caveats; they
 are collected here so nobody has to discover them the hard way.
 
+## Known systematic model error
+
+Random error is reported throughout (ray-miss, convergence, the ±1° ellipse).
+**Systematic** error is not, because it does not raise any of those residuals —
+all the rays are distorted together, so they still meet cleanly and the fix is
+still graded `excellent`. A full end-to-end audit against exact ground truth is
+in **[docs/MATH-AUDIT.md](MATH-AUDIT.md)** (`npm run mathaudit` reproduces every
+number). In brief, as of 2026-07-30:
+
+- the local ENU frame is built on a sphere rather than the ellipsoid, scaling
+  every distance, altitude and true size by 0.1–0.56% depending on latitude and
+  baseline direction;
+- observers' local verticals are treated as parallel, biasing altitude by an
+  amount that grows with baseline (−16 m at 5 km, −119 m at 20 km);
+- the star catalog is J2000 but is used as coordinates of date, a ~0.37° offset
+  that a plate solve absorbs into the pose while still reporting ~0.04° rms;
+- the Moon's position is truncated to one periodic term (mean 0.8°, worst 1.2°
+  — wider than its own disc), and refraction is applied to it and nothing else;
+- angular size is measured through a pinhole even when a lens distortion term
+  has been fitted (up to 8% for an object near a frame corner).
+
+The field-validated results are unaffected at their scale (0.44 m of model error
+at 120 m range). These grow with baseline, range and latitude.
+
 ## Measurement
 
 **A single viewpoint cannot give you distance.** One photo yields direction,
