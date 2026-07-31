@@ -1546,6 +1546,44 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     // registered everywhere a shape has to be
     approx(SHAPES.some((s) => s.k === "cube") ? 1 : 0, 1, 0, "cube: listed in the shape picker");
     approx(SHAPE_R0().cube && SHAPE_R0().cube.length === 9 ? 1 : 0, 1, 0, "cube: has a default 3/4 pose");
+
+    /* STRETCH — height against a FIXED footprint, independent of squash so
+       every combination is reachable: box, column, slab, tall gem, flat
+       lozenge. */
+    const extOf = (P, i) => Math.max(...P.map((p) => p[i])) - Math.min(...P.map((p) => p[i]));
+    const cube = (o) => shapeWire("cube", null, o).flat();
+    for (const [q, st, wantZ, what] of [
+      [0, 1, 1, "cube"], [0, 2.4, 2.4, "tall box"], [0, 0.4, 0.4, "slab"],
+      [1, 1, 1, "diamond"], [1, 2.5, 2.5, "tall diamond"], [1, 0.35, 0.35, "flat lozenge"],
+      [0.5, 1.8, 1.8, "stretched gem"],
+    ]) {
+      const P = cube({ squash: q, stretch: st });
+      approx(extOf(P, 2), wantZ, 1e-9, `cube stretch: ${what} is ${wantZ}× tall`);
+      approx(extOf(P, 0), 1, 1e-9, `cube stretch: ${what} keeps its footprint`);
+    }
+    approx(extOf(cube({ stretch: 99 }), 2), 3, 1e-9, "cube stretch: clamped at 3×");
+    approx(extOf(cube({ stretch: -5 }), 2), 0.25, 1e-9, "cube stretch: clamped at 0.25×");
+    /* the squash corner cases must survive a stretch: caps still collapse */
+    const uq = (P) => [...new Set(P.map((p) => p.map((v) => v.toFixed(4)).join(",")))];
+    approx(uq(cube({ squash: 1, stretch: 2 }).filter((p) => Math.abs(Math.abs(p[2]) - 1) < 1e-9)).length, 2, 0,
+      "cube stretch: a stretched diamond still has exactly 2 apexes");
+
+    /* PYRAMID — square base of fixed width, apex height = stretch */
+    const pyr = (o) => shapeWire("pyr", null, o).flat();
+    for (const [st, what] of [[1, "as tall as it is wide"], [2.2, "spire"], [0.3, "shallow cap"]]) {
+      const P = pyr({ stretch: st });
+      approx(extOf(P, 2), st, 1e-9, `pyramid: ${what} is ${st}× tall`);
+      approx(extOf(P, 0), 1, 1e-9, `pyramid: ${what} keeps a unit base`);
+      /* exactly one apex, on the axis, at the top */
+      const top = uq(P.filter((p) => Math.abs(p[2] - st / 2) < 1e-9));
+      approx(top.length, 1, 0, `pyramid: ${what} has a single apex`);
+      approx(Math.hypot(...P.filter((p) => Math.abs(p[2] - st / 2) < 1e-9)[0].slice(0, 2)), 0, 1e-9,
+        `pyramid: ${what} apex sits on the axis`);
+      /* 4 base corners */
+      approx(uq(P.filter((p) => Math.abs(p[2] + st / 2) < 1e-9)).length, 4, 0, `pyramid: ${what} has a 4-corner base`);
+    }
+    approx(SHAPES.some((x) => x.k === "pyr") ? 1 : 0, 1, 0, "pyramid: listed in the shape picker");
+    approx(SHAPE_R0().pyr && SHAPE_R0().pyr.length === 9 ? 1 : 0, 1, 0, "pyramid: has a default 3/4 pose");
     // baseline injection: the FIT is an implicit keyframe at markT (wFit,
     // shapeFit.rotM) so a SINGLE adjustment RAMPS from the fit instead of
     // going constant — "changes transition from changes, not from un-adjusted
