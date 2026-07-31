@@ -9,6 +9,45 @@ Attribution requirements are met in-app (Leaflet attribution controls on every
 map, and a credit line on the report's satellite plot). If you fork Phodar or
 re-use its output, those credits have to travel with it.
 
+
+## Why a small plane over your house may be missing
+
+Phodar's aircraft check queries volunteer 1090 MHz ADS-B networks
+(airplanes.live, adsb.lol, adsb.fi, adsb.one) plus OpenSky. They share two
+blind spots, and neither is a bug:
+
+1. **Not every aircraft transmits ADS-B.** In US airspace ADS-B Out is required
+   only in Class A/B/C, above 10,000 ft MSL, and inside the Mode C veil
+   (14 CFR 91.225). A light aircraft on a local flight below that is not
+   required to carry it, and an aircraft with no electrical system — a Cub, a
+   glider, a balloon — is permanently exempt. No aggregator can report a signal
+   that was never sent.
+2. **Low aircraft fall below the receiver horizon.** A plane at 2,000 ft AGL is
+   line-of-sight to roughly 55 nm over flat ground and far less across a valley
+   or behind a ridge. If the nearest volunteer receiver is 40 miles away behind
+   terrain, every one of these networks is blind to it at once — they largely
+   share the same feeders.
+
+A commercial tracker can still show that aircraft, because it blends in
+**multilateration** across a much denser receiver network (timing a plain Mode S
+transponder at 4+ sites) and, in the US, **FAA radar/flight-data feeds**. No open
+network has either. That is the honest reason for the difference, and it is why
+Phodar reports "no ADS-B aircraft in range" rather than "no aircraft".
+
+### The real fix: your own receiver
+
+For traffic *directly overhead*, a receiver at the sighting site beats every
+network — an aircraft above you is the easiest possible target, with no horizon
+problem at all. An RTL-SDR dongle running dump1090/tar1090 costs about the price
+of a dinner, and a **dual-band** setup adds 978 MHz UAT, which most US light
+aircraft below 18,000 ft use instead of 1090 and which volunteer 1090-only
+feeders never see.
+
+Caveat worth knowing before you buy: a browser will not fetch
+`http://192.168.x.x:8080` from a page served over HTTPS (mixed content), so a
+local receiver can be read when you run Phodar locally (`npm run dev`), or if
+the receiver is served over TLS. Wiring it into a hosted instance needs a tunnel.
+
 ## Aircraft
 
 | Source | Used for | Terms / limits |
