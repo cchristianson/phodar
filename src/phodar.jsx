@@ -7409,7 +7409,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 {/* one row: the stabilize button with its frame/status info
                     tucked to the RIGHT at button height — the full-width text
                     block above the button cost two lines of vertical space */}
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {/* WRAP, and the status span below gets a full-width basis. It
+                    used to be the last child of a NOWRAP row: with four buttons
+                    taking the width the span was crushed to a sliver and its
+                    text wrapped into eight lines, making this one block 154 px
+                    tall on an iPhone (field report: "so much space between the
+                    lower rows"). */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   {/* stabilize LIVES IN LOOK MODE — running it from place mode made
                       it too easy to nudge the placement mid-solve (field report) */}
                   {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
@@ -7451,9 +7457,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {/* hidden while placing — the place tools' "aligning on" line
                       already says which frame matters there (screen space) */}
                   {pMode !== "place" && (
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 9.5, lineHeight: 1.35 }}>
-                      🎞 frame {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"} (set on the measure step)
-                      {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · stabilized: {source.posePath.length} frames</span>}
+                    <span style={{ flexBasis: "100%", minWidth: 0, fontSize: 9.5, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                      title={`The object was marked on the ${isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "first"} frame, chosen on the measure step.${Array.isArray(source?.posePath) && source.posePath.length > 1 ? ` The clip is stabilized: ${source.posePath.length} frames solved.` : ""}`}>
+                      🎞 {isNum(source?.A?.videoTime) ? (+source.A.videoTime).toFixed(2) + "s" : "start"}
+                      {Array.isArray(source?.posePath) && source.posePath.length > 1 && <span style={{ color: "var(--teal)" }}> · {source.posePath.length} frames solved</span>}
                     </span>
                   )}
                 </div>
@@ -7473,8 +7480,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     step (frame-accurate scrubbing exists there before any
                     stabilization) — point back when it's missing */}
                 {pMode !== "place" && !calibOn && source?.A?.p1 && (source.track || []).filter((p) => isNum(p.t) && isNum(p.x)).length < 2 && (
-                  <div style={{ marginTop: 4 }}>
-                    tip: object moves? ‹ Back to the measure step → <b style={{ color: "var(--track)" }}>Track</b>: scrub the clip and tap the object at a few moments — those taps guide the tracker here
+                  <div style={{ marginTop: 3 }} title="On the measure step, the ⊕ Track tool lets you tap the object at a few moments through the clip. Two or more taps become the guide the auto-tracker follows here, instead of it having to find the object on its own.">
+                    tip: object moves? ‹ Back → <b style={{ color: "var(--track)" }}>Track</b> it on a few frames
                   </div>
                 )}
                 {/* the alignment belongs to ONE frame: if the marks moved to a
@@ -7943,7 +7950,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       ? "Slide an assumed distance — or 📍 set it on a map — to read the object's true size and altitude at that range."
                       : cmpOn
                         ? "Aim the crosshair, ⌖ drop the reference ghost there, then slide its distance — or set it on a map — to compare its apparent size to your object's."
-                        : "Drag to look around · pinch to zoom. Pick a tool below: ✥ Place to align the photo, ⊕ Trajectory to trace its path, 📏 Size or ⚖ Compare to gauge distance.")
+                        : "Drag to look around · pinch to zoom · pick a tool below.")
               : motionOn
                 ? "Point the phone exactly where the object was, then capture."
                 : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}
