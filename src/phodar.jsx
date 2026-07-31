@@ -5420,7 +5420,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const sizeNote = resized ? ` · ${resized} sized point${resized > 1 ? "s" : ""} re-scaled to the solved zoom` : "";
       const guideNote = guideN >= 2 ? `, guided by your ${guideN} track points` : "";
       const objSmoothNote = objGood && objSpiked ? `, ${objSpiked} jump${objSpiked > 1 ? "s" : ""} smoothed` : "";
-      const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
+      /* WHERE it stopped being a measurement. A track can pass the keep
+         threshold and still be fabricated for its whole tail: the field case
+         matched 44 of 71 frames — "tracked" by any ratio — but lost the object
+         to a 5x zoom at 11 s and coasted from there. The coast now freezes
+         instead of flying away, but a frozen tail is still not evidence, so
+         say when the last real lock was. */
+      const lastLock = (() => { for (let i = objPath.length - 1; i >= 0; i--) if ((+objPath[i].q || 0) > 0.3) return +objPath[i].t; return null; })();
+      const heldTail = lastLock != null && objPath.length ? (+objPath[objPath.length - 1].t - lastLock) : 0;
+      const lostNote = heldTail > 0.8 ? ` · ⚠ last locked at ${lastLock.toFixed(1)}s, the final ${heldTail.toFixed(1)}s is held, not measured` : "";
+      const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})${lostNote}` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
         : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
