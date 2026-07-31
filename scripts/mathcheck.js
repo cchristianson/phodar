@@ -980,6 +980,34 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(okAll, 1, 0, "stepObject: the mover is matched on every frame");
     approx(maxErr < 0.25 ? 1 : 0, 1, 0, "stepObject: recovered angular path ≈ truth (<0.25°)");
 
+    // COAST LIMIT — the object is LOST (blank frames it cannot match) and never
+    // comes back. A miss returns the extrapolated direction as the new state,
+    // so velocity survives; without a cap the track keeps flying in a straight
+    // line for the rest of the clip. Field case: a 5× zoom lost the object at
+    // 11 s and the "track" then swept 358° of azimuth and dived 28° of
+    // elevation — every sample fabricated, q=0, and the reported angular rate
+    // measured off pure invention. It must COAST briefly, then FREEZE.
+    {
+      const blank = () => { const d = new Uint8ClampedArray(TW * TH * 4); for (let i = 0; i < TW * TH; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 8; d[i * 4 + 3] = 255; } return d; };
+      const lostPose = { az: 250.6, el: 12.2, roll: 0.3, fov: 60, k: 0 };
+      /* seed with a real velocity so there IS something to run away with */
+      let sl = { tx: TW / 2, ty: TH / 2, g: dirFromAzEl(249, 15.5), gPrev: dirFromAzEl(248.1, 15.15) };
+      const seen = [];
+      for (let i = 0; i < 30; i++) {
+        const o = stepObject(blank(), blank(), TW, TH, sl, lostPose, { natW, natH, patch: 11, search: 18 });
+        sl = { tx: o.tx, ty: o.ty, g: o.g, gPrev: o.gPrev, miss: o.miss };
+        seen.push(dirToAzEl(o.g));
+      }
+      const start = dirToAzEl(dirFromAzEl(249, 15.5));
+      const drift = Math.max(...seen.map((a) => Math.abs(((a.az - start.az + 540) % 360) - 180)));
+      approx(seen.every((a) => !a.ok), true === true, 0, "stepObject: a lost object yields misses");
+      approx(drift < 6 ? 1 : 0, 1, 0, `stepObject: a LOST object coasts then freezes (drifted ${drift.toFixed(1)}°, uncapped it ran 28.4°)`);
+      /* and it must really be frozen, not creeping: the last ten samples equal */
+      const tail = seen.slice(-10);
+      const spread = Math.max(...tail.map((a) => Math.abs(a.az - tail[0].az))) + Math.max(...tail.map((a) => Math.abs(a.el - tail[0].el)));
+      approx(spread, 0, 1e-9, "stepObject: the frozen tail does not creep");
+    }
+
     // FAST mover: its per-frame displacement escapes the near search ring
     // entirely (ground-truth failure on the real-texture synthetic: the near
     // ring latched onto leftover background and the template poisoned) — the

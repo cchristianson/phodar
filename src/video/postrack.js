@@ -763,12 +763,27 @@ export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
      manual trajectory, it OWNS the prediction — the matcher only refines
      around it, and a match far off the guide (opts.guideGate°, default 2) is
      rejected as a lookalike rather than trusted over the human. */
+  /* COAST LIMIT. A miss returns the EXTRAPOLATED direction as the new state, so
+     velocity survives the miss — which is what lets the prediction bridge a
+     brief occlusion. Without a cap it also never stops: once the object is
+     genuinely lost the track keeps flying in a straight line at the last known
+     rate for the rest of the clip. Field case (a 5× zoom at ~11 s): the object
+     was held to az 8-9° for 11 s, then swept 358° of azimuth and dived 28° in
+     elevation, every one of those samples a fabricated extrapolation with
+     q=0. The wireframe sails across the sky and the reported angular rate is
+     measured off pure invention.
+     So: coast for a few steps (a real occlusion), then FREEZE at the last
+     confident direction. Freezing is self-sustaining — with g === gPrev the
+     extrapolation is a no-op — and an honest "it stopped here" beats a
+     confident wrong trajectory. */
+  const misses = st.miss || 0;
+  const coasting = misses < (opts.coastMax || 4);
   const gp = opts.guide ? opts.guide
-    : st.gPrev ? unit([2 * st.g[0] - st.gPrev[0], 2 * st.g[1] - st.gPrev[1], 2 * st.g[2] - st.gPrev[2]]) : st.g;
+    : (st.gPrev && coasting) ? unit([2 * st.g[0] - st.gPrev[0], 2 * st.g[1] - st.gPrev[1], 2 * st.g[2] - st.gPrev[2]]) : st.g;
   const p = dirToPixK(gp, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
-  if (!p) return { ...st, gPrev: st.g, ok: false, ncc: -1 };
+  if (!p) return { ...st, gPrev: coasting ? st.g : st.g, miss: misses + 1, ok: false, ncc: -1 };
   const bx = p.px / sc, by = p.py / sc;
-  if (bx < -4 || bx > w + 4 || by < -4 || by > h + 4) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: -1 };
+  if (bx < -4 || bx > w + 4 || by < -4 || by > h + 4) return { tx: bx, ty: by, g: gp, gPrev: coasting ? st.g : gp, miss: misses + 1, ok: false, ncc: -1 };
   /* The template must be SMALL — a background-heavy template correlates
      ≥0.9 with the background left behind after the object moves away, so the
      tracker latches onto the empty spot and reports a confident stationary
@@ -815,14 +830,14 @@ export function stepObject(prevData, nextData, w, h, st, pose, opts = {}) {
       { patch, search: Math.max(26, opts.search || 0), minNcc, centerW: true })[0];
     if (anchor && anchor.ok && (!best || !best.ok || anchor.ncc >= best.ncc - 0.06)) best = anchor;
   }
-  if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: st.g, ok: false, ncc: best ? best.ncc : -1 }; // hold rides the velocity (or the guide), not the stale spot
+  if (!best || !best.ok) return { tx: bx, ty: by, g: gp, gPrev: coasting ? st.g : gp, miss: misses + 1, ok: false, ncc: best ? best.ncc : -1 }; // coast on the velocity (or the guide) for a few steps, then freeze
   const tr = [best];
   const g2 = pixToDirK(tr[0].px * sc, tr[0].py * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
   if (opts.guide) {
     const dev = Math.acos(clampN(dot(g2, opts.guide), -1, 1)) * R2D;
-    if (dev > (opts.guideGate || 2)) return { tx: bx, ty: by, g: opts.guide, gPrev: st.g, ok: false, ncc: tr[0].ncc }; // the human's path outranks a far lookalike
+    if (dev > (opts.guideGate || 2)) return { tx: bx, ty: by, g: opts.guide, gPrev: st.g, miss: misses + 1, ok: false, ncc: tr[0].ncc }; // the human's path outranks a far lookalike
   }
-  return { tx: tr[0].px, ty: tr[0].py, g: g2, gPrev: st.g, ok: true, ncc: tr[0].ncc };
+  return { tx: tr[0].px, ty: tr[0].py, g: g2, gPrev: st.g, miss: 0, ok: true, ncc: tr[0].ncc };
 }
 
 /* Interpolate a pose path at any time t — az wrap-aware, everything else
