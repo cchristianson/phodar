@@ -155,11 +155,30 @@ export function reanchorPose(pose, fromPose, toPose) {
   return { az: ae.az, el: ae.el, roll };
 }
 
-export function angSizeFromPoints(p1, p2, natW, natH, fovH) {
+/* Angle subtended by two marked pixels.
+   `k` is the lens's radial distortion term (tan-space, s = 1 + k·ρ²), the same
+   one solvePoseAnchors fits and pixToDirK uses. It used to be ignored here, so
+   the app knew the lens was not a pinhole and then measured the object as if it
+   were — and since true size is 2·d·tan(θ/2), the size error equalled the angle
+   error exactly: 0.85% a quarter of the way out, 3.3% half way to the edge,
+   8.1% near a corner at k=−0.10 (docs/MATH-AUDIT.md finding 7). It bit hardest
+   after a star align, which is the path users are told is the most accurate.
+   Omitting k (or passing 0) gives the old pinhole behaviour exactly, so every
+   photo without a fitted lens term is unchanged. */
+/* The lens's fitted radial term for a source, or 0 when none was ever solved
+   (which is every photo that has not been star-aligned — those are unchanged). */
+export const lensK = (s) => (s && s.mediaAim && isNum(s.mediaAim.dist) ? +s.mediaAim.dist : 0);
+
+export function angSizeFromPoints(p1, p2, natW, natH, fovH, k) {
   if (!p1 || !p2 || !natW || !fovH) return null;
   const f = focalPx(natW, fovH);
   const cx = natW / 2, cy = natH / 2;
-  const ray = (p) => unit([p.x - cx, p.y - cy, f]);
+  const kk = isNum(k) ? +k : 0;
+  const ray = (p) => {
+    const x = (p.x - cx) / f, y = (p.y - cy) / f;
+    const s = 1 + kk * (x * x + y * y);
+    return unit([x * s, y * s, 1]);
+  };
   const c = Math.min(1, Math.max(-1, dot(ray(p1), ray(p2))));
   return Math.acos(c) * R2D;
 }

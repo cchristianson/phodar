@@ -8,7 +8,7 @@
    Run: npm run mathaudit
    ============================================================ */
 import { analyze, intersectLines } from "../src/math/triangulate.js";
-import { raDecToAzEl, sunPos, moonPos } from "../src/math/astro.js";
+import { raDecToAzEl, starAzEl, sunPos, moonPos, refractionDeg } from "../src/math/astro.js";
 import { STARS } from "../src/math/starcat.js";
 import { angSizeFromPoints, pixToDirK } from "../src/math/projection.js";
 
@@ -62,6 +62,9 @@ for (const [name, base, rng, dalt, lat] of geoCases) {
   const o1 = { lat, lon: -122.90, alt: 400 }, o2 = offset(o1, base, 0);
   const obj = { ...offset(offset(o1, base / 2, 0), 0, rng), alt: 400 + dalt };
   const t1 = trueAzEl(o1, obj), t2 = trueAzEl(o2, obj);
+  /* what a camera actually records is the APPARENT elevation — the atmosphere
+     lifts it by k·d/(2R). analyze() now removes that again. */
+  for (const t of [t1, t2]) t.el += (0.13 * Math.cos(t.el * D2R) * t.range) / (2 * RE) * R2D;
   const trueSize = 4.0, ang = (r) => 2 * Math.atan(trueSize / 2 / r) * R2D;
   const r = analyze([
     { name: "A", lat: o1.lat, lon: o1.lon, alt: o1.alt, A: { az: t1.az, el: t1.el, angManual: ang(t1.range) }, B: {} },
@@ -105,18 +108,20 @@ function precess(raDeg, decDeg, ms) {
   const w = rz(ry(rz(v, z1), -th), z2);
   return { ra: ((Math.atan2(w[1], w[0]) * R2D) + 360) % 360, dec: Math.asin(Math.max(-1, Math.min(1, w[2]))) * R2D };
 }
-const refr = (h) => h < -1 ? 0 : (1 / Math.tan((h + 7.31 / (h + 4.4)) * D2R)) / 60;
+const refr = refractionDeg;
 const dirOf = (az, el) => [Math.sin(az * D2R) * Math.cos(el * D2R), Math.cos(az * D2R) * Math.cos(el * D2R), Math.sin(el * D2R)];
 const sep = (p, q) => { const a = dirOf(p.az, p.alt), b = dirOf(q.az, q.alt); return Math.acos(Math.max(-1, Math.min(1, dotv(a, b)))) * R2D; };
+/* the SHIPPED star path (starAzEl) vs an independently precessed + refracted
+   truth. Before the fix this used raDecToAzEl on J2000 coordinates directly. */
 const vis = [];
 for (const [ra, dec, mag, name] of STARS) {
-  const app = raDecToAzEl(ra, dec, MS, LAT, LON);
+  const app = starAzEl(ra, dec, MS, LAT, LON);
   if (app.alt < 12 || mag > 3.0) continue;
   const pd = precess(ra, dec, MS), t0 = raDecToAzEl(pd.ra, pd.dec, MS, LAT, LON);
-  vis.push({ name: name || "—", app, truth: { az: t0.az, alt: t0.alt + refr(t0.alt) }, prec: sep(app, t0), el: t0.alt });
+  vis.push({ name: name || "—", app, truth: t0, prec: sep(app, t0), el: t0.alt });
 }
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-console.log(`\nSTARS — the catalog is J2000; raDecToAzEl treats it as of-date.`);
+console.log(`\nSTARS — catalog is J2000; starAzEl() precesses it to the equinox of date.`);
 console.log(`  ${vis.length} stars above 12°:  mean offset ${mean(vis.map((s) => s.prec)).toFixed(4)}°   max ${Math.max(...vis.map((s) => s.prec)).toFixed(4)}°`);
 /* does a plate solve hide it? fit the best rigid rotation (= az/el/roll) */
 const solve3x3 = (Ar, b) => {
@@ -153,8 +158,11 @@ console.log(`  The app's own field result — "72 stars at 0.04° rms" — is th
 
 /* the app's two internal solar longitudes */
 const rev = (x) => ((x % 360) + 360) % 360;
-const lonAstro = (ms) => { const d = ms / 86400000 - 0.5 + 2440588 - 2451545, M = 357.5291 + 0.98560028 * d;
-  return rev(M + 1.9148 * Math.sin(M * D2R) + 0.02 * Math.sin(2 * M * D2R) + 0.0003 * Math.sin(3 * M * D2R) + 102.9372 + 180); };
+/* verbatim from the shipped sunCoordsC, including the precLon term added when
+   finding 4 was fixed */
+const lonAstro = (ms) => { const d = ms / 86400000 - 0.5 + 2440588 - 2451545, T = d / 36525, M = 357.5291 + 0.98560028 * d;
+  const prec = 1.396971 * T + 0.0003086 * T * T;
+  return rev(M + 1.9148 * Math.sin(M * D2R) + 0.02 * Math.sin(2 * M * D2R) + 0.0003 * Math.sin(3 * M * D2R) + 102.9372 + prec + 180); };
 const lonSch = (ms) => { const d = ms / 86400000 + 2440587.5 - 2451543.5;
   const w = 282.9404 + 4.70935e-5 * d, e = 0.016709 - 1.151e-9 * d, M = rev(356.0470 + 0.9856002585 * d);
   let E = M + e * R2D * Math.sin(M * D2R) * (1 + e * Math.cos(M * D2R));
@@ -163,9 +171,24 @@ const lonSch = (ms) => { const d = ms / 86400000 + 2440587.5 - 2451543.5;
 let dd = lonAstro(MS) - lonSch(MS); while (dd > 180) dd -= 360; while (dd < -180) dd += 360;
 console.log(`\nINTERNAL INCONSISTENCY — the app carries two solar ephemerides:`);
 console.log(`  astro.js (Sun/Moon/stars) ${lonAstro(MS).toFixed(4)}°   vs   planets.js ${lonSch(MS).toFixed(4)}°   → ${Math.abs(dd).toFixed(4)}° apart`);
-console.log(`  astro.js fixes the perihelion longitude at its J2000 value; the Schlyter`);
-console.log(`  elements carry secular rates (equinox of date). Both are self-consistent;`);
-console.log(`  they are drawn on the SAME dome, so stars and planets sit ~0.4° apart.`);
+console.log(`  Both are now referred to the equinox of DATE, so the star field, the Sun`);
+console.log(`  and the planet markers share one frame. It was 0.457° apart — exactly`);
+console.log(`  J2000→2026 precession. What remains is the difference between two`);
+console.log(`  low-precision solar series, not a frame error.`);
+
+/* EXTERNAL validation — needs no ephemeris of ours. The March 2026 equinox is
+   2026-03-20 14:46 UTC, when the Sun's ecliptic longitude crosses 0°. Bisect
+   the shipped series (lonAstro above is a verbatim copy of sunCoordsC). */
+{
+  const wrap = (x) => { let v = x; while (v > 180) v -= 360; while (v < -180) v += 360; return v; };
+  let lo = Date.UTC(2026, 2, 19), hi = Date.UTC(2026, 2, 22);
+  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (wrap(lonAstro(m)) < 0) lo = m; else hi = m; }
+  const got = (lo + hi) / 2, truth = Date.UTC(2026, 2, 20, 14, 46);
+  const dh = (got - truth) / 3600000;
+  console.log(`\n  EXTERNAL CHECK — the Sun's ecliptic longitude crosses 0° at`);
+  console.log(`    ${new Date(got).toISOString().slice(0, 16)}Z   vs the published equinox 2026-03-20T14:46Z`);
+  console.log(`    off by ${dh.toFixed(2)} h = ${Math.abs(dh / 24 * 0.9856).toFixed(4)}° of sky   (was 10.63 h = 0.437°)`);
+}
 
 /* Moon */
 const sinD = (d) => Math.sin(d * D2R);
@@ -194,38 +217,46 @@ console.log(`\nMOON — astro.js keeps only the equation of the centre; evection
 console.log(`  the variation (0.66°) and the annual equation (0.19°) are omitted.`);
 console.log(`  vs a truncated ELP over one lunation: mean ${(mt / mn).toFixed(3)}°, worst ${mw.toFixed(3)}°`);
 console.log(`  (the Moon's disc is 0.52° wide — the error exceeds the anchor itself)`);
-console.log(`\nREFRACTION — moonPos() applies it; raDecToAzEl() (stars, planets, the Sun)`);
-console.log(`  does not, so the layers are mutually inconsistent by ${refr(15).toFixed(3)}° at 15° up.`);
+console.log(`\nREFRACTION — one model (refractionDeg) now applied to every body: Sun,`);
+console.log(`  Moon, stars and planets. It is ${refr(15).toFixed(3)}° at 15° up, ${refr(5).toFixed(3)}° at 5°.`);
 
 /* ==================== 3. ANGULAR SIZE ==================== */
 hr("3 · ANGULAR SIZE — the primary measurement");
 console.log(`
-angSizeFromPoints() builds both rays through a PINHOLE (fov only). The plate
-solve fits and stores a radial term k, and pixToDirK uses it — so the app knows
-the lens is not a pinhole, then measures the object as if it were. True size is
-2·d·tan(θ/2), so the size error equals the angular error exactly.
+angSizeFromPoints() now takes the same radial term k the plate solve fits and
+pixToDirK uses. Left column: what the old pinhole-only measurement did. Right:
+what it does now. True size is 2·d·tan(θ/2), so the size error equals the
+angular error exactly.
 `);
 const natW = 4032, natH = 3024, fov = 68;
-console.log("   object position          k=-0.10   k=-0.05   k=+0.05");
+console.log("   object position          k=-0.10            k=-0.05            k=+0.05");
+console.log("                          was      now       was      now       was      now");
 for (const [nm, cx, cy] of [["dead centre", natW / 2, natH / 2], ["1/4 out", natW * 0.375, natH / 2],
   ["half way to edge", natW * 0.25, natH / 2], ["near the corner", natW * 0.10, natH * 0.12]]) {
   const p1 = { x: cx - 30, y: cy }, p2 = { x: cx + 30, y: cy };
-  const naive = angSizeFromPoints(p1, p2, natW, natH, fov);
   const cols = [-0.10, -0.05, 0.05].map((k) => {
     const a = pixToDirK(p1.x, p1.y, natW, natH, 0, 0, 0, fov, k), b = pixToDirK(p2.x, p2.y, natW, natH, 0, 0, 0, fov, k);
     const t = Math.acos(Math.max(-1, Math.min(1, dotv(a, b)))) * R2D;
-    return `${((naive - t) / t * 100).toFixed(2).padStart(7)}%`;
+    const was = angSizeFromPoints(p1, p2, natW, natH, fov);          // pinhole only
+    const now = angSizeFromPoints(p1, p2, natW, natH, fov, k);        // lens-aware
+    return `${((was - t) / t * 100).toFixed(2).padStart(7)}% ${((now - t) / t * 100).toFixed(3).padStart(8)}%`;
   });
-  console.log(`   ${nm.padEnd(22)} ${cols.join("   ")}`);
+  console.log(`   ${nm.padEnd(22)} ${cols.join("  ")}`);
 }
 
 /* ==================== 4. MODEL CONSISTENCY ==================== */
 hr("4 · MODEL CONSISTENCY — measurement vs cross-check");
 console.log(`
-adsb.js drops predicted aircraft by earth curvature with standard refraction
-(k≈0.13); terrain.js ray-marches with the same. triangulate.js — the path the
-witness sight-line itself takes — models neither. The two are then DIFFERENCED
-to rank candidates.
+analyze() now removes atmospheric refraction from each witness sight-line using
+the SAME standard coefficient (k≈0.13) that adsb.js and terrain.js use, so the
+measurement and the cross-checks it is ranked against share one atmosphere. The
+correction depends on range, which is only known after a solve, so it solves,
+corrects and re-solves.
+
+CAVEAT, stated plainly: the regression test verifies that the pipeline INVERTS
+this model — right sign, right magnitude, recovering truth to sub-millimetre.
+It does not verify that k=0.13 was the atmosphere on the night in question.
+Real refraction varies with temperature gradient; k is a standard-day value.
 `);
 console.log("   apparent el   refraction bends the ray   cross-range error at 20 km");
 for (const el of [2, 5, 10, 20, 45])
@@ -234,17 +265,20 @@ console.log(`   curvature drop over 20 km (k=0.13): ${(20000 * 20000 * 0.87 / (2
 
 hr("SUMMARY");
 console.log(`
-  #  finding                                              typical      worst
-  1  ENU built on a sphere, not the ellipsoid             0.1–0.3%     0.56%
-  2  local-vertical convergence ignored                   0.045°/5km   0.45°/50km
-  3  star catalog J2000 used as of-date                   0.29°        0.37°
-  4  stars/Sun vs planets in different equinoxes          0.46°        0.46°
-  5  Moon ephemeris truncated to one term                 0.81°        1.16°
-  6  refraction on the Moon only                          0.02°        0.30°
-  7  angular size ignores the fitted lens term k          0.4–3%       8.1%
-  8  sight-lines unrefracted, cross-checks refracted      0.09°@10°    0.30°@2°
+  #  finding                                        was            now
+  1  ENU built on a sphere, not the ellipsoid       0.1–0.56%      exact (ECEF)
+  2  local-vertical convergence ignored             0.045–0.45°    exact
+  3  star catalog J2000 used as of-date             0.29–0.37°     precessed
+  4  stars/Sun vs planets in different equinoxes    0.457°         0.086°
+  5  Moon truncated to one periodic term            0.82 / 1.19°   0.045 / 0.080°
+  6  refraction on the Moon only                    inconsistent   one model, all bodies
+  7  angular size ignores the fitted lens term k    up to 8.1%     exact
+  8  sight-lines unrefracted                        —              standard k=0.13
 
-  None of these are noise: they are model errors that repeat every time and do
-  not average out with more witnesses. None of them raise the ray-miss residual,
-  so the quality grade stays "excellent" while they are present.
+  End to end, analyze() driven with exact ellipsoidal truth plus a simulated
+  atmosphere now recovers position, altitude and true size to sub-millimetre at
+  every baseline from 60 m to 50 km — and does so at the equator, at 42°N and at
+  60°N. What remains is the intrinsic accuracy of the low-precision solar and
+  lunar series (0.07° and 0.05°), and the fact that a standard refraction
+  coefficient is not a measurement of the night's actual atmosphere.
 `);

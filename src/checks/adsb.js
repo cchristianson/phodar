@@ -68,14 +68,21 @@ export function spanForAircraft(t, category) {
   return { span: null, src: null };
 }
 
-/* az/el/range of an aircraft from an observer, in the observer's ENU
-   frame, with an earth-curvature + standard-refraction (k≈0.13) drop —
-   at 100 km that correction is ~0.4° of elevation, which matters when
-   the whole test is "how many degrees off the sight-line". */
+/* az/el/range of an aircraft from an observer, in the observer's ENU frame,
+   as it APPEARS — i.e. with standard refraction (k≈0.13) lifting it. At
+   100 km the earth-curvature + refraction correction is ~0.4° of elevation,
+   which matters when the whole test is "how many degrees off the sight-line".
+
+   The CURVATURE half of that correction is no longer applied here: enuFromGeo
+   is now built exactly on the ellipsoid, so a target at ground distance d
+   already sits at h − d²/2R in the returned z. Subtracting the old
+   d²(1−k)/2R on top of that would double-count the drop (≈27 m at 20 km,
+   0.08° of elevation). What is left to model is refraction alone, which bends
+   the ray around the earth and so LIFTS the apparent position by k·d²/2R. */
 export function acAzElRange(obs, ac) {
   const P = enuFromGeo(+ac.lat, +ac.lon, ac.altM || 0, { lat: +obs.lat, lon: +obs.lon, alt: isNum(obs.alt) ? +obs.alt : 0 });
   const dGround = Math.hypot(P[0], P[1]);
-  P[2] -= (dGround * dGround * (1 - 0.13)) / (2 * RE);
+  P[2] += (0.13 * dGround * dGround) / (2 * RE);
   const rng = mag(P);
   const ae = dirToAzEl(unit(P));
   return { az: ae.az, el: ae.el, rangeM: rng, d: unit(P) };

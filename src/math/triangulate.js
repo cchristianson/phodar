@@ -5,9 +5,9 @@
    rating that says "poor" when it is poor.
    ============================================================ */
 
-import { D2R, R2D, dot, sub, scl, mag, enuFromGeo, geoFromEnu, dirFromAzEl } from "./geodesy.js";
+import { D2R, R2D, dot, sub, scl, mag, enuFromGeo, geoFromEnu, dirFromAzEl, dirFromAzElAt } from "./geodesy.js";
 import { isNum } from "./format.js";
-import { angSizeFromPoints } from "./projection.js";
+import { angSizeFromPoints, lensK } from "./projection.js";
 
 export function solve3(A, b) {
   const M = A.map((r, i) => [...r, b[i]]);
@@ -59,7 +59,9 @@ export function analyze(sources, sigmaDeg = 1) {
   const obs = valid.map((s) => ({
     s,
     P: enuFromGeo(+s.lat, +s.lon, isNum(s.alt) ? +s.alt : 0, ref),
-    dA: dirFromAzEl(+s.A.az, +s.A.el),
+    /* az/el is measured against THIS observer's local vertical; rotate it into
+       the shared reference frame (identity for the reference observer) */
+    dA: dirFromAzElAt(+s.A.az, +s.A.el, +s.lat, +s.lon, ref),
   }));
 
   /* baseline & convergence */
@@ -75,8 +77,33 @@ export function analyze(sources, sigmaDeg = 1) {
       conv = Math.min(conv, Math.acos(c) * R2D);
     }
 
-  const solA = intersectLines(obs.map((o) => ({ P: o.P, d: o.dA })));
+  /* ATMOSPHERIC REFRACTION on the witness's own sight-line. A ray bends around
+     the earth, so the elevation a camera records is HIGHER than the geometric
+     one by about k·d/(2R) radians over a ground path d (standard terrestrial
+     coefficient k≈0.13 — the same model adsb.js and terrain.js already use, so
+     the measurement and the cross-checks it is ranked against finally share one
+     atmosphere; docs/MATH-AUDIT.md finding 8).
+
+     d is only known after a solve, so: solve, correct, re-solve. Two passes are
+     plenty — the correction is ~0.012° at 20 km and shifts d far less than the
+     step that produced it. Anything that fails to solve, or lands behind an
+     observer, keeps the uncorrected geometry rather than risk making it worse. */
+  let solA = intersectLines(obs.map((o) => ({ P: o.P, d: o.dA })));
   if (!solA) return { ok: false, validCount: valid.length, parallel: true, baseline };
+  const REFR_K = 0.13, R_EARTH = 6371000;
+  for (let pass = 0; pass < 2; pass++) {
+    if (solA.ts.some((t) => !(t > 0))) break;
+    const lines = obs.map((o) => {
+      const dGround = Math.hypot(solA.X[0] - o.P[0], solA.X[1] - o.P[1]);
+      const dEl = (REFR_K * dGround) / (2 * R_EARTH) * R2D;      // degrees, ≥0
+      o.refrDeg = dEl;
+      return { P: o.P, d: dirFromAzElAt(+o.s.A.az, +o.s.A.el - dEl, +o.s.lat, +o.s.lon, ref) };
+    });
+    const next = intersectLines(lines);
+    if (!next || next.ts.some((t) => !(t > 0))) break;
+    solA = next;
+    obs.forEach((o, i) => { o.dA = lines[i].d; });
+  }
 
   const behind = solA.ts.some((t) => t <= 0);
   const meanDist = solA.ts.reduce((a, b) => a + b, 0) / solA.ts.length;
@@ -86,7 +113,7 @@ export function analyze(sources, sigmaDeg = 1) {
   const perSource = obs.map((o, i) => {
     const dist = solA.ts[i];
     const ang =
-      angSizeFromPoints(o.s.A.p1, o.s.A.p2, o.s.natW, o.s.natH, +o.s.fovH) ??
+      angSizeFromPoints(o.s.A.p1, o.s.A.p2, o.s.natW, o.s.natH, +o.s.fovH, lensK(o.s)) ??
       (isNum(o.s.A.angManual) ? +o.s.A.angManual : null);
     const size = ang != null && dist > 0 ? 2 * dist * Math.tan((ang * D2R) / 2) : null;
     return { name: o.s.name, dist, ang, size };
@@ -110,7 +137,7 @@ export function analyze(sources, sigmaDeg = 1) {
   const obsB = obs.filter((o) => isNum(o.s.B.az) && isNum(o.s.B.el));
   if (obsB.length >= 2) {
     const solB = intersectLines(
-      obsB.map((o) => ({ P: o.P, d: dirFromAzEl(+o.s.B.az, +o.s.B.el) }))
+      obsB.map((o) => ({ P: o.P, d: dirFromAzElAt(+o.s.B.az, +o.s.B.el, +o.s.lat, +o.s.lon, ref) }))
     );
     if (solB && !solB.ts.some((t) => t <= 0)) {
       const timed = obsB.filter((o) => isNum(o.s.A.t) && isNum(o.s.B.t));
@@ -152,7 +179,7 @@ export function arbitrateBearings(sources) {
     .filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az))
     .map((s) => ({
       s,
-      ang: angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ??
+      ang: angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH, lensK(s)) ??
         (isNum(s.A?.angManual) ? +s.A.angManual : null),
     }))
     .filter((o) => o.ang != null);

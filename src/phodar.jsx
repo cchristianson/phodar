@@ -12,7 +12,7 @@ const windColor = (ms) => ms < 2.5 ? "#5FD3BC" : ms < 7 ? "#8FB4FF" : ms < 13 ? 
 const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} ft`;
 /* compact single-unit speed in the user's system (mph vs km/h) */
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
-import { photoBasis, angSizeFromPoints, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
+import { photoBasis, angSizeFromPoints, lensK, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
 import { syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "./video/sensorpath.js";
 import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
@@ -21,7 +21,7 @@ import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, g
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
-import { sunPos, moonPos, moonFrac, raDecToAzEl } from "./math/astro.js";
+import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
@@ -1955,7 +1955,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (p) setTrim(p.t0, p.t1);                // ONE source write for the whole gesture
   };
 
-  const ang = angSizeFromPoints(src.A.p1, src.A.p2, natW, natH, +src.fovH);
+  const ang = angSizeFromPoints(src.A.p1, src.A.p2, natW, natH, +src.fovH, lensK(src));
   /* --- per-frame apparent size: resize the fitted shape ON a track point's
      own video frame. The size CHANGE across frames is what recovers the
      radial (closer/farther) side of the trajectory — track points store
@@ -2367,7 +2367,7 @@ function MediaMeasure({ src, update, wizard }) {
               )}
               {(() => {
                 const pr = shapeProjNat(src.shapeFit);
-                const aM = angSizeFromPoints(pr.p1, pr.p2, natW, natH, +src.fovH);
+                const aM = angSizeFromPoints(pr.p1, pr.p2, natW, natH, +src.fovH, lensK(src));
                 const fpx = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
                 const aN = fpx ? (pr.minorNat / fpx) * R2D : null;
                 return aM != null ? (
@@ -4280,7 +4280,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const stars = useMemo(() => {
     if (limMag < -4) return [];
     return STARS.map(([ra, dec, mag, name]) => {
-      const p = raDecToAzEl(ra, dec, T, LAT, LNG);
+      const p = starAzEl(ra, dec, T, LAT, LNG);
       return {
         az: p.az, alt: p.alt, mag, name,
         r: clampN(1.65 - 0.3 * mag, 0.35, 2.3),
@@ -4853,7 +4853,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const sortedTrack = source ? [...(source.track || [])].sort((x, y) => x.t - y.t) : [];
   const trajTotal = sortedTrack.length > 1 ? sortedTrack[sortedTrack.length - 1].t - sortedTrack[0].t : 0;
   const objAngW = source
-    ? (angSizeFromPoints(source.A?.p1, source.A?.p2, source.natW, source.natH, +source.fovH)
+    ? (angSizeFromPoints(source.A?.p1, source.A?.p2, source.natW, source.natH, +source.fovH, lensK(source))
       ?? (isNum(source.A?.angManual) ? +source.A.angManual : null))
     : null;
   /* --- per-point 3D ORIENTATION (optional): drawing the shape at its attitude
@@ -4977,7 +4977,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (det.length < 6) { setFlash(`✦ only ${det.length} star(s) detected — too few to solve; a clearer night-sky frame is needed`); return; }
       /* full bright catalog above the horizon (independent of the display mag
          limit / star toggle) */
-      const cat = STARS.map(([ra, dec, mag]) => { const p = raDecToAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
+      const cat = STARS.map(([ra, dec, mag]) => { const p = starAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
       const fovGuess = isNum(source?.fovH) ? +source.fovH : 85; // no EXIF FOV on many night shots → mid guess + a wide search
       /* STRICT acceptance: only a genuinely TIGHT fit counts as a lock. A loose
          partial match (the wide/soft/hazy case) is declined honestly rather than
@@ -4994,7 +4994,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          lock FOV + elevation, scan the ROTATION against a DEEP catalog. This is
          what makes a wide "straight-up" frame solvable regardless of rotation. */
       if (isNum(source?.fovH) && elPrior != null) {
-        const deep = DEEP_STARS.map(([ra, dec, mag]) => { const p = raDecToAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
+        const deep = DEEP_STARS.map(([ra, dec, mag]) => { const p = starAzEl(ra, dec, T, LAT, LNG); return { g: dirOf(p.az, p.alt), mag, alt: p.alt }; }).filter((c) => c.alt > 0);
         sol = gridStarAlign(det, deep, source.natW, source.natH, { fov: +source.fovH, elPrior, elBand: 10, minGrid: 12, minMatch: 14, maxRms: 0.6 });
       }
       /* fallbacks: seedless asterism (no FOV needed), then a seeded refine */
@@ -10095,7 +10095,7 @@ function AdsbCheck({ sources }) {
   };
 
   const measAng = (s) =>
-    angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ??
+    angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH, lensK(s)) ??
     (isNum(s.A?.angManual) ? +s.A.angManual : null);
 
   return (
@@ -10887,7 +10887,7 @@ async function reportHtml(sources, est, opts = {}) {
        every assumed distance implies a size; reference objects pin intuition */
     const w = (() => {
       for (const s of origAct) {
-        const a = angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH) ?? (isNum(s.A?.angManual) ? +s.A.angManual : null);
+        const a = angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH, lensK(s)) ?? (isNum(s.A?.angManual) ? +s.A.angManual : null);
         if (a != null && a > 0) return { ang: a, el: isNum(s.A?.el) ? +s.A.el : null };
       }
       return null;
@@ -11000,7 +11000,7 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
       const measA = (() => {
         const w = sources.find((s) => isNum(s.lat) && isNum(s.A?.az) && isNum(s.A?.el));
         if (!w) return null;
-        return angSizeFromPoints(w.A?.p1, w.A?.p2, w.natW, w.natH, +w.fovH) ?? (isNum(w.A?.angManual) ? +w.A.angManual : null);
+        return angSizeFromPoints(w.A?.p1, w.A?.p2, w.natW, w.natH, +w.fovH, lensK(w)) ?? (isNum(w.A?.angManual) ? +w.A.angManual : null);
       })();
       /* only aircraft that actually fell inside a photo frame — an airliner
          50° off the pointing is not "in the picture" and just clutters the report */
@@ -11199,7 +11199,7 @@ ${momStrip}`;
             const cands = [];
             for (const [ra, dec, mag, name] of STARS) {
               if (mag > 2.2 || !name) continue;
-              const p = raDecToAzEl(ra, dec, when, +s.lat, +s.lon); if (p.alt < 2) continue;
+              const p = starAzEl(ra, dec, when, +s.lat, +s.lon); if (p.alt < 2) continue;
               const px = dirToPixK(dirFromAzEl(p.az, p.alt), W, H, caz, cel, isNum(ma.roll) ? +ma.roll : 0, +s.fovH, isNum(ma.dist) ? +ma.dist : 0);
               if (!px) continue;
               const sx = px.px * sc, sy = px.py * sc;
@@ -11500,7 +11500,7 @@ ${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the
         for (const p of planetPositions(Tw, la, lo)) if (p.alt > -2) cand.push({ label: `${p.sym} ${p.name}`, az: p.az, alt: p.alt });
         for (const [ra, dec, mag, name] of STARS) {
           if (mag > 1.6 || !name) continue;
-          const p = raDecToAzEl(ra, dec, Tw, la, lo);
+          const p = starAzEl(ra, dec, Tw, la, lo);
           if (p.alt > -2) cand.push({ label: `★ ${name}`, az: p.az, alt: p.alt, mag });
         }
         if (satDbR && sunPos(Tw, la, lo).alt < -4) {
@@ -11656,7 +11656,7 @@ ${windPhotoBlock}
       if (showers.length) {
         let upCount = 0;
         const rows = showers.map((sh) => {
-          const p = raDecToAzEl(sh.ra, sh.dec, when, la, lo);
+          const p = starAzEl(sh.ra, sh.dec, when, la, lo);
           const up = p.alt > 0;
           if (up) upCount++;
           let sepTxt = "—";

@@ -1,13 +1,13 @@
 // Exercises the REAL math core (src/math/*) — not a copy. A regression in
 // triangulation, geodesy, or angular sizing fails `npm test` here.
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
-import { intersectLines, aspectSpan, covEllipse } from "../src/math/triangulate.js";
+import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/triangulate.js";
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
-import { raDecToAzEl } from "../src/math/astro.js";
+import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
 import { sensorAt, syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "../src/video/sensorpath.js";
@@ -48,12 +48,20 @@ const ok = (cond, msg) => {
 };
 const head = (title) => console.log(`\n— ${title} —`);
 
-// --- ENU round-trip: 2000 m due-east baseline ---
+// --- ENU round-trip: a due-east baseline on the WGS84 ellipsoid ---
+// These expectations used to be 2000 ±1 m and 0 ±0.1 m, which encoded the OLD
+// equirectangular model (one mean radius, flat plane). The true values, both
+// confirmed against independent algorithms:
+//   east  2004.7965 m — matches Vincenty's inverse geodesic to 0.0000 m; the
+//         old model was 4.80 m short (the +0.264% east-scale error at lat 42).
+//   north 0.2849 m — two points at the SAME latitude are joined by a chord that
+//         cuts inside the parallel, so it has a small poleward component in the
+//         local frame. Closed form d²·tan(lat)/(2N) gives the same 0.2849 m.
 const ref = { lat: 42.16380, lon: -123.64800, alt: 0 };
 const P1 = enuFromGeo(42.16380, -123.64800, 0, ref);
 const P2 = enuFromGeo(42.16380, -123.62374, 0, ref);
-approx(P2[0], 2000, 1.0, "east baseline");
-approx(P2[1], 0, 0.1, "north component ~0");
+approx(P2[0], 2004.7965, 0.001, "east baseline (ellipsoidal, = Vincenty)");
+approx(P2[1], 0.2849, 0.001, "north component of a same-latitude chord");
 
 // --- Fix A: two crossing bearings recover a known point ---
 const A = intersectLines([
@@ -61,8 +69,124 @@ const A = intersectLines([
   { P: P2, d: dirFromAzEl(341.57, 32.31) },
 ]);
 approx(A.rmsMiss, 0, 0.5, "Fix A rms miss");
-approx(A.ts[0], 3742, 3, "Fix A range from obs1");
-approx(A.ts[1], 3742, 3, "Fix A range from obs2");
+// the ranges scale with the baseline: 3742 × (2004.7965/2000) = 3750.97, and
+// the fix lands at 3751.5 — the same +0.24% correction, propagated.
+approx(A.ts[0], 3751.5, 3, "Fix A range from obs1");
+approx(A.ts[1], 3751.5, 3, "Fix A range from obs2");
+
+// --- GEODESY IS EXACT: drive analyze() with truth built independently in ECEF.
+// Each observer's az/el comes from its OWN true local vertical, i.e. the angles
+// a perfect instrument would read on site. Before the ellipsoidal ENU + the
+// per-observer frame rotation these missed by 28 m (5 km baseline) and 150 m
+// (20 km), while still reporting a 0.000 m ray-miss and grading "excellent".
+{
+  const WA = 6378137.0, WF = 1 / 298.257223563, WE2 = WF * (2 - WF);
+  const ec = (lat, lon, h) => {
+    const p = lat * D2R, l = lon * D2R, sn = Math.sin(p), N = WA / Math.sqrt(1 - WE2 * sn * sn);
+    return [(N + h) * Math.cos(p) * Math.cos(l), (N + h) * Math.cos(p) * Math.sin(l), (N * (1 - WE2) + h) * sn];
+  };
+  const bs = (lat, lon) => { const p = lat * D2R, l = lon * D2R;
+    return { E: [-Math.sin(l), Math.cos(l), 0], N: [-Math.sin(p) * Math.cos(l), -Math.sin(p) * Math.sin(l), Math.cos(p)],
+      U: [Math.cos(p) * Math.cos(l), Math.cos(p) * Math.sin(l), Math.sin(p)] }; };
+  const dt3 = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const azelTrue = (o, t) => {
+    const O = ec(o.lat, o.lon, o.alt), P = ec(t.lat, t.lon, t.alt), b = bs(o.lat, o.lon);
+    const v = [P[0] - O[0], P[1] - O[1], P[2] - O[2]];
+    const e = dt3(v, b.E), n = dt3(v, b.N), u = dt3(v, b.U);
+    return { az: ((Math.atan2(e, n) * R2D) + 360) % 360, el: Math.atan2(u, Math.hypot(e, n)) * R2D, range: Math.hypot(e, n, u) };
+  };
+  const off = (r, east, north) => {
+    const p = r.lat * D2R, sn = Math.sin(p);
+    const N = WA / Math.sqrt(1 - WE2 * sn * sn), M = WA * (1 - WE2) / Math.pow(1 - WE2 * sn * sn, 1.5);
+    return { lat: r.lat + (north / M) * R2D, lon: r.lon + (east / (N * Math.cos(p))) * R2D, alt: r.alt };
+  };
+  const d3 = (u, v) => { const p = ec(u.lat, u.lon, u.alt), q = ec(v.lat, v.lon, v.alt); return Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); };
+  for (const [nm, base, rng, dalt, lat, tol] of [
+    ["120 m", 60, 120, 12, 42.3, 0.02], ["5 km baseline", 5000, 12000, 3000, 42.3, 0.05],
+    ["20 km baseline", 20000, 40000, 10000, 42.3, 0.20], ["equator", 5000, 12000, 3000, 0.5, 0.05]]) {
+    const o1 = { lat, lon: -122.90, alt: 400 }, o2 = off(o1, base, 0);
+    const obj = { ...off(off(o1, base / 2, 0), 0, rng), alt: 400 + dalt };
+    const t1 = azelTrue(o1, obj), t2 = azelTrue(o2, obj);
+    /* a real camera records APPARENT angles: the atmosphere bends the ray, so
+       the recorded elevation is higher than the geometric one by k·d/(2R). Add
+       that here — otherwise this feeds vacuum angles to a pipeline that now
+       (correctly) removes refraction, and the fix lands low by 18 m at 20 km. */
+    const bend = (o, t) => {
+      const dG = Math.cos(t.el * D2R) * t.range;
+      return t.el + (0.13 * dG) / (2 * 6371000) * R2D;
+    };
+    t1.el = bend(o1, t1); t2.el = bend(o2, t2);
+    const TS = 4.0, mkA = (r) => 2 * Math.atan(TS / 2 / r) * R2D;
+    const fx = analyze([
+      { name: "A", lat: o1.lat, lon: o1.lon, alt: o1.alt, A: { az: t1.az, el: t1.el, angManual: mkA(t1.range) }, B: {} },
+      { name: "B", lat: o2.lat, lon: o2.lon, alt: o2.alt, A: { az: t2.az, el: t2.el, angManual: mkA(t2.range) }, B: {} },
+    ]);
+    approx(fx.ok ? 1 : 0, 1, 0, `exact-truth fix solves (${nm})`);
+    approx(d3({ lat: fx.geoA.lat, lon: fx.geoA.lon, alt: fx.geoA.alt }, obj), 0, tol, `exact-truth 3-D position (${nm})`);
+    approx(fx.geoA.alt - obj.alt, 0, tol, `exact-truth altitude (${nm})`);
+    approx(fx.sizeAvg - TS, 0, 0.002, `exact-truth true size (${nm})`);
+  }
+}
+
+// --- ASTRONOMICAL FRAME (audit findings 3-6). Everything used to be computed
+// in a J2000-mean frame and read as if it were of-date: a ~0.37° error that a
+// plate solve absorbs into the pose while still reporting ~0.04° rms.
+{
+  const T26 = Date.UTC(2026, 6, 30, 6, 0, 0), LA = 42.30, LO = -122.90;
+  // precession carries J2000 coordinates to the equinox of date
+  const sir = precessFromJ2000(101.287, -16.716, T26);   // Sirius
+  approx(sir.ra, 101.5839, 0.002, "precession: Sirius RA J2000 -> of date");
+  approx(sir.dec, -16.7453, 0.002, "precession: Sirius Dec J2000 -> of date");
+  // the star path must USE it — starAzEl and raw raDecToAzEl differ by ~0.29°
+  const dirOf = (az, el) => [Math.sin(az * D2R) * Math.cos(el * D2R), Math.cos(az * D2R) * Math.cos(el * D2R), Math.sin(el * D2R)];
+  const sepOf = (p, q) => { const a = dirOf(p.az, p.alt), b = dirOf(q.az, q.alt);
+    return Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * R2D; };
+  approx(sepOf(starAzEl(101.287, -16.716, T26, LA, LO), raDecToAzEl(101.287, -16.716, T26, LA, LO)),
+    0.2859, 0.01, "starAzEl precesses (J2000 vs of-date separation)");
+  // starAzEl == precess-then-convert, exactly
+  approx(sepOf(starAzEl(101.287, -16.716, T26, LA, LO), raDecToAzEl(sir.ra, sir.dec, T26, LA, LO)),
+    0, 1e-9, "starAzEl = precessFromJ2000 + raDecToAzEl");
+  // the Sun is of-date: at the published March-2026 equinox its declination is
+  // ~0, so its altitude at the north pole is just refraction
+  approx(sunPos(Date.UTC(2026, 2, 20, 14, 46), 90, 0).alt, refractionDeg(0), 0.06,
+    "Sun is of-date (declination ~0 at the published equinox)");
+  // refraction is applied to EVERY body, not just the Moon
+  approx(refractionDeg(0) > 0.4 && refractionDeg(45) < 0.02 ? 1 : 0, 1, 0, "refraction model shape");
+  const lowStar = starAzEl(sir.ra, sir.dec, T26, LA, LO);
+  approx(lowStar.alt > -90 ? 1 : 0, 1, 0, "starAzEl returns a usable altitude");
+  // the Moon must carry the principal periodic terms, not just the equation of
+  // the centre. Compare the SHIPPED moonPos against an independent truncated
+  // ELP over a lunation; with only the equation of the centre this was a mean
+  // 0.82° and worst 1.19° out — wider than the Moon's own 0.52° disc.
+  {
+    const S = (x) => Math.sin(x * D2R), C = (x) => Math.cos(x * D2R);
+    const toD = (ms) => ms / 86400000 - 0.5 + 2440588 - 2451545;
+    const refMoon = (ms) => {                 // ecliptic lon/lat -> RA/Dec of date
+      const d = toD(ms), Tc = d / 36525, e = (23.439291 - 0.0130042 * Tc) * D2R;
+      const Lp = 218.3164477 + 13.176396474 * d, Dm = 297.8501921 + 12.190749117 * d;
+      const M = 357.5291092 + 0.98560028 * d, Mp = 134.9633964 + 13.064992953 * d;
+      const Fa = 93.2720950 + 13.229350449 * d;
+      const lon = Lp + 6.288774 * S(Mp) + 1.274027 * S(2 * Dm - Mp) + 0.658314 * S(2 * Dm)
+        + 0.213618 * S(2 * Mp) - 0.185116 * S(M) - 0.114332 * S(2 * Fa)
+        + 0.058793 * S(2 * Dm - 2 * Mp) + 0.057066 * S(2 * Dm - M - Mp)
+        + 0.053322 * S(2 * Dm + Mp) + 0.045758 * S(2 * Dm - M);
+      const lat = 5.128122 * S(Fa) + 0.280602 * S(Mp + Fa) + 0.277693 * S(Mp - Fa)
+        + 0.173237 * S(2 * Dm - Fa) + 0.055413 * S(2 * Dm - Mp + Fa) + 0.046271 * S(2 * Dm - Mp - Fa);
+      const l = lon * D2R, b = lat * D2R;
+      return { ra: Math.atan2(Math.sin(l) * Math.cos(e) - Math.tan(b) * Math.sin(e), Math.cos(l)) * R2D,
+        dec: Math.asin(Math.sin(b) * Math.cos(e) + Math.cos(b) * Math.sin(e) * Math.sin(l)) * R2D };
+    };
+    let worst = 0, n = 0;
+    for (let day = 0; day < 30; day++) {
+      const ms = Date.UTC(2026, 6, 1 + day, 6), m = moonPos(ms, LA, LO);
+      if (m.alt < 5) continue;
+      const r = refMoon(ms), rp = raDecToAzEl(r.ra, r.dec, ms, LA, LO);
+      worst = Math.max(worst, sepOf(m, rp)); n++;
+    }
+    approx(n > 8 ? 1 : 0, 1, 0, "moon: enough nights above 5° to test");
+    approx(worst, 0, 0.15, "moon tracks a truncated ELP over a lunation (was 1.19deg out)");
+  }
+}
 
 // --- angular size → linear span at that range ---
 const ang = 0.612 * D2R;
