@@ -18,12 +18,15 @@ export const SHAPES = [
   { k: "saucer", label: "🛸 Saucer" },
   { k: "capsule", label: "💊 Tic-tac" },
   { k: "tri", label: "▲ Triangle" },
+  { k: "vee", label: "🪃 V / delta" },
   { k: "cube", label: "⬛ Cube" },
   { k: "pyr", label: "🔺 Pyramid" },
+  { k: "stealth", label: "◤ Stealth jet" },
   { k: "plane", label: "✈ Jet" },
   { k: "prop", label: "🛩 Small plane" },
   { k: "heli", label: "🚁 Helicopter" },
   { k: "bird", label: "🕊 Bird" },
+  { k: "balloon", label: "🎈 Balloon" },
   { k: "drone", label: "❖ Drone" },
   { k: "jelly", label: "🪼 Jellyfish" },
 ];
@@ -314,6 +317,73 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
     if (q > 0.01) C.push(sq(m, 0));
     for (const [sx, sy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]])
       C.push([[sx * a, sy * a, h], [sx * m, sy * m, 0], [sx * a, sy * a, -h]]);
+  } else if (kind === "balloon") {
+    /* PARTY BALLOON — envelope up (+z), knot and a dangling string below. The
+       single most-mistaken-for-a-UFO object there is, so it earns its own
+       solid rather than being fitted as an orb: the taper and the string are
+       what let a witness tell the two apart in the photo. `cord` scales the
+       string, and 0 removes it (a bare mylar balloon that has lost it), which
+       is why it is drawn conditionally. Sized so the DEFAULT configuration
+       (cord = 1) spans ≈1 and sits centred on the origin — rotation is about
+       the origin, so an off-centre model swings wildly under the drag. */
+    const cord = Math.max(0, Math.min(2, opts && isFinite(opts.cord) ? opts.cord : 1));
+    const R = 0.26, zTop = 0.5, hEnv = 0.6, zc = 0.09;
+    /* teardrop profile of revolution, f = 0 at the top → 1 at the neck. The
+       exponent pulls the widest point up into the upper third; at 1 it would
+       be an egg, and that reads as an orb, not a balloon. */
+    const prof = (f) => { const ph = f * Math.PI; return [R * Math.sin(ph), zTop - hEnv * Math.pow((1 - Math.cos(ph)) / 2, 1.2) + zc]; };
+    for (const f of [0.28, 0.45, 0.62, 0.8]) { const [r, z] = prof(f); C.push(circ(r, "z", z)); }
+    const P = Array.from({ length: 25 }, (_, i) => prof(i / 24));
+    for (const md of [0, 45, 90, 135]) {                     // meridians: neck → over the top → neck
+      const ca = Math.cos(md * D2R), sa = Math.sin(md * D2R);
+      const half = (s) => P.map(([r, z]) => [s * r * ca, s * r * sa, z]);
+      C.push([...half(-1).reverse(), ...half(1)]);
+    }
+    const zn = zTop - hEnv + zc, zk = zn - 0.035;             // neck, knot
+    C.push([[0.022, 0, zn], [0.028, 0, zk], [-0.028, 0, zk], [-0.022, 0, zn]]);
+    C.push([[0, 0.022, zn], [0, 0.028, zk], [0, -0.028, zk], [0, -0.022, zn]]);
+    if (cord > 0.02) {                                        // string, gently swaying
+      const L = 0.55 * cord;
+      C.push(Array.from({ length: 17 }, (_, i) => {
+        const t = i / 16;
+        return [0.05 * Math.sin(t * Math.PI * 1.6), 0.022 * Math.sin(t * Math.PI * 2.4), zk - t * L];
+      }));
+    }
+  } else if (kind === "vee") {
+    /* V / DELTA — the boomerang. Tip-to-tip span = 1 along Y, apex forward
+       (+X). Two independent params, because witnesses describe two different
+       things: `sweep` is how far the tips trail behind the apex (a shallow
+       arrowhead through to a deep, narrow chevron) and `notch` morphs the
+       trailing edge from straight — a solid delta — to a deep centre notch,
+       leaving two thin arms. So the one shape covers both of the things
+       people mean by "V-shaped craft". */
+    const sw = Math.max(0.12, Math.min(0.9, opts && isFinite(opts.sweep) ? opts.sweep : 0.45));
+    const nt = Math.max(0, Math.min(1, opts && isFinite(opts.notch) ? opts.notch : 0.7));
+    const xa = sw / 2, xt = -sw / 2, th = 0.018;
+    const xn = xt + nt * sw * 0.88;    // at nt=0 this lands ON the tip-to-tip line ⇒ a plain delta
+    const plan = [[xa, 0], [xt, 0.5], [xn, 0], [xt, -0.5], [xa, 0]];
+    for (const z of [th, -th]) C.push(plan.map(([x, y]) => [x, y, z]));
+    for (const [x, y] of plan.slice(0, 4)) C.push([[x, y, th], [x, y, -th]]);
+  } else if (kind === "stealth") {
+    /* FACETED STEALTH JET (F-117-like) — nose +X, wingspan 1, flat belly at
+       the widest line with the upper surface faceted up to a dorsal ridge,
+       plus canted twin tails. ▲ Triangle and 🪃 V cover the ABSTRACT black
+       triangle; this is the aircraft a witness is usually actually looking
+       at, and its silhouette is measurably different from a plain delta. */
+    /* Kept deliberately spare — at the size these wireframes are actually
+       drawn (tens of pixels over the object) every extra facet line reads as
+       noise, so this is the planform, one dorsal ridge, two folds a side and
+       the tails: the parts that make the silhouette recognisable. */
+    const zb = -0.02, zt = 0.085;
+    const plan = [[0.62, 0], [-0.10, 0.5], [-0.38, 0.20], [-0.30, 0], [-0.38, -0.20], [-0.10, -0.5], [0.62, 0]];
+    C.push(plan.map(([x, y]) => [x, y, zb]));                                                    // belly planform (max width)
+    C.push([[0.62, 0, zb], [0.34, 0, zt * 0.62], [0.02, 0, zt], [-0.30, 0, zb]]);                // dorsal ridge, nose → tail root
+    for (const s of [1, -1]) {
+      C.push([[0.34, 0, zt * 0.62], [-0.10, s * 0.5, zb]]);                                      // facet fold out to the wing tip
+      C.push([[0.02, 0, zt], [-0.38, s * 0.20, zb]]);                                            // facet fold to the trailing-edge kink
+      C.push([[-0.14, s * 0.06, zt * 0.66], [-0.24, s * 0.19, 0.20], [-0.35, s * 0.175, 0.185], [-0.30, s * 0.05, zb + 0.02], [-0.14, s * 0.06, zt * 0.66]]); // canted V-tail
+    }
+    C.push([[0.44, 0, zt * 0.45], [0.36, 0.055, zt * 0.8], [0.24, 0, zt], [0.36, -0.055, zt * 0.8], [0.44, 0, zt * 0.45]]);           // cockpit facet
   } else { // tri — thin equilateral plate
     const R = 0.5774, th = 0.05;
     const v = [90, 210, 330].map((d) => [Math.cos(d * D2R) * R, Math.sin(d * D2R) * R]);
@@ -327,7 +397,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), vee: rotX3(48), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), stealth: rotX3(52), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), balloon: rotX3(84), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);

@@ -1,5 +1,6 @@
 // Exercises the REAL math core (src/math/*) — not a copy. A regression in
 // triangulation, geodesy, or angular sizing fails `npm test` here.
+import fs from "node:fs";
 import { D2R, R2D, RE, enuFromGeo, geoFromEnu, dirFromAzEl, sub, mag } from "../src/math/geodesy.js";
 import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/triangulate.js";
 import { sunPos, moonFrac } from "../src/math/astro.js";
@@ -1584,6 +1585,95 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     }
     approx(SHAPES.some((x) => x.k === "pyr") ? 1 : 0, 1, 0, "pyramid: listed in the shape picker");
     approx(SHAPE_R0().pyr && SHAPE_R0().pyr.length === 9 ? 1 : 0, 1, 0, "pyramid: has a default 3/4 pose");
+
+    /* V / DELTA — span is the measured dimension so it must stay 1 whatever
+       the sweep or notch does; `notch` 0 must be a genuine solid delta (the
+       trailing edge dead straight between the tips) and 1 two thin arms. */
+    const vee = (o) => shapeWire("vee", null, o).flat();
+    for (const [sw, what] of [[0.45, "default"], [0.12, "shallow arrowhead"], [0.9, "deep chevron"]]) {
+      const P = vee({ sweep: sw });
+      approx(extOf(P, 1), 1, 1e-9, `V: ${what} keeps a unit tip-to-tip span`);
+      approx(extOf(P, 0), sw, 1e-9, `V: ${what} is ${sw} deep fore-aft`);
+    }
+    {
+      /* the notch vertex is on the centreline; at notch 0 it sits exactly on
+         the straight tip-to-tip trailing edge (x = −sweep/2 = the tips' x),
+         and it marches forward toward the apex as the notch deepens */
+      const sw = 0.5, nx = (nt) => { const P = vee({ sweep: sw, notch: nt }).filter((p) => Math.abs(p[1]) < 1e-9); return Math.min(...P.map((p) => p[0])); };
+      approx(nx(0), -sw / 2, 1e-9, "V: notch 0 is a solid delta (trailing edge straight between the tips)");
+      const xs = [0, 0.25, 0.5, 0.75, 1].map(nx);
+      approx(xs.every((v, i) => i === 0 || v > xs[i - 1] + 1e-9) ? 1 : 0, 1, 0, `V: the notch marches forward monotonically (${xs.map((v) => v.toFixed(3)).join(" ")})`);
+      approx(nx(1) < sw / 2 - 1e-6 ? 1 : 0, 1, 0, "V: even a full notch stops short of the apex (the arms stay joined)");
+      /* the tips are the extremes of the span, at the rear */
+      const P = vee({ sweep: sw, notch: 0.7 });
+      const tip = P.filter((p) => Math.abs(Math.abs(p[1]) - 0.5) < 1e-9);
+      approx(tip.every((p) => Math.abs(p[0] + sw / 2) < 1e-9) ? 1 : 0, 1, 0, "V: the tips sit at the rear of the planform");
+    }
+    [undefined, NaN, -3, 7].forEach((v) => {
+      const P = vee(v === undefined ? undefined : { sweep: v, notch: v });
+      approx(P.length > 0 && Math.abs(extOf(P, 1) - 1) < 1e-9 ? 1 : 0, 1, 0, `V: sweep/notch ${String(v)} clamps to a valid solid`);
+    });
+    approx(SHAPES.some((x) => x.k === "vee") ? 1 : 0, 1, 0, "V: listed in the shape picker");
+    approx(SHAPE_R0().vee && SHAPE_R0().vee.length === 9 ? 1 : 0, 1, 0, "V: has a default 3/4 pose");
+
+    /* STEALTH JET — wingspan is the reference dimension (as on every other
+       aircraft here), nose forward, and it must be measurably NOT a plain
+       delta: the trailing edge carries a centre notch and the tails rise
+       above the wing. */
+    {
+      const P = shapeWire("stealth", null, null).flat();
+      approx(extOf(P, 1), 1, 1e-9, "stealth: unit wingspan (the reference dimension)");
+      approx(Math.max(...P.map((p) => p[0])), 0.62, 1e-9, "stealth: nose is the forward extreme");
+      const tipX = P.filter((p) => Math.abs(Math.abs(p[1]) - 0.5) < 1e-9).map((p) => p[0]);
+      const rearX = Math.min(...P.map((p) => p[0]));
+      approx(tipX.every((x) => x > rearX + 1e-9) ? 1 : 0, 1, 0, "stealth: the tips are swept forward of the trailing edge (not a plain delta)");
+      approx(Math.max(...P.map((p) => p[2])) > 0.15 ? 1 : 0, 1, 0, "stealth: canted tails rise clear of the wing");
+      approx(Math.min(...P.map((p) => p[2])), -0.02, 1e-9, "stealth: flat belly at the widest line");
+      approx(SHAPES.some((x) => x.k === "stealth") ? 1 : 0, 1, 0, "stealth: listed in the shape picker");
+      approx(SHAPE_R0().stealth && SHAPE_R0().stealth.length === 9 ? 1 : 0, 1, 0, "stealth: has a default 3/4 pose");
+    }
+
+    /* BALLOON — envelope of revolution with the widest point in the UPPER
+       third (that taper is what distinguishes it from an orb), plus a string
+       whose length tracks `cord` and vanishes at 0. */
+    {
+      const bal = (o) => shapeWire("balloon", null, o).flat();
+      const P = bal(null);
+      approx(Math.abs(extOf(P, 0) - extOf(P, 1)) < 1e-9 ? 1 : 0, 1, 0, "balloon: envelope is a solid of revolution (square footprint)");
+      const zTopM = Math.max(...P.map((p) => p[2]));
+      /* widest ring: find the z of the point farthest from the axis */
+      let wz = 0, wr = 0;
+      for (const p of P) { const r = Math.hypot(p[0], p[1]); if (r > wr) { wr = r; wz = p[2]; } }
+      const zEnvBot = zTopM - 0.6;
+      approx((wz - zEnvBot) / 0.6 > 0.5 ? 1 : 0, 1, 0, `balloon: widest point sits in the upper half of the envelope (${(((wz - zEnvBot) / 0.6) * 100).toFixed(0)}%)`);
+      /* the string: length scales with cord, and cord 0 removes it entirely */
+      const drop = (c) => zTopM - Math.min(...bal({ cord: c }).map((p) => p[2]));
+      const d0 = drop(0), d1 = drop(1), d2 = drop(2);
+      approx(d1 - d0, 0.55, 1e-9, "balloon: string at cord 1 hangs 0.55 below the knot");
+      approx(d2 - d0, 1.10, 1e-9, "balloon: string length is proportional to cord");
+      approx(d0 < 0.68 ? 1 : 0, 1, 0, "balloon: cord 0 leaves a bare envelope (no string)");
+      approx(Math.abs(extOf(bal(null), 2) - 1) < 0.2 ? 1 : 0, 1, 0, "balloon: the default configuration spans about one unit");
+      [undefined, NaN, -3, 9].forEach((c) => {
+        const Q = bal(c === undefined ? undefined : { cord: c });
+        approx(Q.length > 0 && extOf(Q, 0) > 0.5 && extOf(Q, 2) > 0.5 ? 1 : 0, 1, 0, `balloon: cord ${String(c)} clamps to a valid solid`);
+      });
+      approx(SHAPES.some((x) => x.k === "balloon") ? 1 : 0, 1, 0, "balloon: listed in the shape picker");
+      approx(SHAPE_R0().balloon && SHAPE_R0().balloon.length === 9 ? 1 : 0, 1, 0, "balloon: has a default 3/4 pose");
+    }
+
+    /* the four-place registration rule, enforced rather than remembered: every
+       kind in the picker needs a default pose, real geometry, and a report
+       3-view (the last one fails SILENTLY — an unregistered kind renders an
+       empty figure in the report). */
+    {
+      const views = fs.readFileSync("src/phodar.jsx", "utf8");
+      const blk = views.slice(views.indexOf("const SHAPE_VIEWS = {"), views.indexOf("const SHAPE_VIEWS = {") + 2000);
+      for (const s of SHAPES) {
+        approx(SHAPE_R0()[s.k] ? 1 : 0, 1, 0, `${s.k}: registered in SHAPE_R0`);
+        approx(shapeWire(s.k, 3, null).length > 0 ? 1 : 0, 1, 0, `${s.k}: shapeWire returns geometry`);
+        approx(new RegExp("\\n  " + s.k + ":").test(blk) ? 1 : 0, 1, 0, `${s.k}: registered in SHAPE_VIEWS (report 3-view)`);
+      }
+    }
     // baseline injection: the FIT is an implicit keyframe at markT (wFit,
     // shapeFit.rotM) so a SINGLE adjustment RAMPS from the fit instead of
     // going constant — "changes transition from changes, not from un-adjusted

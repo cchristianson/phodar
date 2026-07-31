@@ -507,11 +507,11 @@ const HELP_SECTIONS = [
         { t: "✂ Trim (video)", d: "Opens the trim bar — see “Trimming the clip” below. The button is lit while the bar is open and unlit while it's shut; the kept span is in its tooltip and on the bar itself." },
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
-        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · ⬛ Cube · 🔺 Pyramid · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
+        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · 🪃 V / delta · ⬛ Cube · 🔺 Pyramid · ◤ Stealth jet · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · 🎈 Balloon · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
-        { t: "aspect / spin / squash / stretch / height / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), the pyramid\u2019s height (shallow cap → spire), bird wing width & fore/aft, jellyfish tendril length." },
+        { t: "aspect / spin / squash / stretch / height / sweep / notch / string / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & fore/aft, jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
@@ -2370,7 +2370,10 @@ function MediaMeasure({ src, update, wizard }) {
                     onChange={(e) => { const nsf = { ...src.shapeFit, aspect: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
               )}
-              {(src.shapeFit.kind === "tri" || src.shapeFit.kind === "cube" || src.shapeFit.kind === "pyr" || src.shapeFit.kind === "plane" || src.shapeFit.kind === "prop" || src.shapeFit.kind === "bird" || src.shapeFit.kind === "drone") && (
+              {/* spin = roll about the line of sight. Offered for every shape
+                  that is NOT a solid of revolution — on an orb, a tic-tac, a
+                  balloon or a jellyfish it would do nothing visible. */}
+              {["tri", "vee", "cube", "pyr", "stealth", "plane", "prop", "bird", "drone"].includes(src.shapeFit.kind) && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                   <span className="microlabel" style={{ marginBottom: 0 }}>spin</span>
                   <input type="range" min={-180} max={180} step={1} value={src.shapeFit.roll || 0}
@@ -2416,6 +2419,34 @@ function MediaMeasure({ src, update, wizard }) {
                   </span>
                   <input type="range" min={0.25} max={3} step={0.05} value={src.shapeFit.stretch ?? 1}
                     onChange={(e) => { const nsf = { ...src.shapeFit, stretch: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                </div>
+              )}
+              {src.shapeFit.kind === "vee" && (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    {/* how far the tips trail behind the apex — a shallow
+                        arrowhead through to a deep, narrow chevron */}
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>sweep {(src.shapeFit.sweep ?? 0.45).toFixed(2)}</span>
+                    <input type="range" min={0.12} max={0.9} step={0.02} value={src.shapeFit.sweep ?? 0.45}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, sweep: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    {/* 0 = a solid delta, 1 = two thin arms; the middle is the
+                        stubby boomerang most "V-shaped craft" reports describe */}
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>
+                      notch {(src.shapeFit.notch ?? 0.7) < 0.02 ? "delta" : (src.shapeFit.notch ?? 0.7) > 0.98 ? "V" : (src.shapeFit.notch ?? 0.7).toFixed(2)}
+                    </span>
+                    <input type="range" min={0} max={1} step={0.02} value={src.shapeFit.notch ?? 0.7}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, notch: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                </>
+              )}
+              {src.shapeFit.kind === "balloon" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  {/* 0 hides the string — a mylar balloon that has lost it */}
+                  <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>string {(src.shapeFit.cord ?? 1) < 0.03 ? "none" : (src.shapeFit.cord ?? 1).toFixed(2) + "×"}</span>
+                  <input type="range" min={0} max={2} step={0.05} value={src.shapeFit.cord ?? 1}
+                    onChange={(e) => { const nsf = { ...src.shapeFit, cord: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                 </div>
               )}
               {src.shapeFit.kind === "jelly" && (
@@ -10791,8 +10822,11 @@ const SHAPE_VIEWS = {
   saucer: [["Top", "x", "y", "diameter", "diameter"], ["Side", "x", "z", "diameter", "height"]],
   capsule: [["Side", "x", "z", "length", "diameter"], ["End", "y", "z", "diameter", "diameter"]],
   tri: [["Top", "x", "y", "width", "depth"], ["Side", "x", "z", "width", "thickness"]],
+  vee: [["Top", "x", "y", "depth", "span"], ["Side", "x", "z", "depth", "thickness"]],
   cube: [["Side", "x", "z", "width", "height"], ["Top", "x", "y", "width", "depth"]],
   pyr: [["Side", "x", "z", "base width", "height"], ["Top", "x", "y", "base width", "base depth"]],
+  stealth: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  balloon: [["Side", "x", "z", "width", "height"], ["Top", "x", "y", "diameter", "diameter"]],
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   prop: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   heli: [["Top", "x", "y", "length", "rotor span"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "rotor span", "height"]],
