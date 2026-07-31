@@ -66,11 +66,17 @@ comments, in this order:
    plane/bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
    Per-shape params ride on the `shapeFit` object and reach `shapeWire` as its
-   `opts` (capsule `aspect`, bird `wing`/`wingX`, jelly `tent`, cube `squash`),
+   `opts` (capsule `aspect`, bird `wing`/`wingX`, jelly `tent`, cube `squash`,
+   vee `sweep`/`notch`, balloon `cord`),
    so a new one needs no plumbing — but a new KIND must be registered in four
    places or it half-works: `SHAPES` (picker), `SHAPE_R0` (default 3/4 pose),
    `shapeWire` (geometry) and `SHAPE_VIEWS` in phodar.jsx (the report's
    dimensioned 3-view, which silently renders nothing without an entry).
+   Mathcheck now walks `SHAPES` and asserts all four for every kind, so that
+   rule is enforced rather than remembered. A fifth, softer one: the spin
+   slider's gate in phodar.jsx lists the kinds that are NOT solids of
+   revolution — an orb, tic-tac, balloon or jellyfish is left out because
+   spinning it about its own axis would change nothing.
    **Cube ↔ diamond**: `squash` ∈ [0,1] tapers the top and bottom faces toward
    the axis while the waist stays put — 0 is a cube, 1 is a square bipyramid
    (the "diamond"), and the middle is a truncated gem. **`stretch`** ∈ [0.25,3]
@@ -89,6 +95,22 @@ comments, in this order:
    squash 0 (it would band a plain cube with a non-edge) as are the collapsed
    caps at squash 1 (they'd leave a dot at each apex). Asserted in mathcheck by
    corner set + extents + monotone taper, not by eye.
+   **V / delta** (`vee`) is the boomerang, and it carries the two things
+   witnesses actually vary independently: `sweep` ∈ [0.12,0.9] is how far the
+   tips trail behind the apex, and `notch` ∈ [0,1] morphs the trailing edge
+   from dead straight (a solid delta) to a deep centre notch (two thin arms).
+   Tip-to-tip span stays 1 throughout — it is the measured dimension. Note
+   when testing: `notch` moves an INTERIOR vertex, so the drawn geometry
+   changes while the outline's bounding box and the measured angular size do
+   not; `sweep` is the param that moves the measurement.
+   **Stealth jet** (`stealth`, F-117-like) is deliberately spare — planform,
+   one dorsal ridge, two folds a side, canted V-tails, cockpit facet. At the
+   size these wires are actually drawn (tens of pixels) every extra facet line
+   reads as noise; an earlier version with inboard facet edges was unreadable.
+   **Balloon** (`balloon`) is the envelope of revolution plus a dangling
+   string, `cord` ∈ [0,2] scaling the string and 0 removing it. It exists
+   because it is the most-mistaken-for-a-UFO object there is and the taper
+   plus the string are what let a witness tell it from an orb in the photo.
 3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
    pinch-zoom, loupe, brightness/contrast), `PositionEditor` + `PinMap` (Leaflet),
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt
