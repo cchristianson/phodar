@@ -611,6 +611,7 @@ const HELP_SECTIONS = [
         { t: "↶ Undo (right after a solve)", d: "Steps back to the PREVIOUS stabilization — one level, offered just after a run. A bad solve is otherwise unrecoverable without redoing the work." },
         { t: "✕ clear", d: "Removes the stabilization for good and returns to the original clip. Every measurement stays — object placement, track waypoints, alignment frame, sky placement — and only the solved camera path and object track are dropped, so you can trim, re-align and solve again from scratch." },
         { t: "🎯 Solve from marks", d: "The manual fallback: solves each frame's pose from the background features you hand-marked with 🎥 Cam refs on step 1 — for a clip the automatic pass can't hold (near-black, low contrast, no skyline). A smoothing slider appears to average out imperfect placement." },
+        { t: "⟳ Re-stabilize to apply", d: "An amber line that appears next to the stabilize button when something the solve DEPENDED on has been edited since it ran — new ⊕ Track points, a moved object mark, a different alignment frame, a changed trim or FOV. It names what changed. Until you re-stabilize, the stored camera path and object track still reflect the old inputs, and nothing else in the app would tell you." },
         { t: "🛸 object overlay", d: "Header toggle for the fitted 3D wireframe and its marks over the photo. It rides the tracked path during stabilized playback, and it is burned into the exported video ONLY while this is on — so turn it off for a clean evidence render." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
@@ -908,6 +909,47 @@ const trimOf = (s, dur) => {
    pretends sub-pixel extents are measurable. When a fit is down at this end,
    the per-observer size estimates in the report scatter widely — that spread
    is the honest error bar and should be read as one. */
+/* WHAT A STABILIZE RUN CONSUMED. The solve reads the alignment frame, the
+   object's marks and the frame they were made on, the kept (trimmed) span, the
+   lens FOV, and the ⊕ Track waypoints that guide the object pass. Change any of
+   those afterwards and the stored path is quietly stale — nothing recomputes,
+   nothing warns. The case that prompted this: told to add Track points so the
+   object survives a zoom, a user adds them and has no way to know they do
+   NOTHING until the solve is re-run.
+   Stamped as source.stabSig when a run finishes, diffed in the sky view. Pure
+   and made of primitives so the diff can NAME what changed. */
+function stabSigOf(s) {
+  if (!s) return null;
+  const r3 = (v) => (isNum(v) ? +(+v).toFixed(3) : null);
+  const pt = (p) => (p && isNum(p.x) && isNum(p.y) ? `${Math.round(+p.x)},${Math.round(+p.y)}` : "");
+  const wp = (s.track || []).filter((p) => isNum(p.t) && isNum(p.x) && isNum(p.y))
+    .map((p) => `${(+p.t).toFixed(2)}:${Math.round(+p.x)},${Math.round(+p.y)}`).sort().join("|");
+  return {
+    alignT: r3(s.alignT), objT: r3(s.A?.videoTime),
+    marks: `${pt(s.A?.p1)}>${pt(s.A?.p2)}`,
+    trim: s.trim && isNum(s.trim.t0) ? `${r3(s.trim.t0)}-${r3(s.trim.t1)}` : "",
+    fov: r3(s.fovH),
+    wp, wpN: wp ? wp.split("|").length : 0,
+  };
+}
+/* → a list of plain-language reasons the stored solve is out of date, or []. */
+function stabStale(s) {
+  const was = s?.stabSig, now = stabSigOf(s);
+  if (!was || !now || !Array.isArray(s?.posePath) || s.posePath.length < 2) return [];
+  const out = [];
+  if (was.wp !== now.wp) {
+    out.push(now.wpN > (was.wpN || 0)
+      ? `${now.wpN - (was.wpN || 0)} new Track point${now.wpN - (was.wpN || 0) > 1 ? "s" : ""} to guide the object`
+      : "your Track points changed");
+  }
+  if (was.marks !== now.marks) out.push("the object mark moved or resized");
+  if (was.objT !== now.objT) out.push("the object is marked on a different frame");
+  if (was.alignT !== now.alignT) out.push("the alignment frame moved");
+  if (was.trim !== now.trim) out.push("the clip trim changed");
+  if (was.fov !== now.fov) out.push("the lens field of view changed");
+  return out;
+}
+
 const SHAPE_MIN_FRAC = 0.00025;
 
 /* ============================================================
@@ -4526,6 +4568,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const trimS = trimOf(source, null);
   const inTrim = (t) => isNum(t) && t >= trimS.t0 - 1e-6 && t <= trimS.t1 + 1e-6;
   const alignT = clampN(isNum(source?.alignT) ? +source.alignT : (isNum(source?.A?.videoTime) ? +source.A.videoTime : 0), trimS.t0, isFinite(trimS.t1) ? trimS.t1 : 1e9);
+  /* which solve inputs have been edited since the last stabilize run (see
+     stabStale). Memoised on the fields it actually reads. */
+  const staleWhy = useMemo(() => stabStale(source), [
+    source?.stabSig, source?.alignT, source?.A?.videoTime, source?.A?.p1, source?.A?.p2,
+    source?.trim, source?.fovH, source?.track, source?.posePath,
+  ]);
   const markT = clampN(isNum(source?.A?.videoTime) ? +source.A.videoTime : alignT, trimS.t0, isFinite(trimS.t1) ? trimS.t1 : 1e9);
   /* MARKED-frame pixel → world dir. The object marks/track pixels live on the
      MARKED frame, so their sky position is fixed by that frame's pose. During
@@ -5408,7 +5456,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         : null;
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
-      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, stabSig: stabSigOf({ ...source, ...(track2 ? { track: track2 } : {}) }), ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -7476,6 +7524,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     </span>
                   )}
                 </div>
+                {/* STALE-SOLVE HINT. The stored path is a snapshot of inputs that
+                    can all be edited afterwards, and nothing else notices. One
+                    amber line naming exactly what changed, next to the button
+                    that fixes it — no modal, no dismissal state to persist, and
+                    it disappears the moment you re-stabilize. */}
+                {pMode !== "place" && !calibOn && !stabBusy && staleWhy.length > 0 && (
+                  <div className="warn" style={{ marginTop: 5, fontSize: 10, lineHeight: 1.4 }}
+                    title="A stabilize run consumes the alignment frame, the object marks, the kept span, the lens FOV and your Track points. These changed afterwards, so the solved camera path and object track no longer reflect them — re-stabilize to apply.">
+                    ⟳ <b>Re-stabilize to apply</b> — {staleWhy.join(" · ")}
+                  </div>
+                )}
                 {/* SMOOTHING slider popup — appears after Solve from marks, re-
                     solves live as you drag (the manual solve is instant), then
                     Done dismisses it. Averages out imperfect placement. */}
