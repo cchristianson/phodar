@@ -73,7 +73,18 @@ comments, in this order:
    dimensioned 3-view, which silently renders nothing without an entry).
    **Cube ↔ diamond**: `squash` ∈ [0,1] tapers the top and bottom faces toward
    the axis while the waist stays put — 0 is a cube, 1 is a square bipyramid
-   (the "diamond"), and the middle is a truncated gem. The waist ring is what
+   (the "diamond"), and the middle is a truncated gem. **`stretch`** ∈ [0.25,3]
+   then scales the HEIGHT against a fixed footprint, and the two are
+   deliberately independent — squash picks the profile's SHAPE, stretch its
+   PROPORTION — so a box, a column, a slab, a tall gem and a flat lozenge are
+   all reachable. The **pyramid** (`pyr`) shares `stretch` as its height
+   (0.25 = shallow cap, 3 = spire) over a unit square base; base + four slant
+   edges only, since any horizontal ring would be a line that is not an edge
+   (the same reason the cube's waist is suppressed at squash 0). Note for
+   testing: in the 3/4 default pose a shallow pyramid's apex sits INSIDE the
+   base square's projected span, so its drawn bounding box does not change
+   below ~1× even though the solid does — assert model extents, not screen
+   height. The waist ring is what
    makes it a diamond rather than a pair of frustums, and it's suppressed at
    squash 0 (it would band a plain cube with a non-edge) as are the collapsed
    caps at squash 1 (they'd leave a dot at each apex). Asserted in mathcheck by

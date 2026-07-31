@@ -19,6 +19,7 @@ export const SHAPES = [
   { k: "capsule", label: "💊 Tic-tac" },
   { k: "tri", label: "▲ Triangle" },
   { k: "cube", label: "⬛ Cube" },
+  { k: "pyr", label: "🔺 Pyramid" },
   { k: "plane", label: "✈ Jet" },
   { k: "prop", label: "🛩 Small plane" },
   { k: "heli", label: "🚁 Helicopter" },
@@ -275,6 +276,19 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
         return [rr * ca - sa * sway, rr * sa + ca * sway, Z(t * zt * 0.62 * tent)];
       }));
     }
+  } else if (kind === "pyr") {
+    /* SQUARE PYRAMID. `stretch` is the height as a multiple of the base width,
+       so 1 is a pyramid as tall as it is wide, 0.25 a shallow cap and 3 a
+       spire. Base half-width stays 0.5 so the footprint is the reference and
+       only the profile changes — the same convention as the cube's stretch.
+       Base + four slant edges only: any horizontal ring would be a line that
+       is not an edge of the solid (the reason the cube's waist is suppressed
+       at squash 0). */
+    const st = Math.max(0.25, Math.min(3, opts && isFinite(opts.stretch) ? opts.stretch : 1));
+    const b = 0.5, h = st * 0.5;
+    C.push([[b, b, -h], [b, -b, -h], [-b, -b, -h], [-b, b, -h], [b, b, -h]]);
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]])
+      C.push([[sx * b, sy * b, -h], [0, 0, h]]);
   } else if (kind === "cube") {
     /* CUBE ↔ DIAMOND. `squash` tapers the top and bottom faces toward the
        vertical axis while the waist stays put, so the solid sweeps
@@ -285,7 +299,13 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
        side edges would be straight lines from a shrunken top corner to a
        shrunken bottom corner, which is a frustum pair, not a diamond. */
     const q = Math.max(0, Math.min(1, opts && isFinite(opts.squash) ? opts.squash : 0));
-    const h = 0.5, m = 0.5, a = m * (1 - q);        // half-height, waist half-width, cap half-width
+    /* `stretch` scales the HEIGHT against a fixed footprint: 1 is the cube (or
+       the diamond at squash 1), >1 pulls it into a column or a tall gem, <1
+       squashes it to a slab or a flat lozenge. The two params are independent
+       by design — squash decides the SHAPE of the profile, stretch its
+       PROPORTION — so every combination is reachable. */
+    const st = Math.max(0.25, Math.min(3, opts && isFinite(opts.stretch) ? opts.stretch : 1));
+    const h = 0.5 * st, m = 0.5, a = m * (1 - q);   // half-height, waist half-width, cap half-width
     const sq = (r, z) => [[r, r, z], [r, -r, z], [-r, -r, z], [-r, r, z], [r, r, z]];
     /* a collapsed cap is a point — drawing its degenerate square would leave a
        dot artefact at the apex, and drawing the waist on an un-squashed cube
@@ -307,7 +327,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), cube: mul3(rotX3(26), rotZ3(35)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), drone: rotX3(40), jelly: rotX3(82) });
 
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
