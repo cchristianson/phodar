@@ -7,7 +7,7 @@ import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
-import { raDecToAzEl } from "../src/math/astro.js";
+import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
 import { sensorAt, syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "../src/video/sensorpath.js";
@@ -107,6 +107,15 @@ approx(A.ts[1], 3751.5, 3, "Fix A range from obs2");
     const o1 = { lat, lon: -122.90, alt: 400 }, o2 = off(o1, base, 0);
     const obj = { ...off(off(o1, base / 2, 0), 0, rng), alt: 400 + dalt };
     const t1 = azelTrue(o1, obj), t2 = azelTrue(o2, obj);
+    /* a real camera records APPARENT angles: the atmosphere bends the ray, so
+       the recorded elevation is higher than the geometric one by k·d/(2R). Add
+       that here — otherwise this feeds vacuum angles to a pipeline that now
+       (correctly) removes refraction, and the fix lands low by 18 m at 20 km. */
+    const bend = (o, t) => {
+      const dG = Math.cos(t.el * D2R) * t.range;
+      return t.el + (0.13 * dG) / (2 * 6371000) * R2D;
+    };
+    t1.el = bend(o1, t1); t2.el = bend(o2, t2);
     const TS = 4.0, mkA = (r) => 2 * Math.atan(TS / 2 / r) * R2D;
     const fx = analyze([
       { name: "A", lat: o1.lat, lon: o1.lon, alt: o1.alt, A: { az: t1.az, el: t1.el, angManual: mkA(t1.range) }, B: {} },
@@ -116,6 +125,66 @@ approx(A.ts[1], 3751.5, 3, "Fix A range from obs2");
     approx(d3({ lat: fx.geoA.lat, lon: fx.geoA.lon, alt: fx.geoA.alt }, obj), 0, tol, `exact-truth 3-D position (${nm})`);
     approx(fx.geoA.alt - obj.alt, 0, tol, `exact-truth altitude (${nm})`);
     approx(fx.sizeAvg - TS, 0, 0.002, `exact-truth true size (${nm})`);
+  }
+}
+
+// --- ASTRONOMICAL FRAME (audit findings 3-6). Everything used to be computed
+// in a J2000-mean frame and read as if it were of-date: a ~0.37° error that a
+// plate solve absorbs into the pose while still reporting ~0.04° rms.
+{
+  const T26 = Date.UTC(2026, 6, 30, 6, 0, 0), LA = 42.30, LO = -122.90;
+  // precession carries J2000 coordinates to the equinox of date
+  const sir = precessFromJ2000(101.287, -16.716, T26);   // Sirius
+  approx(sir.ra, 101.5839, 0.002, "precession: Sirius RA J2000 -> of date");
+  approx(sir.dec, -16.7453, 0.002, "precession: Sirius Dec J2000 -> of date");
+  // the star path must USE it — starAzEl and raw raDecToAzEl differ by ~0.29°
+  const dirOf = (az, el) => [Math.sin(az * D2R) * Math.cos(el * D2R), Math.cos(az * D2R) * Math.cos(el * D2R), Math.sin(el * D2R)];
+  const sepOf = (p, q) => { const a = dirOf(p.az, p.alt), b = dirOf(q.az, q.alt);
+    return Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * R2D; };
+  approx(sepOf(starAzEl(101.287, -16.716, T26, LA, LO), raDecToAzEl(101.287, -16.716, T26, LA, LO)),
+    0.2859, 0.01, "starAzEl precesses (J2000 vs of-date separation)");
+  // starAzEl == precess-then-convert, exactly
+  approx(sepOf(starAzEl(101.287, -16.716, T26, LA, LO), raDecToAzEl(sir.ra, sir.dec, T26, LA, LO)),
+    0, 1e-9, "starAzEl = precessFromJ2000 + raDecToAzEl");
+  // the Sun is of-date: at the published March-2026 equinox its declination is
+  // ~0, so its altitude at the north pole is just refraction
+  approx(sunPos(Date.UTC(2026, 2, 20, 14, 46), 90, 0).alt, refractionDeg(0), 0.06,
+    "Sun is of-date (declination ~0 at the published equinox)");
+  // refraction is applied to EVERY body, not just the Moon
+  approx(refractionDeg(0) > 0.4 && refractionDeg(45) < 0.02 ? 1 : 0, 1, 0, "refraction model shape");
+  const lowStar = starAzEl(sir.ra, sir.dec, T26, LA, LO);
+  approx(lowStar.alt > -90 ? 1 : 0, 1, 0, "starAzEl returns a usable altitude");
+  // the Moon must carry the principal periodic terms, not just the equation of
+  // the centre. Compare the SHIPPED moonPos against an independent truncated
+  // ELP over a lunation; with only the equation of the centre this was a mean
+  // 0.82° and worst 1.19° out — wider than the Moon's own 0.52° disc.
+  {
+    const S = (x) => Math.sin(x * D2R), C = (x) => Math.cos(x * D2R);
+    const toD = (ms) => ms / 86400000 - 0.5 + 2440588 - 2451545;
+    const refMoon = (ms) => {                 // ecliptic lon/lat -> RA/Dec of date
+      const d = toD(ms), Tc = d / 36525, e = (23.439291 - 0.0130042 * Tc) * D2R;
+      const Lp = 218.3164477 + 13.176396474 * d, Dm = 297.8501921 + 12.190749117 * d;
+      const M = 357.5291092 + 0.98560028 * d, Mp = 134.9633964 + 13.064992953 * d;
+      const Fa = 93.2720950 + 13.229350449 * d;
+      const lon = Lp + 6.288774 * S(Mp) + 1.274027 * S(2 * Dm - Mp) + 0.658314 * S(2 * Dm)
+        + 0.213618 * S(2 * Mp) - 0.185116 * S(M) - 0.114332 * S(2 * Fa)
+        + 0.058793 * S(2 * Dm - 2 * Mp) + 0.057066 * S(2 * Dm - M - Mp)
+        + 0.053322 * S(2 * Dm + Mp) + 0.045758 * S(2 * Dm - M);
+      const lat = 5.128122 * S(Fa) + 0.280602 * S(Mp + Fa) + 0.277693 * S(Mp - Fa)
+        + 0.173237 * S(2 * Dm - Fa) + 0.055413 * S(2 * Dm - Mp + Fa) + 0.046271 * S(2 * Dm - Mp - Fa);
+      const l = lon * D2R, b = lat * D2R;
+      return { ra: Math.atan2(Math.sin(l) * Math.cos(e) - Math.tan(b) * Math.sin(e), Math.cos(l)) * R2D,
+        dec: Math.asin(Math.sin(b) * Math.cos(e) + Math.cos(b) * Math.sin(e) * Math.sin(l)) * R2D };
+    };
+    let worst = 0, n = 0;
+    for (let day = 0; day < 30; day++) {
+      const ms = Date.UTC(2026, 6, 1 + day, 6), m = moonPos(ms, LA, LO);
+      if (m.alt < 5) continue;
+      const r = refMoon(ms), rp = raDecToAzEl(r.ra, r.dec, ms, LA, LO);
+      worst = Math.max(worst, sepOf(m, rp)); n++;
+    }
+    approx(n > 8 ? 1 : 0, 1, 0, "moon: enough nights above 5° to test");
+    approx(worst, 0, 0.15, "moon tracks a truncated ELP over a lunation (was 1.19deg out)");
   }
 }
 

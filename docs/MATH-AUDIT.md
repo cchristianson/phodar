@@ -21,16 +21,29 @@ baseline, range and latitude.
 
 ## Findings
 
-| # | Finding | Typical | Worst measured |
+**All eight are fixed** (2026-07-30). The table records what each one was and
+what it is now; `npm run mathaudit` re-measures on demand.
+
+| # | Finding | Was | Now |
 | --- | --- | --- | --- |
-| 1 | ~~ENU frame built on a sphere, not the ellipsoid~~ | ~~0.1–0.3%~~ | **FIXED** |
-| 2 | ~~Local-vertical convergence between observers ignored~~ | ~~0.045° at 5 km~~ | **FIXED** |
-| 3 | Star catalog is J2000, used as if of-date | 0.29° | 0.37° |
-| 4 | Stars/Sun and planets drawn in different equinoxes | 0.46° | 0.46° |
-| 5 | Moon ephemeris truncated to one periodic term | 0.81° | 1.19° |
-| 6 | Refraction applied to the Moon only | 0.02° | 0.30° |
-| 7 | Angular size ignores the lens term the app itself fitted | 0.4–3% | 8.1% |
-| 8 | Sight-lines unrefracted while cross-checks are refracted | 0.09° at 10° el | 0.30° at 2° el |
+| 1 | ENU frame built on a sphere, not the ellipsoid | 0.1–0.56% of every distance | exact (ECEF) |
+| 2 | Local-vertical convergence between observers ignored | 0.045° at 5 km, 0.45° at 50 km | exact |
+| 3 | Star catalog is J2000, used as if of-date | 0.29–0.37° | precessed to date |
+| 4 | Stars/Sun and planets in different equinoxes | 0.457° | 0.086° |
+| 5 | Moon ephemeris truncated to one periodic term | 0.82° mean, 1.19° worst | 0.045° / 0.080° |
+| 6 | Refraction applied to the Moon only | inconsistent across layers | one model, every body |
+| 7 | Angular size ignores the lens term the app fitted | up to 8.1% | exact |
+| 8 | Sight-lines unrefracted | — | standard k=0.13, iterated |
+
+End to end, `analyze()` driven with exact ellipsoidal truth **plus a simulated
+atmosphere** now recovers position, altitude and true size to **sub-millimetre**
+at every baseline from 60 m to 50 km, at the equator, at 42°N and at 60°N.
+
+What remains, stated honestly: the intrinsic accuracy of the low-precision solar
+and lunar series (0.07° and 0.05°), and the fact that a standard refraction
+coefficient is not a measurement of the night's actual atmosphere. The
+regression test proves the pipeline *inverts* the refraction model with the
+right sign and magnitude — not that k=0.13 held on any given evening.
 
 ## 1 + 2 · Geodesy
 

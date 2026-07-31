@@ -9,7 +9,7 @@
 
 import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirFromAzElAt, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
-import { pixelDirFromAnchor, angSizeFromPoints } from "./projection.js";
+import { pixelDirFromAnchor, angSizeFromPoints, lensK } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
 
 /* ─── MULTI-MOMENT TRACK ────────────────────────────────────────────────
@@ -27,7 +27,7 @@ export function sourceTrack(s) {
   if (!s) return [];
   const placedShot = (m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs);
   const momentPt = (m, t0) => {
-    const ang = angSizeFromPoints(m.A?.p1, m.A?.p2, m.natW, m.natH, +m.fovH);
+    const ang = angSizeFromPoints(m.A?.p1, m.A?.p2, m.natW, m.natH, +m.fovH, lensK(m));
     const pt = { t: (+m.whenMs - t0) / 1000, az: +m.A.az, el: +m.A.el };
     if (isNum(ang) && +ang > 0) pt.ang = +ang;
     else if (isNum(m.A?.angManual) && +m.A.angManual > 0) pt.ang = +m.A.angManual;
