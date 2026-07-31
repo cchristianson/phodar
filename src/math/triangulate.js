@@ -5,7 +5,7 @@
    rating that says "poor" when it is poor.
    ============================================================ */
 
-import { D2R, R2D, dot, sub, scl, mag, enuFromGeo, geoFromEnu, dirFromAzEl } from "./geodesy.js";
+import { D2R, R2D, dot, sub, scl, mag, enuFromGeo, geoFromEnu, dirFromAzEl, dirFromAzElAt } from "./geodesy.js";
 import { isNum } from "./format.js";
 import { angSizeFromPoints } from "./projection.js";
 
@@ -59,7 +59,9 @@ export function analyze(sources, sigmaDeg = 1) {
   const obs = valid.map((s) => ({
     s,
     P: enuFromGeo(+s.lat, +s.lon, isNum(s.alt) ? +s.alt : 0, ref),
-    dA: dirFromAzEl(+s.A.az, +s.A.el),
+    /* az/el is measured against THIS observer's local vertical; rotate it into
+       the shared reference frame (identity for the reference observer) */
+    dA: dirFromAzElAt(+s.A.az, +s.A.el, +s.lat, +s.lon, ref),
   }));
 
   /* baseline & convergence */
@@ -110,7 +112,7 @@ export function analyze(sources, sigmaDeg = 1) {
   const obsB = obs.filter((o) => isNum(o.s.B.az) && isNum(o.s.B.el));
   if (obsB.length >= 2) {
     const solB = intersectLines(
-      obsB.map((o) => ({ P: o.P, d: dirFromAzEl(+o.s.B.az, +o.s.B.el) }))
+      obsB.map((o) => ({ P: o.P, d: dirFromAzElAt(+o.s.B.az, +o.s.B.el, +o.s.lat, +o.s.lon, ref) }))
     );
     if (solB && !solB.ts.some((t) => t <= 0)) {
       const timed = obsB.filter((o) => isNum(o.s.A.t) && isNum(o.s.B.t));

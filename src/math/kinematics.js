@@ -7,7 +7,7 @@
    kinematics that scale with an assumed distance.
    ============================================================ */
 
-import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "./geodesy.js";
+import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirFromAzElAt, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
 import { pixelDirFromAnchor, angSizeFromPoints } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
@@ -338,7 +338,9 @@ export function stereoVideo(sources, opts = {}) {
   obs.forEach((o) => {
     o.P = enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref);
     o.t = o.samp.map((p) => o.base + (+p.t));   // absolute clock (pre-offset)
-    o.d = o.samp.map((p) => dirFromAzEl(+p.az, +p.el));
+    /* each clip's az/el is in its OWN observer's local frame — rotate into
+       the shared reference frame (identity for the reference observer) */
+    o.d = o.samp.map((p) => dirFromAzElAt(+p.az, +p.el, +o.s.lat, +o.s.lon, ref));
     o.q = o.samp.map((p) => (p.q == null ? 1 : +p.q));
   });
   const dirAt = (ts, ds, t) => {
@@ -459,7 +461,7 @@ export function mixedStereo(sources) {
   const Ps = enuFromGeo(+still.lat, +still.lon, isNum(still.alt) ? +still.alt : 0, ref);
   const op = vid.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
   const vt = op.map((p) => +p.t);
-  const dirs = op.map((p) => dirFromAzEl(+p.az, +p.el));
+  const dirs = op.map((p) => dirFromAzElAt(+p.az, +p.el, +vid.lat, +vid.lon, ref));
   const dirAtV = (t) => {
     if (t <= vt[0]) return dirs[0];
     if (t >= vt[vt.length - 1]) return dirs[dirs.length - 1];
@@ -467,7 +469,7 @@ export function mixedStereo(sources) {
     const a = dirs[i], b = dirs[i + 1], u = (t - vt[i]) / Math.max(1e-9, vt[i + 1] - vt[i]);
     return unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
   };
-  const ds = dirFromAzEl(+still.A.az, +still.A.el);
+  const ds = dirFromAzElAt(+still.A.az, +still.A.el, +still.lat, +still.lon, ref);
   /* ANCHOR SEARCH: the clip time whose object ray best meets the still ray */
   let best = null;
   const scan = (lo, hi, step) => {

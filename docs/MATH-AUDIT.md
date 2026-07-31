@@ -23,8 +23,8 @@ baseline, range and latitude.
 
 | # | Finding | Typical | Worst measured |
 | --- | --- | --- | --- |
-| 1 | ENU frame built on a sphere, not the ellipsoid | 0.1–0.3% of every distance | 0.56% |
-| 2 | Local-vertical convergence between observers ignored | 0.045° at 5 km baseline | 0.45° at 50 km |
+| 1 | ~~ENU frame built on a sphere, not the ellipsoid~~ | ~~0.1–0.3%~~ | **FIXED** |
+| 2 | ~~Local-vertical convergence between observers ignored~~ | ~~0.045° at 5 km~~ | **FIXED** |
 | 3 | Star catalog is J2000, used as if of-date | 0.29° | 0.37° |
 | 4 | Stars/Sun and planets drawn in different equinoxes | 0.46° | 0.46° |
 | 5 | Moon ephemeris truncated to one periodic term | 0.81° | 1.19° |
@@ -72,12 +72,19 @@ observer's flat tangent frame. Over a baseline *b* the verticals diverge by
 pure elevation bias on every non-reference observer, which is why the altitude
 error above grows with baseline faster than the horizontal error does.
 
-**Both are fully fixable.** A prototype that keeps the same ENU frame but builds
-it exactly — observer positions via ECEF differenced onto the reference
-observer's true ENU basis, sight-lines rotated from each observer's own basis
-into it, `geoFromEnu` inverted through ECEF — recovers every scenario above to
-**sub-millimetre**. It is a change to three functions in `geodesy.js`; nothing
-downstream needs to know.
+**FIXED** (2026-07-30). `enuFromGeo`/`geoFromEnu` are now built exactly on the
+ellipsoid through ECEF, and `dirFromAzElAt()` rotates each observer's az/el from
+its own local basis into the reference frame (returning `dirFromAzEl` unchanged
+when the observer *is* the reference, so every single-observer path is
+bit-identical). Every scenario in the table above now recovers truth to **0.00 m**
+— the 50 km case went from 1071 m to sub-millimetre. Locked in by exact-truth
+assertions in `npm test`.
+
+One consequence worth recording: the curvature drop is now **inherent** in the z
+that `enuFromGeo` returns. `adsb.js` had been subtracting its own `d²(1−k)/2R`
+term on top of a flat frame; that would have double-counted (≈27 m at 20 km), so
+it now adds back refraction alone (`+k·d²/2R`). Any future caller doing its own
+curvature arithmetic must make the same adjustment.
 
 ## 3 + 4 + 5 + 6 · Astronomy
 
