@@ -91,9 +91,10 @@ flight needs nothing fancy.
    edges → position pins → sky placement (calibrate against terrain/Sun — this
    is a *pointing* test, so calibrate like you mean it).
 2. Set Moment B from the second photo pair for speed.
-3. Results step → **🛩 Drone flight-log check** → load the CSV/SRT → pick the
-   preset → read the grade. If the log is height-above-takeoff only, enter the
-   takeoff elevation.
+3. Results step → tap the small **🛩 calibration** link at the very bottom
+   (the check is deliberately unobtrusive — it's a test harness, not a
+   sighting feature) → load the CSV/SRT → pick the preset → read the grade.
+   If the log is height-above-takeoff only, enter the takeoff elevation.
 4. Generate the report — it now opens with a **"Drone flight-log ground
    truth"** section: the answer key, in writing, embedded in a self-contained
    file.

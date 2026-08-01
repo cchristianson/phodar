@@ -201,6 +201,17 @@ function parseSrtLog(text) {
 
 export function parseFlightLog(text, name = "") {
   if (!text || !text.trim()) return { ok: false, error: "empty file" };
+  /* a raw DJI Fly FlightRecord .txt read as text is a binary soup — name it
+     rather than complaining about missing CSV columns (verified against a
+     real Mini record: v13+ payloads are encrypted, only DJI's key service
+     can decode them, which is what Airdata/PhantomHelp do) */
+  const probe = text.slice(0, 2000);
+  let junk = 0;
+  for (const ch of probe) {
+    const c = ch.codePointAt(0);
+    if (c === 0xfffd || (c < 32 && c !== 9 && c !== 10 && c !== 13)) junk++;
+  }
+  if (junk > probe.length * 0.05) return { ok: false, error: "this is a binary flight record, not a decoded log — DJI's FlightRecord .txt is encrypted", binary: true };
   const isSrt = /\.srt$/i.test(name) || /-->\s*\d{2}:\d{2}/.test(text.slice(0, 4000));
   const r = isSrt ? parseSrtLog(text) : parseCsvLog(text);
   if (!r.ok) return r;

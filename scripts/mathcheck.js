@@ -2695,6 +2695,12 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const thin = thinLog(log.pts, 50);
   ok(thin.length === 50 && thin[0].tMs === log.t0Ms && thin[49].tMs === log.t1Ms, "thinLog keeps first/last at the target count");
 
+  // a raw (encrypted, binary) DJI FlightRecord .txt is named for what it is,
+  // not mis-diagnosed as a CSV with missing columns — the shape verified
+  // against a real Mini record read the way FileReader.readAsText would
+  const bin = parseFlightLog(")  " + "�".repeat(400), "FlightRecord_20260714_191224.txt");
+  ok(!bin.ok && bin.binary === true && /encrypted/.test(bin.error), "encrypted FlightRecord .txt → honest binary rejection");
+
   // timezone-honest datetime parsing
   approx(parseWhen("2026-08-01 17:00:00", true), Date.parse("2026-08-01T17:00:00Z"), 0, "parseWhen assumeUtc");
   approx(parseWhen("2026-08-01T17:00:00+00:00"), Date.parse("2026-08-01T17:00:00Z"), 0, "parseWhen explicit zone wins");

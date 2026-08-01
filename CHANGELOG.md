@@ -7,8 +7,10 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
-- **Drone flight-log check (calibration)**: upload your own drone's flight
-  record on the results step (Airdata CSV export, decoded DJI Fly CSV, or DJI
+- **Drone flight-log check (calibration)**: a ground-truth test harness,
+  deliberately unobtrusive — it lives behind a small 🛩 calibration link at
+  the foot of the results step. Upload your own drone's flight
+  record (Airdata CSV export, decoded DJI Fly CSV, or DJI
   video .SRT captions) and every output — direction, fix position, altitude,
   true size, speed, heading — is graded against the craft's logged GPS truth.
   Whole-log time sync (clock/timezone mismatches are found by geometry and

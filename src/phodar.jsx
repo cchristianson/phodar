@@ -655,7 +655,7 @@ const HELP_SECTIONS = [
       { h: "Cross-checks & plots", items: [
         { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory — read-only." },
         { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
-        { t: "🛩 Drone flight-log check (calibration)", d: "Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so)." },
+        { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so)." },
       ]},
     ],
     tips: [
@@ -10338,7 +10338,9 @@ function FlightLogCheck({ sources, fix, onLog }) {
     rd.onload = () => {
       const r = parseFlightLog(String(rd.result || ""), f.name);
       if (!r.ok) {
-        setErr(`Couldn't read that flight log (${r.error}). DJI Fly's raw .txt records are encrypted — export the flight as CSV from Airdata (or PhantomHelp's log viewer), or use the video's .SRT captions.`);
+        setErr(r.binary
+          ? "That's the phone's raw FlightRecord .txt — it's encrypted, so no app can read it directly. Upload it to Airdata (or PhantomHelp's log viewer) and export the flight as CSV, then load that here."
+          : `Couldn't read that flight log (${r.error}). Supported: an Airdata CSV export, a decoded DJI Fly CSV, or the video's .SRT captions.`);
         return;
       }
       setErr("");
@@ -10468,6 +10470,11 @@ function ResultsPanel({ sources, onLog }) {
   const result = useMemo(() => analyze(sources), [sources]);
   const trk = useMemo(() => analyzeTracks(sources), [sources]);
   const [soloT, setSoloT] = useState(0.42);
+  /* the drone-calibration check is an internal test harness, not a sighting
+     feature — it hides behind a small footer link (user decision) and only
+     stands open once a flight log is actually loaded */
+  const [calOpen, setCalOpen] = useState(false);
+  const hasLog = sources.some((s) => s.flightLog && s.flightLog.pts && s.flightLog.pts.length);
 
   const hasTrackContent = (trk.stereo && (trk.stereo.k || trk.stereo.overlapErr)) || trk.solo.length > 0;
   if (!result.ok && !hasTrackContent) return null;
@@ -10588,7 +10595,16 @@ function ResultsPanel({ sources, onLog }) {
       )}
 
       <AdsbCheck sources={sources} />
-      <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} />
+      {(hasLog || calOpen) ? (
+        <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} />
+      ) : (
+        <div style={{ textAlign: "right", padding: "0 14px 8px" }}>
+          <button onClick={() => setCalOpen(true)}
+            style={{ background: "none", border: "none", boxShadow: "none", color: "var(--dim)", opacity: 0.55, fontFamily: "var(--mono)", fontSize: 10, letterSpacing: ".08em", padding: 4, cursor: "pointer" }}>
+            🛩 calibration
+          </button>
+        </div>
+      )}
     </div>
   );
 }

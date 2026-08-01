@@ -496,8 +496,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   `FlightLogCheck` in ResultsPanel + a report section; protocol in
   `docs/DRONE-TEST.md`): upload the user's own drone log (Airdata CSV /
   decoded DJI Fly CSV / DJI .SRT captions — the raw DJI Fly `.txt` is
-  encrypted, the UI says so) and grade direction, fix position, size, alt,
-  speed against the craft's GPS. Design decisions that matter: the time
+  encrypted, the UI says so — binary rejection verified against a REAL Mini
+  FlightRecord: v13+ payloads are AES-encrypted, only DJI's key service
+  decodes them, which is what Airdata/PhantomHelp do) and grade direction,
+  fix position, size, alt, speed against the craft's GPS. DELIBERATELY
+  HIDDEN (user decision): it is a test harness, not a sighting feature, so
+  ResultsPanel shows only a dim "🛩 calibration" footer link until tapped —
+  but the full section stands open whenever a log is already loaded, so an
+  in-progress calibration (or an imported one) stays manageable.
+  Design decisions that matter: the time
   match scans the WHOLE log for the minimum worst-witness separation (a
   local-time export parsed in the wrong timezone is the common failure —
   a windowed search around the stated time would just miss), and altitude
