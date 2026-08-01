@@ -541,7 +541,8 @@ const HELP_SECTIONS = [
         { t: "☀ Brightness / ◐ Contrast", d: "Display-only sliders that lift a dark night shot so you can see the object — carries into the sky view and report; measurements still use the original. ↺ reset restores neutral." },
       ]},
       { h: "Video", items: [
-        { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time. The object's marks stamp whichever frame you fit them on — no separate 'use this frame' step." },
+        { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time. The object's marks stamp whichever frame you FIRST fit them on — no separate 'use this frame' step." },
+        { t: "📌 Object → this frame", d: "The fitted object belongs to ONE frame. Adjusting it while scrubbed elsewhere snaps the video back to that frame (editing a fit against another frame's pixels would silently corrupt the measurement). To deliberately move the object to the frame you're viewing, tap 📌 — its size and rotation are kept; drag it onto the object's position there. If the clip was already auto-tracked, re-run 🎞 Stabilize afterwards (the track was seeded on the old frame)." },
         { t: "⛰ Align on this frame", d: "Scrub to the moment with the clearest horizon or stars and lock it as the ALIGNMENT frame — the sky-view calibration is done there. It's independent of the frame the object was marked on (which may be zoomed in or horizon-free). Leave it unset and the object's own frame is used." },
       ]},
       { h: "Trimming the clip (✂)", items: [
@@ -1025,7 +1026,32 @@ function MediaMeasure({ src, update, wizard }) {
   };
 
   /* --- 3D shape fit: projected silhouette writes A.p1/p2; pose is stored --- */
+  /* FRAME GUARD (field ask): the fitted object belongs to ONE frame. The old
+     rule — "touching the shape on a new frame moves the mark time with it" —
+     made accidental corruption one stray tap away: scrub anywhere, brush the
+     placed object, and the marked frame silently moved while the fit still
+     described pixels from the old frame (tracker seed, angular size and the
+     sight-line all follow the corrupted stamp). Now: adjusting an EXISTING
+     fit while scrubbed off its frame SNAPS the video back instead of
+     editing; moving the object to another frame is the explicit 📌 button.
+     First placement (no shape yet) stays free on any frame. */
+  const objFrameOff = () =>
+    media?.kind === "video" && src.shapeFit && isNum(src.A?.videoTime) && isNum(vidT) &&
+    Math.abs(vidT - +src.A.videoTime) > 0.05;
+  const [frameMsg, setFrameMsg] = useState("");
+  const frameMsgT = useRef(null);
+  const flashFrame = (m) => {
+    setFrameMsg(m);
+    if (frameMsgT.current) clearTimeout(frameMsgT.current);
+    frameMsgT.current = setTimeout(() => setFrameMsg(""), 3200);
+  };
+  const snapToObjFrame = () => {
+    if (!isNum(src.A?.videoTime)) return;
+    seek(+src.A.videoTime);
+    flashFrame(`↩ jumped to the object's frame (${(+src.A.videoTime).toFixed(2)} s) — adjust it there, or 📌 re-place it on another frame`);
+  };
   const syncShape = (sf) => {
+    if (objFrameOff()) { snapToObjFrame(); return; }   // never edit a fit against another frame's pixels
     const pr = shapeProjNat(sf);
     const A2 = { ...src.A, p1: pr.p1, p2: pr.p2 };
     /* video: the marks belong to the frame they were DRAWN on — stamp it here.
@@ -1033,14 +1059,14 @@ function MediaMeasure({ src, update, wizard }) {
        disagree (fit on frame X while videoTime said Y or nothing): the sky
        view then baked the wrong frame and the object tracker seeded its
        template where the object wasn't — track lost immediately
-       (field-observed). Scrubbing alone never re-stamps; only touching the
-       shape on a new frame moves the mark time with it. */
+       (field-observed). With the frame guard above, this stamp can only ever
+       write the frame the fit actually describes. */
     if (media?.kind === "video" && isNum(vidT)) { A2.videoTime = vidT; A2.t = vidT.toFixed(2); }
     update({ shapeFit: sf, A: A2 });
   };
   const updShape = (patch) => { if (src.shapeFit) syncShape({ ...src.shapeFit, ...patch }); };
   const startShape = (kind) => {
-    if (src.shapeFit?.kind === kind) { setActive("shape"); return; }
+    if (src.shapeFit?.kind === kind) { setActive("shape"); if (objFrameOff()) snapToObjFrame(); return; }
     const cx = clampN(((dispW || 1) / 2 - view.ox) / (scale * view.z || 1), 0, natW || 100);
     const cy = clampN(((dispH || 1) / 2 - view.oy) / (scale * view.z || 1), 0, natH || 100);
     const base = {
@@ -2293,7 +2319,7 @@ function MediaMeasure({ src, update, wizard }) {
               ...(isVid ? [["cref", "🎥 Cam refs", "var(--green)", "rgba(90,200,140,.18)"]] : [])].map(([k, label, col, bg]) => (
               <button key={k} className="btn sm"
                 title={k === "shape" ? "Place, size and rotate the 3D object (measures its angular width)" : k === "cref" ? "Hand-mark fixed background features (a cloud edge, star, light) across frames to stabilize a clip the auto pass can't" : (isVid ? "Tap the object across frames to lay down its trajectory" : "Tap the object's path across the photo — where it was at each moment")}
-                onClick={() => setActive(k)}
+                onClick={() => { setActive(k); if (k === "shape" && objFrameOff()) snapToObjFrame(); }}
                 style={{ borderRadius: 0, border: "none", padding: "6px 10px", fontWeight: active === k ? 700 : 500, background: active === k ? bg : "transparent", color: active === k ? col : "var(--dim)" }}>
                 {label}
               </button>
@@ -2884,6 +2910,19 @@ function MediaMeasure({ src, update, wizard }) {
                   <button className="btn sm green" onClick={addCref} style={{ padding: "4px 8px" }} title="Add another reference feature">+</button>
                   {camRefs.length > 0 && <button className="btn sm" onClick={() => delCref(selCref)} style={{ padding: "4px 7px" }} title="Delete the selected reference">🗑</button>}
                 </>)}
+                {active === "shape" && objFrameOff() && (
+                  /* the explicit override the frame guard points at: move the
+                     OBJECT's frame to the one you're looking at (fit geometry
+                     kept — drag it onto the object here) */
+                  <button className="btn sm amber" style={{ padding: "6px 8px" }}
+                    title={`The object is fitted at ${(+src.A.videoTime).toFixed(2)} s — adjusting snaps back there. Tap to RE-PLACE it on THIS frame instead: size/rotation are kept, then drag it onto the object.${(src.objPath || []).length ? " The auto-track was seeded on the old frame — re-run 🎞 Stabilize after." : ""}`}
+                    onClick={() => {
+                      update({ A: { ...src.A, videoTime: vidT, t: vidT.toFixed(2) } });
+                      flashFrame(`📌 object moved to this frame (${vidT.toFixed(2)} s) — drag it onto the object${(src.objPath || []).length ? " · re-run 🎞 Stabilize (the track was seeded on the old frame)" : ""}`);
+                    }}>
+                    📌 Object → this frame
+                  </button>
+                )}
                 {wizard ? (
                   /* the ALIGNMENT frame is chosen HERE (cheap scrubbing) — the
                      sky view bakes it and the world alignment describes it.
@@ -2902,6 +2941,7 @@ function MediaMeasure({ src, update, wizard }) {
                 )}
                 {!wizard && <button className="btn sm teal" onClick={() => update({ B: { ...src.B, t: vidT.toFixed(2), videoTime: vidT } })}>Set time B</button>}
               </div>
+              {frameMsg && <div style={{ fontSize: 11.5, color: "var(--amber)", marginTop: 6, lineHeight: 1.45 }}>{frameMsg}</div>}
               </>)}
               {/* CAM REFS panel — manual stabilization fallback. Pick a reference
                  slot, then tap the same fixed background feature on each frame

@@ -803,7 +803,18 @@ terrain stay frozen and only the object moves. Build ladder:
    - The MARKS stamp their own frame: syncShape writes A.videoTime at fit
      time (video), so marks and marked-frame can never disagree (the old
      "✓ Use this frame"-only flow let the object template seed off the
-     wrong frame entirely).
+     wrong frame entirely). **FRAME GUARD (v2 of this rule, field ask)**:
+     stamping on EVERY shape touch made accidental corruption one stray tap
+     away — scrub anywhere, brush the placed object, and the marked frame
+     silently moved while the fit still described the old frame's pixels
+     (this is also what wrote the A.t placeholders that nearly disabled the
+     clock sync). Now syncShape REFUSES to edit an existing fit while
+     scrubbed off its frame — it snaps the video back instead (also on
+     ◆-tool re-entry) — and moving the object to another frame is the
+     explicit 📌 "Object → this frame" button (fit geometry kept; warns to
+     re-run Stabilize when an objPath was seeded on the old frame). First
+     placement stays free on any frame. Verified by driving the real app:
+     off-frame size jiggle must NOT re-stamp (and must snap back); 📌 must.
    - SEED DRIFT ANCHOR (stepObject opts.seed): the pixel template comes
      from the PREVIOUS frame, so each frame's small localization error
      seeds the next frame's template and the track slowly walks off the

@@ -37,6 +37,16 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Adjusting the placed 3D object can no longer corrupt its frame** (field
+  ask): the object belongs to the frame it was fitted on, but every shape
+  touch re-stamped that frame to wherever the video was scrubbed — one stray
+  tap while browsing frames silently moved the measurement. Now adjusting an
+  existing fit while off its frame snaps the video back to it (on tool
+  re-entry and as a gesture guard); deliberately moving the object to the
+  current frame is the explicit 📌 "Object → this frame" button, which keeps
+  the fit's size/rotation and warns to re-run Stabilize when the auto-track
+  was seeded on the old frame. First placement is unchanged — any frame.
+  Verified by driving the real app in a browser.
 - **The measure-step loupe now follows brightness/contrast live** (field
   report: "the loupe shows the version before adjustment"). The loupe is a
   canvas, so nothing repainted it when the B/C sliders moved while it was on
