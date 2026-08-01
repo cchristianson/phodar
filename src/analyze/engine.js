@@ -47,6 +47,28 @@ function sourceSummary(s, i) {
   };
 }
 
+/* human/AI-readable one-screen summary of a verdict — shared by the CLI and
+   the MCP server so every surface tells the same story */
+export function summarizeVerdict(v) {
+  const mph = (ms) => (ms == null ? "—" : (ms * 2.23694).toFixed(1) + " mph");
+  const L = [];
+  L.push(`sources: ${v.nSources}`);
+  for (const s of v.sources)
+    L.push(`  ${s.name}: ${s.position ? "pos ✓" : "pos ✗"} ${s.sightline ? "sight-line ✓" : "sight-line ✗"} · ${s.trackPts} track pts${s.missing.length ? " · MISSING " + s.missing.join(" + ") : ""}`);
+  if (v.fix?.ok) L.push(`fix: ${v.fix.rating} · ${v.fix.lat}, ${v.fix.lon} · ${v.fix.altAboveRefM} m up · ray miss ${v.fix.rmsMissM} m${v.fix.sizeAvgM != null ? ` · size ${v.fix.sizeAvgM} m` : ""}`);
+  else if (v.fix) L.push(`fix: not solved (${v.fix.reason})`);
+  if (v.trackStereo?.solved) L.push(`track stereo: ${v.trackStereo.n} pts · miss ${v.trackStereo.avgMissM} m · avg ${mph(v.trackStereo.avgSpeedMs)} peak ${mph(v.trackStereo.peakSpeedMs)}${v.trackStereo.clockSync?.applied ? ` · clock sync ${v.trackStereo.clockSync.deltaS} s` : ""}`);
+  else if (v.trackStereo) L.push(`track stereo: ${v.trackStereo.reason}`);
+  if (v.videoStereo?.solved) L.push(`video stereo: ${v.videoStereo.n} pts · miss ${v.videoStereo.meanMissM} m · avg ${mph(v.videoStereo.avgSpeedMs)}`);
+  if (v.flightLog?.ok) {
+    const c = v.flightLog.calibration;
+    L.push(`flight log: ${v.flightLog.samples} samples · calibration ${c?.grade ?? "—"}${c ? ` · sep ${c.sepMaxDeg}° · fix err ${c.fixErrM} m (${c.fixErrPct}%) · size ×${c.sizeRatio}` : ""}`);
+    for (const ck of v.flightLog.clocks || []) if (ck.sharp && Math.abs(ck.offsetS) > 5) L.push(`  ⏱ ${ck.name}: clock ~${ck.offsetS} s off (sharp, ${ck.bestSepDeg}°)`);
+  } else if (v.flightLog) L.push(`flight log: ${v.flightLog.reason}`);
+  for (const w of v.warnings) L.push(`⚠ ${w}`);
+  return L;
+}
+
 export function analyzeSession(input = {}) {
   const sources = Array.isArray(input.sources) ? input.sources
     : Array.isArray(input.session?.sources) ? input.session.sources : [];

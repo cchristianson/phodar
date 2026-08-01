@@ -66,6 +66,42 @@ curl -s https://<your-app>.up.railway.app/api/analyze \
 EOF
 ```
 
+## MCP server (bring your own AI)
+
+The same engine speaks the **Model Context Protocol**, so users drive phodar
+with their own AI subscription — no AI costs on phodar's side. MCP is an
+open standard: Claude, ChatGPT (custom connectors, developer mode, and the
+OpenAI Agents SDK), Gemini's SDKs, LangChain and most agent frameworks all
+consume remote MCP servers over the same Streamable-HTTP transport this
+serves. Stateless JSON responses, no OAuth required.
+
+```
+URL:   https://<your-app>.up.railway.app/mcp/<api-key>
+```
+
+The key rides the URL because every client can paste a URL, while header
+support varies (Authorization: Bearer and X-API-Key also work). A key in a
+URL can land in logs — hand out per-person keys and rotate freely.
+
+**Connect from Claude**: Settings → Connectors → Add custom connector →
+paste the URL. Then in any chat: attach your `.phodar.json` (and flight-log
+CSV) and ask for an analysis.
+
+**Connect from ChatGPT**: Settings → Connectors (developer mode) → Add →
+MCP server, paste the URL, no auth. Or in code, the Agents SDK / Responses
+API `mcp` tool with `server_url`.
+
+**Tools exposed**:
+- `analyze_session` — the full verdict from a session's measurements
+  (+ optional flight log): fix, stereo, clock sync, calibration grades,
+  warnings. Returns a text summary and the structured verdict.
+- `parse_flight_log` — inspect a drone log on its own (samples, span,
+  clock/altitude datums, first/mid/last states).
+
+The `initialize` response carries orientation instructions, so a connected
+AI knows the workflow (measure in the app → export share file → analyze
+here) without any prompt engineering by the user.
+
 ## CLI (same engine, no server)
 
 ```bash

@@ -449,7 +449,15 @@ fetch/DOM): sources JSON (+ optional flight-log text) → one verdict object
 calibration, per-witness clocks, warnings). Exposed as `scripts/analyze.mjs`
 (CLI) and `POST /api/analyze` (server; key-gated by PHODAR_API_KEYS,
 disabled until set; 32 MB body cap). Mathcheck-asserted end to end against
-synthetic exact truth. Phase 2 = raw-media ingestion (needs ffmpeg in the
+synthetic exact truth. **MCP server: DONE** (`/mcp/<key>`, same keys) — the
+engine as MCP tools for BYO-AI use (Claude, ChatGPT connectors/Agents SDK,
+Gemini, LangChain all speak Streamable HTTP). Hand-rolled STATELESS
+JSON-RPC in server/index.mjs: no session ids, plain JSON responses (spec-
+permitted; what both Claude and ChatGPT accept), GET → 405 (no server-push
+SSE), notifications → 202, key in URL path since header/OAuth support
+varies by client. initialize carries `instructions` orienting the AI
+(workflow + "strip mediaJpeg fields to shrink"). Keep it dependency-free
+and stateless — that is why it can ride the same Railway dyno. Phase 2 = raw-media ingestion (needs ffmpeg in the
 deploy image + auto-calibration); phase 3 = an agentic analyst wrapping this
 engine as tools. The engine consumes MEASUREMENTS — keep it pure and free of
 pixel work so it stays testable and server-safe.

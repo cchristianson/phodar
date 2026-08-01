@@ -17,6 +17,14 @@ Notable changes to Phodar. Format loosely follows
   (endpoint disabled until set). Deterministic and mathcheck-asserted end to
   end; raw-media ingestion and an agentic analyst layer are the documented
   next phases.
+- **MCP server (`/mcp/<key>`)**: the engine as Model Context Protocol tools
+  (`analyze_session`, `parse_flight_log`), so users analyze sightings with
+  their OWN AI subscription — Claude, ChatGPT (custom connectors / Agents
+  SDK), Gemini and most agent frameworks all speak MCP's Streamable-HTTP
+  transport. Hand-rolled stateless JSON-RPC (no dependencies), key in the
+  URL path because every client can paste a URL while header auth varies.
+  Full client lifecycle (initialize → tools/list → tools/call, auth and
+  error paths) verified against the real two-video drone session.
 
 ### Added (quality of life)
 - **Trajectory playback on the top-down plot**: when the stereo trajectory

@@ -625,6 +625,154 @@ async function apiAnalyze(req, res) {
   }
 }
 
+/* ---------- /mcp — Model Context Protocol server (BYO-AI access) ----------
+   The same analysis engine exposed as MCP tools so users drive it with
+   THEIR OWN AI subscription — Claude, ChatGPT (custom connectors /
+   developer mode / Agents SDK), Gemini SDKs, LangChain and friends all
+   speak MCP's Streamable HTTP transport. Hand-rolled JSON-RPC (repo ethos:
+   no dependencies), STATELESS mode (each POST answered directly; no
+   session ids, no server-push SSE — spec-permitted, and what both Claude
+   and ChatGPT accept). Auth reuses PHODAR_API_KEYS; because OAuth support
+   varies by client, the key can ride the URL path (/mcp/<key>) — every
+   client can paste a URL — or Authorization: Bearer / X-API-Key headers.
+   Keys in URLs can end up in logs; docs say to treat them as revocable. */
+const MCP_PROTOS = ["2024-11-05", "2025-03-26", "2025-06-18"];
+const MCP_INSTRUCTIONS =
+  "Phodar turns UFO/UAP sighting photos and videos into measured claims: triangulated position, altitude, true size, speed and heading, cross-checked against aircraft/satellites/stars/weather. " +
+  "These tools consume a SESSION's measurements — the .phodar.json file the phodar app exports via '💾 Share file' (or the sighting.phodar.json inside a bundle .zip). " +
+  "Workflow: the witness measures in the app (positions, sky placement, tracks), exports the share file, and you analyze it here — optionally with the drone's flight-log CSV when this is a calibration flight. " +
+  "The verdict includes honest quality grades and warnings; relay them faithfully, including 'poor' and every caveat. Large share files: you may delete mediaJpeg/detailJpeg fields before sending — the engine never reads pixels.";
+const MCP_TOOLS = [
+  {
+    name: "analyze_session",
+    title: "Analyze a phodar session",
+    description: "Run the full phodar analysis pipeline on a session's measurements (.phodar.json content): two-witness triangulated fix, visibility- and clock-aware trajectory stereo, dense two-video stereo, and — when a drone flight log is supplied — ground-truth calibration grades and per-witness clock checks. Returns a structured verdict plus a plain-text summary. Honest by design: incomplete witnesses and quality caveats are named, never hidden.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { description: "The parsed .phodar.json object ({sources:[...]}), or its raw JSON text. You may strip mediaJpeg/detailJpeg fields to shrink it — pixels are never read.", anyOf: [{ type: "object" }, { type: "string" }] },
+        flightLogText: { type: "string", description: "Optional drone flight log as text: Airdata CSV export, decoded DJI Fly CSV, or DJI video .SRT captions. Turns the analysis into a graded calibration against the craft's GPS truth." },
+        flightLogName: { type: "string", description: "Optional filename of the flight log (helps format detection, e.g. 'flight.csv' or 'clip.srt')." },
+        spanM: { type: "number", description: "True span of the craft in metres (DJI Mavic Mini 0.202, DJI Neo 0.157). Enables size grading." },
+        droneId: { type: "string", enum: ["mini1", "neo"], description: "Drone preset (sets spanM if not given)." },
+        homeElevM: { type: "number", description: "Takeoff ground elevation in metres MSL, for logs that only record height above takeoff." },
+      },
+      required: ["session"],
+    },
+  },
+  {
+    name: "parse_flight_log",
+    title: "Parse a drone flight log",
+    description: "Parse a drone flight record (Airdata CSV, decoded DJI Fly CSV, or DJI .SRT captions) and report what it contains: sample count, time span, whether it carries an absolute clock and absolute (MSL) altitude, and first/mid/last states. Raw DJI FlightRecord .txt files are encrypted and rejected with guidance.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The flight log file content as text." },
+        name: { type: "string", description: "Optional filename (helps format detection)." },
+      },
+      required: ["text"],
+    },
+  },
+];
+function mcpAuthKey(req, u, pathKey) {
+  const h = req.headers;
+  const bearer = /^Bearer\s+(.+)$/i.exec(String(h.authorization || ""));
+  return pathKey || (bearer && bearer[1]) || String(h["x-api-key"] || "") || u.searchParams.get("key") || "";
+}
+function mcpToolCall(name, args) {
+  if (name === "parse_flight_log") {
+    const r = parseFlightLogRef(String(args?.text ?? ""), String(args?.name ?? ""));
+    if (!r.ok) return { ok: false, error: r.error };
+    const pick = (p) => p && { tMs: p.tMs, lat: p.lat, lon: p.lon, altAbsM: p.altAbsM ?? null, altRelM: p.altRelM ?? null, speedMs: p.speedMs ?? null };
+    return {
+      ok: true, src: r.src, samples: r.n, spanS: +((r.t1Ms - r.t0Ms) / 1000).toFixed(1),
+      absoluteClock: !!r.absTime, absoluteAltitude: !!r.hasAbsAlt,
+      startsUtc: r.absTime ? new Date(r.t0Ms).toISOString() : null,
+      first: pick(r.pts[0]), mid: pick(r.pts[r.n >> 1]), last: pick(r.pts[r.n - 1]),
+    };
+  }
+  if (name === "analyze_session") {
+    let session = args?.session;
+    if (typeof session === "string") session = JSON.parse(session);
+    const verdict = analyzeSessionRef({
+      session, flightLogText: args?.flightLogText ?? null, flightLogName: args?.flightLogName,
+      spanM: args?.spanM, droneId: args?.droneId, homeElevM: args?.homeElevM,
+    });
+    return { ok: true, summary: summarizeVerdictRef(verdict).join("\n"), verdict };
+  }
+  throw Object.assign(new Error(`unknown tool: ${name}`), { code: -32602 });
+}
+let analyzeSessionRef, summarizeVerdictRef, parseFlightLogRef;
+async function mcpEnsureEngine() {
+  if (!analyzeSessionRef) {
+    const eng = await import("../src/analyze/engine.js");
+    const fl = await import("../src/checks/flightlog.js");
+    analyzeSessionRef = eng.analyzeSession; summarizeVerdictRef = eng.summarizeVerdict; parseFlightLogRef = fl.parseFlightLog;
+  }
+}
+async function apiMcp(req, res, u, pathKey) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, GET, OPTIONS",
+    "access-control-allow-headers": "content-type, authorization, x-api-key, mcp-protocol-version, mcp-session-id",
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
+  if (!API_KEYS.size) { res.writeHead(503, { ...cors, "content-type": "application/json" }); return res.end(JSON.stringify({ error: "MCP server not enabled (set PHODAR_API_KEYS)" })); }
+  if (!API_KEYS.has(mcpAuthKey(req, u, pathKey))) { res.writeHead(401, { ...cors, "content-type": "application/json" }); return res.end(JSON.stringify({ error: "invalid or missing API key — use /mcp/<key>, Authorization: Bearer, or X-API-Key" })); }
+  if (req.method === "GET") { res.writeHead(405, { ...cors, allow: "POST" }); return res.end(); } // no server-push stream in stateless mode
+  if (req.method !== "POST") { res.writeHead(405, { ...cors, allow: "POST" }); return res.end(); }
+  let body;
+  try {
+    body = await new Promise((resolve, reject) => {
+      const chunks = []; let size = 0;
+      req.on("data", (c) => { size += c.length; if (size > ANALYZE_MAX_BODY) { reject(new Error("body too large")); req.destroy(); } else chunks.push(c); });
+      req.on("end", () => resolve(Buffer.concat(chunks))); req.on("error", reject);
+    });
+  } catch (e) { res.writeHead(413, cors); return res.end(); }
+  let msg; try { msg = JSON.parse(body.toString("utf8")); } catch (e) {
+    res.writeHead(200, { ...cors, "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }));
+  }
+  await mcpEnsureEngine();
+  const one = (m) => {
+    const id = m?.id;
+    const reply = (result) => ({ jsonrpc: "2.0", id, result });
+    const fail = (code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
+    try {
+      switch (m?.method) {
+        case "initialize": {
+          const want = m.params?.protocolVersion;
+          return reply({
+            protocolVersion: MCP_PROTOS.includes(want) ? want : MCP_PROTOS[MCP_PROTOS.length - 1],
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "phodar", title: "Phodar sighting analysis", version: "1.0.0" },
+            instructions: MCP_INSTRUCTIONS,
+          });
+        }
+        case "ping": return reply({});
+        case "tools/list": return reply({ tools: MCP_TOOLS });
+        case "tools/call": {
+          try {
+            const out = mcpToolCall(m.params?.name, m.params?.arguments || {});
+            const text = out.ok === false ? `error: ${out.error}` : (out.summary || JSON.stringify(out, null, 1));
+            return reply({ content: [{ type: "text", text }], structuredContent: out, isError: out.ok === false });
+          } catch (e) {
+            if (e.code === -32602) return fail(-32602, e.message);
+            return reply({ content: [{ type: "text", text: `analysis failed: ${e.message || e}` }], isError: true });
+          }
+        }
+        default:
+          if (m?.method && String(m.method).startsWith("notifications/")) return null; // acknowledged silently
+          return fail(-32601, `method not found: ${m?.method}`);
+      }
+    } catch (e) { return fail(-32603, String(e.message || e)); }
+  };
+  const out = Array.isArray(msg) ? msg.map(one).filter(Boolean) : one(msg);
+  if (out == null || (Array.isArray(out) && !out.length)) { res.writeHead(202, cors); return res.end(); }
+  res.writeHead(200, { ...cors, "content-type": "application/json", "cache-control": "no-store" });
+  return res.end(JSON.stringify(out));
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
@@ -636,6 +784,14 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (u.pathname === "/api/analyze") return await apiAnalyze(req, res);
+    {
+      const mm = u.pathname === "/mcp" ? [null, null] : u.pathname.match(/^\/mcp\/([^/]+)$/);
+      if (mm) {
+        const wait = rateLimit(req, "query");
+        if (wait) { res.writeHead(429, { "content-type": "application/json", "retry-after": String(wait) }); return res.end(JSON.stringify({ error: "rate limited", retryAfter: wait })); }
+        return await apiMcp(req, res, u, mm[1] ? decodeURIComponent(mm[1]) : "");
+      }
+    }
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
     if (u.pathname === "/api/live") return await apiLive(u.searchParams, res);
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);
