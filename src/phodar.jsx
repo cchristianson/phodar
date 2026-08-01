@@ -1072,6 +1072,19 @@ function MediaMeasure({ src, update, wizard }) {
     magTimer.current = setTimeout(() => setShapeMag(false), 1100);
     requestAnimationFrame(() => requestAnimationFrame(() => drawLoupe({ x: sf.cx, y: sf.cy }, sf)));
   };
+  /* Moving brightness/contrast while the loupe was up showed STALE pixels
+     (field report: "the loupe shows the version before adjustment") — the
+     loupe is a canvas, so nothing repaints it when imgAdj changes. Re-pop it
+     on every B/C change while a small object is fitted: that's exactly when
+     the magnified view matters (the sliders exist to make a dim object
+     visible), and refreshing the timer keeps it up while you slide. */
+  const adjLive = `${src.imgAdj?.bri ?? 100}/${src.imgAdj?.con ?? 100}`;
+  const adjPrevRef = useRef(adjLive);
+  useEffect(() => {
+    if (adjPrevRef.current === adjLive) return;
+    adjPrevRef.current = adjLive;
+    if (src.shapeFit) shapeLoupeFor(src.shapeFit);
+  }, [adjLive]); // eslint-disable-line
 
   const rotRef = useRef(null);   // body-drag → 3D trackball
   const hDragRef = useRef(null); // center-grab → move
