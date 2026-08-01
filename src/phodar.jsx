@@ -482,6 +482,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "On the home screen", items: [
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1." },
+        { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours)." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
@@ -1859,7 +1860,9 @@ function MediaMeasure({ src, update, wizard }) {
       const name = `phodar-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.${ext}`;
       const file = new File([f], name, { type });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "PHODAR clip" });
+        /* files ONLY — a title/text beside files makes iOS "Save to Files"
+           write the title out as a stray text file next to the real one */
+        await navigator.share({ files: [file] });
         update({ rollSaved: true });
         /* honest about the format: iOS Photos takes mp4/mov, not webm — the
            in-app recorder picks mp4 first on Safari, so an iPhone clip is fine,
@@ -10699,6 +10702,14 @@ function unzipEntryText(u8, name) {
   return null;
 }
 
+/* sighting name (est.name) → filesystem-safe base for every export
+   filename; null when the sighting is unnamed (callers keep their legacy
+   default names, so nothing changes until a name is typed) */
+const slugName = (est) => {
+  const s = (est?.name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  return s || null;
+};
+
 const download = (name, payload, mime) => {
   try {
     const b = payload instanceof Blob ? payload : new Blob([payload], { type: mime });
@@ -12070,7 +12081,7 @@ ${windPhotoBlock}
     }
   }
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PHODAR sighting report</title><style>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${est?.name ? `${e2(est.name)} — PHODAR report` : "PHODAR sighting report"}</title><style>
 html,body{max-width:100%;overflow-x:hidden}
 body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif;color:#141414;max-width:760px;margin:32px auto;padding:0 18px;overflow-wrap:break-word}
 h1{font:800 22px ui-monospace,Menlo,monospace;letter-spacing:.12em}h1 span{color:#C77B14}
@@ -12089,7 +12100,7 @@ details.sec>*:last-child{margin-bottom:14px}
 @media print{.noprint{display:none}details.sec{border-top:none;margin-top:18px}details.sec>summary{cursor:auto}details.sec>summary::before{content:""}}
 @media(max-width:640px){body{margin:16px auto;padding:0 12px}table{table-layout:fixed;font-size:12px}}
 </style></head><body>
-<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:2px"><img src="data:image/svg+xml,${encodeURIComponent(phodarLogoRaw)}" alt="PHODAR" style="height:48px;width:auto;border-radius:8px;display:block"/><span style="font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#555">SIGHTING REPORT</span></div>
+<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:2px"><img src="data:image/svg+xml,${encodeURIComponent(phodarLogoRaw)}" alt="PHODAR" style="height:48px;width:auto;border-radius:8px;display:block"/><span style="font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#555">SIGHTING REPORT</span>${est?.name ? `<span style="font:700 17px Georgia,'Times New Roman',serif;color:#1c1c1c">${e2(est.name)}</span>` : ""}</div>
 <div class="cap">Generated ${new Date().toLocaleString()} · photogrammetric detection &amp; ranging · phodar v1</div>
 <h2>Observers (${packed.length})</h2>
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
@@ -12196,7 +12207,7 @@ function MomentTimeCtl({ m, onChange }) {
   );
 }
 
-function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
+function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -12266,6 +12277,16 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
       {impMsg && <div style={{ fontSize: 12, color: impMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, textAlign: "center" }}>{impMsg}</div>}
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
+          <ML>Sighting name</ML>
+          <input value={est?.name || ""} placeholder="e.g. Applegate orb — Jul 14"
+            onChange={(e) => onName(e.target.value)} />
+          <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
+            Optional — becomes the report's title and the filename of every export (report, share file, bundle).
+          </div>
+        </div>
+      )}
+      {real.length > 0 && (
+        <div className="card" style={{ margin: "10px 0 0" }}>
           <ML>This sighting — {real.length} observer{real.length > 1 ? "s" : ""}</ML>
           {sources.map((s, i) => {
             const moments = s.moments || [];
@@ -12480,10 +12501,15 @@ function ReportView({ sources, est, onBack }) {
        then the ready blob goes to an explicit 💾 button (a fresh gesture)
        rather than pretending it saved. */
     const standalone = (() => { try { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches); } catch (e) { return false; } })();
-    const zf = new File([blob], "phodar-sighting.zip", { type: "application/zip" });
+    /* the OUTER filename carries the sighting name; the entries inside the
+       zip keep their fixed names — import looks for sighting.phodar.json */
+    const zipName = `${slugName(est) || "phodar-sighting"}.zip`;
+    const zf = new File([blob], zipName, { type: "application/zip" });
     if (standalone && navigator.canShare && navigator.canShare({ files: [zf] })) {
       try {
-        await navigator.share({ files: [zf], title: "PHODAR sighting bundle" });
+        /* files ONLY — a title beside files makes iOS "Save to Files" write
+           the title out as a stray 22-byte text file (field report) */
+        await navigator.share({ files: [zf] });
         setMsg(`✓ bundle handed to the share sheet — ${label}`);
         return;
       } catch (e) {
@@ -12493,7 +12519,7 @@ function ReportView({ sources, est, onBack }) {
       setMsg("");
       return;
     }
-    if (download("phodar-sighting.zip", blob, "application/zip"))
+    if (download(zipName, blob, "application/zip"))
       setMsg(`✓ downloading bundle — ${label}`);
     else if (navigator.canShare && navigator.canShare({ files: [zf] })) { setPendingZip({ file: zf, label }); setMsg(""); }
     else setMsg("Bundle download needs the deployed app — this preview can't save binaries.");
@@ -12503,12 +12529,12 @@ function ReportView({ sources, est, onBack }) {
   const savePendingZip = async () => {
     if (!pendingZip) return;
     try {
-      await navigator.share({ files: [pendingZip.file], title: "PHODAR sighting bundle" });
+      await navigator.share({ files: [pendingZip.file] }); // files only — no stray text file
       setMsg(`✓ bundle handed to the share sheet — ${pendingZip.label}`);
       setPendingZip(null);
     } catch (e) {
       if (e && e.name === "AbortError") return; // sheet closed — keep the button for another try
-      if (download("phodar-sighting.zip", pendingZip.file, "application/zip")) { setMsg(`✓ downloading bundle — ${pendingZip.label}`); setPendingZip(null); }
+      if (download(pendingZip.file.name, pendingZip.file, "application/zip")) { setMsg(`✓ downloading bundle — ${pendingZip.label}`); setPendingZip(null); }
       else setMsg("Couldn't hand the bundle to the share sheet — try again, or use the report page's share button.");
     }
   };
@@ -12517,14 +12543,15 @@ function ReportView({ sources, est, onBack }) {
   const shareReportHtml = async () => {
     let html = prevHtml;
     if (!html) { wakeHold(); try { html = await reportHtml(sources, est, { exhibits: "full" }); } finally { wakeRelease(); } }
+    const repName = `${slugName(est) || "phodar"}-report.html`;
     try {
-      const file = new File([html], "phodar-report.html", { type: "text/html" });
+      const file = new File([html], repName, { type: "text/html" });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "PHODAR sighting report" });
+        await navigator.share({ files: [file] }); // files only — no stray text file
         return;
       }
     } catch (e) { if (e && e.name === "AbortError") return; }
-    deliver("phodar-report.html", html, "text/html");
+    deliver(repName, html, "text/html");
   };
   const openReport = async () => { setMsg("packing…"); wakeHold(); try { setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); } finally { wakeRelease(); } setMsg(""); };
   return (
@@ -12747,7 +12774,7 @@ export default function App() {
   const shareJsonNow = async () => {
     wakeHold(); // media packing (thumbnails/crops) can run long on big sightings
     let j; try { j = await buildShareJson(sources, est); } finally { wakeRelease(); }
-    const dl = download("sighting.phodar.json", j, "application/json");
+    const dl = download(`${slugName(est) || "sighting"}.phodar.json`, j, "application/json");
     let cp = false;
     try { await navigator.clipboard.writeText(j); cp = true; } catch (e) { }
     alert(cp ? "Share file copied to clipboard ✓" + (dl ? " (download also attempted)" : "") : dl ? "Download started" : "Open the Report page to copy the share file.");
@@ -12850,7 +12877,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")}
+    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => setEst((e) => ({ ...e, name }))} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")}
       onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
       unitsImp={unitsImp} onToggleUnits={toggleUnits} appMode={appMode} onSetMode={setMode} />;
     return (

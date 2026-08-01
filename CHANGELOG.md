@@ -6,7 +6,16 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Added (quality of life)
+- **Sighting name**: an optional name field on the home screen that becomes
+  the report's title/header and the filename of every export — report .html,
+  .phodar.json share file, and the .zip bundle.
+
 ### Fixed
+- **Stray "text" file beside share-sheet saves**: passing a `title` alongside
+  `files` to `navigator.share` makes iOS "Save to Files" write the title out
+  as a separate 22-byte text file (field report). All file shares now pass
+  files only.
 - **Bundle download in the installed PWA**: a home-screen web app has no
   browser download manager, so the .zip's `<a download>` click was a silent
   no-op — the app said "✓ downloading bundle" while nothing was saved (field
