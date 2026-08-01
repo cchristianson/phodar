@@ -311,11 +311,99 @@ export function analyzeTracks(sources) {
   let stereo = null;
   if (withT.length >= 2) {
     const ref = { lat: +withT[0].s.lat, lon: +withT[0].s.lon, alt: isNum(withT[0].s.alt) ? +withT[0].s.alt : 0 };
-    const obs = withT.map((o) => ({
-      ...o,
-      P: enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref),
-      segs: trackSegments(o.dirs.map((d) => d.ct)),
-    }));
+    /* ABSOLUTE CLOCKS: A.t anchors a track to a common clock when the user
+       set one; otherwise, when EVERY witness carries a capture time and none
+       used A.t, each track is anchored at whenMs + video t. Without this,
+       two clips' tracks align at their recording STARTS — silently wrong by
+       the difference in start times (field case: 39 s). */
+    /* A.t is a deliberate common-clock anchor only when it DIFFERS from the
+       source's own video reference: ct = A.t + (p.t − videoTime), so an A.t
+       equal to videoTime (or 0 on a photo/plain track) is an identity
+       placeholder that anchors nothing — field data carried both patterns
+       ("0.00", and A.t == videoTime written by a wizard flow). */
+    const anchored = withT.some((o) => {
+      if (!isNum(o.s.A?.t)) return false;
+      const vref = isNum(o.s.A?.videoTime) ? +o.s.A.videoTime : 0;
+      return Math.abs(+o.s.A.t - vref) > 0.5;
+    });
+    const useWhen = !anchored && withT.every((o) => isNum(o.s.whenMs));
+    let obs = withT.map((o) => {
+      const dirs = useWhen ? o.dirs.map((d) => ({ ...d, ct: d.ct + (+o.s.whenMs / 1000) })) : o.dirs;
+      return { ...o, dirs, P: enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref) };
+    });
+    /* GEOMETRIC CLOCK SYNC (two witnesses): capture clocks lie — field case:
+       one video's captured time was ~20 min wrong, and even hand-corrected
+       to the minute it sat ~40 s off (proven against the drone's own flight
+       log). The object's motion is the shared signal: search the relative
+       offset that minimises mean ray-miss over shared-visibility instants,
+       and ADOPT it only when the minimum is DECISIVE — a hovering object
+       fits every offset equally, and a flat minimum must never invent a
+       shift. A ±45 s window covers clock drift and start-vs-end stamps;
+       when the tracks don't overlap AT ALL, a wide coarse RESCUE sweep
+       (±30 min) hunts for where they geometrically meet — the 20-minute
+       class of error. */
+    let sync = null;
+    if (obs.length === 2 && useWhen) {
+      const T = obs.map((o) => o.dirs.map((d) => d.ct));
+      const D = obs.map((o) => o.dirs.map((d) => d.d));
+      const dirAtL = (ts, ds, t) => {
+        if (t <= ts[0]) return ds[0];
+        if (t >= ts[ts.length - 1]) return ds[ds.length - 1];
+        let i = 0; while (i < ts.length - 2 && ts[i + 1] < t) i++;
+        const a = ds[i], b = ds[i + 1], u = (t - ts[i]) / Math.max(1e-9, ts[i + 1] - ts[i]);
+        return unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
+      };
+      const triAt = (delta, cap = 80) => {
+        const T1 = T[1].map((x) => x + delta);
+        const w0 = Math.max(T[0][0], T1[0]), w1 = Math.min(T[0][T[0].length - 1], T1[T1.length - 1]);
+        if (!(w1 > w0)) return null;
+        let sh = interSegments(trackSegments(T[0]), trackSegments(T1))
+          .map(([a, b]) => [Math.max(a, w0), Math.min(b, w1)]).filter(([a, b]) => b > a);
+        if (!sh.length) return null;
+        let ts = T[0].filter((x) => inSegments(sh, x));
+        if (ts.length > cap) { const st = Math.ceil(ts.length / cap); ts = ts.filter((_, i) => i % st === 0); }
+        if (ts.length < 5) return null;
+        let s = 0, n = 0;
+        for (const t of ts) {
+          const sol = intersectLines([{ P: obs[0].P, d: dirAtL(T[0], D[0], t) }, { P: obs[1].P, d: dirAtL(T1, D[1], t) }]);
+          if (!sol || sol.ts.some((x) => x <= 0)) continue;
+          s += sol.rmsMiss; n++;
+        }
+        return n >= 5 ? { miss: s / n, n } : null;
+      };
+      const scan = (lo, hi, step) => {
+        let bst = null;
+        for (let dl = lo; dl <= hi + 1e-9; dl += step) {
+          const r = triAt(dl);
+          if (r && (!bst || r.miss < bst.miss)) bst = { delta: dl, ...r };
+        }
+        return bst;
+      };
+      const base = triAt(0);
+      let best = scan(-45, 45, 1);
+      if (!best && !base) {
+        const spanMin = Math.min(T[0][T[0].length - 1] - T[0][0], T[1][T[1].length - 1] - T[1][0]);
+        best = scan(-1800, 1800, Math.max(2, spanMin / 6));
+        if (best) best.rescued = true;
+      }
+      if (best) {
+        const fine = scan(best.delta - 1.6, best.delta + 1.6, 0.1);
+        if (fine && fine.miss < best.miss) best = { ...best, delta: fine.delta, miss: fine.miss, n: fine.n };
+        const off = [triAt(best.delta - 3), triAt(best.delta + 3)].filter(Boolean);
+        const rise = off.length ? Math.min(...off.map((r) => r.miss)) - best.miss : 0;
+        const sharp = rise > Math.max(0.6, best.miss * 0.4);
+        const beats = !base || best.miss < base.miss * 0.55;
+        if (Math.abs(best.delta) > 1.2 && sharp && beats) {
+          obs = obs.map((o, i) => (i === 0 ? o : { ...o, dirs: o.dirs.map((d) => ({ ...d, ct: d.ct + best.delta })) }));
+          sync = { applied: true, delta: +best.delta.toFixed(2), rescued: !!best.rescued, rise: +rise.toFixed(2) };
+        } else {
+          sync = { applied: false, delta: +best.delta.toFixed(2), flat: !sharp };
+        }
+      } else if (!base) {
+        sync = { applied: false, searchedWide: true };
+      }
+    }
+    obs = obs.map((o) => ({ ...o, segs: trackSegments(o.dirs.map((d) => d.ct)) }));
     const t0 = Math.max(...obs.map((o) => o.dirs[0].ct));
     const t1 = Math.min(...obs.map((o) => o.dirs[o.dirs.length - 1].ct));
     /* the span every witness ACTUALLY saw — triangulating inside another
@@ -324,8 +412,8 @@ export function analyzeTracks(sources) {
     for (let i = 1; i < obs.length; i++) shared = interSegments(shared, obs[i].segs);
     shared = shared.map(([a, b]) => [Math.max(a, t0), Math.min(b, t1)]).filter(([a, b]) => b > a);
     const sharedDur = segsDur(shared);
-    if (!(t1 > t0)) stereo = { overlapErr: true };
-    else if (!(sharedDur > 0)) stereo = { overlapErr: true, noShared: true };
+    if (!(t1 > t0)) stereo = { overlapErr: true, sync };
+    else if (!(sharedDur > 0)) stereo = { overlapErr: true, noShared: true, sync };
     else {
       let ts = [...new Set(obs.flatMap((o) => o.dirs.map((d) => +d.ct.toFixed(3))))]
         .filter((t) => t >= t0 && t <= t1 && inSegments(shared, t)).sort((a, b) => a - b);
@@ -345,9 +433,9 @@ export function analyzeTracks(sources) {
       }
       if (pos.length >= 3) {
         const k = kinematics(times, pos);
-        if (k) stereo = { k, times, pos, ref, avgMiss: missSum / pos.length, window: [t0, t1], nObs: obs.length, sharedDur, cutDur: Math.max(0, (t1 - t0) - sharedDur), sharedSegs: shared.length };
+        if (k) stereo = { k, times, pos, ref, avgMiss: missSum / pos.length, window: [t0, t1], nObs: obs.length, sharedDur, cutDur: Math.max(0, (t1 - t0) - sharedDur), sharedSegs: shared.length, sync };
       }
-      if (!stereo) stereo = pos.length ? { sparse: true } : { overlapErr: true };
+      if (!stereo) stereo = pos.length ? { sparse: true, sync } : { overlapErr: true, sync };
     }
   }
   return { stereo, solo };

@@ -23,7 +23,7 @@ import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/trian
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
-import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibration, DRONE_PRESETS } from "./checks/flightlog.js";
+import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibration, witnessClockCheck, witnessStatedMs, DRONE_PRESETS } from "./checks/flightlog.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
@@ -193,6 +193,11 @@ function TrajectoryStereoSection({ stereo }) {
       {stereo.cutDur > 0.5 && (
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>
           ◔ Only shared visibility is triangulated: {stereo.sharedDur.toFixed(1)} s where every witness had the object, {stereo.cutDur.toFixed(1)} s ignored where one lost sight (interpolating across a blind stretch would fabricate a path nobody saw).
+        </div>
+      )}
+      {stereo.sync && stereo.sync.applied && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>
+          ⏱ The witnesses' clocks disagreed: the second track was shifted <b>{Math.abs(stereo.sync.delta) > 90 ? `${(stereo.sync.delta / 60).toFixed(1)} min` : `${stereo.sync.delta.toFixed(1)} s`}</b> to where the sight-lines sharply intersect{stereo.sync.rescued ? " (found by a wide search — one capture time was far off)" : ""}. The object's own motion pinned this alignment; verify the capture times on the photo steps.
         </div>
       )}
       <div style={{ marginTop: 8, fontSize: 11, color: "var(--dim)" }}>
@@ -661,10 +666,11 @@ const HELP_SECTIONS = [
       { h: "Cross-checks & plots", items: [
         { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory — read-only." },
         { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
-        { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so)." },
+        { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so). It also runs a per-witness ⏱ clock check — one sight-line swept against the whole flight is the sharpest clock reference there is, and a capture time that's seconds or minutes wrong gets named with the offset." },
       ]},
     ],
     tips: [
+      "Two witnesses' capture clocks rarely agree perfectly — and sometimes a video's recorded time is minutes wrong. The triangulated trajectory auto-aligns the witnesses' tracks by the object's own motion (searching the time offset where the sight-lines sharply intersect) and says so when it shifted one; a flat minimum (hovering object) is never “corrected”. That fixes the clocks relative to each other — the drone flight-log check can pin them absolutely.",
       "“No ADS-B aircraft in range” rules out ADS-B traffic, not aircraft. Phodar queries volunteer 1090 MHz networks, which miss two whole classes: aircraft not transmitting ADS-B at all (in the US it's only required in Class A/B/C, above 10,000 ft and inside the Mode C veil — so a light aircraft on a local flight often carries none, and anything without an electrical system is permanently exempt), and aircraft flying too low for the nearest volunteer receiver to see over the horizon.",
       "That is why a small plane can be missing here and still show on a commercial tracker: those blend in multilateration across a much denser receiver network, plus FAA radar feeds, neither of which any open network provides. If you want the traffic over YOUR house accounted for, the real answer is a receiver at your house — see docs/DATA-SOURCES.md.",
     ],
@@ -10313,13 +10319,18 @@ function FlightLogCheck({ sources, fix, onLog }) {
     if (!log || !valid.length) return null;
     const spanM = isNum(log.spanM) ? +log.spanM : null;
     const homeElevM = isNum(log.homeElevM) ? +log.homeElevM : null;
-    const whenMs = valid.find((s) => isNum(s.whenMs))?.whenMs ?? null;
+    const w0 = valid.find((s) => isNum(s.whenMs));
+    const whenMs = w0 ? witnessStatedMs(w0) : null; // the MARK moment (capture + video t)
     const inSpan = log.absTime && whenMs != null && whenMs >= log.t0Ms - 2000 && whenMs <= log.t1Ms + 2000;
     const stated = inSpan ? calibrationSummary({ sources: valid, fix, pts: log.pts, tMs: +whenMs, spanM, homeElevM }) : null;
     const bestT = syncLogTime(valid, log.pts, spanM, homeElevM);
     const best = bestT ? calibrationSummary({ sources: valid, fix, pts: log.pts, tMs: bestT.tMs, spanM, homeElevM }) : null;
     const use = best || stated;
-    return { whenMs, inSpan, stated, best, use, grade: gradeCalibration(use) };
+    /* per-witness clock check: the log is the sharpest clock reference there
+       is (field case: a hand-corrected capture time still ~41 s off, exposed
+       at 0.13° sharp) */
+    const clocks = log.absTime ? valid.map((s) => witnessClockCheck(s, log.pts, spanM, homeElevM)) : [];
+    return { whenMs, inSpan, stated, best, use, grade: gradeCalibration(use), clocks };
   }, [log, sources, fix]);
   /* render even with NO complete observer — an opened section that shows
      nothing reads as a dead button (field report); say what's missing instead */
@@ -10445,6 +10456,14 @@ function FlightLogCheck({ sources, fix, onLog }) {
                     {p.ownSep != null && <> (<span style={{ color: p.ownSep < 1 ? "var(--teal)" : "var(--amber)" }}>{p.ownSep.toFixed(2)}°</span> at this photo's own time)</>}
                     {" · "}drone at {p.az.toFixed(1)}°/{p.el.toFixed(1)}° (witness {(+w.A.az).toFixed(1)}°/{(+w.A.el).toFixed(1)}°) · {fmtLenShort(p.rangeM)}
                     {p.predAng != null && <> · would appear <span style={{ color: "var(--teal)" }}>{p.predAng.toFixed(3)}°</span>{m != null && <> vs measured <span style={{ color: "var(--amber)" }}>{m.toFixed(3)}°</span></>}</>}
+                    {(() => {
+                      const ck = cmp.clocks && cmp.clocks[i];
+                      return ck && ck.sharp && Math.abs(ck.dtS) > 5 ? (
+                        <div style={{ color: "var(--amber)", marginTop: 2 }}>
+                          ⏱ this witness's clock looks ~{Math.abs(ck.dtS) > 90 ? `${(ck.dtS / 60).toFixed(1)} min` : `${ck.dtS.toFixed(0)} s`} off — its sight-line matches the drone <b>sharply</b> ({ck.bestSep.toFixed(2)}°) at that offset. Fix the capture time on the photo step.
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
                 );
               })}
@@ -11345,6 +11364,7 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
     `</table>` +
     (tr.stereo.cutDur > 0.5 ? `<p class="cap">Only genuinely shared visibility is triangulated: ${tr.stereo.sharedDur.toFixed(1)} s where every witness had the object; ${tr.stereo.cutDur.toFixed(1)} s of the time overlap was ignored where one witness had lost sight (interpolating a blind stretch would fabricate a path nobody observed).</p>` : "") +
+    (tr.stereo.sync && tr.stereo.sync.applied ? `<p class="cap">⏱ The witnesses' capture clocks disagreed: the second track was shifted <b>${Math.abs(tr.stereo.sync.delta) > 90 ? (tr.stereo.sync.delta / 60).toFixed(1) + " min" : tr.stereo.sync.delta.toFixed(1) + " s"}</b> to the offset where the sight-lines sharply intersect${tr.stereo.sync.rescued ? " (recovered by a wide search — one capture time was far off)" : ""}. The object's own motion pinned this alignment.</p>` : "") +
     reportTrajSvg(tr.stereo.k) : "";
   const soloKin = (!tr.stereo?.k && tr.solo?.length) ? (() => {
     const s0 = tr.solo[0];

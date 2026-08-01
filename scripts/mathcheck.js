@@ -31,7 +31,7 @@ import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
 import { parseAirports } from "../src/checks/airports.js";
-import { parseFlightLog, parseWhen, thinLog, logStateAt, droneAltM, droneAzElRange, logMomentPer, syncLogTime, calibrationSummary, gradeCalibration, DRONE_PRESETS } from "../src/checks/flightlog.js";
+import { parseFlightLog, parseWhen, thinLog, logStateAt, droneAltM, droneAzElRange, logMomentPer, syncLogTime, calibrationSummary, gradeCalibration, witnessClockCheck, witnessStatedMs, DRONE_PRESETS } from "../src/checks/flightlog.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -2668,6 +2668,61 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(sv.cutDur > 6, `blind stretch reported as ignored (${sv.cutDur.toFixed(1)} s)`);
 }
 
+// --- Geometric clock sync: capture clocks lie; the object's motion doesn't ---
+// Field case: one video's app-captured time was ~20 min wrong; hand-corrected
+// to the minute it still sat ~41 s off (proven against the drone's own log).
+// The stereo pipeline must recover decisive offsets from geometry alone —
+// and must NOT invent a shift when the minimum is flat (a hovering object
+// fits every offset equally).
+{
+  head("geometric clock sync");
+  const ref = { lat: 42.164, lon: -123.648, alt: 0 };
+  const truthAt = (t) => (t <= 10 ? [100 + 10 * t, 300, 50] : [200, 300 + 12 * (t - 10), 50]);
+  const obsDef = [{ ...ref }, { ...geoFromEnu([300, 0, 0], ref), alt: 0 }];
+  const azelFor = (o, t, tr = truthAt) => {
+    const g = geoFromEnu(tr(t), ref);
+    return dirToAzEl(unit(enuFromGeo(g.lat, g.lon, g.alt, o)));
+  };
+  const WHEN = Date.parse("2026-08-01T17:20:00Z");
+  const mkSrc = (o, name, whenErrS, tr = truthAt) => {
+    const track = [];
+    for (let t = 0; t <= 20 + 1e-9; t += 0.5) track.push({ t: +t.toFixed(1), ...azelFor(o, t, tr) });
+    // the witness's CLAIMED capture time is wrong by whenErrS
+    return { name, lat: o.lat, lon: o.lon, alt: o.alt, whenMs: WHEN + whenErrS * 1000, A: {}, B: {}, track };
+  };
+  // 25 s clock error → recovered by the ±45 s scan
+  {
+    const trk = analyzeTracks([mkSrc(obsDef[0], "A", 0), mkSrc(obsDef[1], "B", 25)]);
+    ok(!!(trk.stereo && trk.stereo.k), "stereo solves through a 25 s clock error");
+    ok(!!(trk.stereo.sync && trk.stereo.sync.applied), "the offset was adopted (decisive minimum)");
+    approx(trk.stereo.sync.delta, -25, 0.4, "recovered clock error (s)");
+    let worst = 0;
+    for (let i = 0; i < trk.stereo.times.length; i++) {
+      const tTrue = trk.stereo.times[i] - WHEN / 1000;
+      worst = Math.max(worst, mag(sub(trk.stereo.pos[i], truthAt(tTrue))));
+    }
+    approx(worst, 0, 1.5, "positions on the truth path after sync (m worst)");
+  }
+  // 20-minute class: tracks don't overlap at all → wide rescue finds them
+  {
+    const trk = analyzeTracks([mkSrc(obsDef[0], "A", 0), mkSrc(obsDef[1], "B", 1200)]);
+    ok(!!(trk.stereo && trk.stereo.k && trk.stereo.sync && trk.stereo.sync.applied && trk.stereo.sync.rescued),
+      "a 20-minute capture-time error is rescued by the wide search");
+    approx(trk.stereo.sync.delta, -1200, 0.4, "recovered 20-minute error (s)");
+  }
+  // hover: every offset fits equally — the sync must refuse to invent one
+  {
+    const hover = () => [150, 300, 40];
+    const trk = analyzeTracks([mkSrc(obsDef[0], "A", 0, hover), mkSrc(obsDef[1], "B", 25, hover)]);
+    ok(!(trk.stereo && trk.stereo.sync && trk.stereo.sync.applied), "a hovering object (flat minimum) adopts NO shift");
+  }
+  // clocks agreed all along → no shift invented, path solves as before
+  {
+    const trk = analyzeTracks([mkSrc(obsDef[0], "A", 0), mkSrc(obsDef[1], "B", 0)]);
+    ok(!!(trk.stereo && trk.stereo.k) && !(trk.stereo.sync && trk.stereo.sync.applied), "aligned clocks pass through untouched");
+  }
+}
+
 // --- Close-up pixel pin (pinStep): a poor track must not break the lock ---
 // Field failure (real close-up export): the v2 clutter gate compared every
 // find against the TRACK — the thing the pin exists to correct — so ~1° of
@@ -2870,6 +2925,21 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     ok(s2.per[0].ownSep == null, "own-time grading: a witness at the joint instant gets no redundant entry");
     ok(s2.per[1].sep > 3, `own-time grading: the moved drone is visibly off the late witness at the joint instant (${s2.per[1].sep.toFixed(1)}°)`);
     approx(s2.per[1].ownSep, 0, 0.05, "own-time grading: the late witness grades ~0° at its own photo time");
+  }
+
+  // per-witness clock check: a witness whose stated time is 41 s off must be
+  // caught SHARPLY (the drone is moving); the same witness against a hover
+  // must NOT be indicted (a flat minimum can't blame the clock)
+  {
+    const wErr = { ...wit[0], whenMs: tPick - 41000, A: { ...wit[0].A, videoTime: 0 } };
+    const ck = witnessClockCheck(wErr, log.pts, span);
+    ok(ck && ck.sharp, "a 41 s clock error is caught with a sharp minimum");
+    approx(ck.dtS, 41, 0.5, "clock-error size recovered (s)");
+    approx(ck.bestSep, 0, 0.05, "the sight-line matches the drone at the corrected time");
+    ok(witnessStatedMs({ whenMs: 1000, A: { videoTime: 11.5 } }) === 12500, "stated moment = capture + video t");
+    const hoverPts = log.pts.map((p) => ({ ...p, lat: log.pts[60].lat, lon: log.pts[60].lon, altAbsM: log.pts[60].altAbsM }));
+    const ckH = witnessClockCheck(wErr, hoverPts, span);
+    ok(!ckH || !ckH.sharp, "a hovering drone (flat minimum) does not indict the clock");
   }
 
   // a raw (encrypted, binary) DJI FlightRecord .txt is named for what it is,

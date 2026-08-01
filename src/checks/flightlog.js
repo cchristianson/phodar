@@ -377,9 +377,11 @@ export function calibrationSummary({ sources, fix, pts, tMs, spanM, homeElevM })
      away from the joint match instant is ALSO graded against the drone's
      position at its OWN time: the purest per-witness direction test. */
   valid.forEach((s, i) => {
-    if (!isNum(s.whenMs) || Math.abs(+s.whenMs - tMs) <= 10000) return;
-    const own = logMomentPer([s], pts, +s.whenMs, spanM, homeElevM);
-    if (own && !own.clamped) { out.per[i].ownSep = own.sepMax; out.per[i].ownTMs = +s.whenMs; }
+    if (!isNum(s.whenMs)) return;
+    const w = witnessStatedMs(s);
+    if (Math.abs(w - tMs) <= 10000) return;
+    const own = logMomentPer([s], pts, w, spanM, homeElevM);
+    if (own && !own.clamped) { out.per[i].ownSep = own.sepMax; out.per[i].ownTMs = w; }
   });
   if (fix && fix.ok) {
     const { altM, altAssumed } = droneAltM(m.st, homeElevM, fix.ref.alt);
@@ -409,6 +411,32 @@ export function calibrationSummary({ sources, fix, pts, tMs, spanM, homeElevM })
     }
   }
   return out;
+}
+
+/* the moment a witness actually MARKED: capture time plus, for a video, the
+   marked frame's position in the clip */
+export function witnessStatedMs(s) {
+  return +s.whenMs + (isNum(s.A?.videoTime) ? +s.A.videoTime * 1000 : 0);
+}
+
+/* Per-witness CLOCK CHECK against the log — the sharpest clock test there
+   is: one sight-line swept against the craft's whole flight. Returns the
+   offset between the witness's stated mark moment and its best geometric
+   match, and whether that minimum is SHARP (a hovering drone fits many
+   instants equally — only a sharp minimum indicts the clock). Field case:
+   a video's capture time was ~20 min wrong in-app; hand-corrected to the
+   minute it still sat ~41 s off, which this check exposed at 0.13° sharp. */
+export function witnessClockCheck(source, pts, spanM, homeElevM) {
+  if (!isNum(source?.whenMs)) return null;
+  const stated = witnessStatedMs(source);
+  const own = logMomentPer([source], pts, stated, spanM, homeElevM);
+  const best = syncLogTime([source], pts, spanM, homeElevM);
+  if (!own || !best) return null;
+  const dtS = (best.tMs - stated) / 1000;
+  const off = [logMomentPer([source], pts, best.tMs - 3000, spanM, homeElevM),
+               logMomentPer([source], pts, best.tMs + 3000, spanM, homeElevM)].filter(Boolean);
+  const rise = off.length ? Math.min(...off.map((m) => m.sepMax)) - best.sepMax : 0;
+  return { statedMs: stated, statedSep: own.sepMax, bestSep: best.sepMax, dtS, rise, sharp: rise > 0.35 };
 }
 
 /* grade the calibration the way the app grades a fix — honest words, not

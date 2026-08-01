@@ -12,6 +12,21 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Witness clocks are now aligned by the object's own motion** (field case:
+  one video's capture time was recorded ~20 min wrong in-app; hand-corrected
+  to the minute it still sat ~41 s off — proven against the drone's flight
+  log). Track stereo now (1) anchors each witness's track on its capture
+  time (whenMs + video t) instead of silently aligning recording starts,
+  (2) searches ±45 s for the relative offset where the sight-lines sharply
+  intersect and adopts it only when the minimum is decisive — a hovering
+  object (flat minimum) never gets a fabricated shift — and (3) when the
+  tracks don't overlap at all, runs a wide ±30 min rescue sweep that
+  recovers the 20-minute class of error. Applied shifts are declared in the
+  trajectory section and the report. On the real two-video session this
+  recovered a 12 s relative error and dropped the ray miss to 0.29 m. The
+  drone flight-log check gains a per-witness ⏱ clock check (one sight-line
+  against the whole flight) that pins clocks absolutely — it exposed the
+  41 s residual at 0.13° sharp.
 - **Intermittent visibility no longer poisons triangulation** (field case: a
   drone visible only in sections of each of two videos, path captured where
   possible). Interpolating a witness's direction across a visibility hole

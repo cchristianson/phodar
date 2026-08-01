@@ -51,6 +51,20 @@ imported by both `phodar.jsx` and the test scripts):
   held/guided samples first (predictions, not observations), and the
   UI/report state seconds used vs ignored. Asserted in mathcheck with a
   truth path that turns sharply inside one witness's blind stretch.
+  **GEOMETRIC CLOCK SYNC** (field case: a video's capture time ~20 min
+  wrong in-app, and still ~41 s off after a hand-fix — proven against the
+  drone log): analyzeTracks anchors each track at whenMs + video t (A.t
+  counts as a common-clock anchor ONLY when it differs from the source's
+  own videoTime — field data carried "0.00" and A.t==videoTime
+  placeholders), then for two witnesses searches ±45 s for the offset
+  where sight-lines sharply intersect (±30 min coarse RESCUE when tracks
+  don't overlap at all), adopting it only on a DECISIVE minimum — a
+  hovering object fits every offset, and a flat minimum must never invent
+  a shift. Applied shifts are declared in UI + report. This fixes clocks
+  RELATIVELY; `witnessClockCheck` (flightlog.js) pins them absolutely
+  against a drone log (one sight-line vs the whole flight; exposed the
+  real 41 s residual at 0.13° sharp). All mathcheck-asserted (25 s and
+  20 min recovery, hover refusal, aligned pass-through).
 - `astro.js` — `sunPos`/`moonPos`/`moonFrac` (SunCalc-derived).
 
 Everything else still lives in `src/phodar.jsx` (~3,750 lines) **on purpose** —
