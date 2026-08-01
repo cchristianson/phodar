@@ -670,7 +670,7 @@ const HELP_SECTIONS = [
       { h: "What you can export", items: [
         { t: "Report (.html)", d: "A single self-contained page: the fix, quality, photo exhibits with detail crops, top-down + trajectory charts, and the sky-object / wind / aircraft checks." },
         { t: "💾 Share file (.phodar.json)", d: "Just the data — the importable file another observer loads to add their perspective, or that you keep as a backup." },
-        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar." },
+        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar. In the installed (home-screen) app there is no browser download manager, so the bundle goes to the share sheet instead — tap 💾 Save bundle when it appears and choose “Save to Files”." },
         { t: "👁 View report / 📤 Share/Download page", d: "View opens the finished report in a new tab; Share/Download hands the self-contained .html to your phone's share sheet (or downloads it) so you can message it, mail it or file it. It needs no internet to open — every chart, photo and datum is embedded in the page." },
       ]},
       { h: "Extra checks in the report", items: [
@@ -12412,11 +12412,12 @@ function ReportView({ sources, est, onBack }) {
   const [msg, setMsg] = useState("");
   const [prevHtml, setPrevHtml] = useState(null);   // iframe preview
   const [manual, setManual] = useState(null);       // { name, text } fallback copy box
+  const [pendingZip, setPendingZip] = useState(null); // built bundle awaiting a fresh save gesture (installed PWA)
   /* the report is ALWAYS regenerated from the current sources by reportHtml, so
      importing an older sighting produces a fresh report with the current
      checks. Safeguard: if the sources change (e.g. an import) while a preview is
      cached, drop it so the next view rebuilds. */
-  useEffect(() => { setPrevHtml(null); setManual(null); }, [sources]);
+  useEffect(() => { setPrevHtml(null); setManual(null); setPendingZip(null); }, [sources]);
   const fix = analyze(sources);
   const copyText = async (txt) => {
     try { await navigator.clipboard.writeText(txt); return true; } catch (e) { }
@@ -12440,6 +12441,7 @@ function ReportView({ sources, est, onBack }) {
      before/after pair). A download, importable back into Phodar. */
   const downloadBundle = async () => {
     setMsg("packing bundle…");
+    setPendingZip(null); // a rebuild supersedes any bundle awaiting its save tap
     wakeHold(); // keyframe baking + video packing runs long — don't let the phone doze
     try {
     const html = await reportHtml(sources, est, { exhibits: "files" });
@@ -12468,10 +12470,46 @@ function ReportView({ sources, est, onBack }) {
       }
     }
     const blob = makeZip(files);
+    const label = `${(blob.size / 1048576).toFixed(1)} MB · report + data + full-res photos${vidN ? ` + ${vidN} video${vidN > 1 ? "s" : ""}` : ""}`;
+    /* INSTALLED PWA: an <a download> click is a SILENT no-op — standalone
+       WKWebView has no download manager, so the old path reported
+       "✓ downloading" while saving nothing (field report). The share sheet
+       ("Save to Files") is the only route there, same as saveToRoll. The zip
+       build just burned the tap's user activation, so share() may refuse —
+       then the ready blob goes to an explicit 💾 button (a fresh gesture)
+       rather than pretending it saved. */
+    const standalone = (() => { try { return window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches); } catch (e) { return false; } })();
+    const zf = new File([blob], "phodar-sighting.zip", { type: "application/zip" });
+    if (standalone && navigator.canShare && navigator.canShare({ files: [zf] })) {
+      try {
+        await navigator.share({ files: [zf], title: "PHODAR sighting bundle" });
+        setMsg(`✓ bundle handed to the share sheet — ${label}`);
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") { setMsg(""); return; } // user closed the sheet
+      }
+      setPendingZip({ file: zf, label });
+      setMsg("");
+      return;
+    }
     if (download("phodar-sighting.zip", blob, "application/zip"))
-      setMsg(`✓ downloading bundle — ${(blob.size / 1048576).toFixed(1)} MB · report + data + full-res photos${vidN ? ` + ${vidN} video${vidN > 1 ? "s" : ""}` : ""}`);
+      setMsg(`✓ downloading bundle — ${label}`);
+    else if (navigator.canShare && navigator.canShare({ files: [zf] })) { setPendingZip({ file: zf, label }); setMsg(""); }
     else setMsg("Bundle download needs the deployed app — this preview can't save binaries.");
     } finally { wakeRelease(); }
+  };
+  /* fresh user gesture → share() is allowed; NO await before the call */
+  const savePendingZip = async () => {
+    if (!pendingZip) return;
+    try {
+      await navigator.share({ files: [pendingZip.file], title: "PHODAR sighting bundle" });
+      setMsg(`✓ bundle handed to the share sheet — ${pendingZip.label}`);
+      setPendingZip(null);
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // sheet closed — keep the button for another try
+      if (download("phodar-sighting.zip", pendingZip.file, "application/zip")) { setMsg(`✓ downloading bundle — ${pendingZip.label}`); setPendingZip(null); }
+      else setMsg("Couldn't hand the bundle to the share sheet — try again, or use the report page's share button.");
+    }
   };
   /* share the viewable report page itself via the OS share sheet (text,
      email, AirDrop…); falls back to a download/copy where share is unsupported */
@@ -12512,7 +12550,13 @@ function ReportView({ sources, est, onBack }) {
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
           <button className="btn amber" style={{ padding: 14, fontSize: 15 }} onClick={openReport}>👁 View report</button>
           <button className="btn" style={{ padding: 12 }} onClick={downloadBundle}>⬇ Download bundle (.zip — report + photos + videos + data)</button>
+          {pendingZip && (
+            <button className="btn teal" style={{ padding: 12 }} onClick={savePendingZip}>
+              💾 Save bundle ({pendingZip.label.split(" · ")[0]}) — opens the share sheet
+            </button>
+          )}
         </div>
+        {pendingZip && <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 6 }}>Bundle is packed and ready — tap 💾 Save and choose “Save to Files” (or AirDrop / share it).</div>}
         {msg && <div style={{ fontSize: 12, color: "var(--teal)", marginTop: 8 }}>{msg}</div>}
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 8 }}>
           The bundle re-imports into Phodar. Open the report to read it and share the page itself (text / email) from the top.

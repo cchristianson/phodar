@@ -6,6 +6,15 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **Bundle download in the installed PWA**: a home-screen web app has no
+  browser download manager, so the .zip's `<a download>` click was a silent
+  no-op — the app said "✓ downloading bundle" while nothing was saved (field
+  report). In standalone mode the bundle now goes to the OS share sheet
+  ("Save to Files" / AirDrop); if the zip build consumed the tap's user
+  activation and share is refused, a 💾 Save bundle button holds the packed
+  zip for a fresh gesture instead of pretending it saved.
+
 ### Added
 - **Drone flight-log check (calibration)**: a ground-truth test harness,
   deliberately unobtrusive — it lives behind a small 🛩 calibration link at
