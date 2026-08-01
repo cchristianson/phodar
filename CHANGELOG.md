@@ -22,6 +22,12 @@ Notable changes to Phodar. Format loosely follows
   glides — never snaps — back to the track after a loss. In the harness a
   poor track went from 380 px rms object wander with losses to 41 px, the
   same as a good track.
+- **Bundle save "sometimes works" in the installed app (iPad field report)**:
+  packing the zip consumes the tap's user activation, and a late automatic
+  `navigator.share` sometimes opened and sometimes failed indistinguishably
+  from a user cancel. The installed app no longer gambles: pack finishes,
+  then the 💾 Save bundle button always appears — its tap is a fresh gesture,
+  so the share sheet opens reliably every time.
 - **Stray "text" file beside share-sheet saves**: passing a `title` alongside
   `files` to `navigator.share` makes iOS "Save to Files" write the title out
   as a separate 22-byte text file (field report). All file shares now pass

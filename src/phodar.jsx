@@ -671,7 +671,7 @@ const HELP_SECTIONS = [
       { h: "What you can export", items: [
         { t: "Report (.html)", d: "A single self-contained page: the fix, quality, photo exhibits with detail crops, top-down + trajectory charts, and the sky-object / wind / aircraft checks." },
         { t: "💾 Share file (.phodar.json)", d: "Just the data — the importable file another observer loads to add their perspective, or that you keep as a backup." },
-        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar. In the installed (home-screen) app there is no browser download manager, so the bundle goes to the share sheet instead — tap 💾 Save bundle when it appears and choose “Save to Files”." },
+        { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar. In the installed (home-screen) app there is no browser download manager, so saving is a deliberate two-step: the bundle packs, then the 💾 Save bundle button appears — tap it and choose “Save to Files” (or AirDrop / share it)." },
         { t: "👁 View report / 📤 Share/Download page", d: "View opens the finished report in a new tab; Share/Download hands the self-contained .html to your phone's share sheet (or downloads it) so you can message it, mail it or file it. It needs no internet to open — every chart, photo and datum is embedded in the page." },
       ]},
       { h: "Extra checks in the report", items: [
@@ -12483,17 +12483,14 @@ function ReportView({ sources, est, onBack }) {
     const zipName = `${slugName(est) || "phodar-sighting"}.zip`;
     const zf = new File([blob], zipName, { type: "application/zip" });
     if (standalone && navigator.canShare && navigator.canShare({ files: [zf] })) {
-      try {
-        /* files ONLY — a title beside files makes iOS "Save to Files" write
-           the title out as a stray 22-byte text file (field report) */
-        await navigator.share({ files: [zf] });
-        setMsg(`✓ bundle handed to the share sheet — ${label}`);
-        return;
-      } catch (e) {
-        if (e && e.name === "AbortError") { setMsg(""); return; } // user closed the sheet
-      }
+      /* NEVER auto-share after the pack (field report, iPad): packing burns
+         the tap's user activation, and a late share() sometimes opens and
+         sometimes dies looking exactly like a user cancel — which we then
+         swallowed, leaving nothing. Deterministic two-step instead: pack,
+         then ALWAYS present 💾 — its tap is a fresh gesture, so the sheet
+         opens reliably every time. */
       setPendingZip({ file: zf, label });
-      setMsg("");
+      setMsg(`✓ bundle packed — ${label}`);
       return;
     }
     if (download(zipName, blob, "application/zip"))
