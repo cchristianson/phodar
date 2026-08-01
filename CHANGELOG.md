@@ -37,6 +37,14 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **The measure-step loupe now follows brightness/contrast live** (field
+  report: "the loupe shows the version before adjustment"). The loupe is a
+  canvas, so nothing repainted it when the B/C sliders moved while it was on
+  screen. It now re-pops on every B/C change while a small object is fitted
+  — exactly the moment the magnified view matters, since the sliders exist
+  to make a dim object visible. Reproduced and verified fixed by driving the
+  real app in a browser (a gray frame under 200% brightness must read
+  doubled in the loupe's own pixels).
 - **A panning camera no longer fabricates object speed**: pixel waypoints on
   a stabilized clip now convert through each frame's OWN solved pose instead
   of assuming the camera never moved (a tripod clip without a solved path
