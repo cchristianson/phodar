@@ -22,6 +22,17 @@ Notable changes to Phodar. Format loosely follows
   glides — never snaps — back to the track after a loss. In the harness a
   poor track went from 380 px rms object wander with losses to 41 px, the
   same as a good track.
+- **Bundle import now brings the videos back** (field report: a 160 MB
+  two-video bundle opened on another device with no videos). The bundle
+  always carried each observer's clips; the importer only ever extracted the
+  measurement JSON. Importing a .zip now re-attaches each observer's original
+  clip (and any stabilized render) to the imported sources.
+- **"Single viewpoint" with two witnesses on screen now explains itself**
+  (field report): the fix status, report screen and drone-calibration check
+  name which observer is incomplete and what's missing — its position
+  (step 2) or its sky placement (open the sky view and tap ✓ Set A) — instead
+  of just counting viewpoints. The calibration check also renders that
+  guidance instead of silently showing nothing when no observer is complete.
 - **Bundle save "sometimes works" in the installed app (iPad field report)**:
   packing the zip consumes the tap's user activation, and a late automatic
   `navigator.share` sometimes opened and sometimes failed indistinguishably

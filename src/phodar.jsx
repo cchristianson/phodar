@@ -10306,7 +10306,9 @@ function FlightLogCheck({ sources, fix, onLog }) {
     const use = best || stated;
     return { whenMs, inSpan, stated, best, use, grade: gradeCalibration(use) };
   }, [log, sources, fix]);
-  if (!valid.length && !log) return null;
+  /* render even with NO complete observer — an opened section that shows
+     nothing reads as a dead button (field report); say what's missing instead */
+  if (!sources.filter((s) => !isEmptySource(s)).length && !log) return null;
   const ownerId = holder ? holder.id : (valid[0] || sources[0]).id;
   const patch = (p) => onLog(ownerId, { ...log, ...p });
 
@@ -10357,6 +10359,12 @@ function FlightLogCheck({ sources, fix, onLog }) {
         {log && <button className="btn" onClick={() => onLog(ownerId, null)} title="Remove the flight log">✕</button>}
       </div>
       {err && <div className="warn">{err}</div>}
+      {!valid.length && (
+        <div className="warn">
+          No observer is complete enough to compare against a log yet — each needs a position and a committed sky placement:
+          {missingFacets(sources).map((t, i) => <div key={i} style={{ marginTop: 4 }}>· {t}</div>)}
+        </div>
+      )}
       {log && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
@@ -10392,7 +10400,6 @@ function FlightLogCheck({ sources, fix, onLog }) {
               </div>
             </div>
           )}
-          {!valid.length && <div className="warn">Complete at least one observer (position + sky placement) to compare against the log.</div>}
           {cmp && cmp.use && (
             <div style={{ marginTop: 10 }}>
               {cmp.whenMs != null && log.absTime && !cmp.inSpan && (
@@ -10469,6 +10476,9 @@ function ResultsPanel({ sources, onLog }) {
           <div style={{ fontSize: 13, color: "var(--dim)" }}>
             Trajectory data found, but a position fix needs 2 observers with lat/lon + Moment-A bearing and elevation (currently complete: {result.validCount}). Distances and g-forces below use an assumed range until then.
           </div>
+          {missingFacets(sources).map((t, i) => (
+            <div key={i} style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 6 }}>· {t}</div>
+          ))}
         </Section>
       )}
       {result.ok && (<>
@@ -10677,6 +10687,37 @@ function unzipEntryText(u8, name) {
     o = dataStart + compSize;
   }
   return null;
+}
+
+/* every stored entry under a path prefix — how the bundle's video files come
+   back out on import. The bundle writer stores uncompressed (method 0), so
+   the bytes are a straight subarray. */
+function unzipBinEntries(u8, prefix) {
+  const u16 = (o) => u8[o] | (u8[o + 1] << 8);
+  const u32 = (o) => u8[o] + u8[o + 1] * 256 + u8[o + 2] * 65536 + u8[o + 3] * 16777216;
+  const out = [];
+  let o = 0;
+  while (o + 30 <= u8.length && u32(o) === 0x04034b50) {
+    const method = u16(o + 8), compSize = u32(o + 18);
+    const nameLen = u16(o + 26), extraLen = u16(o + 28);
+    const nm = new TextDecoder().decode(u8.subarray(o + 30, o + 30 + nameLen));
+    const dataStart = o + 30 + nameLen + extraLen;
+    if (method === 0 && nm.startsWith(prefix)) out.push({ name: nm, bytes: u8.subarray(dataStart, dataStart + compSize) });
+    o = dataStart + compSize;
+  }
+  return out;
+}
+
+/* which active observers are missing the facets a fix needs — named plainly,
+   because "single viewpoint" with two witnesses on screen reads as a bug
+   (field report) when the real cause is one uncommitted sky placement */
+function missingFacets(sources) {
+  return sources.filter((s) => !isEmptySource(s)).map((s, i) => {
+    const pos = isNum(s.lat) && isNum(s.lon), dir = isNum(s.A?.az) && isNum(s.A?.el);
+    return pos && dir ? null
+      : `${s.name || `Observer ${i + 1}`} is missing ${!pos && !dir ? "its position (step 2) and its sky placement (open the sky view and tap ✓ Set A)"
+        : !pos ? "its position (step 2)" : "its sky placement — open the sky view and tap ✓ Set A"}`;
+  }).filter(Boolean);
 }
 
 /* sighting name (est.name) → filesystem-safe base for every export
@@ -12237,16 +12278,17 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => {
           const f = e.target.files?.[0]; if (!f) return;
-          const finish = (tx) => {
-            const n = tx ? onImport(tx) : 0;
-            setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}` : "Couldn't read that — expected a .phodar.json, a Phodar report, or a sighting .zip.");
+          const finish = (tx, media) => {
+            const n = tx ? onImport(tx, media) : 0;
+            setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}${media && media.length ? ` + ${media.length} video file${media.length > 1 ? "s" : ""}` : ""}` : "Couldn't read that — expected a .phodar.json, a Phodar report, or a sighting .zip.");
           };
           f.arrayBuffer().then((buf) => {
             const u8 = new Uint8Array(buf);
-            /* a sighting .zip (PK\x03\x04) → pull the data file out of it;
+            /* a sighting .zip (PK\x03\x04) → pull the data file out of it,
+               plus the observers' video files so the clips come back too;
                otherwise it's a .phodar.json or a report .html — read as text */
             if (u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04) {
-              finish(unzipEntryText(u8, "sighting.phodar.json") || unzipEntryText(u8, "report.html"));
+              finish(unzipEntryText(u8, "sighting.phodar.json") || unzipEntryText(u8, "report.html"), unzipBinEntries(u8, "videos/"));
             } else finish(new TextDecoder().decode(u8));
           }).catch(() => setImpMsg("Couldn't read that file."));
           e.target.value = "";
@@ -12547,6 +12589,9 @@ function ReportView({ sources, est, onBack }) {
         ) : (
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)", marginTop: 8 }}>
             single-perspective report — invites a second witness to complete the triangulation
+            {missingFacets(sources).map((t, i) => (
+              <div key={i} style={{ marginTop: 4, fontFamily: "inherit" }}>· {t}</div>
+            ))}
           </div>
         )}
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
@@ -12753,7 +12798,7 @@ export default function App() {
     try { await navigator.clipboard.writeText(j); cp = true; } catch (e) { }
     alert(cp ? "Share file copied to clipboard ✓" + (dl ? " (download also attempted)" : "") : dl ? "Download started" : "Open the Report page to copy the share file.");
   };
-  const importShared = (text) => {
+  const importShared = (text, media = []) => {
     try {
       let str = text;
       const m = text.match(/<script[^>]*id="phodar-data"[^>]*>([\s\S]*?)<\/script>/);
@@ -12772,8 +12817,25 @@ export default function App() {
           mediaNorm: !!mediaJpeg,
         };
       });
+      /* the BUNDLE carries each observer's actual video files — the share
+         JSON never does (a clip as a data URL would be tens of MB). Re-attach
+         them by observer index so an imported bundle plays back, exports and
+         re-analyzes like the original session did (field report: "the videos
+         aren't there"). Stabilized renders re-attach under the :stab key. */
+      const vtype = (n) => /\.mov$/i.test(n) ? "video/quicktime" : /\.webm$/i.test(n) ? "video/webm" : "video/mp4";
+      merged.forEach((s, i) => {
+        const orig = media.find((f) => f.name.startsWith(`videos/observer-${i + 1}-original.`));
+        if (orig && !s.mediaUrl) {
+          const blob = new Blob([orig.bytes], { type: vtype(orig.name) });
+          mediaPut(s.id, { kind: "video", data: blob });
+          s.mediaUrl = URL.createObjectURL(blob);
+          s.mediaKind = "video";
+        }
+        const st = media.find((f) => f.name.startsWith(`videos/observer-${i + 1}-stabilized.`));
+        if (st) mediaPut(s.id + ":stab", { kind: "video", data: new Blob([st.bytes], { type: vtype(st.name) }) });
+      });
       setSources((ss) => [...ss, ...merged]);
-      merged.forEach((s) => { if (s.mediaUrl) mediaPut(s.id, { kind: "image", data: s.mediaUrl }); });
+      merged.forEach((s) => { if (s.mediaUrl && s.mediaKind === "image") mediaPut(s.id, { kind: "image", data: s.mediaUrl }); });
       return merged.length;
     } catch (e) { return 0; }
   };
