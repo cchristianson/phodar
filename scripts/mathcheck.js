@@ -32,6 +32,7 @@ import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
 import { parseAirports } from "../src/checks/airports.js";
 import { parseFlightLog, parseWhen, thinLog, logStateAt, droneAltM, droneAzElRange, logMomentPer, syncLogTime, calibrationSummary, gradeCalibration, witnessClockCheck, witnessStatedMs, DRONE_PRESETS } from "../src/checks/flightlog.js";
+import { analyzeSession } from "../src/analyze/engine.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -2773,6 +2774,54 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const trk = analyzeTracks([mkSrc(obsDef[0], "A", 0), mkSrc(obsDef[1], "B", 0)]);
     ok(!!(trk.stereo && trk.stereo.k) && !(trk.stereo.sync && trk.stereo.sync.applied), "aligned clocks pass through untouched");
   }
+}
+
+// --- Headless analysis engine: the whole pipeline, no UI, one call ---
+// The core of API access (/api/analyze, scripts/analyze.mjs): a session's
+// measurements + a flight-log CSV in, every solver's verdict out. Driven by
+// the same synthetic truth as the clock-sync section, so the expected
+// numbers are exact.
+{
+  head("headless analysis engine");
+  const ref = { lat: 42.164, lon: -123.648, alt: 0 };
+  const truthAt = (t) => (t <= 10 ? [100 + 10 * t, 300, 50] : [200, 300 + 12 * (t - 10), 50]);
+  const obsDef = [{ ...ref }, { ...geoFromEnu([300, 0, 0], ref), alt: 0 }];
+  const WHEN = Date.parse("2026-08-01T17:20:00Z");
+  const azelFor = (o, t) => {
+    const g = geoFromEnu(truthAt(t), ref);
+    return dirToAzEl(unit(enuFromGeo(g.lat, g.lon, g.alt, o)));
+  };
+  const mkSrc = (o, name, whenErrS) => {
+    const track = [];
+    for (let t = 0; t <= 20 + 1e-9; t += 0.5) track.push({ t: +t.toFixed(1), ...azelFor(o, t) });
+    const ae = azelFor(o, 5);
+    // mark at video t=5 → stated mark moment = whenMs + 5 s; truth range at
+    // t=5 is 339 m for both (symmetric), so a 0.9 m span subtends 0.152°
+    return { name, lat: o.lat, lon: o.lon, alt: o.alt, whenMs: WHEN + whenErrS * 1000,
+      A: { az: ae.az.toFixed(2), el: ae.el.toFixed(2), videoTime: 5, angManual: "0.152" }, B: {}, track };
+  };
+  // Airdata-style CSV from the same truth (10 Hz, UTC clock, MSL altitude)
+  const fmtUtc = (ms) => { const d = new Date(ms), p = (v) => String(v).padStart(2, "0"); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; };
+  const rows = ["time(millisecond),datetime(utc),latitude,longitude,altitude_above_seaLevel(feet)"];
+  for (let t = 0; t <= 20 + 1e-9; t += 0.1) {
+    const g = geoFromEnu(truthAt(t), ref);
+    rows.push(`${Math.round(t * 1000)},${fmtUtc(WHEN + Math.floor(t) * 1000)},${g.lat.toFixed(7)},${g.lon.toFixed(7)},${(g.alt / 0.3048).toFixed(1)}`);
+  }
+  const v = analyzeSession({
+    sources: [mkSrc(obsDef[0], "A", 0), mkSrc(obsDef[1], "B", 25)],
+    flightLogText: rows.join("\n"), spanM: 0.9,
+  });
+  ok(v.fix?.ok && v.fix.rating === "excellent", `engine fix solves (${v.fix?.rating})`);
+  ok(v.trackStereo?.solved && v.trackStereo.clockSync?.applied, "engine stereo solves and recovers the 25 s clock error");
+  approx(v.trackStereo.clockSync.deltaS, -25, 0.4, "engine-reported sync delta (s)");
+  ok(v.flightLog?.ok && v.flightLog.calibration?.grade === "excellent", `engine calibration grade on perfect data (${v.flightLog?.calibration?.grade})`);
+  approx(v.flightLog.calibration.fixErrM, 0, 3, "engine fix-vs-log error (m)");
+  const badClock = v.flightLog.clocks.find((c) => c.name === "B");
+  ok(badClock && badClock.sharp && Math.abs(badClock.offsetS + 25) < 1, `engine clock check catches B's 25 s error (${badClock?.offsetS} s)`);
+  ok(v.warnings.some((w) => /clock/.test(w)), "engine surfaces the clock warning");
+  // incomplete session → named gaps, no invented fix
+  const v2 = analyzeSession({ sources: [{ name: "X", lat: 42.1, lon: -123.6, A: {}, B: {}, track: [] }] });
+  ok(v2.fix && v2.fix.ok === false && v2.sources[0].missing.length === 1, "engine names what an incomplete witness is missing");
 }
 
 // --- Close-up pixel pin (pinStep): a poor track must not break the lock ---

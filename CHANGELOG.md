@@ -6,6 +6,18 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Headless analysis engine + API access** (`src/analyze/engine.js`,
+  `scripts/analyze.mjs`, `POST /api/analyze` — see `docs/API.md`): the full
+  results pipeline with no UI. Feed it a session's measurements (the app's
+  own .phodar.json share format) plus optionally a drone flight-log CSV and
+  get one machine-readable verdict: fix, visibility- and clock-aware stereo,
+  dense two-video stereo, flight-log calibration grades, per-witness clock
+  checks, and every honesty warning as data. Key-gated via PHODAR_API_KEYS
+  (endpoint disabled until set). Deterministic and mathcheck-asserted end to
+  end; raw-media ingestion and an agentic analyst layer are the documented
+  next phases.
+
 ### Added (quality of life)
 - **Trajectory playback on the top-down plot**: when the stereo trajectory
   solves, the satellite view gains ▶ + a scrubber — a marker rides the

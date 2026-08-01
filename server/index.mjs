@@ -589,6 +589,42 @@ function rateLimit(req, kind) {
   return 0;
 }
 
+/* ---------- /api/analyze — headless analysis engine (API access) ----------
+   POST a session (the app's .phodar.json share shape) + optionally a drone
+   flight-log CSV, get the full analysis verdict back. Key-gated: keys live
+   in PHODAR_API_KEYS (comma-separated) and the endpoint is DISABLED until
+   that env var is set — no accidental public compute. Media ingestion (raw
+   photos/videos) is a later phase; this analyses measurements. */
+const API_KEYS = new Set(String(process.env.PHODAR_API_KEYS || "").split(",").map((s) => s.trim()).filter(Boolean));
+const ANALYZE_MAX_BODY = 32 * 1024 * 1024; // share JSONs carry 1600px JPEGs — a few MB each
+async function apiAnalyze(req, res) {
+  if (!API_KEYS.size) return json(res, 503, { error: "analysis API not enabled (set PHODAR_API_KEYS)" });
+  const key = req.headers["x-api-key"] || "";
+  if (!API_KEYS.has(String(key))) return json(res, 401, { error: "invalid or missing X-API-Key" });
+  if (req.method !== "POST") return json(res, 405, { error: "POST a JSON body: { session | sources, flightLogText?, spanM?, droneId?, homeElevM? }" });
+  let body;
+  try {
+    body = await new Promise((resolve, reject) => {
+      const chunks = []; let size = 0;
+      req.on("data", (c) => {
+        size += c.length;
+        if (size > ANALYZE_MAX_BODY) { reject(Object.assign(new Error("body too large"), { status: 413 })); req.destroy(); }
+        else chunks.push(c);
+      });
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
+  } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+  let input;
+  try { input = JSON.parse(body.toString("utf8")); } catch (e) { return json(res, 400, { error: "invalid JSON body" }); }
+  try {
+    const { analyzeSession } = await import("../src/analyze/engine.js");
+    return json(res, 200, analyzeSession(input));
+  } catch (e) {
+    return json(res, 500, { error: `analysis failed: ${e.message || e}` });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://x");
@@ -599,6 +635,7 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify({ error: "rate limited — this proxy forwards to free, volunteer-run services", retryAfter: wait }));
       }
     }
+    if (u.pathname === "/api/analyze") return await apiAnalyze(req, res);
     if (u.pathname === "/api/hist") return await apiHist(u.searchParams, res);
     if (u.pathname === "/api/live") return await apiLive(u.searchParams, res);
     if (u.pathname.startsWith("/api/tile/")) return await apiTile(u, res);

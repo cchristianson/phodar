@@ -442,6 +442,18 @@ photo was adjusted.
    during the module split: calibration fns take (frame, pose); treat
    mediaAim as a pose sample, not a per-source constant.
 
+## Headless engine & API (docs/API.md)
+`src/analyze/engine.js` — the full results pipeline with no UI (pure, no
+fetch/DOM): sources JSON (+ optional flight-log text) → one verdict object
+(fix, track/video stereo with sync + visibility accounting, flight-log
+calibration, per-witness clocks, warnings). Exposed as `scripts/analyze.mjs`
+(CLI) and `POST /api/analyze` (server; key-gated by PHODAR_API_KEYS,
+disabled until set; 32 MB body cap). Mathcheck-asserted end to end against
+synthetic exact truth. Phase 2 = raw-media ingestion (needs ffmpeg in the
+deploy image + auto-calibration); phase 3 = an agentic analyst wrapping this
+engine as tools. The engine consumes MEASUREMENTS — keep it pure and free of
+pixel work so it stays testable and server-safe.
+
 ## Calibration & cross-check source roadmap (all free)
 Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **Astrometry.net** (free key, self-hostable): plate-solve night photos →
