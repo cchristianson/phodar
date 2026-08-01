@@ -664,7 +664,7 @@ const HELP_SECTIONS = [
         { t: "Solution quality (table)", d: "Baseline, convergence angle, ray-miss distance (how close the sight-lines actually pass), and range/baseline ratio — the raw geometry behind the grade." },
       ]},
       { h: "Cross-checks & plots", items: [
-        { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory — read-only." },
+        { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory. When a triangulated trajectory exists, a ▶ + scrubber under the map plays the object's movement in real time — a marker rides the path with a growing progress trail, and the readout shows elapsed time, clock time, altitude and speed at that instant." },
         { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
         { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so). It also runs a per-witness ⏱ clock check — one sight-line swept against the whole flight is the sharpest clock reference there is, and a capture time that's seconds or minutes wrong gets named with the offset." },
       ]},
@@ -10153,6 +10153,26 @@ function PlotBoard({ result, traj }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);
+  /* ── trajectory playback (field ask): animate the triangulated path on the
+     satellite view with a scrubber. traj = {pos, times} when the stereo
+     track solved; a teal marker rides the path, a bright progress line grows
+     behind it. Scrub events are rAF-coalesced (invariant #7 — a 120 Hz iPad
+     floods React otherwise). Display-only. */
+  const hasPlay = !!(traj && traj.pos && traj.times && traj.pos.length > 1 && traj.times.length === traj.pos.length && traj.times[traj.times.length - 1] - traj.times[0] > 0.3);
+  const [pt, setPt] = useState(null);          // current playback time (traj clock)
+  const [playing, setPlaying] = useState(false);
+  const objMarkRef = useRef(null);
+  const progLineRef = useRef(null);
+  const scrubRef = useRef({ raf: 0, v: 0 });
+  const t0p = hasPlay ? traj.times[0] : 0, t1p = hasPlay ? traj.times[traj.times.length - 1] : 0;
+  const posAt = (t) => {
+    const T = traj.times, P = traj.pos;
+    if (t <= T[0]) return { X: P[0], i: 0 };
+    if (t >= T[T.length - 1]) return { X: P[P.length - 1], i: P.length - 2 };
+    let i = 0; while (i < T.length - 2 && T[i + 1] < t) i++;
+    const u = (t - T[i]) / Math.max(1e-9, T[i + 1] - T[i]);
+    return { X: [P[i][0] + (P[i + 1][0] - P[i][0]) * u, P[i][1] + (P[i + 1][1] - P[i][1]) * u, P[i][2] + (P[i + 1][2] - P[i][2]) * u], i };
+  };
   useEffect(() => {
     const el = boxRef.current; if (!el || mapRef.current) return;
     const map = L.map(el, { attributionControl: true });
@@ -10177,9 +10197,16 @@ function PlotBoard({ result, traj }) {
       L.marker(geo(o.P), { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-tri">▲<span>${esc(o.s.name || `Obs ${i + 1}`)}</span></div>` }) }).addTo(g);
       bounds.push(geo(o.P));
     });
-    if (traj && traj.length > 1) {
-      L.polyline(traj.map(geo), { color: "#8FB4FF", weight: 2.5, opacity: 0.95, interactive: false }).addTo(g);
-    }
+    if (traj && traj.pos && traj.pos.length > 1) {
+      L.polyline(traj.pos.map(geo), { color: "#8FB4FF", weight: 2.5, opacity: 0.7, interactive: false }).addTo(g);
+      /* playback layers: bright progress line + the object marker */
+      progLineRef.current = L.polyline([geo(traj.pos[0])], { color: "#5FD3BC", weight: 3.5, opacity: 0.95, interactive: false }).addTo(g);
+      objMarkRef.current = L.marker(geo(traj.pos[0]), {
+        interactive: false, zIndexOffset: 500,
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div style="width:13px;height:13px;margin:-6px 0 0 -6px;border-radius:50%;background:#5FD3BC;border:2px solid #06231d;box-shadow:0 0 8px #5FD3BCcc"></div>` }),
+      }).addTo(g);
+      traj.pos.forEach((P) => bounds.push(geo(P)));
+    } else { progLineRef.current = null; objMarkRef.current = null; }
     const A = geo(result.solA.X); bounds.push(A);
     L.marker(A, { interactive: false, icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk lmk-fix">⊕<span>FIX A</span></div>` }) }).addTo(g);
     if (result.motion?.XB) {
@@ -10190,8 +10217,63 @@ function PlotBoard({ result, traj }) {
     g.addTo(map); layerRef.current = g;
     try { map.fitBounds(L.latLngBounds(bounds).pad(0.3), { maxZoom: 16, animate: false }); } catch (e) { }
   }, [result, traj]);
+  /* fresh trajectory → rewind */
+  useEffect(() => { setPt(hasPlay ? traj.times[0] : null); setPlaying(false); }, [traj]);
+  /* move the marker + grow the progress line at the scrub time */
+  useEffect(() => {
+    if (!hasPlay || pt == null || !objMarkRef.current || !result?.ok) return;
+    const geo = (P) => { const w = geoFromEnu(P, result.ref); return [w.lat, w.lon]; };
+    const { X, i } = posAt(pt);
+    objMarkRef.current.setLatLng(geo(X));
+    if (progLineRef.current) progLineRef.current.setLatLngs([...traj.pos.slice(0, i + 1).map(geo), geo(X)]);
+  }, [pt, traj, result]);
+  /* real-time playback; stops at the end */
+  useEffect(() => {
+    if (!playing || !hasPlay) return;
+    let raf = 0, last = performance.now();
+    const step = (now) => {
+      const dt = (now - last) / 1000; last = now;
+      setPt((p) => {
+        const n = (p == null || p >= t1p ? t0p : p) + dt;
+        if (n >= t1p) { setPlaying(false); return t1p; }
+        return n;
+      });
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, hasPlay, t0p, t1p]);
   if (!result?.ok) return null;
-  return <div className="plotwrap"><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /><div className="map-north">N ↑</div></div>;
+  const stats = hasPlay && pt != null ? (() => {
+    const { X, i } = posAt(pt);
+    const dt = traj.times[i + 1] - traj.times[i];
+    const sp = dt > 1e-6 ? mag(sub(traj.pos[i + 1], traj.pos[i])) / dt : 0;
+    const wall = t0p > 1e9 ? new Date(pt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null;
+    return { alt: X[2], sp, wall };
+  })() : null;
+  return (
+    <div>
+      <div className="plotwrap"><div ref={boxRef} style={{ position: "absolute", inset: 0 }} /><div className="map-north">N ↑</div></div>
+      {hasPlay && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+          <button className="btn sm" style={{ minWidth: 40 }} onClick={() => setPlaying((p) => !p)}>{playing ? "⏸" : "▶"}</button>
+          <input type="range" style={{ flex: 1 }} min={t0p} max={t1p} step={Math.max(0.02, (t1p - t0p) / 400)}
+            value={pt ?? t0p}
+            onChange={(e) => {
+              setPlaying(false);
+              /* rAF-coalesced scrub — a 120 Hz slider floods React otherwise
+                 (invariant #7); only the latest value lands, once per frame */
+              const s = scrubRef.current;
+              s.v = +e.target.value;
+              if (!s.raf) s.raf = requestAnimationFrame(() => { s.raf = 0; setPt(s.v); });
+            }} />
+          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)", minWidth: 118, textAlign: "right" }}>
+            {stats ? <>t+{(pt - t0p).toFixed(1)}s{stats.wall ? ` · ${stats.wall}` : ""}<br />{fmtLenShort(stats.alt)} up · {fmtSpeedShort(stats.sp)}</> : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ============================================================
@@ -10518,7 +10600,7 @@ function ResultsPanel({ sources, onLog }) {
       {result.ok && (<>
       <Section title="Position fix — Moment A"
         right={<span style={{ fontFamily: "var(--mono)", fontSize: 11, color: ratingColor, letterSpacing: ".1em", textTransform: "uppercase" }}>◉ {r.rating}</span>}>
-        <PlotBoard result={r} traj={trk.stereo && trk.stereo.k ? trk.stereo.pos : null} />
+        <PlotBoard result={r} traj={trk.stereo && trk.stereo.k ? { pos: trk.stereo.pos, times: trk.stereo.times } : null} />
         {r.behind && <div className="warn">⚠ At least one solution point falls <b>behind</b> an observer — the bearings likely don't describe the same object, or one compass reading is off.</div>}
 
         <div className="grid2" style={{ marginTop: 12 }}>

@@ -7,6 +7,11 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added (quality of life)
+- **Trajectory playback on the top-down plot**: when the stereo trajectory
+  solves, the satellite view gains ▶ + a scrubber — a marker rides the
+  triangulated path in real time with a growing progress trail, and the
+  readout shows elapsed/clock time, altitude and speed at the scrubbed
+  instant.
 - **Sighting name**: an optional name field on the home screen that becomes
   the report's title/header and the filename of every export — report .html,
   .phodar.json share file, and the .zip bundle.
