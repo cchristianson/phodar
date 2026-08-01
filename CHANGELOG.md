@@ -17,6 +17,18 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **A panning camera no longer fabricates object speed**: pixel waypoints on
+  a stabilized clip now convert through each frame's OWN solved pose instead
+  of assuming the camera never moved (a tripod clip without a solved path
+  keeps the static assumption — which is then actually true). Measured
+  against a drone's flight log with one handheld and one tripod camera: the
+  handheld pan added ~10 mph of phantom speed (32 measured vs 21 logged);
+  with per-frame poses the speed profile tracks the log (peak 26.0 vs
+  logged 28.4 mph, per-instant ratio 0.85), the ray miss tightened
+  0.29 → 0.19 m and the absolute clock residual fell to 1.3 s. Kinematics
+  are also gap-aware: path, average speed and acceleration use measured
+  segments only — never the straight-line jump across a visibility hole
+  (which used to masquerade as a slow "average").
 - **Witness clocks are now aligned by the object's own motion** (field case:
   one video's capture time was recorded ~20 min wrong in-app; hand-corrected
   to the minute it still sat ~41 s off — proven against the drone's flight

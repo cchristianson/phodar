@@ -9,7 +9,7 @@
 
 import { D2R, R2D, clampN, dot, sub, add, scl, mag, unit, enuFromGeo, dirFromAzEl, dirFromAzElAt, dirToAzEl } from "./geodesy.js";
 import { isNum } from "./format.js";
-import { pixelDirFromAnchor, angSizeFromPoints, lensK } from "./projection.js";
+import { pixelDirFromAnchor, angSizeFromPoints, lensK, pixToDirK } from "./projection.js";
 import { intersectLines } from "./triangulate.js";
 
 /* ─── MULTI-MOMENT TRACK ────────────────────────────────────────────────
@@ -73,12 +73,15 @@ export function sourceTrack(s) {
    segments. gapS adapts to the track's own cadence (waypoints ~0.5 s, dense
    tracker paths ~0.25 s), floored so a deliberately sparse but continuous
    track isn't shredded. */
-export function trackSegments(ts, opts = {}) {
-  if (!ts || !ts.length) return [];
+export function gapThreshold(ts) {
   const dts = [];
   for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
   const med = dts.slice().sort((a, b) => a - b)[dts.length >> 1] || 0;
-  const gapS = opts.gapS != null ? +opts.gapS : Math.max(1.6, med * 4);
+  return Math.max(1.6, med * 4);
+}
+export function trackSegments(ts, opts = {}) {
+  if (!ts || !ts.length) return [];
+  const gapS = opts.gapS != null ? +opts.gapS : gapThreshold(ts);
   const segs = [];
   let s0 = ts[0];
   for (let i = 1; i < ts.length; i++) {
@@ -174,18 +177,43 @@ function roundCorners(pts) {
   return out;
 }
 
+/* az-wrap-aware pose interpolation over a solved posePath ([{t,az,el,roll,
+   fov,k}]) — local minimal twin of the video module's posePathAt, kept here
+   so the math core doesn't depend on src/video. Clamps beyond the ends. */
+function poseAtL(path, t) {
+  if (t <= path[0].t) return path[0];
+  const last = path[path.length - 1];
+  if (t >= last.t) return last;
+  let lo = 0, hi = path.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; (path[m].t <= t ? lo = m : hi = m); }
+  const a = path[lo], b = path[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+  const dAz = ((+b.az - +a.az + 540) % 360) - 180;
+  return {
+    az: (((+a.az + dAz * u) % 360) + 360) % 360,
+    el: +a.el + (+b.el - +a.el) * u,
+    roll: (+a.roll || 0) + ((+b.roll || 0) - (+a.roll || 0)) * u,
+    fov: +a.fov + (+b.fov - +a.fov) * u,
+    k: (+a.k || 0) + ((+b.k || 0) - (+a.k || 0)) * u,
+  };
+}
+
 /* Convert a source's track into [{ct, d}] — clock time + unit direction.
    Pixel points are anchored to Moment A: the FIRST pixel track point is
    defined to lie along A's az/el; later points are pixel offsets from it.
 
-   POSE NOTE (video roadmap): `s.mediaAim` is read here as the pose for
-   every point, which assumes the camera never moved. When per-frame poses
-   land, a point's own `p.pose` should win over the source-level one. */
+   PER-FRAME POSES: when the clip was stabilized (s.posePath), each pixel
+   waypoint converts through ITS OWN frame's solved pose — the roadmap's
+   "camera never moved" assumption removed. This was MEASURED on a real
+   two-camera drone pass against the flight log: the handheld witness's pan
+   added ~10 mph of phantom speed under the static assumption (32 vs the
+   drone's logged 21 mph average); a tripod clip has no posePath and keeps
+   the static path, which is then actually true. */
 export function trackDirections(s) {
   const track = sourceTrack(s);
   if (!track || track.length < 2) return null;
   const pts = [...track].sort((a, b) => a.t - b.t);
   const fov = isNum(s.fovH) ? +s.fovH : null;
+  const pp = Array.isArray(s.posePath) && s.posePath.length >= 2 ? s.posePath : null;
   /* the ANCHOR pixel point sits at A.az/el; every other pixel point is an offset
      from it. Normally that's the first tapped point, but a point flagged
      `anchor` (SNAPPED to the measured 3D object — which may be anywhere ALONG
@@ -198,6 +226,10 @@ export function trackDirections(s) {
   for (const p of pts) {
     let d;
     if (p.az != null && p.el != null) d = dirFromAzEl(+p.az, +p.el);
+    else if (pp && p.x != null && isNum(p.t) && s.natW) {
+      const P = poseAtL(pp, +p.t);
+      d = pixToDirK(p.x, p.y, s.natW, s.natH, P.az, P.el, P.roll || 0, P.fov, P.k || 0);
+    }
     else if (s.natW && fov && p0 && (useAim || anchored)) {
       d = pixelDirFromAnchor(p.x, p.y, p0.x, p0.y,
         anchored ? +s.A.az : 0, anchored ? +s.A.el : 0,
@@ -214,12 +246,19 @@ export function trackDirections(s) {
    Velocities per segment; 3-point smoothing before differentiating for
    acceleration (raw finite differences amplify point jitter badly).
    Felt load = |a − g⃗| / 9.81, so steady level motion reads 1 g. */
-export function kinematics(times, pos) {
+export function kinematics(times, pos, opts = {}) {
+  /* maxSegDt: a pair of samples separated by more than this is a VISIBILITY
+     HOLE, not a segment — "displacement ÷ 18 s" across a blind stretch is
+     not a speed anybody measured. Skipped segments contribute nothing to
+     the speed/acceleration series, the path length, or the active duration
+     that the average divides by. Callers without the option keep the old
+     behavior exactly. */
+  const maxDt = opts.maxSegDt > 0 ? +opts.maxSegDt : Infinity;
   const segs = [];
   for (let i = 0; i < pos.length - 1; i++) {
     const dt = times[i + 1] - times[i];
-    if (dt <= 0) continue;
-    segs.push({ t: (times[i] + times[i + 1]) / 2, v: scl(sub(pos[i + 1], pos[i]), 1 / dt) });
+    if (dt <= 0 || dt > maxDt) continue;
+    segs.push({ t: (times[i] + times[i + 1]) / 2, v: scl(sub(pos[i + 1], pos[i]), 1 / dt), dt });
   }
   if (!segs.length) return null;
   const vs = segs.map((s, i) => (segs.length < 3 || i === 0 || i === segs.length - 1)
@@ -229,16 +268,22 @@ export function kinematics(times, pos) {
   const acc = [];
   for (let i = 0; i < vs.length - 1; i++) {
     const dt = segs[i + 1].t - segs[i].t;
-    if (dt <= 0) continue;
+    if (dt <= 0 || dt > maxDt) continue; // never differentiate across a hole
     const a = scl(sub(vs[i + 1], vs[i]), 1 / dt);
     const load = mag(sub(a, GV)) / 9.81;
     const sp = Math.min(speeds[i], speeds[i + 1]);
     const turn = sp > 0.01 ? (Math.acos(clampN(dot(unit(vs[i]), unit(vs[i + 1])), -1, 1)) * R2D) / dt : 0;
     acc.push({ t: (segs[i].t + segs[i + 1].t) / 2, a: mag(a), load, turn });
   }
-  let path = 0;
-  for (let i = 0; i < pos.length - 1; i++) path += mag(sub(pos[i + 1], pos[i]));
-  const dur = times[times.length - 1] - times[0];
+  /* path & the duration the average divides by: measured segments only —
+     the straight-line jump across a blind stretch is not path anybody saw */
+  let path = 0, dur = 0;
+  if (isFinite(maxDt)) {
+    for (const s of segs) { path += mag(s.v) * s.dt; dur += s.dt; }
+  } else {
+    for (let i = 0; i < pos.length - 1; i++) path += mag(sub(pos[i + 1], pos[i]));
+    dur = times[times.length - 1] - times[0];
+  }
   const peak = (arr, fn) => (arr.length ? arr.reduce((m, x) => Math.max(m, fn(x)), 0) : null);
   return {
     n: pos.length, dur, path,
@@ -299,7 +344,8 @@ export function analyzeTracks(sources) {
   const solo = sources.map((s) => {
     const dirs = trackDirections(s);
     if (!dirs || dirs.length < 3) return null;
-    const k = kinematics(dirs.map((d) => d.ct), dirs.map((d) => d.d));
+    const cts = dirs.map((d) => d.ct);
+    const k = kinematics(cts, dirs.map((d) => d.d), { maxSegDt: gapThreshold(cts) });
     return k ? { name: s.name, k, rad: soloTrack(s) } : null;
   }).filter(Boolean);
 
@@ -432,7 +478,7 @@ export function analyzeTracks(sources) {
         times.push(t); pos.push(sol.X); missSum += sol.rmsMiss;
       }
       if (pos.length >= 3) {
-        const k = kinematics(times, pos);
+        const k = kinematics(times, pos, { maxSegDt: gapThreshold(times) });
         if (k) stereo = { k, times, pos, ref, avgMiss: missSum / pos.length, window: [t0, t1], nObs: obs.length, sharedDur, cutDur: Math.max(0, (t1 - t0) - sharedDur), sharedSegs: shared.length, sync };
       }
       if (!stereo) stereo = pos.length ? { sparse: true, sync } : { overlapErr: true, sync };
@@ -556,7 +602,7 @@ export function stereoVideo(sources, opts = {}) {
   const final = triAt(best.delta, 400, true);
   if (!final) return null;
   const times = final.rows.map((r) => r.t), pos = final.rows.map((r) => r.X);
-  const k = kinematics(times, pos);
+  const k = kinematics(times, pos, { maxSegDt: gapThreshold(times) });
   /* sync CONFIDENCE: how sharply the miss rises when we mistune the offset by
      ±0.5 s. A deep, narrow minimum ⇒ well-constrained; a flat one (far/slow
      object) ⇒ the sync — and thus absolute speed — is soft. */

@@ -676,8 +676,16 @@ terrain stay frozen and only the object moves. Build ladder:
    star blobs + gradient corners (a dusk clip uses stars AND the tree
    line; either alone was wasteful). Asserted in mathcheck (60→46° zoom
    sweep recovered to ~1°, az locked; tree + stars both contribute).
-2. Track points convert through their own frame's pose (removes the current
-   "camera never moved" assumption — the biggest hidden video error today).
+2. Track points convert through their own frame's pose. **DONE for solved
+   clips** (trackDirections uses s.posePath when present; a tripod clip
+   without one keeps the static path, which is then actually true). Field-
+   measured against a drone flight log with one handheld + one tripod
+   camera: the handheld pan added ~10 mph of phantom speed under the static
+   assumption (32 vs the drone's logged 21 mph mean); with per-frame poses
+   the speed profile tracks the log at ratio 0.85 (slightly LOW — sparse
+   waypoint smoothing, the honest direction to err). kinematics() is also
+   gap-aware now (opts.maxSegDt): path/average/acceleration use measured
+   segments only, never the straight-line jump across a visibility hole.
 3. World-stabilized playback/exhibit render = existing mesh warp, per frame.
    **DONE (rung B)** — ▶ + scrubber in look mode when a posePath exists:
    single-in-flight seek → bake frame → set `playPose` (a DISPLAY-ONLY pose

@@ -6,7 +6,7 @@ import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/tri
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -2666,6 +2666,58 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     worstV = Math.max(worstV, mag(sub(sv.pos[i], truthAt(sv.times[i] - when))));
   approx(worstV, 0, 2.0, "dense stereo points sit on the truth path (m worst)");
   ok(sv.cutDur > 6, `blind stretch reported as ignored (${sv.cutDur.toFixed(1)} s)`);
+}
+
+// --- Per-frame-pose waypoints: a panning camera must not fabricate speed ---
+// Field measurement (two-camera drone pass vs the flight log): the handheld
+// witness's pan added ~10 mph of phantom speed under the static-camera
+// assumption (32 measured vs 21 logged). With a solved posePath, each pixel
+// waypoint converts through ITS OWN frame's pose, subtracting the pan.
+{
+  head("per-frame-pose waypoints");
+  const natW = 1920, natH = 1080, FOV = 60;
+  // the camera PANS 40° across a HOVERING object — the truth is zero motion,
+  // and the static-camera assumption reads the whole pan as object speed
+  const camAt = (t) => ({ t, az: 200 + 2 * t, el: 10, roll: 0, fov: FOV, k: 0 });
+  const objAt = (t) => ({ az: 218, el: 12 });
+  const track = [], posePath = [];
+  for (let t = 0; t <= 20 + 1e-9; t += 0.5) {
+    const P = camAt(t);
+    posePath.push(P);
+    const g = objAt(t);
+    const px = dirToPixK(dirFromAzEl(g.az, g.el), natW, natH, P.az, P.el, 0, FOV, 0);
+    track.push({ t: +t.toFixed(1), x: px.px, y: px.py });
+  }
+  const base = { name: "P", lat: 42.164, lon: -123.648, alt: 0, fovH: FOV, natW, natH, whenMs: 0,
+    A: { az: "218", el: "12" }, B: {}, mediaAim: { az: 200, el: 10, roll: 0 }, track };
+  const withPose = trackDirections({ ...base, posePath });
+  const withoutPose = trackDirections(base);
+  const rate = (dirs) => {
+    let sweep = 0;
+    for (let i = 1; i < dirs.length; i++) sweep += Math.acos(Math.min(1, Math.max(-1, dot(dirs[i - 1].d, dirs[i].d)))) * R2D;
+    return sweep / (dirs[dirs.length - 1].ct - dirs[0].ct);
+  };
+  approx(rate(withPose), 0, 0.02, "pose-path waypoints: a hovering object reads ~0°/s through a 2°/s pan");
+  ok(rate(withoutPose) > 1.5, `static assumption reads the pan as motion (${rate(withoutPose).toFixed(2)}°/s) — the error the fix removes`);
+  // absolute accuracy: each pose-path direction sits on the true object dir
+  let worst = 0;
+  withPose.forEach((d, i) => {
+    const g = objAt(i * 0.5);
+    worst = Math.max(worst, Math.acos(Math.min(1, Math.max(-1, dot(d.d, dirFromAzEl(g.az, g.el))))) * R2D);
+  });
+  approx(worst, 0, 0.05, "pose-path directions sit on the true object (deg worst)");
+
+  // gap-aware kinematics: the straight-line jump across a blind stretch must
+  // not enter path/avg/acceleration — two clusters moving at 10 m/s with an
+  // 18 s hole between them used to average path/24 s ≈ misleadingly slow
+  const times = [], pos = [];
+  for (let t = 0; t <= 3 + 1e-9; t += 0.5) { times.push(t); pos.push([10 * t, 0, 50]); }
+  for (let t = 21; t <= 24 + 1e-9; t += 0.5) { times.push(t); pos.push([400 + 10 * (t - 21), 100, 50]); }
+  const kGap = kinematics(times, pos, { maxSegDt: 2 });
+  approx(kGap.avgSpeed, 10, 0.01, "average speed uses measured segments only (m/s)");
+  approx(kGap.path, 60, 0.5, "path length excludes the unseen jump (m)");
+  const kOld = kinematics(times, pos);
+  ok(kOld.avgSpeed < 20 && kOld.path > 350, "legacy no-option behavior unchanged (jump included)");
 }
 
 // --- Geometric clock sync: capture clocks lie; the object's motion doesn't ---
