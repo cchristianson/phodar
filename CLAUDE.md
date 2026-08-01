@@ -514,6 +514,12 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   for free. Pure + mathcheck-asserted against a synthetic flight built from
   exact ENU truth (parse → interpolate → predict → 7.5 s clock-skew
   recovery → analyze() fix graded "excellent" on perfect data).
+  **FIELD-VALIDATED** (docs/FIELD-TESTS.md Case 5): a real Mavic Mini flight
+  triangulated to 2.19 m of its logged position (2.2% of range) on the
+  production PWA. That flight's photos were 122 s apart, so
+  calibrationSummary also grades each witness at its OWN photo time
+  (per.ownSep; a hover makes the joint-instant match undersell a good
+  sight-line — obs 1 was 0.19° at its own time vs 1.24° joint).
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
   skyline and landmark azimuth anchors. **Forward geocoding is DONE** —

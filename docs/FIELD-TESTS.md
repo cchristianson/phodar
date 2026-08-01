@@ -114,3 +114,35 @@ Size is the weakest output and honestly so: the structure spans ~3 px at
 4032 px, where ±1 px is ±33 %, and the per-observer estimates (20.8 / 30.8 /
 36.4 ft) disagree by 75 % — the spread IS the uncertainty, visible in the
 report without anyone having to compute it.
+
+## Case 5 — DJI Mavic Mini vs its own flight log (Cave Junction, OR · July 2026)
+First case with **dense, machine-logged ground truth**: a 5-minute Mavic Mini
+flight (Airdata CSV, 3,010 GPS/barometer samples at 10 Hz, UTC clock, MSL
+altitude), photographed from two positions and graded by the app's 🛩
+flight-log calibration check — run end-to-end on the production PWA, and
+reproduced bit-for-bit offline from the exported bundle + CSV.
+
+- Geometry: baseline **61.5 m**, ranges **57 / 100 m**, convergence 33.4°,
+  rms ray miss **0.36 m**, fix rated *excellent*.
+- **Position: fix landed 2.19 m (7.2 ft) from the drone's logged position —
+  2.2 % of range.** Altitude −0.8 m.
+- Direction: 1.24° off both sight-lines at the joint match instant; Observer
+  1's sight-line was within **0.19°** of the drone at its own photo time.
+- Size: **0.26 m vs the 0.202 m body (×1.29)** — measured angular sizes ran
+  ~0.04° hot on a 0.12–0.25° target, consistent with marking the prop disc
+  and edge blur. Exactly the output DRONE-TEST.md predicted would be
+  humbling; direction and position were not.
+
+**Lessons encoded in the app.**
+- The two photos were taken **122 s apart** — a single joint match instant
+  undersells each witness when the target moved between shots, so
+  `calibrationSummary` now also grades every witness against the drone's
+  position at that witness's OWN photo time (shown in the check and the
+  report whenever stated times differ from the match instant).
+- The whole-log time scan did its job: best joint match 61.3 s from the
+  stated (first witness's) time, with the hover making the minimum shallow —
+  reported, not hidden.
+- Two platform bugs shaken out before this run, both from real artifacts:
+  the phone's raw DJI FlightRecord `.txt` is AES-encrypted (parser now names
+  it and points at Airdata), and the installed PWA silently dropped the
+  bundle `<a download>` (now routed through the share sheet).

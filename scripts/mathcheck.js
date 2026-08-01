@@ -2695,6 +2695,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const thin = thinLog(log.pts, 50);
   ok(thin.length === 50 && thin[0].tMs === log.t0Ms && thin[49].tMs === log.t1Ms, "thinLog keeps first/last at the target count");
 
+  // non-simultaneous witnesses (first field flight: photos 122 s apart): a
+  // witness whose photo captured the drone at ITS OWN time must grade ~0°
+  // there even when the joint match instant sits elsewhere on the path
+  {
+    const tLate = tPick + 20000; // drone has moved 100 m north by then
+    const gLate = geoFromEnu(truthEnu(50), ref);
+    const oLate = obsDefs[1];
+    const PL = enuFromGeo(gLate.lat, gLate.lon, gLate.alt, oLate);
+    const aeL = dirToAzEl(unit(PL));
+    const wit2 = [
+      { ...wit[0], whenMs: tPick, B: {} },
+      { name: "B", lat: oLate.lat, lon: oLate.lon, alt: oLate.alt, whenMs: tLate, A: { az: aeL.az, el: aeL.el }, B: {} },
+    ];
+    const s2 = calibrationSummary({ sources: wit2, fix: null, pts: log.pts, tMs: tPick, spanM: span });
+    ok(s2.per[0].ownSep == null, "own-time grading: a witness at the joint instant gets no redundant entry");
+    ok(s2.per[1].sep > 3, `own-time grading: the moved drone is visibly off the late witness at the joint instant (${s2.per[1].sep.toFixed(1)}°)`);
+    approx(s2.per[1].ownSep, 0, 0.05, "own-time grading: the late witness grades ~0° at its own photo time");
+  }
+
   // a raw (encrypted, binary) DJI FlightRecord .txt is named for what it is,
   // not mis-diagnosed as a CSV with missing columns — the shape verified
   // against a real Mini record read the way FileReader.readAsText would

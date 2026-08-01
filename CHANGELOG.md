@@ -28,7 +28,11 @@ Notable changes to Phodar. Format loosely follows
   report section, and `docs/DRONE-TEST.md` — the field protocol for flying a
   calibration test. Parsing, prediction, sync and grading are pure
   (`src/checks/flightlog.js`) and asserted in mathcheck against a synthetic
-  flight with exact ground truth.
+  flight with exact ground truth. Field-validated on a real Mavic Mini
+  flight: fix within 2.19 m of the logged position at 57–100 m ranges
+  (docs/FIELD-TESTS.md Case 5). Witnesses whose photos were taken at
+  different moments are additionally graded against the drone's position at
+  each photo's own time (that flight's photos were 122 s apart).
 
 ## [0.9.0] — 2026-07-26
 

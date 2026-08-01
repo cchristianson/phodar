@@ -10440,6 +10440,7 @@ function FlightLogCheck({ sources, fix, onLog }) {
                   <div key={i} style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
                     {valid.length > 1 ? `${p.name || "obs " + (i + 1)}: ` : ""}
                     <span style={{ color: p.sep < 1 ? "var(--teal)" : p.sep < 3 ? "var(--amber)" : "var(--red)" }}>{p.sep.toFixed(2)}° off the sight-line</span>
+                    {p.ownSep != null && <> (<span style={{ color: p.ownSep < 1 ? "var(--teal)" : "var(--amber)" }}>{p.ownSep.toFixed(2)}°</span> at this photo's own time)</>}
                     {" · "}drone at {p.az.toFixed(1)}°/{p.el.toFixed(1)}° (witness {(+w.A.az).toFixed(1)}°/{(+w.A.el).toFixed(1)}°) · {fmtLenShort(p.rangeM)}
                     {p.predAng != null && <> · would appear <span style={{ color: "var(--teal)" }}>{p.predAng.toFixed(3)}°</span>{m != null && <> vs measured <span style={{ color: "var(--amber)" }}>{m.toFixed(3)}°</span></>}</>}
                   </div>
@@ -10449,7 +10450,7 @@ function FlightLogCheck({ sources, fix, onLog }) {
                 <div style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
                   fix vs log: <span style={{ color: gradeCol[cmp.grade?.pos] || "var(--ink)" }}>{fmtLenShort(cmp.use.fixCmp.errM)} off</span>
                   {cmp.use.fixCmp.errPct != null ? ` (${cmp.use.fixCmp.errPct.toFixed(1)}% of range)` : ""}
-                  {" · "}alt {cmp.use.fixCmp.errV >= 0 ? "+" : ""}{cmp.use.fixCmp.errV.toFixed(1)} m
+                  {" · "}alt {cmp.use.fixCmp.errV >= 0 ? "+" : "−"}{fmtLenShort(Math.abs(cmp.use.fixCmp.errV))}
                   {cmp.use.fixCmp.sizeRatio != null && <> · size <span style={{ color: "var(--teal)" }}>{fmtLenShort(cmp.use.fixCmp.sizeM)}</span> vs true {fmtLenShort(cmp.use.fixCmp.spanM)} (×{cmp.use.fixCmp.sizeRatio.toFixed(2)})</>}
                   {cmp.use.fixCmp.speedFix != null && <> · speed {fmtSpeedShort(cmp.use.fixCmp.speedFix)} vs log {fmtSpeedShort(cmp.use.fixCmp.speedLog)}</>}
                   {cmp.use.fixCmp.altAssumed && <div style={{ color: "var(--amber)", marginTop: 2 }}>⚠ altitude datum assumed (takeoff = observer elevation) — set the takeoff elevation above for a true 3D error</div>}
@@ -11401,7 +11402,7 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
           (isNum(w.A?.angManual) ? +w.A.angManual : null);
         const rows = sum.per.map((p, i) => {
           const m = wit[i] ? measAngW(wit[i]) : null;
-          return `<tr><td>${e2(p.name || "Observer " + (i + 1))}</td><td>${p.sep.toFixed(2)}°</td><td>${p.az.toFixed(1)}° / ${p.el.toFixed(1)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(3) + "°" : "—"}${m != null ? ` vs ${m.toFixed(3)}°` : ""}</td></tr>`;
+          return `<tr><td>${e2(p.name || "Observer " + (i + 1))}</td><td>${p.sep.toFixed(2)}°${p.ownSep != null ? ` <span class="cap">(${p.ownSep.toFixed(2)}° at this photo's own time)</span>` : ""}</td><td>${p.az.toFixed(1)}° / ${p.el.toFixed(1)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(3) + "°" : "—"}${m != null ? ` vs ${m.toFixed(3)}°` : ""}</td></tr>`;
         }).join("");
         const fc = sum.fixCmp;
         const assess = `<b>Assessment — calibration: ${grade.overall}.</b> At the matched instant the drone's logged position sat ${sum.sepMax.toFixed(2)}° off the ${wit.length > 1 ? "worst witness's" : "witness's"} sight-line${fc
@@ -11415,7 +11416,7 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
 <p class="lead">${assess}</p>
 <p class="cap">Calibration flight: ${e2(preset ? preset.label : "drone")}${spanM != null ? `, ${fmtLenShort(spanM)} across` : ""} · ${e2(fl.name || "flight log")} · ${fl.nFull || fl.pts.length} samples over ${((fl.t1Ms - fl.t0Ms) / 60000).toFixed(1)} min${fl.absTime ? ` from ${new Date(fl.t0Ms).toLocaleString()}` : ""}. ${clockTxt}</p>
 <table><tr><th>Witness</th><th>Off sight-line</th><th>Drone at az/el</th><th>Range</th><th>Would appear vs measured</th></tr>${rows}</table>
-${fc ? `<p>Altitude: fix ${fc.errV >= 0 ? "+" : ""}${fc.errV.toFixed(1)} m vs the log${fc.speedFix != null ? ` · speed ${fmtSpeedShort(fc.speedFix)} vs logged ${fmtSpeedShort(fc.speedLog)}${isNum(fc.headErr) ? ` · heading ${fc.headErr >= 0 ? "+" : ""}${fc.headErr.toFixed(0)}°` : ""}` : ""}.${fc.altAssumed ? ` <b>⚠ Altitude datum assumed</b> — this log records height above takeoff only and no takeoff elevation was set, so the takeoff spot was assumed to sit at the observer's elevation.` : ""}</p>` : ""}
+${fc ? `<p>Altitude: fix ${fc.errV >= 0 ? "+" : "−"}${fmtLenShort(Math.abs(fc.errV))} vs the log${fc.speedFix != null ? ` · speed ${fmtSpeedShort(fc.speedFix)} vs logged ${fmtSpeedShort(fc.speedLog)}${isNum(fc.headErr) ? ` · heading ${fc.headErr >= 0 ? "+" : ""}${fc.headErr.toFixed(0)}°` : ""}` : ""}.${fc.altAssumed ? ` <b>⚠ Altitude datum assumed</b> — this log records height above takeoff only and no takeoff elevation was set, so the takeoff spot was assumed to sit at the observer's elevation.` : ""}</p>` : ""}
 <p class="cap">The flight record is the craft's own GPS/barometer telemetry — the ground truth this analysis is graded against. Direction is the purest test (it needs no triangulation); position and size also grade the two-witness geometry.</p>`;
       }
     }

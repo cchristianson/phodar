@@ -371,6 +371,16 @@ export function calibrationSummary({ sources, fix, pts, tMs, spanM, homeElevM })
   const m = logMomentPer(valid, pts, tMs, spanM, homeElevM);
   if (!m) return null;
   const out = { tMs, sepMax: m.sepMax, per: m.per, st: m.st, clamped: m.clamped };
+  /* Witnesses photograph at DIFFERENT moments (first field flight: 122 s
+     apart) — one joint instant undersells each sight-line when the target
+     moved between shots. So each witness whose stated photo time sits well
+     away from the joint match instant is ALSO graded against the drone's
+     position at its OWN time: the purest per-witness direction test. */
+  valid.forEach((s, i) => {
+    if (!isNum(s.whenMs) || Math.abs(+s.whenMs - tMs) <= 10000) return;
+    const own = logMomentPer([s], pts, +s.whenMs, spanM, homeElevM);
+    if (own && !own.clamped) { out.per[i].ownSep = own.sepMax; out.per[i].ownTMs = +s.whenMs; }
+  });
   if (fix && fix.ok) {
     const { altM, altAssumed } = droneAltM(m.st, homeElevM, fix.ref.alt);
     const D = enuFromGeo(m.st.lat, m.st.lon, altM, fix.ref);
