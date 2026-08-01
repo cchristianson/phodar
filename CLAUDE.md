@@ -42,7 +42,15 @@ imported by both `phodar.jsx` and the test scripts):
   `videoKinematics` (dense objPath angular kinematics), `stereoVideo`
   (two-video dense triangulation with auto time-sync), `mixedStereo`
   (video + still: anchor the dense clip to absolute scale via one photo's
-  sight-line).
+  sight-line). **VISIBILITY SEGMENTS** (`trackSegments`/`interSegments`,
+  field case: a drone visible only in sections of each of two videos): a
+  witness's track has holes where they lost the object, and interpolating a
+  direction across a hole fabricates a ray nobody observed — both stereo
+  paths triangulate ONLY instants inside every witness's visible segments
+  (gap > ~4× the track's own cadence = break), stereoVideo drops q<0.3
+  held/guided samples first (predictions, not observations), and the
+  UI/report state seconds used vs ignored. Asserted in mathcheck with a
+  truth path that turns sharply inside one witness's blind stretch.
 - `astro.js` — `sunPos`/`moonPos`/`moonFrac` (SunCalc-derived).
 
 Everything else still lives in `src/phodar.jsx` (~3,750 lines) **on purpose** —

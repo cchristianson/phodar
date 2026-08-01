@@ -190,6 +190,11 @@ function TrajectoryStereoSection({ stereo }) {
           <tr><td>Avg ray miss along track</td><td>{fmtLenShort(stereo.avgMiss)}</td></tr>
         </tbody>
       </table>
+      {stereo.cutDur > 0.5 && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--amber)" }}>
+          ◔ Only shared visibility is triangulated: {stereo.sharedDur.toFixed(1)} s where every witness had the object, {stereo.cutDur.toFixed(1)} s ignored where one lost sight (interpolating across a blind stretch would fabricate a path nobody saw).
+        </div>
+      )}
       <div style={{ marginTop: 8, fontSize: 11, color: "var(--dim)" }}>
         A steady airliner reads ~1 g; a hard fighter turn ~7–9 g. Differentiation amplifies tap jitter — mark every few frames rather than every frame, and distrust single-sample g spikes that the speed trace doesn't corroborate.
       </div>
@@ -10587,7 +10592,9 @@ function ResultsPanel({ sources, onLog }) {
 
       {trk.stereo && trk.stereo.overlapErr && (
         <div className="warn" style={{ margin: "10px 12px" }}>
-          ⚠ Multiple observers have tracks, but their time windows don't overlap. Track times sync through each source's Moment-A clock time — set "Set time A" on the anchor frame, then put both observers' A times on a common clock.
+          {trk.stereo.noShared
+            ? <>⚠ The observers' tracks overlap in time, but never both SEE the object at the same moment — each captured it only while the other had lost it. Triangulation needs at least a few seconds of shared visibility; the sections where only one witness had the object still feed that witness's single-view analysis.</>
+            : <>⚠ Multiple observers have tracks, but their time windows don't overlap. Track times sync through each source's Moment-A clock time — set "Set time A" on the anchor frame, then put both observers' A times on a common clock.</>}
         </div>
       )}
       {trk.stereo && trk.stereo.k && <TrajectoryStereoSection stereo={trk.stereo} />}
@@ -11336,7 +11343,9 @@ ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
     (tr.stereo.k.peakA != null ? row("Peak acceleration", tr.stereo.k.peakA.toFixed(1) + " m/s²") : "") +
     (tr.stereo.k.peakLoad != null ? row("Peak felt load", tr.stereo.k.peakLoad.toFixed(2) + " g") : "") +
     (tr.stereo.k.peakTurn != null ? row("Peak turn rate", tr.stereo.k.peakTurn.toFixed(1) + " °/s") : "") +
-    `</table>` + reportTrajSvg(tr.stereo.k) : "";
+    `</table>` +
+    (tr.stereo.cutDur > 0.5 ? `<p class="cap">Only genuinely shared visibility is triangulated: ${tr.stereo.sharedDur.toFixed(1)} s where every witness had the object; ${tr.stereo.cutDur.toFixed(1)} s of the time overlap was ignored where one witness had lost sight (interpolating a blind stretch would fabricate a path nobody observed).</p>` : "") +
+    reportTrajSvg(tr.stereo.k) : "";
   const soloKin = (!tr.stereo?.k && tr.solo?.length) ? (() => {
     const s0 = tr.solo[0];
     const base = `Single-view angular trajectory: ${s0.k.n} pts over ${s0.k.dur.toFixed(1)} s, peak angular rate ${(s0.k.peakSpeed * R2D).toFixed(2)} °/s.`;
@@ -11805,6 +11814,7 @@ ${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tra
         `</table>` + reportTrajSvg(vs.k) : "";
       vstereoHtml = `<h2>Two-video trajectory (dense stereo)</h2>
 <p class="lead"><b>Triangulated from ${vs.nObs} clips</b> frame-by-frame: ${vs.n} common instants over ${(vs.window[1] - vs.window[0]).toFixed(1)} s. The clips were auto-synchronised (${vs.offset >= 0 ? "+" : ""}${vs.offset.toFixed(2)} s relative offset, ${syncTxt})${vs.dropped ? `, and ${vs.dropped} mistracked frame${vs.dropped > 1 ? "s were" : " was"} rejected` : ""}.</p>
+${vs.cutDur > 0.5 || vs.qDropped ? `<p class="cap">Only genuinely shared visibility is triangulated: ${vs.sharedDur.toFixed(1)} s where both clips held the object${vs.cutDur > 0.5 ? `, ${vs.cutDur.toFixed(1)} s ignored where one lost sight` : ""}${vs.qDropped ? `; ${vs.qDropped} tracker samples that were held/guided predictions (not observations) were excluded first` : ""}.</p>` : ""}
 <table><tr><th>Fix geometry</th><th></th></tr>
 ${row("Baseline (observer spacing)", fmtLenShort(vs.baseline))}
 ${row("Mean convergence angle", `${vs.conv.toFixed(1)}°${vs.conv < 6 ? " — shallow; depth (range/speed) less certain" : ""}`)}

@@ -12,6 +12,19 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Intermittent visibility no longer poisons triangulation** (field case: a
+  drone visible only in sections of each of two videos, path captured where
+  possible). Interpolating a witness's direction across a visibility hole
+  fabricates a ray nobody observed, and the stereo triangulation consumed it
+  wherever the other witness's real data fell inside the hole. Both stereo
+  pipelines (waypoint tracks and dense two-video) now build per-witness
+  visibility segments (a gap ≳4× the track's own cadence is a break), drop
+  low-confidence tracker samples (held/guided predictions) first, triangulate
+  only instants inside every witness's segments, and report how many seconds
+  of shared visibility were used vs ignored. Disjoint visibility is named
+  ("never both see the object at the same moment") instead of erroring
+  ambiguously. Asserted in mathcheck with a truth path that turns sharply
+  inside one witness's blind stretch.
 - **Twitchy object close-up exports**: the close-up's per-frame pixel pin
   gated its own correct finds against the solved track — the very thing the
   pin exists to correct — so ~1° of track error made it reject the lock and

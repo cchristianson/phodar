@@ -6,7 +6,7 @@ import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/tri
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo } from "../src/math/kinematics.js";
+import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -2592,6 +2592,80 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(poseQuality(5, true, "orient").headingOk === false, "poseQuality: no accuracy claim on the orientation path");
   ok(poseQuality(5, true, "ios").headingOk === true, "poseQuality: iOS keeps its accuracy-backed confidence");
   ok(/set the bearing yourself/.test(poseQuality(null, true, null).note), "poseQuality: no compass at all is said plainly");
+}
+
+// --- Visibility-aware stereo: intermittently-visible tracks (field case) ---
+// The drone was visible only in SECTIONS of each of two videos; the witness
+// captured path where they could. Interpolating a direction across a
+// visibility hole fabricates a ray nobody observed — the triangulation must
+// use only instants inside EVERY witness's visible segments, and say how
+// much it ignored. Truth here turns sharply INSIDE observer 1's hole, so the
+// old cut-the-corner interpolation would be badly wrong there.
+{
+  head("visibility-aware stereo (gaps)");
+  const segs = trackSegments([0, 0.5, 1, 1.5, 8, 8.5, 9]);
+  ok(segs.length === 2 && segs[0][1] === 1.5 && segs[1][0] === 8, "a 6.5 s hole splits a 0.5 s-cadence track into two segments");
+  ok(trackSegments([0, 2, 4, 6]).length === 1, "a sparse-but-steady track stays ONE segment (threshold rides the cadence)");
+  approx(segsDur(interSegments([[0, 8], [14, 20]], [[4, 16]])), 6, 1e-9, "segment intersection duration");
+
+  const ref = { lat: 42.164, lon: -123.648, alt: 0 };
+  const truthAt = (t) => (t <= 10 ? [100 + 10 * t, 300, 50] : [200, 300 + 12 * (t - 10), 50]); // sharp 90° turn at t=10
+  const obsDef = [{ ...ref }, { ...geoFromEnu([300, 0, 0], ref), alt: 0 }];
+  const azelFor = (o, t) => {
+    const P = enuFromGeo(...(() => { const g = geoFromEnu(truthAt(t), ref); return [g.lat, g.lon, g.alt]; })(), o);
+    return dirToAzEl(unit(P));
+  };
+  const mkSrc = (o, name, times) => ({
+    name, lat: o.lat, lon: o.lon, alt: o.alt, A: {}, B: {},
+    track: times.map((t) => ({ t, ...azelFor(o, t) })),
+  });
+  const times1 = [], times2 = [];
+  for (let t = 0; t <= 20 + 1e-9; t += 0.5) {
+    if (t < 8 || t > 14) times1.push(+t.toFixed(1)); // obs1 loses the object across the turn
+    times2.push(+t.toFixed(1));
+  }
+  const trk = analyzeTracks([mkSrc(obsDef[0], "A", times1), mkSrc(obsDef[1], "B", times2)]);
+  ok(!!(trk.stereo && trk.stereo.k), "stereo path solves from the shared-visibility sections");
+  ok(trk.stereo.times.every((t) => t <= 8.01 || t >= 13.99), "no triangulated instant falls inside the invisibility hole");
+  let worst = 0;
+  for (let i = 0; i < trk.stereo.times.length; i++)
+    worst = Math.max(worst, mag(sub(trk.stereo.pos[i], truthAt(trk.stereo.times[i]))));
+  approx(worst, 0, 1.5, "every triangulated point sits on the truth path (m worst)");
+  // obs1's last pre-hole sample is 7.5 and first post-hole 14.5 (the generator
+  // excludes the boundary samples), so shared = [0,7.5]+[14.5,20] = 13 s
+  approx(trk.stereo.sharedDur, 13, 0.2, "shared-visibility duration reported");
+  approx(trk.stereo.cutDur, 7, 0.2, "ignored (one-witness-blind) duration reported");
+  // no shared visibility at all → named, not a bogus fix
+  const trkNo = analyzeTracks([
+    mkSrc(obsDef[0], "A", times2.filter((t) => t <= 8)),
+    mkSrc(obsDef[1], "B", times2.filter((t) => t >= 14)),
+  ]);
+  ok(!!(trkNo.stereo && trkNo.stereo.overlapErr), "disjoint visibility → overlap error, not a fabricated fix");
+
+  // dense two-video stereo: a low-q fabricated stretch (tracker held/guided
+  // while the object was invisible) must be excluded the same way
+  const when = Date.parse("2026-08-01T17:00:00Z") / 1000;
+  const mkClip = (o, name, badLo, badHi) => {
+    const op = [];
+    for (let t = 0; t <= 20 + 1e-9; t += 0.25) {
+      const tt = +t.toFixed(2);
+      const bad = tt > badLo && tt < badHi;
+      if (bad) {
+        const g0 = azelFor(o, badLo); // frozen hold — the fabricated path
+        op.push({ t: tt, az: g0.az, el: g0.el, q: 0.2 });
+      } else op.push({ t: tt, ...azelFor(o, tt), q: 0.95 });
+    }
+    return { name, lat: o.lat, lon: o.lon, alt: o.alt, whenMs: when * 1000, objPath: op };
+  };
+  const sv = stereoVideo([mkClip(obsDef[0], "A", 10, 18), mkClip(obsDef[1], "B", -1, -1)]);
+  ok(!!(sv && sv.ok), "two-video stereo solves around the low-q stretch");
+  ok(sv.qDropped >= 30, `held/guided samples dropped as non-observations (${sv.qDropped})`);
+  ok(sv.times.every((t) => t - when <= 10.01 || t - when >= 17.99), "no dense-stereo instant falls inside the fabricated stretch");
+  let worstV = 0;
+  for (let i = 0; i < sv.times.length; i++)
+    worstV = Math.max(worstV, mag(sub(sv.pos[i], truthAt(sv.times[i] - when))));
+  approx(worstV, 0, 2.0, "dense stereo points sit on the truth path (m worst)");
+  ok(sv.cutDur > 6, `blind stretch reported as ignored (${sv.cutDur.toFixed(1)} s)`);
 }
 
 // --- Close-up pixel pin (pinStep): a poor track must not break the lock ---

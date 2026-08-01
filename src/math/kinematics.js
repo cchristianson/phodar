@@ -61,6 +61,44 @@ export function sourceTrack(s) {
   return manual;
 }
 
+/* ─── VISIBILITY SEGMENTS ───────────────────────────────────────────────
+   A witness only measured the object where they could SEE it — a real track
+   has holes (behind trees, too small, out of frame). Interpolating a
+   direction across a hole fabricates a path nobody observed, and a
+   triangulation that consumes it is silently wrong wherever the other
+   witness's real data falls inside the hole (field case: a drone visible
+   only in sections of each of two videos). So: adjacent samples further
+   apart than gapS form a BREAK; interpolation is legal only inside a
+   segment, and stereo triangulation only at instants inside EVERY witness's
+   segments. gapS adapts to the track's own cadence (waypoints ~0.5 s, dense
+   tracker paths ~0.25 s), floored so a deliberately sparse but continuous
+   track isn't shredded. */
+export function trackSegments(ts, opts = {}) {
+  if (!ts || !ts.length) return [];
+  const dts = [];
+  for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
+  const med = dts.slice().sort((a, b) => a - b)[dts.length >> 1] || 0;
+  const gapS = opts.gapS != null ? +opts.gapS : Math.max(1.6, med * 4);
+  const segs = [];
+  let s0 = ts[0];
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] - ts[i - 1] > gapS) { segs.push([s0, ts[i - 1]]); s0 = ts[i]; }
+  }
+  segs.push([s0, ts[ts.length - 1]]);
+  return segs;
+}
+export const inSegments = (segs, t) => segs.some(([a, b]) => t >= a - 1e-9 && t <= b + 1e-9);
+/* intersection of two segment lists — the span BOTH witnesses actually saw */
+export function interSegments(A, B) {
+  const out = [];
+  for (const a of A) for (const b of B) {
+    const lo = Math.max(a[0], b[0]), hi = Math.min(a[1], b[1]);
+    if (hi > lo) out.push([lo, hi]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+export const segsDur = (segs) => segs.reduce((s, [a, b]) => s + (b - a), 0);
+
 /* spherical linear interpolation between unit vectors */
 function slerp(a, b, f) {
   const c = clampN(dot(a, b), -1, 1);
@@ -273,13 +311,24 @@ export function analyzeTracks(sources) {
   let stereo = null;
   if (withT.length >= 2) {
     const ref = { lat: +withT[0].s.lat, lon: +withT[0].s.lon, alt: isNum(withT[0].s.alt) ? +withT[0].s.alt : 0 };
-    const obs = withT.map((o) => ({ ...o, P: enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref) }));
+    const obs = withT.map((o) => ({
+      ...o,
+      P: enuFromGeo(+o.s.lat, +o.s.lon, isNum(o.s.alt) ? +o.s.alt : 0, ref),
+      segs: trackSegments(o.dirs.map((d) => d.ct)),
+    }));
     const t0 = Math.max(...obs.map((o) => o.dirs[0].ct));
     const t1 = Math.min(...obs.map((o) => o.dirs[o.dirs.length - 1].ct));
+    /* the span every witness ACTUALLY saw — triangulating inside another
+       witness's visibility hole consumes an interpolated (fabricated) ray */
+    let shared = obs[0].segs;
+    for (let i = 1; i < obs.length; i++) shared = interSegments(shared, obs[i].segs);
+    shared = shared.map(([a, b]) => [Math.max(a, t0), Math.min(b, t1)]).filter(([a, b]) => b > a);
+    const sharedDur = segsDur(shared);
     if (!(t1 > t0)) stereo = { overlapErr: true };
+    else if (!(sharedDur > 0)) stereo = { overlapErr: true, noShared: true };
     else {
       let ts = [...new Set(obs.flatMap((o) => o.dirs.map((d) => +d.ct.toFixed(3))))]
-        .filter((t) => t >= t0 && t <= t1).sort((a, b) => a - b);
+        .filter((t) => t >= t0 && t <= t1 && inSegments(shared, t)).sort((a, b) => a - b);
       if (ts.length > 140) { const step = Math.ceil(ts.length / 140); ts = ts.filter((_, i) => i % step === 0); }
       const lerpDir = (dirs, t) => {
         let i = 0;
@@ -296,7 +345,7 @@ export function analyzeTracks(sources) {
       }
       if (pos.length >= 3) {
         const k = kinematics(times, pos);
-        if (k) stereo = { k, times, pos, ref, avgMiss: missSum / pos.length, window: [t0, t1], nObs: obs.length };
+        if (k) stereo = { k, times, pos, ref, avgMiss: missSum / pos.length, window: [t0, t1], nObs: obs.length, sharedDur, cutDur: Math.max(0, (t1 - t0) - sharedDur), sharedSegs: shared.length };
       }
       if (!stereo) stereo = pos.length ? { sparse: true } : { overlapErr: true };
     }
@@ -325,13 +374,25 @@ export function analyzeTracks(sources) {
    residuals for honest grading. Robust by construction to the small
    imperfections inherent in hand-held video. Pure. */
 export function stereoVideo(sources, opts = {}) {
+  /* q below minQ = the tracker HELD or rode the guide there — a prediction,
+     not an observation (the object was invisible: blur, occlusion, out of
+     frame). Dropping them turns invisible stretches into real GAPS, which
+     the segment masking below then excludes from triangulation. A brief
+     blur still bridges: the gap threshold tolerates short dropouts. */
+  const minQ = opts.minQ != null ? +opts.minQ : 0.3;
+  let qDropped = 0;
   const obs = (sources || [])
     .filter((s) => isNum(s.lat) && isNum(s.lon) && Array.isArray(s.objPath) && s.objPath.length >= 3)
-    .map((s) => ({
-      s,
-      base: (isNum(s.whenMs) ? +s.whenMs / 1000 : 0) + (isNum(s.syncOffset) ? +s.syncOffset : 0),
-      samp: s.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t),
-    }))
+    .map((s) => {
+      const all = s.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el));
+      const samp = all.filter((p) => !(isNum(p.q) && +p.q < minQ)).sort((a, b) => a.t - b.t);
+      qDropped += all.length - samp.length;
+      return {
+        s,
+        base: (isNum(s.whenMs) ? +s.whenMs / 1000 : 0) + (isNum(s.syncOffset) ? +s.syncOffset : 0),
+        samp,
+      };
+    })
     .filter((o) => o.samp.length >= 3);
   if (obs.length < 2) return null;
   const ref = { lat: +obs[0].s.lat, lon: +obs[0].s.lon, alt: isNum(obs[0].s.alt) ? +obs[0].s.alt : 0 };
@@ -357,7 +418,14 @@ export function stereoVideo(sources, opts = {}) {
     const t0 = Math.max(...T.map((tt) => tt[0]));
     const t1 = Math.min(...T.map((tt) => tt[tt.length - 1]));
     if (!(t1 > t0 + 1e-6)) return null;
-    let times = obs[0].t.filter((x) => x >= t0 && x <= t1);
+    /* only instants inside EVERY clip's visibility segments — a hole in one
+       clip (object invisible) must not consume the other's real data
+       against an interpolated ray */
+    let shared = trackSegments(T[0]);
+    for (let i = 1; i < T.length; i++) shared = interSegments(shared, trackSegments(T[i]));
+    shared = shared.map(([a, b]) => [Math.max(a, t0), Math.min(b, t1)]).filter(([a, b]) => b > a);
+    if (!shared.length) return null;
+    let times = obs[0].t.filter((x) => x >= t0 && x <= t1 && inSegments(shared, x));
     if (times.length > cap) { const step = Math.ceil(times.length / cap); times = times.filter((_, i) => i % step === 0); }
     if (times.length < 3) return null;
     const rows = [];
@@ -378,7 +446,7 @@ export function stereoVideo(sources, opts = {}) {
       if (kept.length < 3) kept = rows;
     }
     const meanMiss = kept.reduce((s, r) => s + r.miss, 0) / kept.length;
-    return { rows: kept, meanMiss, dropped: rows.length - kept.length, t0, t1 };
+    return { rows: kept, meanMiss, dropped: rows.length - kept.length, t0, t1, sharedDur: segsDur(shared) };
   };
   /* AUTO-SYNC: coarse sweep then refine, minimising mean ray-miss. Window is
      tight when both clips carry EXIF time (only clock drift to absorb), wide
@@ -429,6 +497,7 @@ export function stereoVideo(sources, opts = {}) {
     n: times.length, times, pos, k, window: [final.t0, final.t1],
     nObs: obs.length, perObs, syncConf, bothWhen, baseline, conv,
     names: obs.map((o) => o.s.name),
+    sharedDur: final.sharedDur, cutDur: Math.max(0, (final.t1 - final.t0) - final.sharedDur), qDropped,
   };
 }
 
