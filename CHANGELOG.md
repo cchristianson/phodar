@@ -4,6 +4,21 @@ Notable changes to Phodar. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are the ones in
 `package.json`.
 
+## [Unreleased]
+
+### Added
+- **Drone flight-log check (calibration)**: upload your own drone's flight
+  record on the results step (Airdata CSV export, decoded DJI Fly CSV, or DJI
+  video .SRT captions) and every output — direction, fix position, altitude,
+  true size, speed, heading — is graded against the craft's logged GPS truth.
+  Whole-log time sync (clock/timezone mismatches are found by geometry and
+  reported, never hidden), honest altitude datums for height-above-takeoff
+  logs, DJI Mavic Mini / Neo span presets, a "Drone flight-log ground truth"
+  report section, and `docs/DRONE-TEST.md` — the field protocol for flying a
+  calibration test. Parsing, prediction, sync and grading are pure
+  (`src/checks/flightlog.js`) and asserted in mathcheck against a synthetic
+  flight with exact ground truth.
+
 ## [0.9.0] — 2026-07-26
 
 First public release. Everything below is what the app can do at its debut, not

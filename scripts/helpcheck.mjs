@@ -92,6 +92,7 @@ const NAMED = [
   ["setPeek", /📷 hold/, "hold-to-compare the photo against the terrain preview"],
   ["autoStarAlign", /Auto star align/, "automatic plate solving"],
   ["matchSkyline", /Snap to ridges/, "terrain skyline snapping"],
+  ["FlightLogCheck", /flight-log check/i, "the drone flight-log calibration check"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

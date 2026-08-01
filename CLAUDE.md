@@ -492,6 +492,21 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
 - **Launch Library 2** + **NASA CNEOS fireball API**: known-events correlator
   (rocket launches, bolides) near the sighting time/place.
 - **adsbdb.com**: aircraft hex/callsign → type, registration, route.
+- **Drone flight-log ground truth: DONE** (`src/checks/flightlog.js` +
+  `FlightLogCheck` in ResultsPanel + a report section; protocol in
+  `docs/DRONE-TEST.md`): upload the user's own drone log (Airdata CSV /
+  decoded DJI Fly CSV / DJI .SRT captions — the raw DJI Fly `.txt` is
+  encrypted, the UI says so) and grade direction, fix position, size, alt,
+  speed against the craft's GPS. Design decisions that matter: the time
+  match scans the WHOLE log for the minimum worst-witness separation (a
+  local-time export parsed in the wrong timezone is the common failure —
+  a windowed search around the stated time would just miss), and altitude
+  datums are explicit (`droneAltM`: abs MSL → takeoff+homeElev → observer
+  elevation ASSUMED and flagged). Log persists downsampled (≤900 pts) on
+  the first witness as `source.flightLog`, so it rides autosave/share/report
+  for free. Pure + mathcheck-asserted against a synthetic flight built from
+  exact ENU truth (parse → interpolate → predict → 7.5 s clock-skew
+  recovery → analyze() fix graded "excellent" on perfect data).
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
   skyline and landmark azimuth anchors. **Forward geocoding is DONE** —

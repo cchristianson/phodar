@@ -31,6 +31,7 @@ import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "../src/checks/photometry.js";
 import { parseAirports } from "../src/checks/airports.js";
+import { parseFlightLog, parseWhen, thinLog, logStateAt, droneAltM, droneAzElRange, logMomentPer, syncLogTime, calibrationSummary, gradeCalibration, DRONE_PRESETS } from "../src/checks/flightlog.js";
 
 let fails = 0;
 const approx = (got, want, tol, msg) => {
@@ -2591,6 +2592,112 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(poseQuality(5, true, "orient").headingOk === false, "poseQuality: no accuracy claim on the orientation path");
   ok(poseQuality(5, true, "ios").headingOk === true, "poseQuality: iOS keeps its accuracy-backed confidence");
   ok(/set the bearing yourself/.test(poseQuality(null, true, null).note), "poseQuality: no compass at all is said plainly");
+}
+
+// --- Drone flight-log check: parse → predict → time-sync → calibrate vs truth ---
+// A synthetic calibration flight with EXACT ground truth: the drone flies due
+// north at 5 m/s, 40 m above two observers. The Airdata-style CSV is generated
+// from the truth via geoFromEnu, so every parsed value has a known answer.
+{
+  head("drone flight-log ground truth");
+  const ref = { lat: 42.16380, lon: -123.64800, alt: 120 };
+  const T0 = Date.parse("2026-08-01T17:00:00Z");
+  const SPD = 5, ALT = 40; // m/s north, m above the observers
+  const truthEnu = (tSec) => [120, -100 + SPD * tSec, ALT];
+  const fmtUtc = (ms) => {
+    const d = new Date(ms), p = (v) => String(v).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  };
+  const rows = ["time(millisecond),datetime(utc),latitude,longitude,altitude_above_seaLevel(feet),height_above_takeoff(feet),speed(mph),compass_heading(degrees)"];
+  for (let i = 0; i <= 120; i++) {
+    const t = i * 0.5, g = geoFromEnu(truthEnu(t), ref);
+    // datetime truncated to the SECOND like a real Airdata export — the parser
+    // must anchor on the first stamp and advance by time(millisecond)
+    rows.push(`${i * 500},${fmtUtc(T0 + Math.floor(t) * 1000)},${g.lat.toFixed(7)},${g.lon.toFixed(7)},${(g.alt / 0.3048).toFixed(1)},${(ALT / 0.3048).toFixed(1)},${(SPD / 0.44704).toFixed(2)},0.0`);
+  }
+  const log = parseFlightLog(rows.join("\n"), "flight.csv");
+  ok(log.ok && log.src === "csv" && log.absTime, "Airdata CSV parses (absolute clock)");
+  approx(log.n, 121, 0, "row count (pre-GPS rows would be dropped)");
+  approx(log.t0Ms, T0, 1, "first timestamp anchored to the UTC datetime");
+  approx(log.t1Ms - log.t0Ms, 60000, 1, "sub-second cadence carried by the millisecond clock");
+  ok(log.hasAbsAlt && log.hasRelAlt, "both altitude datums detected");
+  approx(log.pts[0].speedMs, SPD, 0.01, "speed mph → m/s");
+  approx(log.pts[0].altAbsM - ref.alt, ALT, 0.05, "altitude feet → metres (MSL)");
+
+  // interpolation between samples, against exact truth
+  const tQ = T0 + 30250;
+  const st = logStateAt(log.pts, tQ);
+  const stEnu = enuFromGeo(st.lat, st.lon, st.altAbsM, ref);
+  const want = truthEnu(30.25);
+  approx(mag(sub(stEnu, want)), 0, 0.15, "interpolated state sits on the truth path (m)");
+  approx(st.headDeg, 0, 0.5, "interpolated heading");
+
+  // witnesses: sight-lines computed from TRUTH geometry (not via the module),
+  // angular sizes for the true 0.202 m span at each true range
+  const span = DRONE_PRESETS[0].spanM;
+  const tPick = T0 + 30000;
+  const gTrue = geoFromEnu(truthEnu(30), ref);
+  const obsDefs = [{ name: "A", ...ref }, { name: "B", ...geoFromEnu([300, 0, 0], ref), alt: 120 }];
+  const wit = obsDefs.map((o) => {
+    const P = enuFromGeo(gTrue.lat, gTrue.lon, gTrue.alt, o);
+    const ae = dirToAzEl(unit(P));
+    return { name: o.name, lat: o.lat, lon: o.lon, alt: o.alt, A: { az: ae.az, el: ae.el, angManual: 2 * Math.atan(span / 2 / mag(P)) * R2D }, B: {} };
+  });
+  const m = logMomentPer(wit, log.pts, tPick, span);
+  approx(m.sepMax, 0, 0.05, "drone planted on both sight-lines → sep ~0°");
+  const rng0 = m.per[0].rangeM;
+  approx(m.per[0].predAng, 2 * Math.atan(span / 2 / rng0) * R2D, 0.02, "predicted angular size from the preset span");
+
+  // clock skew: stated sighting time 7.5 s late → the stated moment misses,
+  // the whole-log scan recovers the true instant (the drone's own motion is
+  // the shared signal, as in stereoVideo's auto-sync)
+  const stated = logMomentPer(wit, log.pts, tPick + 7500, span);
+  ok(stated.sepMax > 3, `a 7.5 s clock error is visible (${stated.sepMax.toFixed(1)}° off)`);
+  const best = syncLogTime(wit, log.pts, span);
+  approx(best.tMs, tPick, 300, "whole-log sync recovers the true instant (ms)");
+
+  // full calibration: a real analyze() fix graded against the log
+  const fix = analyze(wit);
+  ok(fix.ok, "two-witness fix solves");
+  const sum = calibrationSummary({ sources: wit, fix, pts: log.pts, tMs: tPick, spanM: span });
+  approx(sum.fixCmp.errM, 0, 3, "fix-vs-log 3D position error (m)");
+  approx(sum.fixCmp.sizeRatio, 1, 0.05, "triangulated size / true span");
+  const grade = gradeCalibration(sum);
+  ok(grade.overall === "excellent", `calibration grade on perfect data: ${grade.overall}`);
+
+  // relative-altitude-only logs: the datum choice is explicit and honest
+  const relPts = log.pts.map(({ altAbsM, ...p }) => p);
+  const dHome = droneAltM(relPts[0], ref.alt, null);
+  approx(dHome.altM - ref.alt, ALT, 0.05, "rel-alt + home elevation → true MSL");
+  const dAssumed = droneAltM(relPts[0], null, 120);
+  ok(dAssumed.altAssumed === true, "no home elevation → assumption is flagged, not hidden");
+  approx(dAssumed.altM - 120, ALT, 0.05, "assumed datum uses the observer's elevation");
+
+  // DJI SRT captions (bracket format, including DJI's own 'longtitude' typo)
+  const srt = [
+    "1", "00:00:00,000 --> 00:00:00,033",
+    "<font size=\"28\">FrameCnt: 1, DiffTime: 33ms", "2026-08-01 10:00:00.000",
+    "[iso: 100] [latitude: 42.16400] [longtitude: -123.64750] [rel_alt: 30.000 abs_alt: 150.200]</font>",
+    "", "2", "00:00:01,000 --> 00:00:01,033",
+    "<font size=\"28\">FrameCnt: 31, DiffTime: 33ms", "2026-08-01 10:00:01.000",
+    "[iso: 100] [latitude: 42.16410] [longtitude: -123.64750] [rel_alt: 31.000 abs_alt: 151.200]</font>",
+  ].join("\n");
+  const sl = parseFlightLog(srt, "clip.srt");
+  ok(sl.ok && sl.src === "srt" && sl.n === 2, "DJI SRT captions parse");
+  approx(sl.pts[0].lat, 42.164, 1e-9, "SRT latitude");
+  approx(sl.pts[0].altAbsM, 150.2, 1e-9, "SRT abs_alt");
+  approx(sl.pts[0].altRelM, 30, 1e-9, "SRT rel_alt");
+  approx(sl.t1Ms - sl.t0Ms, 1000, 1, "SRT datetimes carry the clock");
+  const slSt = logStateAt(sl.pts, sl.t0Ms + 500);
+  ok(Number.isFinite(slSt.speedMs) && slSt.speedMs > 5 && slSt.speedMs < 20, `SRT speed derived from positions (${slSt.speedMs.toFixed(1)} m/s)`);
+
+  // persistence downsample keeps the ends
+  const thin = thinLog(log.pts, 50);
+  ok(thin.length === 50 && thin[0].tMs === log.t0Ms && thin[49].tMs === log.t1Ms, "thinLog keeps first/last at the target count");
+
+  // timezone-honest datetime parsing
+  approx(parseWhen("2026-08-01 17:00:00", true), Date.parse("2026-08-01T17:00:00Z"), 0, "parseWhen assumeUtc");
+  approx(parseWhen("2026-08-01T17:00:00+00:00"), Date.parse("2026-08-01T17:00:00Z"), 0, "parseWhen explicit zone wins");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

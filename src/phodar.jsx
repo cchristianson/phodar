@@ -23,6 +23,7 @@ import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/trian
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibration, DRONE_PRESETS } from "./checks/flightlog.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
@@ -654,6 +655,7 @@ const HELP_SECTIONS = [
       { h: "Cross-checks & plots", items: [
         { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory — read-only." },
         { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
+        { t: "🛩 Drone flight-log check (calibration)", d: "Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so)." },
       ]},
     ],
     tips: [
@@ -679,6 +681,7 @@ const HELP_SECTIONS = [
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
         { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
         { t: "Aircraft, airfields & routes", d: "ADS-B traffic ranked against the sight-lines, the best match's origin→destination, and nearby airfields whose approach corridors concentrate low, slow traffic." },
+        { t: "Drone flight-log ground truth", d: "When a calibration flight's log is loaded, the report opens with the answer key: how far the drone's logged position sat off each sight-line, the fix-vs-log position error, size vs the true span, altitude and speed — a measured-accuracy test of the whole pipeline." },
         { t: "Uncertainty ellipse", d: "With two witnesses, the ground-position error is shown as a 1σ ellipse (weakest across the baseline), not a single ± number." },
       ]},
     ],
@@ -10297,9 +10300,171 @@ function AdsbCheck({ sources }) {
 const FT_M = 0.3048;
 
 /* ============================================================
+   DRONE FLIGHT-LOG CHECK — calibration flights. Upload the drone's own
+   flight record (Airdata CSV, decoded DJI CSV, or DJI SRT captions) and
+   every phodar output is graded against the craft's logged GPS truth.
+   The log persists on the first witness (source.flightLog, downsampled),
+   so it survives autosave/share and reaches the report.
+   ============================================================ */
+function FlightLogCheck({ sources, fix, onLog }) {
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+  const valid = sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el));
+  const holder = sources.find((s) => s.flightLog && s.flightLog.pts && s.flightLog.pts.length) || null;
+  const log = holder ? holder.flightLog : null;
+  /* every hook must run before the empty-state return — this component
+     appears/disappears as observers complete, and a conditional hook throws */
+  const cmp = useMemo(() => {
+    if (!log || !valid.length) return null;
+    const spanM = isNum(log.spanM) ? +log.spanM : null;
+    const homeElevM = isNum(log.homeElevM) ? +log.homeElevM : null;
+    const whenMs = valid.find((s) => isNum(s.whenMs))?.whenMs ?? null;
+    const inSpan = log.absTime && whenMs != null && whenMs >= log.t0Ms - 2000 && whenMs <= log.t1Ms + 2000;
+    const stated = inSpan ? calibrationSummary({ sources: valid, fix, pts: log.pts, tMs: +whenMs, spanM, homeElevM }) : null;
+    const bestT = syncLogTime(valid, log.pts, spanM, homeElevM);
+    const best = bestT ? calibrationSummary({ sources: valid, fix, pts: log.pts, tMs: bestT.tMs, spanM, homeElevM }) : null;
+    const use = best || stated;
+    return { whenMs, inSpan, stated, best, use, grade: gradeCalibration(use) };
+  }, [log, sources, fix]);
+  if (!valid.length && !log) return null;
+  const ownerId = holder ? holder.id : (valid[0] || sources[0]).id;
+  const patch = (p) => onLog(ownerId, { ...log, ...p });
+
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const r = parseFlightLog(String(rd.result || ""), f.name);
+      if (!r.ok) {
+        setErr(`Couldn't read that flight log (${r.error}). DJI Fly's raw .txt records are encrypted — export the flight as CSV from Airdata (or PhantomHelp's log viewer), or use the video's .SRT captions.`);
+        return;
+      }
+      setErr("");
+      onLog(ownerId, {
+        name: f.name, src: r.src, absTime: r.absTime, hasAbsAlt: r.hasAbsAlt, hasRelAlt: r.hasRelAlt,
+        nFull: r.n, t0Ms: r.t0Ms, t1Ms: r.t1Ms, pts: thinLog(r.pts, 900),
+        droneId: log?.droneId || "mini1",
+        spanM: isNum(log?.spanM) ? log.spanM : DRONE_PRESETS[0].spanM,
+        homeElevM: log?.homeElevM ?? null,
+      });
+    };
+    rd.onerror = () => setErr("Couldn't read the file.");
+    rd.readAsText(f);
+  };
+
+  const measAng = (s) =>
+    angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH, lensK(s)) ??
+    (isNum(s.A?.angManual) ? +s.A.angManual : null);
+  const gradeCol = { excellent: "var(--teal)", good: "var(--teal)", fair: "var(--amber)", poor: "var(--red)" };
+  const preset = DRONE_PRESETS.find((p) => p.id === (log?.droneId || "mini1")) || DRONE_PRESETS[DRONE_PRESETS.length - 1];
+
+  return (
+    <Section title="🛩 Drone flight-log check (calibration)" collapsible>
+      <div style={{ fontSize: 12, color: "var(--dim)", lineHeight: 1.5 }}>
+        Flew your own drone as the “sighting”? Upload its flight record and every number above —
+        direction, range, size, altitude — gets graded against the craft's logged GPS truth.
+        Reads Airdata CSV exports, decoded DJI Fly CSVs and DJI video .SRT captions.
+      </div>
+      <input ref={fileRef} type="file" accept=".csv,.srt,.txt,text/csv,text/plain" style={{ display: "none" }} onChange={onFile} />
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn teal" style={{ flex: 1 }} onClick={() => fileRef.current && fileRef.current.click()}>
+          🛩 {log ? "Replace flight log" : "Load flight log (CSV / SRT)"}
+        </button>
+        {log && <button className="btn" onClick={() => onLog(ownerId, null)} title="Remove the flight log">✕</button>}
+      </div>
+      {err && <div className="warn">{err}</div>}
+      {log && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
+            {log.name} · {log.nFull || log.pts.length} samples · {((log.t1Ms - log.t0Ms) / 60000).toFixed(1)} min
+            {log.absTime ? ` · ${new Date(log.t0Ms).toLocaleString()}` : " · no absolute clock in this log"}
+            {log.pts.length < (log.nFull || 0) ? ` · kept ${log.pts.length} for the analysis` : ""}
+          </div>
+          <div className="grid2" style={{ marginTop: 8 }}>
+            <div>
+              <ML>Drone</ML>
+              <select value={log.droneId || "mini1"} onChange={(e) => {
+                const p = DRONE_PRESETS.find((x) => x.id === e.target.value);
+                patch({ droneId: e.target.value, ...(p && isNum(p.spanM) ? { spanM: p.spanM } : {}) });
+              }}>
+                {DRONE_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <ML>Span the photo shows (m)</ML>
+              <input type="number" step="0.01" min="0.02" value={log.spanM ?? ""}
+                onChange={(e) => patch({ spanM: e.target.value === "" ? null : +e.target.value })} />
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>{preset.note}</div>
+          {!log.hasAbsAlt && (
+            <div style={{ marginTop: 8 }}>
+              <ML>Takeoff ground elevation (m MSL)</ML>
+              <input type="number" step="1" placeholder={`blank = assume observer's elevation${isNum(valid[0]?.alt) ? ` (${valid[0].alt} m)` : ""}`}
+                value={log.homeElevM ?? ""}
+                onChange={(e) => patch({ homeElevM: e.target.value === "" ? null : +e.target.value })} />
+              <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
+                This log only records height <b>above takeoff</b> — the takeoff spot's elevation anchors it to sea level.
+              </div>
+            </div>
+          )}
+          {!valid.length && <div className="warn">Complete at least one observer (position + sky placement) to compare against the log.</div>}
+          {cmp && cmp.use && (
+            <div style={{ marginTop: 10 }}>
+              {cmp.whenMs != null && log.absTime && !cmp.inSpan && (
+                <div className="warn">⚠ The sighting time ({new Date(cmp.whenMs).toLocaleString()}) falls <b>outside this log's span</b> — a wrong file, or a timezone/clock mismatch. Comparing at the best-fitting log instant instead.</div>
+              )}
+              {!log.absTime && <div className="warn">This log has no absolute clock (relative timestamps only) — the match below is by geometry alone.</div>}
+              {cmp.best && cmp.whenMs != null && log.absTime && cmp.inSpan && (
+                <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
+                  best geometric match {((cmp.best.tMs - cmp.whenMs) / 1000).toFixed(1)} s from the stated sighting time
+                  {cmp.stated ? ` (at the stated time the drone sat ${cmp.stated.sepMax.toFixed(1)}° off the sight-line)` : ""}
+                </div>
+              )}
+              {cmp.grade && (
+                <div style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 12 }}>
+                  <span style={{ color: "var(--dim)" }}>CALIBRATION </span>
+                  <span style={{ color: gradeCol[cmp.grade.overall], fontWeight: 700, textTransform: "uppercase", letterSpacing: ".1em" }}>◉ {cmp.grade.overall}</span>
+                  <span style={{ color: "var(--dim)" }}>
+                    {" — "}direction {cmp.grade.dir}{cmp.grade.pos ? ` · position ${cmp.grade.pos}` : ""}{cmp.grade.size ? ` · size ${cmp.grade.size}` : ""}
+                  </span>
+                </div>
+              )}
+              {cmp.use.per.map((p, i) => {
+                const w = valid[i], m = w ? measAng(w) : null;
+                return (
+                  <div key={i} style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
+                    {valid.length > 1 ? `${p.name || "obs " + (i + 1)}: ` : ""}
+                    <span style={{ color: p.sep < 1 ? "var(--teal)" : p.sep < 3 ? "var(--amber)" : "var(--red)" }}>{p.sep.toFixed(2)}° off the sight-line</span>
+                    {" · "}drone at {p.az.toFixed(1)}°/{p.el.toFixed(1)}° (witness {(+w.A.az).toFixed(1)}°/{(+w.A.el).toFixed(1)}°) · {fmtLenShort(p.rangeM)}
+                    {p.predAng != null && <> · would appear <span style={{ color: "var(--teal)" }}>{p.predAng.toFixed(3)}°</span>{m != null && <> vs measured <span style={{ color: "var(--amber)" }}>{m.toFixed(3)}°</span></>}</>}
+                  </div>
+                );
+              })}
+              {cmp.use.fixCmp && (
+                <div style={{ borderTop: "1px solid var(--line)", padding: "8px 0", fontFamily: "var(--mono)", fontSize: 12, color: "var(--dim)" }}>
+                  fix vs log: <span style={{ color: gradeCol[cmp.grade?.pos] || "var(--ink)" }}>{fmtLenShort(cmp.use.fixCmp.errM)} off</span>
+                  {cmp.use.fixCmp.errPct != null ? ` (${cmp.use.fixCmp.errPct.toFixed(1)}% of range)` : ""}
+                  {" · "}alt {cmp.use.fixCmp.errV >= 0 ? "+" : ""}{cmp.use.fixCmp.errV.toFixed(1)} m
+                  {cmp.use.fixCmp.sizeRatio != null && <> · size <span style={{ color: "var(--teal)" }}>{fmtLenShort(cmp.use.fixCmp.sizeM)}</span> vs true {fmtLenShort(cmp.use.fixCmp.spanM)} (×{cmp.use.fixCmp.sizeRatio.toFixed(2)})</>}
+                  {cmp.use.fixCmp.speedFix != null && <> · speed {fmtSpeedShort(cmp.use.fixCmp.speedFix)} vs log {fmtSpeedShort(cmp.use.fixCmp.speedLog)}</>}
+                  {cmp.use.fixCmp.altAssumed && <div style={{ color: "var(--amber)", marginTop: 2 }}>⚠ altitude datum assumed (takeoff = observer elevation) — set the takeoff elevation above for a true 3D error</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/* ============================================================
    RESULTS PANEL
    ============================================================ */
-function ResultsPanel({ sources }) {
+function ResultsPanel({ sources, onLog }) {
   const result = useMemo(() => analyze(sources), [sources]);
   const trk = useMemo(() => analyzeTracks(sources), [sources]);
   const [soloT, setSoloT] = useState(0.42);
@@ -10423,6 +10588,7 @@ function ResultsPanel({ sources }) {
       )}
 
       <AdsbCheck sources={sources} />
+      <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} />
     </div>
   );
 }
@@ -11194,6 +11360,50 @@ ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (wo
 <p>${verdict}${routeTxt}</p>`;
     }
   }
+
+  /* --- Drone flight-log ground truth: a calibration flight graded against
+         the craft's own GPS record (source.flightLog, set on the results
+         step). This is the report's answer key — when it exists, the whole
+         document is a measured-accuracy test, so it renders open. --- */
+  let flightHtml = "";
+  {
+    const fl = origAct.map((s) => s.flightLog).find((f) => f && f.pts && f.pts.length);
+    const wit = sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el));
+    if (fl && wit.length) {
+      const spanM = isNum(fl.spanM) ? +fl.spanM : null;
+      const homeElevM = isNum(fl.homeElevM) ? +fl.homeElevM : null;
+      const whenMs = origAct.find((s) => isNum(s.whenMs))?.whenMs ?? null;
+      const inSpan = fl.absTime && whenMs != null && whenMs >= fl.t0Ms - 2000 && whenMs <= fl.t1Ms + 2000;
+      const bestT = syncLogTime(wit, fl.pts, spanM, homeElevM);
+      const sum = bestT ? calibrationSummary({ sources: wit, fix, pts: fl.pts, tMs: bestT.tMs, spanM, homeElevM }) : null;
+      const statedSum = inSpan && whenMs != null ? calibrationSummary({ sources: wit, fix, pts: fl.pts, tMs: +whenMs, spanM, homeElevM }) : null;
+      if (sum) {
+        const grade = gradeCalibration(sum);
+        const preset = DRONE_PRESETS.find((p) => p.id === fl.droneId);
+        const measAngW = (w) =>
+          angSizeFromPoints(w.A?.p1, w.A?.p2, w.natW, w.natH, +w.fovH, lensK(w)) ??
+          (isNum(w.A?.angManual) ? +w.A.angManual : null);
+        const rows = sum.per.map((p, i) => {
+          const m = wit[i] ? measAngW(wit[i]) : null;
+          return `<tr><td>${e2(p.name || "Observer " + (i + 1))}</td><td>${p.sep.toFixed(2)}°</td><td>${p.az.toFixed(1)}° / ${p.el.toFixed(1)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(3) + "°" : "—"}${m != null ? ` vs ${m.toFixed(3)}°` : ""}</td></tr>`;
+        }).join("");
+        const fc = sum.fixCmp;
+        const assess = `<b>Assessment — calibration: ${grade.overall}.</b> At the matched instant the drone's logged position sat ${sum.sepMax.toFixed(2)}° off the ${wit.length > 1 ? "worst witness's" : "witness's"} sight-line${fc
+          ? `; phodar's triangulated fix landed <b>${fmtLenShort(fc.errM)}</b> (${fc.errPct != null ? fc.errPct.toFixed(1) : "—"}% of range) from the logged position${fc.sizeRatio != null ? `, and the triangulated size ${fmtLenShort(fc.sizeM)} vs the true ${fmtLenShort(fc.spanM)} span (×${fc.sizeRatio.toFixed(2)})` : ""}` : ""}.`;
+        const clockTxt = !fl.absTime
+          ? `The log carries no absolute clock, so the match is by geometry alone (the log instant whose position best fits every sight-line).`
+          : !inSpan
+            ? `⚠ The stated sighting time falls <b>outside the log's span</b> — a timezone or clock mismatch; the comparison uses the best-fitting log instant instead.`
+            : `Best geometric match ${((sum.tMs - whenMs) / 1000).toFixed(1)} s from the stated sighting time${statedSum ? ` (at the stated time the drone sat ${statedSum.sepMax.toFixed(2)}° off)` : ""}.`;
+        flightHtml = `<h2>Drone flight-log ground truth</h2>
+<p class="lead">${assess}</p>
+<p class="cap">Calibration flight: ${e2(preset ? preset.label : "drone")}${spanM != null ? `, ${fmtLenShort(spanM)} across` : ""} · ${e2(fl.name || "flight log")} · ${fl.nFull || fl.pts.length} samples over ${((fl.t1Ms - fl.t0Ms) / 60000).toFixed(1)} min${fl.absTime ? ` from ${new Date(fl.t0Ms).toLocaleString()}` : ""}. ${clockTxt}</p>
+<table><tr><th>Witness</th><th>Off sight-line</th><th>Drone at az/el</th><th>Range</th><th>Would appear vs measured</th></tr>${rows}</table>
+${fc ? `<p>Altitude: fix ${fc.errV >= 0 ? "+" : ""}${fc.errV.toFixed(1)} m vs the log${fc.speedFix != null ? ` · speed ${fmtSpeedShort(fc.speedFix)} vs logged ${fmtSpeedShort(fc.speedLog)}${isNum(fc.headErr) ? ` · heading ${fc.headErr >= 0 ? "+" : ""}${fc.headErr.toFixed(0)}°` : ""}` : ""}.${fc.altAssumed ? ` <b>⚠ Altitude datum assumed</b> — this log records height above takeoff only and no takeoff elevation was set, so the takeoff spot was assumed to sit at the observer's elevation.` : ""}</p>` : ""}
+<p class="cap">The flight record is the craft's own GPS/barometer telemetry — the ground truth this analysis is graded against. Direction is the purest test (it needs no triangulation); position and size also grade the two-witness geometry.</p>`;
+      }
+    }
+  }
   const exhibits = packed.map((s, i) => {
     let imgSrc = s.mediaJpeg;
     if (opts.exhibits === "full" && origAct[i]?.mediaUrl && origAct[i].mediaKind === "image") imgSrc = origAct[i].mediaUrl;
@@ -11874,6 +12084,7 @@ ${collapsible(vstereoHtml, true)}
 ${collapsible(mixedHtml, true)}
 ${collapsible(videoHtml, false)}
 ${collapsible(alignHtml, true)}
+${collapsible(flightHtml, true)}
 ${collapsible(adsbHtml, false)}
 ${collapsible(airportsHtml, false)}
 ${collapsible(photomHtml, false)}
@@ -12105,7 +12316,7 @@ function WizHome({ sources, est, onNew, onAddWitness, onResume, onRemove, onImpo
   );
 }
 
-function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt }) {
+function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt, onLog }) {
   const fix = analyze(sources);
   const tr = analyzeTracks(sources);
   return (
@@ -12175,7 +12386,7 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt })
       </div>
       {/* full results: top-down plot, per-observer table, motion, quality, trajectory, ADS-B */}
       <div style={{ margin: "6px -12px 0" }}>
-        <ResultsPanel sources={sources} />
+        <ResultsPanel sources={sources} onLog={onLog} />
       </div>
     </div>
   );
@@ -12511,7 +12722,7 @@ export default function App() {
     if (ui.view === "report") {
       page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
     } else if (ui.view === "s4") {
-      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} onFixAlt={(id, alt) => updateSource(id, { alt })} />;
+      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} onFixAlt={(id, alt) => updateSource(id, { alt })} onLog={(id, flightLog) => updateSource(id, { flightLog })} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
