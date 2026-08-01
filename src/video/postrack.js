@@ -1157,6 +1157,74 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
   return ws > 0 ? { x: xs / ws, y: ys / ws, score: best } : { x: bx, y: by, score: best };
 }
 
+/* --- PIXEL-PIN POLICY (the close-up export's per-frame camera lock) --------
+   Pure decision core, extracted from the export's inline refinePin so the
+   policy is mathcheck-assertable. The v2 policy failed in the field on a REAL
+   close-up (object wandered ±20% of the frame and left it entirely) because
+   its clutter gate compared every find against the TRACK — the very thing the
+   pin exists to correct. With ~1° of track error the gate rejected the pin's
+   own correct finds, and each rejection EASED the camera back toward the bad
+   track (reproduced in a harness: 26 gate rejections → 380 px rms wander and
+   a full loss; same scene with this policy: 41 px rms, zero losses).
+
+   Policy now:
+   · ACQUIRE (no lock): wide pinFind window centered on the track prediction;
+     a find must sit within the acquire gate of the track (the human-guided
+     track outranks pixels — a bird 2° away must not capture the camera).
+   · LOCKED: search a tight window around the pin's OWN last find and trust
+     the chain — the window is the gate. A generous 4× backstop vs the track
+     still bounds total divergence (the track may carry degrees of error; the
+     backstop only catches a chain that has clearly run away).
+   · MISS while locked: WORLD-HOLD the last locked direction (a brief fade
+     must not drag the camera anywhere); after holdFrames consecutive misses
+     the lock releases and the aim GLIDES back to the track (no snap).
+   · EMA (α=0.6) on the output only — find noise never reaches the camera raw.
+
+   st: mutable {prevDir, missRun, emaDir, ok} (create as {} per export).
+   pred: {az, el} track prediction for this frame.
+   o: {natW, natH, pose:{az,el,roll,fov,k}, maxAng, holdFrames?}.
+   sample(cx, cy, W2): RGBA data of a W2×W2 native-resolution window centered
+   on (cx, cy), or null — the caller owns the pixels (canvas in the app,
+   synthetic frames in mathcheck).
+   Returns {az, el, mode} — mode ∈ lock | hold | glide | pred | gated | faded. */
+export function pinStep(st, pred, o, sample) {
+  const HOLD = o.holdFrames ?? 10;
+  const predDir = dirFromAzEl(pred.az, pred.el);
+  const lerpU = (a, b, u) => unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
+  const ang = (a, b) => Math.acos(Math.min(1, Math.max(-1, dot(a, b))));
+  const out = (d, mode) => { const ae = dirToAzEl(d); return { az: ae.az, el: ae.el, mode }; };
+  const isLock = !!st.prevDir && (st.missRun || 0) < HOLD;
+  const miss = (why) => {
+    st.missRun = (st.missRun || 0) + 1;
+    if (st.prevDir && st.missRun < HOLD) return out(st.emaDir || st.prevDir, "hold");
+    st.prevDir = null;
+    if (st.emaDir) {
+      st.emaDir = lerpU(st.emaDir, predDir, 0.12);
+      if (ang(st.emaDir, predDir) < 0.0006) st.emaDir = null; // arrived — back on the track
+      return out(st.emaDir || predDir, "glide");
+    }
+    return { ...pred, mode: why || "pred" };
+  };
+  const baseDir = isLock ? st.prevDir : predDir;
+  const bp = dirToPixK(baseDir, o.natW, o.natH, o.pose.az, o.pose.el, o.pose.roll || 0, o.pose.fov, o.pose.k || 0);
+  if (!bp) return miss();
+  const objPx = Math.min(220, Math.max(4, o.natW * Math.tan((Math.max(0.05, o.maxAng) * D2R) / 2) / Math.tan((o.pose.fov * D2R) / 2)));
+  const objR = Math.min(14, Math.max(2, Math.round(objPx / 2)));
+  const reach = isLock ? Math.max(10, objR * 2) : Math.round(Math.min(240, Math.max(110, objPx * 6)));
+  const half = reach + objR * 3 + 4;
+  const W2 = Math.min(560, 2 * half);
+  const data = sample(bp.px, bp.py, W2);
+  const f = data ? pinFind(data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: isLock ? 2 : 3 }) : null;
+  if (!f || f.score < 5) return miss("faded");
+  const fd = pixToDirK(bp.px + (f.x - W2 / 2), bp.py + (f.y - W2 / 2), o.natW, o.natH, o.pose.az, o.pose.el, o.pose.roll || 0, o.pose.fov, o.pose.k || 0);
+  const acqGate = (o.maxAng * 2.5 + 0.6) * D2R;
+  if (ang(fd, predDir) > (isLock ? acqGate * 4 : acqGate)) return miss("gated");
+  st.prevDir = fd; st.missRun = 0;
+  st.emaDir = st.emaDir ? lerpU(st.emaDir, fd, 0.6) : fd;
+  st.ok = (st.ok || 0) + 1;
+  return out(st.emaDir, "lock");
+}
+
 /* --- USER-TUNABLE SMOOTHING STRENGTH (the field slider) ---------------------
    One knob s ∈ [0,1] per path, mapped onto the evidence-weighted smoothers so
    the character of the motion stays a WITNESS decision, not a baked constant:

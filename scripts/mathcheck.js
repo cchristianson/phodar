@@ -24,7 +24,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0 } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -2592,6 +2592,90 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(poseQuality(5, true, "orient").headingOk === false, "poseQuality: no accuracy claim on the orientation path");
   ok(poseQuality(5, true, "ios").headingOk === true, "poseQuality: iOS keeps its accuracy-backed confidence");
   ok(/set the bearing yourself/.test(poseQuality(null, true, null).note), "poseQuality: no compass at all is said plainly");
+}
+
+// --- Close-up pixel pin (pinStep): a poor track must not break the lock ---
+// Field failure (real close-up export): the v2 clutter gate compared every
+// find against the TRACK — the thing the pin exists to correct — so ~1° of
+// track error rejected the pin's own correct finds and the miss path eased
+// the camera back onto the bad track (object wandered ±20% of the frame and
+// left it). This drives the REAL pinStep + pinFind over synthetic frames.
+{
+  head("close-up pixel pin");
+  const natW = 1920, natH = 1080, FPS = 30, DUR = 12;
+  const pose = { az: 252, el: 20.5, roll: 0, fov: 60, k: 0 };
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5;
+  const truthAzEl = (t) => ({ az: 250 + 3.2 * Math.sin(t * 0.5) + 0.16 * t, el: 20 + 1.8 * Math.sin(t * 0.31 + 1) });
+  // 4 Hz track with a POOR solve: 0.2° bias + 1.2° smooth wander + noise
+  const trk = [];
+  for (let t = 0; t <= DUR + 1e-9; t += 0.25) {
+    const g = truthAzEl(t);
+    trk.push({ t, az: g.az + 0.2 + 1.2 * Math.sin(t * 0.9 + 2) + rnd() * 0.4, el: g.el + 0.84 * Math.sin(t * 1.1) + rnd() * 0.4 });
+  }
+  const predAt = (t) => {
+    let lo = 0, hi = trk.length - 1;
+    if (t <= trk[0].t) hi = 0; else if (t >= trk[trk.length - 1].t) lo = trk.length - 1;
+    else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (trk[m].t <= t) lo = m; else hi = m; }
+    const a = trk[lo], b = trk[hi], u = hi === lo ? 0 : (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return { az: a.az + (b.az - a.az) * u, el: a.el + (b.el - a.el) * u };
+  };
+  const maxAng = 0.35;
+  const objPxR = (natW * Math.tan((maxAng * D2R) / 2) / Math.tan((pose.fov * D2R) / 2)) / 2;
+  const sampleAt = (t, visible) => (cx, cy, W2) => {
+    const g = truthAzEl(t);
+    const op = dirToPixK(dirFromAzEl(g.az, g.el), natW, natH, pose.az, pose.el, 0, pose.fov, 0);
+    const data = new Uint8ClampedArray(W2 * W2 * 4);
+    for (let y = 0; y < W2; y++) for (let x = 0; x < W2; x++) {
+      const px = cx - W2 / 2 + x, py = cy - W2 / 2 + y;
+      let v = 165 + 20 * (py / natH) + 6 * Math.sin(px * 0.006) + rnd() * 4;
+      const d = op && visible ? Math.hypot(px - op.px, py - op.py) : 1e9;
+      if (d < objPxR * 2) v -= 55 * Math.max(0, 1 - (d / (objPxR * 2)) ** 2);
+      const i = (y * W2 + x) * 4; data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+    }
+    return data;
+  };
+  const st = { prevDir: null, missRun: 0, emaDir: null, ok: 0 };
+  const o = { natW, natH, pose, maxAng };
+  const errs = []; let locks = 0;
+  for (let fi = 0; fi < DUR * FPS; fi++) {
+    const t = fi / FPS;
+    const r = pinStep(st, predAt(t), o, sampleAt(t, true));
+    if (r.mode === "lock") locks++;
+    const g = truthAzEl(t);
+    errs.push(Math.acos(Math.min(1, Math.max(-1, dot(dirFromAzEl(r.az, r.el), dirFromAzEl(g.az, g.el))))) * R2D);
+  }
+  const rms = Math.sqrt(errs.reduce((a, e) => a + e * e, 0) / errs.length);
+  ok(locks === DUR * FPS, `pin locks every frame through a 1.2°-wander track (${locks}/${DUR * FPS})`);
+  approx(rms, 0, 0.06, "object stays centered despite the poor track (deg rms)");
+  // fade: brief loss world-holds (no drift toward the bad track), long loss
+  // releases and GLIDES back to the track — never a snap
+  const lastLock = { az: null, el: null };
+  { const r = pinStep(st, predAt(DUR - 0.01), o, sampleAt(DUR - 0.01, true)); lastLock.az = r.az; lastLock.el = r.el; }
+  let prev = lastLock, maxStep = 0, holds = 0, glides = 0, holdDriftMax = 0;
+  for (let fi = 0; fi < 40; fi++) {
+    const t = DUR - 0.01;
+    const r = pinStep(st, predAt(t), o, sampleAt(t, false));
+    if (r.mode === "hold") {
+      holds++;
+      const d = Math.acos(Math.min(1, Math.max(-1, dot(dirFromAzEl(r.az, r.el), dirFromAzEl(lastLock.az, lastLock.el))))) * R2D;
+      holdDriftMax = Math.max(holdDriftMax, d);
+    }
+    if (r.mode === "glide") glides++;
+    const step = Math.acos(Math.min(1, Math.max(-1, dot(dirFromAzEl(r.az, r.el), dirFromAzEl(prev.az, prev.el))))) * R2D;
+    maxStep = Math.max(maxStep, step);
+    prev = r;
+  }
+  ok(holds >= 8, `brief fade world-holds the last lock (${holds} hold frames)`);
+  ok(holdDriftMax < 0.02, `held frames stay ON the last lock, not the track (max drift ${holdDriftMax.toFixed(3)}°)`);
+  ok(glides >= 10, `long fade releases and glides toward the track (${glides} glide frames)`);
+  ok(maxStep < 0.35, `no snap anywhere in the fade path (max step ${maxStep.toFixed(3)}°/frame)`);
+  // clutter safety: a track 10° wrong must NOT let pixels capture the camera —
+  // the acquire window never reaches the object, so the aim stays on the track
+  const stBad = { prevDir: null, missRun: 0, emaDir: null, ok: 0 };
+  const badPred = { az: truthAzEl(1).az + 10, el: truthAzEl(1).el };
+  const rBad = pinStep(stBad, badPred, o, sampleAt(1, true));
+  ok(stBad.ok === 0 && Math.abs(rBad.az - badPred.az) < 1e-9, "a wildly wrong track is followed, not overruled (human outranks pixels)");
 }
 
 // --- Drone flight-log check: parse → predict → time-sync → calibrate vs truth ---

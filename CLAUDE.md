@@ -676,6 +676,22 @@ terrain stay frozen and only the object moves. Build ladder:
    grid pitch scales with FOV down to 0.5°). OVERLAYS ONLY ON "view"
    (grid + readout + all visible sky layers + wireframe): "full" and
    "crop" are CLEAN evidence renders, nothing burned in (user decision).
+   **Close-up PIXEL PIN — v3 (`pinStep`, postrack.js, pure + mathcheck-
+   asserted).** The crop camera re-locks on the object's ACTUAL pixels
+   every frame (pinFind contrast sweep), because the solved track carries
+   sub-degree error that the crop zoom magnifies into gross wander. The
+   v2 lesson, learned from a real field close-up (object swung ±20% of
+   the frame and LEFT it): never gate the locked chain against the TRACK
+   — the track is the thing the pin exists to correct, so with ~1° of
+   track error the gate rejected the pin's own correct finds and the
+   miss path eased the camera back onto the bad track. v3 policy: while
+   locked, the tight search window IS the gate (a 4× backstop bounds a
+   runaway chain); ACQUIRE still gates against the track (a bird must
+   not capture the camera — human outranks pixels); brief fades
+   WORLD-HOLD the last lock; a released lock GLIDES back to the track,
+   never snaps. Reproduced + fixed in a harness driving the real
+   pinFind: a 1.2°-wander track went from 380 px rms object wander (with
+   losses) to 41 px, identical to a good track.
    The warp texture is NATIVE for full/crop, guarded only by the iOS
    canvas ceiling (4600 px side / 16 Mpx) — the old 2048 texture cap
    silently halved 4K sources before the warp ever saw them; "view"

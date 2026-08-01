@@ -12,6 +12,16 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Twitchy object close-up exports**: the close-up's per-frame pixel pin
+  gated its own correct finds against the solved track — the very thing the
+  pin exists to correct — so ~1° of track error made it reject the lock and
+  ease the camera back onto the bad track (field clip: the object wandered
+  ±20% of the frame and left it entirely). The pin policy (now `pinStep`,
+  pure and regression-tested against synthetic frames driven through the
+  real detector) trusts the locked pixel chain, world-holds brief fades, and
+  glides — never snaps — back to the track after a loss. In the harness a
+  poor track went from 380 px rms object wander with losses to 41 px, the
+  same as a good track.
 - **Stray "text" file beside share-sheet saves**: passing a `title` alongside
   `files` to `navigator.share` makes iOS "Save to Files" write the title out
   as a separate 22-byte text file (field report). All file shares now pass

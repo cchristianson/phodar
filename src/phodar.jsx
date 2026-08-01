@@ -14,7 +14,7 @@ const fmtLenAlt = (m) => isImperialUnits() ? `${n1(m)} m` : `${n1(m * 3.28084)} 
 const fmtSpeedShort = (ms) => isImperialUnits() ? `${n1(ms * 2.23694)} mph` : `${n1(ms * 3.6)} km/h`;
 import { photoBasis, angSizeFromPoints, lensK, pixelDirFromAnchor, pixToDirK, dirToPixK, solvePoseAnchors, reanchorPose, reanchorAzEl } from "./math/projection.js";
 import { syncSensor, fuseSensorVisual, fuseStats, motionDisagreement, sensorOnlyPath } from "./video/sensorpath.js";
-import { initTracker, stepTracker, stepObject, snapToObject, pinFind, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
+import { initTracker, stepTracker, stepObject, snapToObject, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "./video/postrack.js";
 import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
@@ -6076,57 +6076,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          can't inject its own jitter; any failed/edge find falls back to the
          track prediction. Display-only — the objPath measurement is never
          touched. */
-      /* v2, rebuilt against the user's real close-up (measured: the object
-         swung ±20% of the frame; the v1 snapToObject window's 16 px reach
-         never even saw it). The pin is now a SELF-CHAINING 30 fps tracker:
-         · ACQUIRE — pinFind's integral-image contrast sweep over a WIDE
-           window (±~2× the wander measured in the field clip), full-res so
-           a faint 12 px object survives;
-         · FOLLOW — once locked, search a tight window around the pin's OWN
-           previous find (at 30 fps the object moves a few px/frame, no
-           matter how wrong the low-rate track is);
-         · the TRACK stays the seed + CLUTTER GATE (a find far from the
-           track's prediction is a bird/lookalike — the human-guided track
-           outranks pixels), and misses world-hold the last lock, easing
-           toward the track so a fade never reads as a jump. */
+      /* v3 — the DECISION POLICY moved to pinStep (postrack.js, pure,
+         mathcheck-asserted); this wrapper only owns the pixels (canvas grab
+         from the seeked video). v2 failed in the field (object wandered ±20%
+         of the close-up and left the frame): its clutter gate compared every
+         find against the TRACK — the thing the pin exists to correct — so
+         ~1° of track error rejected the pin's own correct finds, and each
+         rejection eased the camera back toward the bad track. pinStep trusts
+         the locked chain (the tight window is the gate, a 4× backstop bounds
+         runaway), world-holds brief fades, and glides — never snaps — back
+         to the track after a release. Reproduced + fixed in a harness driven
+         by the real pinFind: poor track went 380 px rms wander → 41 px. */
       const pinCvs = camFollow ? document.createElement("canvas") : null;
       const pinCtx = pinCvs ? pinCvs.getContext("2d", { willReadFrequently: true }) : null;
-      let pinPrevDir = null, pinMissRun = 0, pinEmaDir = null, pinOk = 0, pinTry = 0;
-      const lerpDir = (a2, b2, u2) => unit([a2[0] + (b2[0] - a2[0]) * u2, a2[1] + (b2[1] - a2[1]) * u2, a2[2] + (b2[2] - a2[2]) * u2]);
+      const pinSt = { prevDir: null, missRun: 0, emaDir: null, ok: 0 };
+      let pinTry = 0;
       const refinePin = (p, pred) => {
         if (!pinCtx || !v.videoWidth) return pred;
         pinTry++;
-        const predDir = dirFromAzEl(pred.az, pred.el);
-        const locked = pinPrevDir && pinMissRun < 10;
-        const baseDir = locked ? pinPrevDir : predDir;
-        const outD = (d2) => { const ae = dirToAzEl(d2); return { az: ae.az, el: ae.el }; };
-        const miss = () => {
-          pinMissRun++;
-          if (pinPrevDir && pinMissRun >= 10) { pinPrevDir = null; pinEmaDir = null; return pred; }
-          if (pinEmaDir) { pinEmaDir = lerpDir(pinEmaDir, predDir, 0.12); return outD(pinEmaDir); }
-          return pred;
-        };
-        const bp = dirToPixK(baseDir, natW, natH, p.az, p.el, p.roll || 0, p.fov, p.k || 0);
-        if (!bp) return miss();
-        const objPx = clampN(natW * Math.tan((Math.max(0.05, maxAngX) * RAD) / 2) / Math.tan((p.fov * RAD) / 2), 4, 220);
-        const objR = clampN(Math.round(objPx / 2), 2, 14);
-        const reach = locked ? Math.max(10, objR * 2) : Math.round(clampN(objPx * 6, 110, 240));
-        const half = reach + objR * 3 + 4;
-        const W2 = Math.min(560, 2 * half);
-        if (pinCvs.width !== W2) { pinCvs.width = W2; pinCvs.height = W2; }
         const sv = (v.videoWidth || natW) / natW;
-        try {
-          pinCtx.fillStyle = "#000"; pinCtx.fillRect(0, 0, W2, W2);
-          pinCtx.drawImage(v, (bp.px - W2 / 2) * sv, (bp.py - W2 / 2) * sv, W2 * sv, W2 * sv, 0, 0, W2, W2);
-          const f = pinFind(pinCtx.getImageData(0, 0, W2, W2).data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: locked ? 2 : 3 });
-          if (!f || f.score < 5) return miss();   // faded below sky noise — nothing to pin
-          const fd = pixToDirK(bp.px + (f.x - W2 / 2), bp.py + (f.y - W2 / 2), natW, natH, p.az, p.el, p.roll || 0, p.fov, p.k || 0);
-          const gate = (maxAngX * 2.5 + 0.6) * RAD;
-          if (Math.acos(clampN(dot(fd, predDir), -1, 1)) > gate) return miss();
-          pinPrevDir = fd; pinMissRun = 0; pinOk++;
-          pinEmaDir = pinEmaDir ? lerpDir(pinEmaDir, fd, 0.6) : fd;
-          return outD(pinEmaDir);
-        } catch (e) { return miss(); }
+        const r = pinStep(pinSt, pred, { natW, natH, pose: p, maxAng: maxAngX }, (cx, cy, W2) => {
+          if (pinCvs.width !== W2) { pinCvs.width = W2; pinCvs.height = W2; }
+          try {
+            pinCtx.fillStyle = "#000"; pinCtx.fillRect(0, 0, W2, W2);
+            pinCtx.drawImage(v, (cx - W2 / 2) * sv, (cy - W2 / 2) * sv, W2 * sv, W2 * sv, 0, 0, W2, W2);
+            return pinCtx.getImageData(0, 0, W2, W2).data;
+          } catch (e) { return null; }
+        });
+        return { az: r.az, el: r.el };
       };
       /* output size: "view" caps at 1920; "full"/"crop" size the canvas so the
          most-zoomed frame's pixel density survives (tan-space ratio of the
@@ -6609,7 +6586,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         a.download = `phodar-${mode === "crop" ? "object" : mode === "full" ? "stabilized-maxres" : "stabilized"}.${ext}`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 60000);
-        const pinNote = camFollow && pinTry ? ` · pixel-pinned on the object (${Math.round(100 * pinOk / pinTry)}% of frames re-locked)` : "";
+        const pinNote = camFollow && pinTry ? ` · pixel-pinned on the object (${Math.round(100 * pinSt.ok / pinTry)}% of frames re-locked)` : "";
         setFlash(`⬇ exported ${(blob.size / 1e6).toFixed(1)} MB .${ext} (${OUT_W}×${OUT_H}) — world-locked at ${camFov.toFixed(0)}° camera FOV${pinNote}. It's also packed into the report bundle.`);
       } else setFlash("⬇ export cancelled");
     } catch (e) {
