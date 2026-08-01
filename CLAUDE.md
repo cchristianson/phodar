@@ -66,7 +66,7 @@ comments, in this order:
    plane/bird wireframes), rotation mats, `shapeProjNat` (orthographic project +
    silhouette extremes → auto-writes `A.p1/p2`).
    Per-shape params ride on the `shapeFit` object and reach `shapeWire` as its
-   `opts` (capsule `aspect`, bird `wing`/`wingX`, jelly `tent`, cube `squash`,
+   `opts` (capsule `aspect`, bird `wing`/`wingA`, jelly `tent`, cube `squash`,
    vee `sweep`/`notch`, balloon `cord`),
    so a new one needs no plumbing — but a new KIND must be registered in four
    places or it half-works: `SHAPES` (picker), `SHAPE_R0` (default 3/4 pose),
@@ -111,6 +111,19 @@ comments, in this order:
    string, `cord` ∈ [0,2] scaling the string and 0 removing it. It exists
    because it is the most-mistaken-for-a-UFO object there is and the taper
    plus the string are what let a witness tell it from an orb in the photo.
+   **Bird wing ANGLE, not position** (field report: "the wing position is kind
+   of silly"): `wingA` ∈ [−25°,55°] swings the wings aft (a stoop) or forward
+   (a soar) — it REPLACED `wingX`, which slid the whole wing fore/aft along
+   the body, a thing no wing does. Implemented as a shear on |y| rather than a
+   rotation about the shoulder, so the root edge stays welded to the body and
+   the tip-to-tip span stays owned by `wing` alone: the two sliders answer
+   separate questions (how WIDE, at what ANGLE) instead of fighting. A stored
+   `wingX` fit is carried over as the angle that puts the tip in the same
+   place, so an old bird keeps its silhouette (and its measurement) rather
+   than silently snapping back to neutral — asserted in mathcheck. Note when
+   testing: near 0° the drawn bounding box barely moves (the head still sets
+   the fore extent), so assert model extents or the geometry hash, not screen
+   width.
 3. **Components** — `MediaMeasure` (upload → canvas normalize → shape fitting,
    pinch-zoom, loupe, brightness/contrast), `PositionEditor` + `PinMap` (Leaflet),
    `SkyAimer` (Place/Look modes, canvas mesh warp, wizard trajectory + Δt

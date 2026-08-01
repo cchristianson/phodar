@@ -511,7 +511,7 @@ const HELP_SECTIONS = [
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
-        { t: "aspect / spin / squash / stretch / height / sweep / notch / string / wingspan / wing pos / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & fore/aft, jellyfish tendril length." },
+        { t: "aspect / spin / squash / stretch / height / sweep / notch / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
@@ -2387,10 +2387,15 @@ function MediaMeasure({ src, update, wizard }) {
                     <input type="range" min={0.5} max={1.8} step={0.02} value={src.shapeFit.wing ?? 1}
                       onChange={(e) => { const nsf = { ...src.shapeFit, wing: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                   </div>
+                  {/* the wing's ANGLE from the body — the shoulder stays put
+                      and the wing swings aft (+) or forward (−), which is what
+                      a real bird varies between a soaring glide and a stoop.
+                      It replaced a fore/aft SLIDE of the whole wing, which is
+                      not a thing a wing does. */}
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>wing pos {(src.shapeFit.wingX ?? 0) >= 0 ? "+" : ""}{(src.shapeFit.wingX ?? 0).toFixed(2)}</span>
-                    <input type="range" min={-0.15} max={0.15} step={0.005} value={src.shapeFit.wingX ?? 0}
-                      onChange={(e) => { const nsf = { ...src.shapeFit, wingX: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>wing angle {(src.shapeFit.wingA ?? 0) > 0 ? "+" : ""}{Math.round(src.shapeFit.wingA ?? 0)}°</span>
+                    <input type="range" min={-25} max={55} step={1} value={src.shapeFit.wingA ?? 0}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, wingA: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                   </div>
                 </>
               )}

@@ -208,10 +208,25 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       C.push([[-0.1, s * 0.05, -0.03], [-0.14, s * 0.12, -0.185]]);  // rear strut
     }
   } else if (kind === "bird") {
-    // gliding bird — head along +X, slight dihedral. wingF scales the
-    // lateral span (wingtip reach); wingX sweeps the wing root fore/aft.
+    /* gliding bird — head along +X, slight dihedral. `wing` scales the lateral
+       span (wingtip reach); `wingA` is the wing's ANGLE from the body — the
+       shoulder stays put and the wing swings aft (+) or forward (−), which is
+       the thing a bird actually varies between a soaring glide and a stoop.
+       It's applied as a shear on |y| rather than a rotation about the
+       shoulder, so the root edge stays welded to the body and the tip-to-tip
+       span stays whatever `wing` set it to: the two sliders answer separate
+       questions (how WIDE, at what ANGLE) and don't fight each other. */
     const wingF = opts && isFinite(opts.wing) ? opts.wing : 1;
-    const wingX = opts && isFinite(opts.wingX) ? opts.wingX : 0;
+    const ROOT = 0.03;                                                // wing-root half-width (the body side)
+    /* legacy: `wingX` used to SLIDE the whole wing fore/aft, which is not a
+       thing a wing does. An old fit is carried over as the angle that
+       displaces the tip by the same amount, so a stored bird keeps its
+       silhouette instead of silently snapping back to neutral. */
+    const wingA = (opts && isFinite(opts.wingA)) ? opts.wingA
+      : (opts && isFinite(opts.wingX) && opts.wingX !== 0)
+        ? -Math.atan(opts.wingX / Math.max(0.05, 0.5 * wingF - ROOT)) / D2R : 0;
+    const tanA = Math.tan(Math.max(-25, Math.min(55, wingA)) * D2R);
+    const sweep = ([x, y, z]) => [x - Math.max(0, Math.abs(y) - ROOT) * tanA, y, z];
     C.push([[0.17, 0], [0.13, 0.03], [-0.12, 0.025], [-0.14, 0], [-0.12, -0.025], [0.13, -0.03], [0.17, 0]]
       .map(([x, y]) => [x, y, 0]));                                   // body planform
     C.push([[0.17, 0], [0.12, -0.035], [-0.12, -0.03], [-0.14, 0], [-0.11, 0.028], [0.13, 0.03], [0.17, 0]]
@@ -220,15 +235,15 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
       // pointed, swept wing: leading edge sweeps aft to a single tip point,
       // trailing edge is concave — the classic gliding-bird silhouette
       C.push([
-        [0.08 + wingX, s * 0.03, 0],                                  // root leading (shoulder)
-        [0.05 + wingX, s * 0.22 * wingF, -0.018 * wingF],             // leading edge
-        [-0.01 + wingX, s * 0.40 * wingF, -0.035 * wingF],            // leading edge
-        [-0.05 + wingX, s * 0.5 * wingF, -0.05 * wingF],              // POINTED TIP (swept aft)
-        [-0.10 + wingX, s * 0.38 * wingF, -0.035 * wingF],            // trailing edge (concave)
-        [-0.09 + wingX, s * 0.18 * wingF, -0.018 * wingF],            // trailing edge
-        [-0.06 + wingX, s * 0.03, 0],                                 // root trailing
-        [0.08 + wingX, s * 0.03, 0],                                  // close
-      ]);                                                             // wing with dihedral
+        [0.08, s * ROOT, 0],                                          // root leading (shoulder)
+        [0.05, s * 0.22 * wingF, -0.018 * wingF],                     // leading edge
+        [-0.01, s * 0.40 * wingF, -0.035 * wingF],                    // leading edge
+        [-0.05, s * 0.5 * wingF, -0.05 * wingF],                      // POINTED TIP (swept aft)
+        [-0.10, s * 0.38 * wingF, -0.035 * wingF],                    // trailing edge (concave)
+        [-0.09, s * 0.18 * wingF, -0.018 * wingF],                    // trailing edge
+        [-0.06, s * ROOT, 0],                                         // root trailing
+        [0.08, s * ROOT, 0],                                          // close
+      ].map(sweep));                                                  // wing with dihedral, swung to wingA
     }
     C.push([[-0.12, 0.02, 0], [-0.23, 0.08, 0], [-0.25, 0, 0], [-0.23, -0.08, 0], [-0.12, -0.02, 0], [-0.12, 0.02, 0]]); // tail fan
   } else if (kind === "drone") {

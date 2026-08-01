@@ -1661,6 +1661,45 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(SHAPE_R0().balloon && SHAPE_R0().balloon.length === 9 ? 1 : 0, 1, 0, "balloon: has a default 3/4 pose");
     }
 
+    /* BIRD WING ANGLE — the wing swings about the shoulder instead of sliding
+       fore/aft (which is not a thing a wing does). The root must stay welded
+       to the body, the span must stay owned by `wing` alone, and an old
+       `wingX` fit must carry over rather than snapping back to neutral. */
+    {
+      const bird = (o) => shapeWire("bird", null, o).flat();
+      const tipX = (o) => { const P = bird(o); const m = Math.max(...P.map((p) => Math.abs(p[1]))); return P.find((p) => Math.abs(Math.abs(p[1]) - m) < 1e-9)[0]; };
+      const xs = [-25, -12, 0, 20, 40, 55].map((a) => tipX({ wingA: a }));
+      approx(xs.every((v, i) => i === 0 || v < xs[i - 1] - 1e-6) ? 1 : 0, 1, 0,
+        `bird: the tip swings monotonically aft as the angle rises (${xs.map((v) => v.toFixed(3)).join(" ")})`);
+      approx(xs[2], -0.05, 1e-9, "bird: 0° leaves the wing exactly where it was");
+      /* the span belongs to `wing`, not to the angle — the two sliders answer
+         separate questions and must not fight */
+      for (const a of [-25, 0, 30, 55]) approx(extOf(bird({ wingA: a }), 1), 1, 1e-9, `bird: ${a}° keeps the unit span (angle never steals from wingspan)`);
+      approx(extOf(bird({ wing: 1.6, wingA: 40 }), 1), 1.6, 1e-9, "bird: wingspan and angle compose");
+      /* the root edge is welded to the body at every angle (the wings are the
+         8-point curves — body planform/profile are 7, the tail fan 6) */
+      const wings = (o) => shapeWire("bird", null, o).filter((c) => c.length === 8);
+      for (const a of [-25, 0, 55]) {
+        const W = wings({ wingA: a });
+        approx(W.length, 2, 0, `bird: ${a}° draws two wings`);
+        const root = W.flat().filter((p) => Math.abs(Math.abs(p[1]) - 0.03) < 1e-9);
+        approx(root.length > 0 && root.every((p) => Math.abs(p[0] - 0.08) < 1e-9 || Math.abs(p[0] + 0.06) < 1e-9) ? 1 : 0, 1, 0, `bird: ${a}° leaves the wing root on the body`);
+      }
+      /* symmetric: left and right swing together */
+      const P40 = bird({ wingA: 40 });
+      approx(P40.every((p) => P40.some((q) => Math.abs(q[0] - p[0]) < 1e-9 && Math.abs(q[1] + p[1]) < 1e-9)) ? 1 : 0, 1, 0, "bird: both wings swing together (mirror-symmetric)");
+      /* legacy carry-over: an old fore/aft SLIDE becomes the angle that puts
+         the tip in the same place, so a stored bird keeps its silhouette */
+      approx(tipX({ wingX: 0.15 }), -0.05 + 0.15, 1e-9, "bird: legacy wingX puts the tip exactly where it used to be");
+      approx(tipX({ wingX: -0.15 }) < tipX({ wingX: 0.15 }) ? 1 : 0, 1, 0, "bird: the legacy carry-over keeps its direction");
+      approx(tipX({ wingA: 20, wingX: 0.15 }), tipX({ wingA: 20 }), 1e-12, "bird: an explicit angle wins over the legacy field");
+      /* out of range clamps rather than folding the wing through the body */
+      for (const a of [NaN, -400, 400, 89]) {
+        const P = bird({ wingA: a });
+        approx(P.length > 0 && Math.abs(extOf(P, 1) - 1) < 1e-9 && extOf(P, 0) < 2 ? 1 : 0, 1, 0, `bird: wingA ${String(a)} clamps to a valid solid`);
+      }
+    }
+
     /* the four-place registration rule, enforced rather than remembered: every
        kind in the picker needs a default pose, real geometry, and a report
        3-view (the last one fails SILENTLY — an unregistered kind renders an
