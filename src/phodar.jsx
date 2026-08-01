@@ -4915,22 +4915,6 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const commitPlacement = () => {
     if (!update || !photoOn) return;
     const patch = { mediaAim: { az: +pAz.toFixed(2), el: +pEl.toFixed(2), roll: +pRoll.toFixed(1), dist: +pDist.toFixed(5) }, fovH: +fovM.toFixed(1), placed: true, calib: { ...(calibRecRef.current || { method: "manual" }), vt: source?.mediaKind === "video" ? +alignT.toFixed(3) : null } };
-    /* placement + marked points fully determine the sight-lines — derive
-       A (object marks / shape fit) and B (motion mark) automatically, so
-       the fix never dies for want of an elevation the user already gave us */
-    if (source && !(source.track || []).length && source.natW) {
-      const fpx = (source.natW / 2) / Math.tan((fovM * D2R) / 2);
-      const bb = photoBasis(pAz, pEl, pRoll);
-      const dirAt = (px, py) => {
-        const x = (px - source.natW / 2) / fpx, y = (source.natH / 2 - py) / fpx;
-        const s = 1 + pDist * (x * x + y * y); // match the calibrated lens distortion
-        return dirToAzEl(unit([bb.f[0] + (bb.r[0] * x + bb.u[0] * y) * s, bb.f[1] + (bb.r[1] * x + bb.u[1] * y) * s, bb.f[2] + (bb.r[2] * x + bb.u[2] * y) * s]));
-      };
-      const c = source.shapeFit ? { x: source.shapeFit.cx, y: source.shapeFit.cy }
-        : (source.A?.p1 && source.A?.p2 ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null);
-      if (c) { const ae = dirAt(c.x, c.y); patch.A = { ...source.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
-      if (source.B?.pb) { const ae = dirAt(source.B.pb.x, source.B.pb.y); patch.B = { ...source.B, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
-    }
     /* RE-ANCHOR the solved paths: the stabilized camera path + object track
        were solved RELATIVE to the previous placement of the alignment frame.
        A re-align (drag, snap-to-ridges, star-align) rotates the whole world
@@ -4954,6 +4938,32 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         if (Array.isArray(source.objPathRaw) && source.objPathRaw.length) patch.objPathRaw = rotO(source.objPathRaw);
         if (Array.isArray(source.poseFixes) && source.poseFixes.length) patch.poseFixes = rotP(source.poseFixes); // ⚓ anchors are absolute world poses — they rotate with the solution
       }
+    }
+    /* placement + marked points fully determine the sight-lines — derive
+       A (object marks / shape fit) and B (motion mark) automatically, so
+       the fix never dies for want of an elevation the user already gave us.
+       TWO field bugs lived here (a real two-video session where BOTH
+       witnesses ended up with empty A.az/el — "single viewpoint" with two
+       fully-worked witnesses on screen):
+       · the guard skipped derivation for ANY track — but only SKY-anchored
+         trajectory points (az/el, owned by syncAB) justify that; a video's
+         measure-step waypoints are pixel taps {t,x,y} and never set A
+         themselves, so they must not block it;
+       · a video's marks live on the MARKED frame — when it differs from the
+         alignment frame the placement pose describes, project them through
+         THAT frame's solved pose (freshly rotated above if the alignment
+         just moved), same rule as the close-up export. */
+    const skyTrack = (source?.track || []).some((q) => isNum(q.az) && isNum(q.el));
+    if (source && !skyTrack && source.natW) {
+      const mkT = +source.A?.videoTime || 0;
+      const path = patch.posePath || source.posePath;
+      const mk = (source.mediaKind === "video" && Math.abs(mkT - alignT) > 0.05 && Array.isArray(path) && path.length && posePathAt(path, mkT)) || null;
+      const P = mk || { az: pAz, el: pEl, roll: pRoll, fov: fovM, k: pDist };
+      const dirAt = (px, py) => dirToAzEl(pixToDirK(px, py, source.natW, source.natH, P.az, P.el, P.roll || 0, P.fov, P.k ?? 0));
+      const c = source.shapeFit ? { x: source.shapeFit.cx, y: source.shapeFit.cy }
+        : (source.A?.p1 && source.A?.p2 ? { x: (source.A.p1.x + source.A.p2.x) / 2, y: (source.A.p1.y + source.A.p2.y) / 2 } : null);
+      if (c) { const ae = dirAt(c.x, c.y); patch.A = { ...source.A, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
+      if (source.B?.pb) { const ae = dirAt(source.B.pb.x, source.B.pb.y); patch.B = { ...source.B, az: ae.az.toFixed(2), el: ae.el.toFixed(2) }; }
     }
     update(patch);
   };
