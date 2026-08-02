@@ -46,6 +46,14 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **The loupe now frames the whole shape with breathing room** (field
+  report): the magnifier's zoom was derived from the shape's nominal size,
+  but a stretched monolith, a balloon's string or a tilted attitude projects
+  well past that (and can sit off-centre of the anchor point), so at certain
+  proportions the wireframe fell off the glass. The zoom is now computed
+  from the real projected extent about the loupe centre, fit to 80% of the
+  glass radius — the outline always lands inside with a visible margin, so
+  you can tell where it sits as it scales.
 - **Adjust-mode size/tilt controls moved up beside the image** (field ask):
   the per-point size slider and attitude buttons sat at the bottom of the
   Track panel, below the mode toggle and colour rows — so on a phone,

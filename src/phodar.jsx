@@ -1889,10 +1889,19 @@ function MediaMeasure({ src, update, wizard }) {
     const dprL = cv.width / S || 1;               // device-res backing store
     ctx.setTransform(dprL, 0, 0, dprL, 0, 0);     // draw in CSS px, render at native res
     let pxPerNat = Math.max(2, 1.5 * (view.z || 1) * scale); // half the old zoom — more surrounding context to line a feature up
+    let prL = null;
     if (sf && sf.sizeNat) {
-      /* frame the WHOLE shape: fit it to ~62% of the glass, never dropping
-         below ~screen scale (at which point the loupe adds nothing) */
-      pxPerNat = clampN((S * 0.62) / sf.sizeNat, 1.15 * (view.z || 1) * scale, 46);
+      /* frame the WHOLE projected wireframe with breathing room around it —
+         from its REAL extent about the loupe centre, not sizeNat: a stretched
+         monolith, a balloon's string or a tilted attitude reaches well past
+         the nominal size (and can sit off-centre of the anchor), which let
+         the shape fall off the glass at certain proportions (field report).
+         Fit the farthest curve point to 80% of the glass radius so a margin
+         always shows where the outline lands as it scales. */
+      prL = shapeProjNat(sf);
+      let rad = Math.max(1, (sf.sizeNat || 1) * 0.5);
+      for (const c of prL.curves) for (const q of c) { const d = Math.hypot(q.x - p.x, q.y - p.y); if (d > rad) rad = d; }
+      pxPerNat = clampN(((S / 2) * 0.8) / rad, 1.15 * (view.z || 1) * scale, 46);
     }
     const half = (S / 2) / pxPerNat;
     ctx.imageSmoothingEnabled = false;
@@ -1909,7 +1918,7 @@ function MediaMeasure({ src, update, wizard }) {
     ctx.moveTo(S / 2 + 7, S / 2); ctx.lineTo(S, S / 2); ctx.stroke();
     ctx.beginPath(); ctx.arc(S / 2, S / 2, 7, 0, Math.PI * 2); ctx.stroke();
     if (sf) { // magnified wireframe so you can judge the fit at point-source scale
-      const pr = shapeProjNat(sf);
+      const pr = prL || shapeProjNat(sf);
       ctx.lineWidth = 1;
       for (const c of pr.curves) for (let i = 0; i < c.length - 1; i++) {
         const a2 = c[i], b2 = c[i + 1];
