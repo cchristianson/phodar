@@ -3028,6 +3028,64 @@ function MediaMeasure({ src, update, wizard }) {
               </div>
               {frameMsg && <div style={{ fontSize: 11.5, color: "var(--amber)", marginTop: 6, lineHeight: 1.45 }}>{frameMsg}</div>}
               </>)}
+              {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
+                 outline to the object as it appears RIGHT THERE. Apparent
+                 size across frames ⇒ range ratio over time (the radial side
+                 of the trajectory the bearings alone can't see). RENDERED
+                 DIRECTLY UNDER THE IMAGE/frame row, not down in the Track
+                 panel — adjusting is compare-the-outline-to-the-pixels, so
+                 the controls must share the screen with the image (field:
+                 "you have to scroll away from the image when adjusting"). */}
+              {wizard && src.shapeFit && active === "trk" && trkAdjust && selIdx >= 0 && (() => {
+                  const p = trkSorted[selIdx];
+                  const w = isNum(p.wpx) ? +p.wpx : wFit;
+                  const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
+                  const sv = clampN(Math.log(w / lo) / Math.log(hi / lo), 0, 1);
+                  const aP = angOfW(w), aF = angOfW(wFit);
+                  const rho = aP != null && aF != null ? Math.tan(aF * D2R / 2) / Math.tan(aP * D2R / 2) : null;
+                  return (
+                    <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.08)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
+                          point {selIdx + 1} @ {(+p.t).toFixed(2)}s — size + attitude · bigger = closer
+                        </span>
+                        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
+                          {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                        <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>size</span>
+                        <button className="btn sm" onClick={() => setPtW(w / 1.08)}>−</button>
+                        <input type="range" min={0} max={1} step={0.004} value={sv}
+                          onChange={(e) => setPtW(lo * Math.pow(hi / lo, +e.target.value))} style={{ flex: 1 }} />
+                        <button className="btn sm" onClick={() => setPtW(w * 1.08)}>+</button>
+                        {isNum(p.wpx) && (
+                          <button className="btn sm" title="forget this point's size (back to the fitted size)"
+                            onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== selIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
+                        )}
+                      </div>
+                      {/* per-point ATTITUDE — tumble/roll this point's model; it
+                         SLERPs to the next attitude keyframe in playback/export */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
+                        <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>tilt</span>
+                        <button className="btn sm" title="pitch up" onClick={() => nudgeRot("x", -12)}>↑</button>
+                        <button className="btn sm" title="pitch down" onClick={() => nudgeRot("x", 12)}>↓</button>
+                        <button className="btn sm" title="yaw left" onClick={() => nudgeRot("y", -12)}>←</button>
+                        <button className="btn sm" title="yaw right" onClick={() => nudgeRot("y", 12)}>→</button>
+                        <button className="btn sm" title="roll left" onClick={() => nudgeRot("z", -12)}>⟲</button>
+                        <button className="btn sm" title="roll right" onClick={() => nudgeRot("z", 12)}>⟳</button>
+                        {Array.isArray(trkSorted[selIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
+                      </div>
+                      {!trkSorted.some((q) => isNum(q.wpx)) && (
+                        <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
+                          {isVid
+                            ? "Scrub to a point and match the outline to the object as it appears there — the size change between frames is what recovers closer/farther motion."
+                            : "Set the object smaller where it looked FARTHER, bigger where it looked CLOSER, and tilt it to match its attitude — this records the object's distance + orientation along the recalled path."}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               {/* CAM REFS panel — manual stabilization fallback. Pick a reference
                  slot, then tap the same fixed background feature on each frame
                  (scrub between). The sky view solves the pose from these marks. */}
@@ -3137,60 +3195,6 @@ function MediaMeasure({ src, update, wizard }) {
                       <span style={{ fontSize: 10, color: "var(--dim)" }}>{src.shapeFit ? "tap a swatch: object · points" : "tap the swatch to recolour points"}</span>
                     )}
                   </div>
-                  {/* SIZE ON THIS FRAME — scrub to a tapped point and match the
-                     outline to the object as it appears RIGHT THERE. Apparent
-                     size across frames ⇒ range ratio over time (the radial
-                     side of the trajectory the bearings alone can't see). */}
-                  {wizard && src.shapeFit && trkAdjust && selIdx >= 0 && (() => {
-                    const p = trkSorted[selIdx];
-                    const w = isNum(p.wpx) ? +p.wpx : wFit;
-                    const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
-                    const sv = clampN(Math.log(w / lo) / Math.log(hi / lo), 0, 1);
-                    const aP = angOfW(w), aF = angOfW(wFit);
-                    const rho = aP != null && aF != null ? Math.tan(aF * D2R / 2) / Math.tan(aP * D2R / 2) : null;
-                    return (
-                      <div style={{ marginTop: 8, borderTop: "1px solid rgba(143,180,255,.25)", paddingTop: 6 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)" }}>
-                            point {selIdx + 1} @ {(+p.t).toFixed(2)}s — size + attitude · bigger = closer
-                          </span>
-                          <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
-                            {rho == null ? "" : Math.abs(rho - 1) < 0.03 ? "≈ fitted range" : rho < 1 ? `≈ ${(1 / rho).toFixed(2)}× closer` : `≈ ${rho.toFixed(2)}× farther`}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                          <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>size</span>
-                          <button className="btn sm" onClick={() => setPtW(w / 1.08)}>−</button>
-                          <input type="range" min={0} max={1} step={0.004} value={sv}
-                            onChange={(e) => setPtW(lo * Math.pow(hi / lo, +e.target.value))} style={{ flex: 1 }} />
-                          <button className="btn sm" onClick={() => setPtW(w * 1.08)}>+</button>
-                          {isNum(p.wpx) && (
-                            <button className="btn sm" title="forget this point's size (back to the fitted size)"
-                              onClick={() => update({ track: trkSorted.map((q, i) => { if (i !== selIdx) return q; const { wpx, ang: _a, ...rest } = q; return rest; }) })}>✕</button>
-                          )}
-                        </div>
-                        {/* per-point ATTITUDE — tumble/roll this point's model; it
-                           SLERPs to the next attitude keyframe in playback/export */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
-                          <span className="microlabel" style={{ marginBottom: 0, minWidth: 30 }}>tilt</span>
-                          <button className="btn sm" title="pitch up" onClick={() => nudgeRot("x", -12)}>↑</button>
-                          <button className="btn sm" title="pitch down" onClick={() => nudgeRot("x", 12)}>↓</button>
-                          <button className="btn sm" title="yaw left" onClick={() => nudgeRot("y", -12)}>←</button>
-                          <button className="btn sm" title="yaw right" onClick={() => nudgeRot("y", 12)}>→</button>
-                          <button className="btn sm" title="roll left" onClick={() => nudgeRot("z", -12)}>⟲</button>
-                          <button className="btn sm" title="roll right" onClick={() => nudgeRot("z", 12)}>⟳</button>
-                          {Array.isArray(trkSorted[selIdx]?.rotM) && <button className="btn sm" style={{ marginLeft: "auto" }} title="clear this point's attitude" onClick={resetPtRotM}>reset</button>}
-                        </div>
-                        {!trkSorted.some((q) => isNum(q.wpx)) && (
-                          <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--dim)", lineHeight: 1.4 }}>
-                            {isVid
-                              ? "Scrub to a point and match the outline to the object as it appears there — the size change between frames is what recovers closer/farther motion."
-                              : "Set the object smaller where it looked FARTHER, bigger where it looked CLOSER, and tilt it to match its attitude — this records the object's distance + orientation along the recalled path."}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
                   {/* STILL adjust: a photo shows the object only once, so there's
                      no per-point size — instead tune the leg's DURATION (Δt) and
                      the TURN tightness that turn the recalled path into speed +

@@ -46,6 +46,14 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Adjust-mode size/tilt controls moved up beside the image** (field ask):
+  the per-point size slider and attitude buttons sat at the bottom of the
+  Track panel, below the mode toggle and colour rows — so on a phone,
+  adjusting meant scrolling away from the very image you're matching the
+  outline against. The panel now renders directly under the image and frame
+  row (its own card), so the outline, the frame steppers and the size/tilt
+  controls share one screen. The Track panel keeps the place/adjust toggle,
+  colour and point management.
 - **Track-point size ghost now scales about the point's centre** (field
   report): the wireframe drawn while sizing a track point was pinned by the
   midpoint of its widest silhouette chord, which is NOT the visual centre
