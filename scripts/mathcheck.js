@@ -1598,6 +1598,25 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(uq(cube({ squash: 1, stretch: 2 }).filter((p) => Math.abs(Math.abs(p[2]) - 1) < 1e-9)).length, 2, 0,
       "cube stretch: a stretched diamond still has exactly 2 apexes");
 
+    /* DEPTH — the footprint's second axis (y) against the fixed x width: the
+       third independent proportion, added for the MONOLITH. It must scale y
+       alone, compose with stretch and squash, and hit the classic 1:4:9. */
+    const thin = cube({ depth: 0.25 });
+    approx(extOf(thin, 1), 0.25, 1e-9, "cube depth: 0.25 thins the footprint's y to 0.25");
+    approx(extOf(thin, 0), 1, 1e-9, "cube depth: the x width stays the fixed reference (1)");
+    approx(extOf(thin, 2), 1, 1e-9, "cube depth: the height is untouched");
+    const mono = cube({ depth: 0.25, stretch: 2.25 });
+    approx(extOf(mono, 1), 0.25, 1e-9, "monolith: thickness 0.25 …");
+    approx(extOf(mono, 0), 1, 1e-9, "monolith: … width 1 …");
+    approx(extOf(mono, 2), 2.25, 1e-9, "monolith: … height 2.25 — the classic 1:4:9 slab");
+    approx(extOf(cube({ depth: 99 }), 1), 3, 1e-9, "cube depth: clamped at 3×");
+    approx(extOf(cube({ depth: -1 }), 1), 0.1, 1e-9, "cube depth: clamped at 0.1×");
+    approx(extOf(cube({}), 1), 1, 1e-9, "cube depth: default 1 leaves the square footprint (old fits unchanged)");
+    const thinDia = cube({ squash: 1, depth: 0.5 });
+    approx(extOf(thinDia, 1), 0.5, 1e-9, "cube depth: composes with squash (thin diamond waist y = 0.5)");
+    approx(uq(thinDia.filter((p) => Math.abs(Math.abs(p[2]) - 0.5) < 1e-9)).length, 2, 0,
+      "cube depth: a thin diamond still collapses to exactly 2 apexes");
+
     /* PYRAMID — square base of fixed width, apex height = stretch */
     const pyr = (o) => shapeWire("pyr", null, o).flat();
     for (const [st, what] of [[1, "as tall as it is wide"], [2.2, "spire"], [0.3, "shallow cap"]]) {

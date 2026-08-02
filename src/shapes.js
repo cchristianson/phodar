@@ -323,15 +323,23 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
        by design — squash decides the SHAPE of the profile, stretch its
        PROPORTION — so every combination is reachable. */
     const st = Math.max(0.25, Math.min(3, opts && isFinite(opts.stretch) ? opts.stretch : 1));
+    /* `depth` is the THIRD independent proportion: it scales the footprint's
+       second axis (y) against the fixed x width, so the family finally spans
+       true rectangular slabs — the reason it exists is the MONOLITH (a
+       2001-style 1:4:9 thickness:width:height is depth 0.25 + stretch 2.25,
+       squash 0). It multiplies y EVERYWHERE (caps, waist, side edges), so
+       squash still picks the profile's shape and stretch its height with no
+       coupling — every box/slab/column/gem is reachable at any thinness. */
+    const dp = Math.max(0.1, Math.min(3, opts && isFinite(opts.depth) ? opts.depth : 1));
     const h = 0.5 * st, m = 0.5, a = m * (1 - q);   // half-height, waist half-width, cap half-width
-    const sq = (r, z) => [[r, r, z], [r, -r, z], [-r, -r, z], [-r, r, z], [r, r, z]];
+    const sq = (r, z) => [[r, r * dp, z], [r, -r * dp, z], [-r, -r * dp, z], [-r, r * dp, z], [r, r * dp, z]];
     /* a collapsed cap is a point — drawing its degenerate square would leave a
        dot artefact at the apex, and drawing the waist on an un-squashed cube
        would band it with a line that isn't an edge */
     if (a > 0.005) C.push(sq(a, h), sq(a, -h));
     if (q > 0.01) C.push(sq(m, 0));
     for (const [sx, sy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]])
-      C.push([[sx * a, sy * a, h], [sx * m, sy * m, 0], [sx * a, sy * a, -h]]);
+      C.push([[sx * a, sy * a * dp, h], [sx * m, sy * m * dp, 0], [sx * a, sy * a * dp, -h]]);
   } else if (kind === "balloon") {
     /* PARTY BALLOON — envelope up (+z), knot and a dangling string below. The
        single most-mistaken-for-a-UFO object there is, so it earns its own

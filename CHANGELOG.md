@@ -27,6 +27,15 @@ Notable changes to Phodar. Format loosely follows
   error paths) verified against the real two-video drone session.
 
 ### Added (quality of life)
+- **Cube depth slider — the monolith axis** (field ask): the ⬛ cube gains a
+  third independent proportion, `depth` (0.1–3×), thinning the footprint's
+  second axis against its fixed width — so a true rectangular slab is now
+  reachable, not just square boxes and columns. A live mono readout beside
+  the slider shows the solid's proportions (thinnest side = 1) so a specific
+  ratio can be dialled exactly; the classic 2001 monolith (1 : 4 : 9) is
+  depth 0.25 + stretch 2.25. Composes cleanly with squash (thin diamonds
+  work too); existing fits are unchanged (default 1). Mathcheck-asserted;
+  the report's dimensioned 3-view picks the new extents up automatically.
 - **Trajectory playback on the top-down plot**: when the stereo trajectory
   solves, the satellite view gains ▶ + a scrubber — a marker rides the
   triangulated path in real time with a growing progress trail, and the

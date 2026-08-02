@@ -105,7 +105,15 @@ comments, in this order:
    then scales the HEIGHT against a fixed footprint, and the two are
    deliberately independent — squash picks the profile's SHAPE, stretch its
    PROPORTION — so a box, a column, a slab, a tall gem and a flat lozenge are
-   all reachable. The **pyramid** (`pyr`) shares `stretch` as its height
+   all reachable. **`depth`** ∈ [0.1,3] is the THIRD independent proportion
+   (cube only): it scales the footprint's second axis (y) against the fixed
+   x width, which is what makes a true rectangular MONOLITH reachable — the
+   2001-style 1:4:9 slab is depth 0.25 + stretch 2.25 at squash 0, and the
+   slider row's mono readout shows the live proportions (thinnest side = 1)
+   so a specific ratio can be dialled exactly. Depth multiplies y everywhere
+   (caps, waist, side edges), so all three params stay uncoupled; default 1
+   leaves old fits byte-identical. Mathcheck-asserted (per-axis extents,
+   the 1:4:9 case, clamps, squash composition). The **pyramid** (`pyr`) shares `stretch` as its height
    (0.25 = shallow cap, 3 = spire) over a unit square base; base + four slant
    edges only, since any horizontal ring would be a line that is not an edge
    (the same reason the cube's waist is suppressed at squash 0). Note for

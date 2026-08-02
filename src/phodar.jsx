@@ -537,7 +537,7 @@ const HELP_SECTIONS = [
         { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
-        { t: "aspect / spin / squash / stretch / height / sweep / notch / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
+        { t: "aspect / spin / squash / stretch / depth / height / sweep / notch / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), depth for the cube’s footprint thickness against its fixed width — thin a box into a rectangular slab or monolith; the mono readout beside that slider shows the proportions with the thinnest side as 1, so a specific ratio can be dialled exactly (the classic monolith is 1 : 4 : 9 — depth 0.25 + stretch 2.25), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
@@ -2542,6 +2542,29 @@ function MediaMeasure({ src, update, wizard }) {
                   </span>
                   <input type="range" min={0.25} max={3} step={0.05} value={src.shapeFit.stretch ?? 1}
                     onChange={(e) => { const nsf = { ...src.shapeFit, stretch: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                </div>
+              )}
+              {src.shapeFit.kind === "cube" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                  {/* the FOOTPRINT's second axis against its fixed width — the
+                      THIRD independent proportion, and the one that makes a
+                      MONOLITH: a 2001-style 1:4:9 slab is depth 0.25 +
+                      stretch 2.25. The mono readout shows the solid's
+                      proportions (thinnest = 1) so a specific ratio can be
+                      dialled exactly. */}
+                  <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>
+                    depth {(src.shapeFit.depth ?? 1).toFixed(2)}×
+                  </span>
+                  <input type="range" min={0.1} max={3} step={0.05} value={src.shapeFit.depth ?? 1}
+                    onChange={(e) => { const nsf = { ...src.shapeFit, depth: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  <span title="proportions, thinnest side = 1 (the classic monolith is 1 : 4 : 9 — depth 0.25, stretch 2.25)"
+                    style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--dim)", whiteSpace: "nowrap" }}>
+                    {(() => {
+                      const d = [+(src.shapeFit.depth ?? 1), 1, +(src.shapeFit.stretch ?? 1)].sort((a, b) => a - b);
+                      const f = (v) => { const r = v / d[0]; return Math.abs(r - Math.round(r)) < 0.05 ? String(Math.round(r)) : r.toFixed(1); };
+                      return d.map(f).join(" : ");
+                    })()}
+                  </span>
                 </div>
               )}
               {src.shapeFit.kind === "vee" && (
