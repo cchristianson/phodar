@@ -898,7 +898,16 @@ terrain stay frozen and only the object moves. Build ladder:
    ends, fitted shape where none), and `shapeAt` normalises the target
    apparent width to a real sizeNat through the rotated shape's own
    projection. Two size marks ⇒ a smooth grow/shrink between them; N
-   marks ⇒ piecewise; same for attitude via SLERP. The dome wire renders
+   marks ⇒ piecewise; same for attitude via SLERP. **The measure-step ghost
+   at a track point is pinned by its APPARENT centre** (`pinApparentCenter`,
+   shapes.js, pure + mathcheck-asserted): neither the 3D origin nor the
+   silhouette-chord midpoint is the visual centre for asymmetric shapes (a
+   saucer's dome / a balloon's string hang off the widest chord), and both
+   let the outline slide off the point as it scaled — two field reports.
+   The size/tilt controls also SNAP the video to the targeted point's own
+   frame on first touch (they select the nearest point in TIME, so the
+   scrubber could be parked on any frame — sizing against another frame's
+   pixels writes a size that describes nothing). The dome wire renders
    at TRUE fitted angular size, scaling with dome zoom through the
    projection — a
    short-lived "legibility floor" that magnified small wires was

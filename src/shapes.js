@@ -414,6 +414,24 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    triangle also gets an in-plane 180° so its apex points up, not down. */
 export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), vee: rotX3(48), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), stealth: rotX3(52), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), balloon: rotX3(84), drone: rotX3(40), jelly: rotX3(82) });
 
+/* Translate a shapeFit so the APPARENT centre of its projected wireframe —
+   the bounding-box centre of the drawn curves — lands exactly on (x, y).
+   The silhouette-chord midpoint ((p1+p2)/2) is NOT that centre for any shape
+   whose geometry extends asymmetrically off its widest chord (a saucer's
+   dome, a balloon's string, a jellyfish's tentacles, any tilted attitude),
+   so pinning the chord midpoint still let the visible outline slide off its
+   track point as it scaled (field: "doesn't scale from the center of the
+   placed track point"). Translation is exact under orthographic projection,
+   so one correction pins it — scaling then grows the outline symmetrically
+   about the point. Pure. */
+export function pinApparentCenter(sf, x, y) {
+  const pts = shapeProjNat(sf).curves.flat();
+  if (!pts.length) return sf;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+  return { ...sf, cx: (sf.cx || 0) + (x - (x0 + x1) / 2), cy: (sf.cy || 0) + (y - (y0 + y1) / 2) };
+}
+
 export function shapeProjNat(sf) { // orthographic project → natural-px curves + silhouette extremes
   const R = sf.roll ? mul3(sf.rotM || I3, rotZ3(sf.roll)) : (sf.rotM || I3);
   const s = sf.sizeNat || 100;

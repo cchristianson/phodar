@@ -40,7 +40,7 @@ import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./che
 import { DEEP_STARS } from "./math/starcatDeep.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
-import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt } from "./shapes.js";
+import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt, pinApparentCenter } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
@@ -2232,17 +2232,29 @@ function MediaMeasure({ src, update, wizard }) {
     let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: (rotM && rotM.length === 9) ? rotM : (src.shapeFit.rotM || I3), roll: 0 };
     const pr = shapeProjNat(sfG); const pw = Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1;
     sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pw };
-    /* pin the SILHOUETTE midpoint on the point (matches the on-photo ghost):
-       origin-anchoring let asymmetric shapes slide off the point as they scaled */
-    const pr2 = shapeProjNat(sfG);
-    return { ...sfG, cx: sfG.cx + (p.x - (pr2.p1.x + pr2.p2.x) / 2), cy: sfG.cy + (p.y - (pr2.p1.y + pr2.p2.y) / 2) };
+    /* pin the APPARENT centre on the point (matches the on-photo ghost) —
+       chord-midpoint pinning still let asymmetric shapes scale off-centre */
+    return pinApparentCenter(sfG, p.x, p.y);
   };
   /* size/attitude target the SELECTED point (video = scrub position szIdx;
      still = tap-selected selTrk) — so a still can also record the object
      shrinking (moving away) / growing (coming closer) and its attitude at
      each recalled point, exactly like video. */
+  /* SIZING/TILTING HAPPENS ON THE POINT'S OWN FRAME (field ask): the controls
+     target the nearest placed point in TIME, but the scrubber can be parked on
+     any frame — matching the outline against another frame's pixels writes a
+     size that describes nothing. First touch of size/tilt SNAPS the video to
+     the targeted point's frame; the edit still applies (it's keyed to the
+     point, so the value was never at risk — the comparison basis was). */
+  const snapToPtFrame = () => {
+    const p = trkSorted[selIdx];
+    if (!isVid || !p || !isNum(p.t) || !isNum(vidT) || Math.abs(vidT - +p.t) <= 0.06) return;
+    seek(+p.t);
+    flashFrame(`↩ jumped to point ${selIdx + 1}'s frame (${(+p.t).toFixed(2)} s) — match the object as it appears there`);
+  };
   const setPtW = (w) => {
     if (selIdx < 0) return;
+    snapToPtFrame();
     const w2 = clampN(w, 2, natW * 0.6);
     const a2 = angOfW(w2);
     update({ track: trkSorted.map((p, i) => (i === selIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
@@ -2253,6 +2265,7 @@ function MediaMeasure({ src, update, wizard }) {
   const ptRotOf = (i) => (Array.isArray(trkSorted[i]?.rotM) && trkSorted[i].rotM.length === 9) ? trkSorted[i].rotM : (src.shapeFit?.rotM || I3);
   const setPtRotM = (m) => {
     if (selIdx < 0) return;
+    snapToPtFrame();
     update({ track: trkSorted.map((p, i) => (i === selIdx ? { ...p, rotM: m } : p)) });
     const p = trkSorted[selIdx]; const sfG = ptGhostSf(p, isNum(p?.wpx) ? +p.wpx : wFit, m); if (sfG) shapeLoupeFor(sfG);
   };
@@ -2740,16 +2753,14 @@ function MediaMeasure({ src, update, wizard }) {
                       let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: rot, roll: 0 };
                       const pwG = (() => { const pr = shapeProjNat(sfG); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
                       sfG = { ...sfG, sizeNat: (src.shapeFit.sizeNat || 1) * w / pwG };
-                      /* anchor the SILHOUETTE midpoint on the tapped point, not the
-                         shape's 3D origin: for asymmetric shapes/attitudes the
-                         projected centre sits off the origin and that offset GROWS
-                         with size — origin-anchoring made the outline slide off the
-                         point as it scaled (field: "scales from a weird center").
-                         Translation is exact, so one correction re-pins it. */
-                      let prG = shapeProjNat(sfG);
-                      const mgx = (prG.p1.x + prG.p2.x) / 2, mgy = (prG.p1.y + prG.p2.y) / 2;
-                      if (Math.abs(mgx - p.x) + Math.abs(mgy - p.y) > 0.01)
-                        prG = shapeProjNat({ ...sfG, cx: sfG.cx + (p.x - mgx), cy: sfG.cy + (p.y - mgy) });
+                      /* anchor the APPARENT centre (bounding box of the drawn
+                         curves) on the tapped point — neither the shape's 3D
+                         origin nor the silhouette-chord midpoint is the visual
+                         centre for asymmetric shapes/attitudes (saucer dome,
+                         balloon string), and both let the outline slide off the
+                         point as it scaled (field: "doesn't scale from the
+                         center of the placed track point"). */
+                      const prG = shapeProjNat(pinApparentCenter(sfG, p.x, p.y));
                       const colG = `hsl(${src.shapeFit.hue ?? 36},88%,60%)`;
                       return prG.curves.map((c, j) => (
                         <polyline key={`g${i}-${j}`} points={c.map((pt2) => TT(pt2.x, pt2.y).join(",")).join(" ")}

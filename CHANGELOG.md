@@ -37,6 +37,21 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Track-point size ghost now scales about the point's centre** (field
+  report): the wireframe drawn while sizing a track point was pinned by the
+  midpoint of its widest silhouette chord, which is NOT the visual centre
+  for asymmetric shapes or tilted attitudes (a saucer's dome, a balloon's
+  string all hang off that chord) — so the outline slid off the point as it
+  grew. It is now pinned by its APPARENT centre (the bounding box of the
+  drawn curves), on the photo and in the loupe alike, so scaling grows the
+  outline symmetrically about the placed point. Mathcheck-asserted.
+- **Sizing/tilting a track point snaps the video to that point's frame**
+  (field ask): the size + tilt controls target the nearest placed point in
+  time, but the scrubber could be parked on any frame — so the outline was
+  being matched against the wrong frame's pixels. First touch of either
+  control now jumps the video to the targeted point's own frame (with a
+  brief note saying so), the same guard philosophy the 3D object's frame
+  already has.
 - **All videos rendering black on the installed app (iPad field report)**:
   iOS keeps a live decoder pipeline for every <video> that ever loaded a
   source and caps those per page — a long multi-observer session saturates

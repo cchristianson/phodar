@@ -25,7 +25,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
-import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0 } from "../src/shapes.js";
+import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0, shapeProjNat, pinApparentCenter } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -1510,6 +1510,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     const none = sampleShapeAt([{ t: 0, x: 1, y: 1 }], sf, 1);
     approx(none.wpx == null ? 1 : 0, 1, 0, "sampleShapeAt: no size marks ⇒ wpx null (caller uses fitted size)");
     approx(Math.max(...I3.map((v, i) => Math.abs(v - none.rotM[i]))) < 1e-9 ? 1 : 0, 1, 0, "sampleShapeAt: no attitude marks ⇒ fitted rotM");
+
+    /* pinApparentCenter: the track-point ghost anchors by APPARENT centre
+       (bbox of the drawn curves) — the silhouette-chord midpoint sits
+       off-centre for asymmetric shapes (a balloon's string hangs below its
+       envelope), so midpoint pinning let the outline slide off the point as
+       it scaled. Assert: the pinned bbox centre lands exactly on the target,
+       stays there when the size doubles (scaling is ABOUT the point), and a
+       symmetric orb needs no correction. */
+    {
+      const bbox = (sfx) => {
+        const P = shapeProjNat(sfx).curves.flat();
+        const xs = P.map((p) => p.x), ys = P.map((p) => p.y);
+        return { cx: (Math.min(...xs) + Math.max(...xs)) / 2, cy: (Math.min(...ys) + Math.max(...ys)) / 2, w: Math.max(...xs) - Math.min(...xs) };
+      };
+      const bal = { kind: "balloon", cx: 500, cy: 400, sizeNat: 120, rotM: SHAPE_R0().balloon, cord: 1.6 };
+      approx(Math.abs(bbox(bal).cy - 400) > 1 ? 1 : 0, 1, 0, "pinApparentCenter: origin-anchored balloon centre really sits off the origin (the bug's precondition)");
+      const b1 = bbox(pinApparentCenter(bal, 500, 400));
+      approx(b1.cx, 500, 1e-9, "pinApparentCenter: apparent centre lands on the point (x)");
+      approx(b1.cy, 400, 1e-9, "pinApparentCenter: apparent centre lands on the point (y)");
+      const b2 = bbox(pinApparentCenter({ ...bal, sizeNat: 240 }, 500, 400));
+      approx(b2.cx, 500, 1e-9, "pinApparentCenter: centre stays on the point when the size doubles (x)");
+      approx(b2.cy, 400, 1e-9, "pinApparentCenter: centre stays on the point when the size doubles (y)");
+      approx(b2.w / b1.w, 2, 1e-6, "pinApparentCenter: doubling sizeNat doubles the extent about the pinned centre");
+      const po = pinApparentCenter({ kind: "orb", cx: 100, cy: 100, sizeNat: 50, rotM: I3 }, 100, 100);
+      approx(po.cx, 100, 1e-9, "pinApparentCenter: a symmetric orb needs no correction (cx)");
+      approx(po.cy, 100, 1e-9, "pinApparentCenter: a symmetric orb needs no correction (cy)");
+    }
 
     /* CUBE ↔ DIAMOND (squash). The solid must actually BE a cube at 0 and a
        square bipyramid at 1, not merely look like one: check the corner set,
