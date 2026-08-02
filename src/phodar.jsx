@@ -471,6 +471,20 @@ function applyImgAdj(ctx, w, h, a) {
   ctx.putImageData(id, 0, 0);
 }
 
+/* iOS keeps a live decoder PIPELINE for every <video> that ever loaded a
+   src, and Safari caps those per page — once saturated, EVERY video (even a
+   fresh upload) renders BLACK until the web process restarts (field report:
+   a long multi-observer session went all-black on the installed app; Chrome,
+   which has no such cap, was fine). The offscreen videos (stabilize, export,
+   keyframes, playback) already release in their finally/cleanup paths — this
+   is for the RENDERED player: React unmounting a <video> does not reliably
+   tear the pipeline down on iOS, so it must be released explicitly. */
+const releaseVideo = (v) => {
+  if (!v || v.tagName !== "VIDEO") return;
+  try { v.pause(); } catch (e) { }
+  try { v.removeAttribute("src"); v.load(); } catch (e) { }
+};
+
 const ML = ({ children, style }) => <div className="microlabel" style={style}>{children}</div>;
 
 /* ============================================================
@@ -541,6 +555,7 @@ const HELP_SECTIONS = [
         { t: "☀ Brightness / ◐ Contrast", d: "Display-only sliders that lift a dark night shot so you can see the object — carries into the sky view and report; measurements still use the original. ↺ reset restores neutral." },
       ]},
       { h: "Video", items: [
+        { t: "▶ / ⏸ Play", d: "Preview the clip from the frame you're on — it pauses where you stop it, and the frame slider follows. A freshly uploaded clip never auto-plays; it just shows its first frame." },
         { t: "Scrub / −1 fr / +1 fr", d: "Seek to any frame; step one frame (~1/30 s) at a time. The object's marks stamp whichever frame you FIRST fit them on — no separate 'use this frame' step." },
         { t: "📌 Object → this frame", d: "The fitted object belongs to ONE frame. Adjusting it while scrubbed elsewhere snaps the video back to that frame (editing a fit against another frame's pixels would silently corrupt the measurement). To deliberately move the object to the frame you're viewing, tap 📌 — its size and rotation are kept; drag it onto the object's position there. If the clip was already auto-tracked, re-run 🎞 Stabilize afterwards (the track was seeded on the old frame)." },
         { t: "⛰ Align on this frame", d: "Scrub to the moment with the clearest horizon or stars and lock it as the ALIGNMENT frame — the sky-view calibration is done there. It's independent of the frame the object was marked on (which may be zoomed in or horizon-free). Leave it unset and the object's own frame is used." },
@@ -1395,16 +1410,50 @@ function MediaMeasure({ src, update, wizard }) {
     const kick = () => {
       const v = mediaRef.current; if (!v) return;
       try {
-        const p = v.play();
-        if (p && p.then) p.then(() => { v.pause(); paintFirstFrame(); }).catch(() => { /* refused (e.g. Low Power Mode) — the retry below and the seek nudge remain */ });
-        else { v.pause(); paintFirstFrame(); }
+        /* the kick exists to PAINT ONE FRAME, not to play the clip (field
+           ask: "don't auto-play after uploading") — pause at the first
+           PRESENTED frame via rVFC where it exists; play().then() pauses
+           late enough that the clip visibly ran on some devices. A play the
+           USER started (▶) is never paused by the kick. */
+        if (v.requestVideoFrameCallback) {
+          v.requestVideoFrameCallback(() => {
+            const w = mediaRef.current;
+            if (w && !userPlayRef.current) { w.pause(); paintFirstFrame(); }
+          });
+          v.play().catch(() => { /* refused (e.g. Low Power Mode) — the retry below and the seek nudge remain */ });
+        } else {
+          const p = v.play();
+          if (p && p.then) p.then(() => { if (!userPlayRef.current) { v.pause(); paintFirstFrame(); } }).catch(() => { });
+          else if (!userPlayRef.current) { v.pause(); paintFirstFrame(); }
+        }
       } catch (e) { /* the seek nudge already ran */ }
     };
     kick();
     /* Low Power Mode (and first-load races) can refuse the first play() —
        one delayed retry when no frame data has arrived yet */
-    setTimeout(() => { const v = mediaRef.current; if (v && v.readyState < 2) kick(); }, 700);
+    setTimeout(() => { const v = mediaRef.current; if (v && v.readyState < 2 && !userPlayRef.current) kick(); }, 700);
   };
+  /* ▶/⏸ preview playback (field ask — the scrubber alone made checking a
+     clip tedious). userPlayRef marks a USER-initiated play so the one-frame
+     paint kick above never pauses it. */
+  const [vidPlaying, setVidPlaying] = useState(false);
+  const userPlayRef = useRef(false);
+  const togglePlay = () => {
+    const v = mediaRef.current;
+    if (!v || media?.kind !== "video") return;
+    if (v.paused) { userPlayRef.current = true; v.play().catch(() => { userPlayRef.current = false; }); }
+    else { userPlayRef.current = false; v.pause(); }
+  };
+  /* release the player's decoder pipeline when the clip changes or the step
+     unmounts — guarded so a same-element src swap never clears the NEW clip */
+  useEffect(() => {
+    const url = media?.url;
+    if (!url || media?.kind !== "video") return;
+    return () => {
+      const v = mediaRef.current;
+      if (v && v.tagName === "VIDEO" && (!v.isConnected || v.currentSrc === url || v.src === url)) releaseVideo(v);
+    };
+  }, [media?.url, media?.kind]);
   const onLoaded = () => {
     const el = mediaRef.current;
     if (!el) return;
@@ -2557,6 +2606,7 @@ function MediaMeasure({ src, update, wizard }) {
                 {media.kind === "video" ? (
                   <video ref={mediaRef} src={media.url} playsInline muted preload="auto"
                     onLoadedMetadata={onLoaded} onLoadedData={() => { paintFirstFrame(); kickVideoPaint(); }} onError={onMediaError} onTimeUpdate={(e) => setVidT(e.target.currentTime)}
+                    onPlay={() => setVidPlaying(userPlayRef.current)} onPause={() => { setVidPlaying(false); userPlayRef.current = false; }} onEnded={() => { setVidPlaying(false); userPlayRef.current = false; }}
                     style={{ width: dispW ? dispW * elZ : "100%", height: "auto", display: "block", pointerEvents: "none", filter: imgAdjFilter(src.imgAdj) }} />
                 ) : (
                   <img ref={mediaRef} src={media.url} alt="sighting" onLoad={onLoaded} onError={onMediaError}
@@ -2884,6 +2934,7 @@ function MediaMeasure({ src, update, wizard }) {
                 </div>
               )}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn sm" style={{ padding: "6px 9px", minWidth: 36 }} title={vidPlaying ? "Pause" : "Play the clip (it never auto-plays on upload)"} onClick={togglePlay}>{vidPlaying ? "⏸" : "▶"}</button>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.min(vidDur, vidT + 0.033))}>+1 fr</button>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)" }}>{vidT.toFixed(2)}s</span>

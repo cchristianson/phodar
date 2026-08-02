@@ -37,6 +37,22 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **All videos rendering black on the installed app (iPad field report)**:
+  iOS keeps a live decoder pipeline for every <video> that ever loaded a
+  source and caps those per page — a long multi-observer session saturates
+  the cap, after which every clip (even a fresh upload) renders black until
+  the web process restarts (Chrome has no such cap, hence "works on
+  Chrome"). The offscreen videos already released their pipelines; the
+  measure step's rendered player now does too, explicitly, when the clip
+  changes or the step closes. If the app is currently in the all-black
+  state, force-quit it (or restart the device) once — the fix prevents
+  recurrence.
+- **A freshly uploaded clip no longer auto-plays** (field ask): the
+  first-frame paint kick now pauses at the first PRESENTED frame
+  (requestVideoFrameCallback) instead of play-then-pause, which visibly ran
+  the clip on some devices. A ▶ / ⏸ button joins the frame controls so the
+  clip can be previewed without dragging the scrubber; a user-started play
+  is never touched by the paint kick.
 - **Adjusting the placed 3D object can no longer corrupt its frame** (field
   ask): the object belongs to the frame it was fitted on, but every shape
   touch re-stamped that frame to wherever the video was scrubbed — one stray
