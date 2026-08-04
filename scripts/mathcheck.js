@@ -25,7 +25,7 @@ import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
 import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
-import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0, shapeProjNat, pinApparentCenter } from "../src/shapes.js";
+import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0, shapeProjNat, pinApparentCenter, normSizedTrack } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
 import { activeShowers } from "../src/checks/meteorshowers.js";
@@ -1536,6 +1536,39 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       const po = pinApparentCenter({ kind: "orb", cx: 100, cy: 100, sizeNat: 50, rotM: I3 }, 100, 100);
       approx(po.cx, 100, 1e-9, "pinApparentCenter: a symmetric orb needs no correction (cx)");
       approx(po.cy, 100, 1e-9, "pinApparentCenter: a symmetric orb needs no correction (cy)");
+    }
+
+    /* normSizedTrack: size keyframes are wpx AT THEIR OWN FRAME'S ZOOM — a
+       real field clip zoomed 46°→5° (9.25×), and interpolating raw px (or
+       projecting one frame's px through another frame's lens) ballooned the
+       world-view wireframe ~8× at zoomed keyframes. Normalizing through
+       eq = wpx·tan(fovOwn/2)/tan(fovTarget/2) makes equal ANGULAR sizes come
+       out as equal px at the target scale. */
+    {
+      const D2Rl = Math.PI / 180;
+      const fpx = (fov, natW = 720) => (natW / 2) / Math.tan((fov * D2Rl) / 2);
+      const wpxOf = (angDeg, fov) => 2 * fpx(fov) * Math.tan((angDeg * D2Rl) / 2);
+      const pp = [{ t: 0, fov: 41.6 }, { t: 5, fov: 20 }, { t: 10, fov: 5 }];
+      // two keyframes, SAME 0.8° angular size, captured at 41.6° and 5° zoom
+      const trk = [
+        { t: 0, x: 1, y: 1, wpx: wpxOf(0.8, 41.6) },
+        { t: 10, x: 1, y: 1, wpx: wpxOf(0.8, 5) },
+      ];
+      approx(trk[1].wpx / trk[0].wpx, Math.tan(20.8 * D2Rl) / Math.tan(2.5 * D2Rl), 1e-9,
+        "normSizedTrack precondition: equal angles are ~8.7× different raw px across the zoom");
+      const n = normSizedTrack(trk, pp, 41.6);
+      approx(n[0].wpx, trk[0].wpx, 1e-9, "normSizedTrack: a keyframe already at the target scale is untouched");
+      approx(n[1].wpx, trk[0].wpx, 1e-6, "normSizedTrack: equal angular sizes normalize to equal px (9× zoom collapsed)");
+      // real-clip regression: 51.4 px at fov 5 ≈ 0.357° ⇒ ~5.93 px at fov 41.6
+      const g = normSizedTrack([{ t: 10, wpx: 51.4 }], pp, 41.6)[0].wpx;
+      approx(2 * Math.atan((g / 2) / fpx(41.6)) / D2Rl, 0.357, 0.002, "normSizedTrack: Germany-clip keyframe keeps its true angular size at the target scale");
+      // identity paths: flat fov, no posePath, unsized points
+      approx(normSizedTrack(trk, [{ t: 0, fov: 41.6 }, { t: 10, fov: 41.6 }], 41.6) === trk ? 1 : 0, 1, 0, "normSizedTrack: flat-FOV clip returns the track unchanged (same reference)");
+      approx(normSizedTrack(trk, null, 41.6) === trk ? 1 : 0, 1, 0, "normSizedTrack: no posePath ⇒ unchanged");
+      approx(normSizedTrack([{ t: 3, x: 1, y: 1 }], pp, 41.6)[0].wpx === undefined ? 1 : 0, 1, 0, "normSizedTrack: unsized points pass through untouched");
+      // interpolated fov between samples: t=2.5 sits halfway 41.6→20
+      const mid = normSizedTrack([{ t: 2.5, wpx: 100 }], pp, 41.6)[0].wpx;
+      approx(mid, 100 * Math.tan(((41.6 + 20) / 2) * D2Rl / 2) / Math.tan(20.8 * D2Rl), 1e-9, "normSizedTrack: FOV interpolates linearly between pose samples");
     }
 
     /* CUBE ↔ DIAMOND (squash). The solid must actually BE a cube at 0 and a

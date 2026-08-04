@@ -116,6 +116,40 @@ export function sampleShapeAt(track, shapeFit, t, opts) {
   return { rotM, wpx: sk.length ? interp1(sk, t) : null };
 }
 
+/* Normalize per-frame SIZED track points to ONE pixel scale before
+   interpolating. `wpx` is native px ON THE KEYFRAME'S OWN FRAME — under a
+   zooming camera the same angular size is many more px zoomed in (a real
+   field clip spanned 9×), so interpolating raw px, or projecting one frame's
+   px through another frame's lens, ballooned the world-view wireframe at
+   zoomed keyframes ("the 3D object doesn't scale correctly when scrubbing").
+   eqPx = wpx · tan(fovOwn/2) / tan(fovTarget/2) maps each keyframe to the
+   target frame's scale exactly — the ANGULAR size is the invariant.
+   `posePath` supplies fovOwn(t) (the solved per-frame FOV); no path, or a
+   flat-FOV clip, returns the track unchanged. Pure. */
+export function normSizedTrack(track, posePath, targetFov) {
+  if (!Array.isArray(track) || !Array.isArray(posePath) || posePath.length < 2 ||
+    !isNum(targetFov) || !(+targetFov > 0)) return track;
+  const pp = posePath;
+  const fovAt = (t) => {
+    if (t <= pp[0].t) return pp[0].fov;
+    if (t >= pp[pp.length - 1].t) return pp[pp.length - 1].fov;
+    let lo = 0, hi = pp.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pp[m].t <= t) lo = m; else hi = m; }
+    const a = pp[lo], b = pp[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+    return a.fov + (b.fov - a.fov) * u;
+  };
+  const tT = Math.tan((+targetFov * D2R) / 2);
+  let changed = false;
+  const out = track.map((p) => {
+    if (!isNum(p?.wpx) || !isNum(p?.t)) return p;
+    const f = fovAt(+p.t);
+    if (!isNum(f) || !(f > 0) || Math.abs(f - +targetFov) < 0.01) return p;
+    changed = true;
+    return { ...p, wpx: +p.wpx * Math.tan((f * D2R) / 2) / tT };
+  });
+  return changed ? out : track;
+}
+
 export function shapeWire(kind, aspect, opts) { // unit major dimension, centered at origin
   const C = [];
   const circ = (r, axis, off = 0, n = 40) => Array.from({ length: n + 1 }, (_, i) => {

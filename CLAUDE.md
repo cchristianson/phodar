@@ -906,7 +906,13 @@ terrain stay frozen and only the object moves. Build ladder:
    ends, fitted shape where none), and `shapeAt` normalises the target
    apparent width to a real sizeNat through the rotated shape's own
    projection. Two size marks ⇒ a smooth grow/shrink between them; N
-   marks ⇒ piecewise; same for attitude via SLERP. **The measure-step ghost
+   marks ⇒ piecewise; same for attitude via SLERP. **On a zooming clip the
+   wpx keyframes are normalized to ONE pixel scale first** (`normSizedTrack`,
+   shapes.js, pure + mathcheck-asserted): wpx is px at the keyframe's OWN
+   frame, and a real clip zoomed 9× — interpolating raw px and projecting
+   them through the marked frame's lens ballooned the world-view wire ~8×
+   at zoomed keyframes. eq = wpx·tan(fovOwn/2)/tan(fovTarget/2); flat-FOV
+   clips pass through unchanged. **The measure-step ghost
    at a track point is pinned by its APPARENT centre** (`pinApparentCenter`,
    shapes.js, pure + mathcheck-asserted): neither the 3D origin nor the
    silhouette-chord midpoint is the visual centre for asymmetric shapes (a

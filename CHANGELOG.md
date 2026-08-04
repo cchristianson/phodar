@@ -46,6 +46,18 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **World-view wireframe scaled wrong while scrubbing a zoomed clip** (field
+  report, Germany sighting): per-point size keyframes store the object's
+  width in PIXELS on their own frame — and on a zooming clip (this one swept
+  46°→5° FOV, 9.25×) the same angular size is ~9× more pixels zoomed in.
+  Playback and the world-locked export interpolated those raw pixels and
+  projected them through the marked frame's lens, so the 3D model ballooned
+  up to ~8× too big around zoomed-in keyframes. Sizes are now normalized to
+  one pixel scale through each keyframe's own solved FOV (angular size is
+  the invariant) before interpolating — in the dome, the export burn-in and
+  the measure-step ghosts alike. Tripod/fixed-lens clips are byte-identical.
+  Mathcheck-asserted, including a regression straight from the field clip's
+  numbers.
 - **Videos vanishing from the installed app while points survive** (field
   report: "the PWA goes stale — no video loading from memory even though
   track points and other data are there"): the sighting metadata lives in

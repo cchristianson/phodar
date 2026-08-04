@@ -40,7 +40,7 @@ import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./che
 import { DEEP_STARS } from "./math/starcatDeep.js";
 import { mediaPut, mediaGet, mediaDel, mediaClear, requestPersist } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
-import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt, pinApparentCenter } from "./shapes.js";
+import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt, pinApparentCenter, normSizedTrack } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
 import { STARS } from "./math/starcat.js";
 import phodarLogo from "./assets/phodar-logo.svg";
@@ -83,12 +83,18 @@ const blankMomentB = () => ({ t: "", az: "", el: "", pb: null, videoTime: null }
    target apparent WIDTH to a real sizeNat through the rotated shape's own
    projection — so a tumbling elongated object still hits the width set on that
    frame. Returns a shapeFit clone (or the original when nothing is keyframed). */
-const shapeAt = (shapeFit, track, t, markT) => {
+const shapeAt = (shapeFit, track, t, markT, norm) => {
   if (!shapeFit || !isNum(t)) return shapeFit;
   /* the fit's own projected width = the baseline apparent size at markT, so a
      single adjustment ramps from the fit instead of jumping the whole track */
   const wFit = (() => { const pr = shapeProjNat(shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
-  const s = sampleShapeAt(track, shapeFit, t, { markT, wFit });
+  /* norm = { posePath, targetFov }: on a ZOOMING clip each size keyframe's
+     wpx is px at its own frame's zoom — re-express them all at the scale of
+     the frame these px will be PROJECTED through (the marked frame), or the
+     wire balloons ~(fovTarget/fovOwn)× at zoomed keyframes. The baseline
+     wFit is already marked-frame px, so it needs no conversion. */
+  const trk = norm ? normSizedTrack(track, norm.posePath, norm.targetFov) : track;
+  const s = sampleShapeAt(trk, shapeFit, t, { markT, wFit });
   let sf = { ...shapeFit, rotM: s.rotM, roll: 0 };
   if (s.wpx != null) {
     const pr = shapeProjNat(sf);
@@ -2797,8 +2803,23 @@ function MediaMeasure({ src, update, wizard }) {
                          the baseline keyframe) — so an un-adjusted point shows the
                          value that ramps from the nearest adjustment/fit, not a
                          flat fitted size that jumps at the next keyframe */
-                      const smp = sampleShapeAt(src.track, src.shapeFit, p.t, { markT: isNum(src.A?.videoTime) ? +src.A.videoTime : null, wFit });
-                      const w = smp.wpx != null ? smp.wpx : wFit;
+                      /* ZOOMING clip: interpolate sizes at THIS point's own
+                         pixel scale — its ghost overlays its own frame's
+                         pixels, where px-per-degree differs from every other
+                         keyframe's. Keyframes normalize through the solved
+                         per-frame FOV; the fit baseline converts from the
+                         marked frame's scale. No solve ⇒ unchanged. */
+                      const mkT2 = isNum(src.A?.videoTime) ? +src.A.videoTime : null;
+                      const ppZ = Array.isArray(src.posePath) && src.posePath.length > 1 ? src.posePath : null;
+                      const fovR = ppZ ? posePathAt(ppZ, +p.t)?.fov : null;
+                      const trkZ = ppZ && isNum(fovR) ? normSizedTrack(src.track, ppZ, fovR) : src.track;
+                      let wFitZ = wFit;
+                      if (ppZ && isNum(fovR) && mkT2 != null) {
+                        const fM = posePathAt(ppZ, mkT2)?.fov;
+                        if (isNum(fM)) wFitZ = wFit * Math.tan((fM * D2R) / 2) / Math.tan((fovR * D2R) / 2);
+                      }
+                      const smp = sampleShapeAt(trkZ, src.shapeFit, p.t, { markT: mkT2, wFit: wFitZ });
+                      const w = smp.wpx != null ? smp.wpx : wFitZ;
                       const rot = (smp.rotM && smp.rotM.length === 9) ? smp.rotM : (src.shapeFit.rotM || I3);
                       let sfG = { ...src.shapeFit, cx: p.x, cy: p.y, rotM: rot, roll: 0 };
                       const pwG = (() => { const pr = shapeProjNat(sfG); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })();
@@ -5009,7 +5030,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
            static marked frame use its own time. So the model breathes and
            tumbles between keyframes instead of holding one fitted pose. */
         const wireT = playPose && isNum(playPose.t) ? +playPose.t : markT;
-        const sfNow = shapeAt(source.shapeFit, source.track, wireT, markT);
+        /* the wire's px are projected through pixDirMarked — normalize the
+           size keyframes to THAT frame's scale (same fov selection rule) */
+        const mkFovD = (Array.isArray(source?.posePath) && source.posePath.length > 1 && Math.abs(markT - alignT) > 0.05
+          ? posePathAt(source.posePath, markT)?.fov : null) || fovM;
+        const sfNow = shapeAt(source.shapeFit, source.track, wireT, markT, { posePath: source.posePath, targetFov: mkFovD });
         wire = shapeProjNat(sfNow).curves.map((c) => {
           const segs = []; let cur = [];
           for (const pt of c) { const q = PF(pt); if (q) cur.push(q); else if (cur.length > 1) { segs.push(cur); cur = []; } else cur = []; }
@@ -6355,7 +6380,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          marked at THIS frame's time (shapeAt), projected through the marked
          pose, then Rodrigues-rotated onto the tracked dir in drawFrame. */
       const wireDirsAt = (t) => wireBase
-        ? shapeProjNat(shapeAt(source.shapeFit, source.track, t, markT)).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
+        ? shapeProjNat(shapeAt(source.shapeFit, source.track, t, markT, { posePath: path, targetFov: mkP.fov })).curves.map((c) => c.map((pt) => pixToDirK(pt.x, pt.y, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0)))
         : null;
       const objD0 = wireBase ? pixToDirK(source.shapeFit.cx, source.shapeFit.cy, natW, natH, mkP.az, mkP.el, mkP.roll || 0, mkP.fov, mkP.k || 0) : null;
       /* --- every dome layer that is VISIBLE in the world view is burned into
