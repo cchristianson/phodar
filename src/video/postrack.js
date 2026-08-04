@@ -1038,46 +1038,6 @@ export function applyPoseFixes(path, fixes) {
    frame center; field report: a ~4° roll anchor visibly pulled the
    carefully-tracked object off its path). Without dims it falls back to the
    az/el delta approximation. */
-/* ⌖ OBJECT ANCHORS — the object-track sibling of applyPoseFixes. The user
-   scrubs to where the tracked outline wandered off the object (a bird latch,
-   blur, or a rotation-starved zoom span where camera motion was booked as
-   object motion), drags it back ON, and anchors it: fixes are ABSOLUTE world
-   directions [{t, az, el}]. Each anchor's delta vs the base track is exact at
-   its own time, blends linearly between anchors, and HOLDS beyond the
-   outermost — so one anchor inside a bad stretch heals it without disturbing
-   the good data, and a zero-delta "pin" bounds a correction region, exactly
-   the ⚓ Fix-frames semantics. Corrected samples are marked `h: 1` so reports
-   can say which stretches are witness-asserted rather than pixel-measured.
-   Applied LAST in the re-derivation (after pose fixes, smoothing and the
-   waypoint snap): the dome correction is the human's final word. Pure. */
-export function applyObjFixes(path, fixes) {
-  const fx = (fixes || []).filter((f) => f && Number.isFinite(+f.t) && Number.isFinite(+f.az) && Number.isFinite(+f.el))
-    .map((f) => ({ t: +f.t, az: +f.az, el: +f.el })).sort((a, b) => a.t - b.t);
-  if (!Array.isArray(path) || path.length < 2 || !fx.length) return path;
-  const wrap = (d) => ((d + 540) % 360) - 180;
-  const at = (t) => {
-    if (t <= path[0].t) return { az: +path[0].az, el: +path[0].el };
-    if (t >= path[path.length - 1].t) return { az: +path[path.length - 1].az, el: +path[path.length - 1].el };
-    let lo = 0, hi = path.length - 1;
-    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (path[m].t <= t) lo = m; else hi = m; }
-    const a = path[lo], b = path[hi], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
-    return { az: +a.az + wrap(+b.az - +a.az) * u, el: +a.el + (+b.el - +a.el) * u };
-  };
-  const deltas = fx.map((f) => { const b = at(f.t); return { t: f.t, dAz: wrap(f.az - b.az), dEl: f.el - b.el }; });
-  const dAt = (t) => {
-    if (t <= deltas[0].t) return deltas[0];
-    if (t >= deltas[deltas.length - 1].t) return deltas[deltas.length - 1];
-    let i = 0; while (i < deltas.length - 1 && deltas[i + 1].t < t) i++;
-    const a = deltas[i], b = deltas[i + 1], u = (t - a.t) / Math.max(1e-9, b.t - a.t);
-    return { dAz: a.dAz + (b.dAz - a.dAz) * u, dEl: a.dEl + (b.dEl - a.dEl) * u };
-  };
-  return path.map((p) => {
-    const d = dAt(+p.t);
-    if (Math.abs(d.dAz) < 1e-4 && Math.abs(d.dEl) < 1e-4) return p;
-    return { ...p, az: +((((+p.az + d.dAz) % 360) + 360) % 360).toFixed(3), el: +Math.max(-89, Math.min(89, +p.el + d.dEl)).toFixed(3), h: 1 };
-  });
-}
-
 export function applyDirFixes(dirs, basePath, fixes, opts) {
   if (!Array.isArray(dirs) || !dirs.length || !Array.isArray(fixes) || !fixes.length) return dirs;
   const fixed = applyPoseFixes(basePath, fixes);

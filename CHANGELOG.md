@@ -74,24 +74,6 @@ Notable changes to Phodar. Format loosely follows
   Germany field clip rates "fair — 39% masked". Pure + mathcheck-asserted
   (`trackQuality` in the math core).
 
-### Added
-- **⌖ Object anchors** — ⚓ Fix frames' sibling for the OBJECT track: when
-  the world lock is fine but the tracked outline wandered off the object (a
-  bird latch, blur, or a hard zoom where the solver couldn't separate camera
-  from object), open ⌖ on the playback row, scrub to the frame, drag the
-  outline back ONTO the object, and ⌖ Anchor. Anchors are absolute world
-  directions; corrections are exact at each anchor, blend between them and
-  hold past the ends — one anchor inside a bad stretch heals it without
-  touching the good data, and ⌖ Pin on an untouched frame bounds a
-  correction region. Fully non-destructive (re-derived from the raw solve,
-  composes with ⚓ anchors and the smoothing sliders; re-stabilizing clears
-  them, re-aligning the placement rotates them). Honest epistemics
-  throughout: corrected samples are flagged, and the report labels the
-  stretches "witness-asserted, not pixel-measured". Pure math
-  (`applyObjFixes`) mathcheck-asserted; the full UI flow (drag → pending →
-  anchor → persist → reload) verified in a real browser against the Germany
-  field session.
-
 ### Fixed
 - **Trajectory view: playhead highlight + dots toggle** (field ask): while
   scrubbing stabilized playback with ⊕ Trajectory open, the point nearest

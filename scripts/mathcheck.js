@@ -24,7 +24,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, applyObjFixes, snapDirsToAnchors } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, snapDirsToAnchors } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0, shapeProjNat, pinApparentCenter, normSizedTrack } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -2533,25 +2533,6 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(dExact[0].el, want.el, 1e-3, "dirFix exact: roll anchor exact (el)");
   const dApprox = applyDirFixes([{ t: 2, az: g0.az, el: g0.el, q: 1 }], rollBase, rollFix); // no dims → old shift
   approx(Math.abs(dApprox[0].el - want.el) > 0.3 ? 1 : 0, 1, 0, "dirFix exact: the az/el-shift approximation demonstrably misses a roll fix (regression guard)");
-
-  /* ⌖ OBJECT ANCHORS (applyObjFixes) — same delta-field semantics as the
-     pose anchors, applied to the OBJECT track itself: the user drags the
-     outline back onto the object where the tracker wandered. */
-  const obase = Array.from({ length: 9 }, (_, i) => ({ t: i, az: 200 + i, el: 30, q: 0.9 }));
-  let oo = applyObjFixes(obase, [{ t: 4, az: 206, el: 31.5 }]);
-  approx(oo[4].az, 206, 1e-6, "objFix: anchor frame lands exactly on the anchor (az)");
-  approx(oo[4].el, 31.5, 1e-6, "objFix: anchor elevation exact");
-  approx(oo[0].az, 202, 1e-6, "objFix: delta held before the first anchor");
-  approx(oo[8].az, 210, 1e-6, "objFix: delta held after the last anchor");
-  approx(oo[4].h === 1 ? 1 : 0, 1, 0, "objFix: corrected samples are marked witness-asserted (h)");
-  oo = applyObjFixes(obase, [{ t: 4, az: 206, el: 30 }, { t: 8, az: 208, el: 30 }]);
-  approx(oo[6].az, 207, 1e-6, "objFix: linear delta interpolation between anchors");
-  approx(oo[8].az, 208, 1e-6, "objFix: a zero-delta pin bounds the correction region");
-  approx(oo[8].h === undefined ? 1 : 0, 1, 0, "objFix: an untouched pin frame stays unmarked");
-  const owrap = [{ t: 0, az: 359.6, el: 10, q: 1 }, { t: 1, az: 359.8, el: 10, q: 1 }];
-  const ow = applyObjFixes(owrap, [{ t: 0, az: 0.6, el: 10 }]);
-  approx(ow[1].az, 0.8, 1e-6, "objFix: az delta is wrap-aware across north");
-  approx(applyObjFixes(obase, []) === obase ? 1 : 0, 1, 0, "objFix: no anchors ⇒ identical reference (byte-stable sessions)");
   /* waypoint snap: the hand-tapped track points are ground truth — the final
      track must pass exactly through them, with the matcher's detail between
      taps preserved (an off-track drift is corrected by an interpolated delta
