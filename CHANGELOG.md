@@ -63,8 +63,6 @@ Notable changes to Phodar. Format loosely follows
   lines and the implied numbers spelled out ("witness estimate — 394 ft →
   5.1 ft across · 225 ft above you"), plus a caption sentence. Verified by
   rendering the real report in a browser against the Germany field session.
-
-### Added (quality of life)
 - **🎥 Track-quality rating** (field ask): a camera-motion risk rating
   (excellent/good/fair/poor) rendered in the reporting surfaces — above the
   results screen's trajectory section and at the top of the report's video
