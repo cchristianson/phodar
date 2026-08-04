@@ -93,6 +93,12 @@ Notable changes to Phodar. Format loosely follows
   field session.
 
 ### Fixed
+- **Trajectory view: playhead highlight + dots toggle** (field ask): while
+  scrubbing stabilized playback with ⊕ Trajectory open, the point nearest
+  the playhead now lights up amber with a ring, so you can see where along
+  the path the clip is. And a ◆ shapes / ● dots toggle in the panel swaps
+  the 3D model drawn at every point for plain dots — 47 wireframes on a
+  dense path was unreadable.
 - **The phantom "sharp turn" during a zoom is now masked and named** (field
   report: "the sharp turn never happens in the video — it glides like a
   balloon"): the residual 4.4°/s peak sat exactly inside a 3.3× zoom-in

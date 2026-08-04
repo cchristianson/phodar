@@ -651,7 +651,7 @@ const HELP_SECTIONS = [
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Distance, size & the path", items: [
-        { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair." },
+        { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair. While scrubbing stabilized playback, the point nearest the playhead lights up amber so you can see where along the path the clip is; the ◆ shapes / ● dots toggle in the panel swaps the 3D model at every point for plain dots — much easier to read on a dense path." },
         { t: "🔄 Rotate (stills)", d: "In the ⊕ Trajectory tool on a photo, sets the object's ATTITUDE at the selected path point — ⟲ ⟳ tumble the fitted model, reset clears it. Set it at two or more points and the displayed model turns smoothly between them along the path, so a craft that rolled or pitched as it went is shown doing that rather than sliding along rigidly." },
         { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that). The distance you set is remembered as the witness's own estimate and drawn, with its implied size and altitude, on the report's size ⇄ distance chart." },
         { t: "📍 Set distance on a map", d: "In the size or compare tool, opens a satellite map centred near where the photo was taken, with your camera's field-of-view wedge and the object's sight-line drawn on it. Tap (or drag the ✦) where the object was overhead; the straight-line distance from the camera — carried up the sight-line to a true line-of-sight range — sets the assumed distance. Often easier than guessing on the slider: you place it over the ridge/field/town it was above." },
@@ -3684,6 +3684,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
   const [trajOn, setTrajOn] = useState(false);  // trajectory drop-point tools — its own mode
+  const [trajDots, setTrajDots] = useState(false); // trajectory points as plain dots instead of 3D wireframes (47 slabs is unreadable — field)
   /* clean-viewing collapses (field ask): tuck the header layer chips and the
      bottom control stack away. The bottom ACTION row and the playback
      scrubber always persist — never strand the user without navigation or
@@ -7419,17 +7420,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 if (!trajOn) return ps.map((p, i) => (p && !dirs[i].virt ? (
                   <div key={"fx" + i} style={{ position: "absolute", left: (p[0] * 100) + "%", top: (p[1] * 100) + "%", transform: "translate(-50%,-50%)", width: 6, height: 6, borderRadius: "50%", background: "var(--track)", opacity: 0.85, pointerEvents: "none" }} />
                 ) : null));
+                /* the point nearest the PLAYBACK scrubber position lights up,
+                   so scrubbing shows where along the path the clip is (field ask) */
+                const curT = playPose && isNum(playPose.t) ? +playPose.t : null;
+                const nearIdx = curT != null && sortedTrack.length
+                  ? sortedTrack.reduce((bi, q, qi) => (Math.abs(+q.t - curT) < Math.abs(+sortedTrack[bi].t - curT) ? qi : bi), 0) : null;
                 let n = -1;
                 return ps.map((p, i) => {
                   if (dirs[i].virt) return null;
                   n++;
                   if (!p) return null;
-                  const idx = n, sel = selPt === idx;
+                  const idx = n, sel = selPt === idx, near = nearIdx != null && idx === nearIdx;
                   /* the trajectory is laid down on the MEASURE step now (for both
                      stills and video), so the world view is READ-ONLY — points
                      are shown for reference, never tappable here. */
                   const tappable = false;
-                  const col = sel ? "var(--amber)" : "var(--track)";
+                  const col = sel || near ? "var(--amber)" : "var(--track)";
                   /* TRUE apparent size: angular size → screen px via the LIVE FOV,
                      so the shape scales with the sky as you zoom in/out (a distant
                      object really is tiny — zoom in to see it; the rotation loupe
@@ -7452,8 +7458,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       {/* shape centered exactly on the point so the path line runs
                           THROUGH it; the number floats below without moving that center */}
                       <div style={{ position: "relative", filter: "drop-shadow(0 1px 2px rgba(0,0,0,.85))" }}>
-                        <TrackObj sf={sfI} px={dispPx} color={col} />
-                        <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", fontSize: 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1, whiteSpace: "nowrap" }}>{idx + 1}</div>
+                        {near && (
+                          <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", width: Math.max((trajDots ? 8 : dispPx) + 14, 24), height: Math.max((trajDots ? 8 : dispPx) + 14, 24), borderRadius: "50%", border: "1.5px solid var(--amber)", opacity: 0.95, pointerEvents: "none" }} />
+                        )}
+                        {trajDots
+                          ? <div style={{ width: near ? 9 : 7, height: near ? 9 : 7, borderRadius: "50%", background: col, margin: "0 auto" }} />
+                          : <TrackObj sf={sfI} px={dispPx} color={col} />}
+                        <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", fontSize: near ? 10.5 : 9, fontFamily: "var(--mono)", fontWeight: 800, color: col, textShadow: "0 1px 2px rgba(0,0,0,.8)", marginTop: 1, whiteSpace: "nowrap" }}>{idx + 1}</div>
                       </div>
                     </div>
                   );
@@ -8185,6 +8196,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             {sortedTrack.length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--track)" }}>t₀</span>
+                <button className="btn sm" style={{ padding: "3px 8px", fontSize: 10, ...(trajDots ? { borderColor: "var(--track)", color: "var(--track)" } : {}) }}
+                  title="Draw the trajectory points as plain dots instead of the 3D model at each point — a dense path is far easier to read as dots"
+                  onClick={() => setTrajDots((v) => !v)}>{trajDots ? "● dots" : "◆ shapes"}</button>
                 <span style={{ fontSize: 10, color: "var(--dim)", fontStyle: "italic" }}>{source?.mediaKind === "video" ? "timing set by the video frames" : "timing set on the measure step"}</span>
                 <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: "var(--track)" }}>
                   total {trajTotal.toFixed(1)} s · {sortedTrack.length} pt{sortedTrack.length > 1 ? "s" : ""}
