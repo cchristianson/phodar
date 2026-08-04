@@ -75,7 +75,25 @@ Notable changes to Phodar. Format loosely follows
   (`trackQuality` in the math core).
 
 ### Added
-- **⌖ Object anchors** — ⚓ Fix frames' sibling for the OBJECT track: when
+- **⌖ Trajectory brush (v2 — replaces the drag-anchor UI)** (field
+  redesign: "the point is to focus on the trajectory and straighten it —
+  paint over the points and normalize them to the gesture"; v1's
+  drag-one-point also needed a scrubbed frame before it armed, which read
+  as "can't move the points"): in the world view, ⌖ now lets you PAINT a
+  stroke along where the path should run — tracked samples under the brush
+  normalize onto it, with az×cos(el) distances, time order preserved by an
+  isotonic clamp (a hairpin stroke can't reverse time), and feathered edges
+  so the painted stretch joins the untouched track without a kink. Brush
+  radius follows zoom (pinch in for finer strokes); the dense track draws
+  as the paint surface with the live stroke at true brush width; ↶ undoes a
+  stroke, ✕⌖ clears them; a stroke that misses the track says so instead of
+  silently doing nothing. Strokes persist and re-apply non-destructively
+  (compose with ⚓ anchors + smoothing; cleared on re-stabilize; rotated on
+  re-align), corrected samples are flagged and the report labels those
+  stretches "witness-asserted, not pixel-measured". Pure math
+  mathcheck-asserted; the paint→persist→undo flow verified in a real
+  browser on the Germany session.
+- **⌖ Object anchors (v1, superseded above)** — ⚓ Fix frames' sibling for the OBJECT track: when
   the world lock is fine but the tracked outline wandered off the object (a
   bird latch, blur, or a hard zoom where the solver couldn't separate camera
   from object), open ⌖ on the playback row, scrub to the frame, drag the

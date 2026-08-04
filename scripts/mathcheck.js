@@ -24,7 +24,7 @@ import { parseFireballs } from "../src/checks/fireballs.js";
 import { parsePeaks, bearingDeg, distM } from "../src/checks/peaks.js";
 import { heightMeters, parseOverpassBuildings, buildingHeightSampler, buildingBoxes, boxesPeak, convexHull2, segInsideHull, visibleSegs } from "../src/buildings.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "../src/checks/platesolve.js";
-import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, applyObjFixes, snapDirsToAnchors } from "../src/video/postrack.js";
+import { detectBgFeatures, trackFeatures, poseFromTracks, initTracker, stepTracker, stepObject, snapToObject, pinFind, pinStep, smearDrift, despikePath, smoothPath, smoothObjPath, smoothPathAt, smoothObjPathAt, posePathAt, registerToRef, grayDown, applyPoseFixes, applyDirFixes, applyObjFixes, applyObjBrush, snapDirsToAnchors } from "../src/video/postrack.js";
 import { rotZ3, rotY3, mul3, I3, quatFromMat3, mat3FromQuat, slerp3, sampleShapeAt, shapeWire, SHAPES, SHAPE_R0, shapeProjNat, pinApparentCenter, normSizedTrack } from "../src/shapes.js";
 import { muxMp4 } from "../src/video/mp4mux.js";
 import { cloudBaseAGL, cloudRangeBound } from "../src/checks/weather.js";
@@ -2552,6 +2552,42 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const ow = applyObjFixes(owrap, [{ t: 0, az: 0.6, el: 10 }]);
   approx(ow[1].az, 0.8, 1e-6, "objFix: az delta is wrap-aware across north");
   approx(applyObjFixes(obase, []) === obase ? 1 : 0, 1, 0, "objFix: no anchors ⇒ identical reference (byte-stable sessions)");
+
+  /* ⌖ TRAJECTORY BRUSH (applyObjBrush) — paint a stroke over the path and
+     the samples under the brush NORMALIZE onto it: a wobbly stretch of a
+     truly-straight glide straightens, the untouched ends stay put, edges
+     feather (no kink), and time order survives even a hairpin stroke. */
+  {
+    let seed2 = 777;
+    const rnd2 = () => { seed2 = (seed2 * 1103515245 + 12345) & 0x7fffffff; return seed2 / 0x7fffffff - 0.5; };
+    // truth: straight glide az 350→10 at el 40; wobble ±0.45° in the middle third
+    const bpath = Array.from({ length: 41 }, (_, i) => {
+      const u = i / 40, az = (350 + 20 * u) % 360;
+      const wob = i >= 14 && i <= 27 ? 0.45 * Math.sin(i * 1.7) + 0.2 * rnd2() : 0;
+      return { t: i * 0.5, az, el: 40 + wob, q: 0.9 };
+    });
+    // stroke: the straight truth line painted over the middle (with margin)
+    const stroke = { pts: Array.from({ length: 15 }, (_, i) => ({ az: (350 + 20 * ((10 + i) / 40)) % 360, el: 40 }), ), r: 1.2 };
+    const b1 = applyObjBrush(bpath, stroke);
+    const wobBefore = Math.max(...bpath.slice(14, 28).map((q) => Math.abs(q.el - 40)));
+    const wobAfter = Math.max(...b1.slice(16, 26).map((q) => Math.abs(q.el - 40)));
+    approx(wobBefore > 0.3 ? 1 : 0, 1, 0, "objBrush precondition: the painted stretch really wobbled");
+    approx(wobAfter < 0.15 ? 1 : 0, 1, 0, `objBrush: painted stretch normalizes onto the stroke (wobble ${wobBefore.toFixed(2)}°→${wobAfter.toFixed(3)}°; feathered edges keep a small residual by design)`);
+    approx(b1[0] === bpath[0] && b1[40] === bpath[40] ? 1 : 0, 1, 0, "objBrush: samples outside the brush are untouched (same references)");
+    approx(b1.slice(16, 26).every((q) => q.h === 1) ? 1 : 0, 1, 0, "objBrush: corrected samples are marked witness-asserted (h)");
+    // feather: the first painted sample moves less than a mid-stroke one
+    const moved = (i) => Math.hypot(((b1[i].az - bpath[i].az + 540) % 360) - 180, b1[i].el - bpath[i].el);
+    const firstIn = b1.findIndex((q, i) => q !== bpath[i]);
+    approx(moved(firstIn) <= Math.max(...b1.map((q, i) => moved(i))) + 1e-9 && moved(firstIn) < 0.45 ? 1 : 0, 1, 0, "objBrush: edge samples feather in (no kink at the run boundary)");
+    // time order survives a hairpin: paint a stroke that doubles back
+    const hair = { pts: [{ az: 355, el: 40 }, { az: 358, el: 40 }, { az: 356, el: 40.3 }], r: 1.2 };
+    const b2 = applyObjBrush(bpath, hair);
+    let mono = true;
+    for (let i = 1; i < b2.length; i++) if (b2[i].t <= b2[i - 1].t) mono = false;
+    approx(mono ? 1 : 0, 1, 0, "objBrush: sample times stay strictly ordered (a hairpin stroke can't reverse time)");
+    // a stroke nowhere near the path is a no-op with the SAME reference
+    approx(applyObjBrush(bpath, { pts: [{ az: 100, el: 10 }, { az: 105, el: 10 }], r: 1 }) === bpath ? 1 : 0, 1, 0, "objBrush: a stray stroke far from the track changes nothing (same reference)");
+  }
   /* waypoint snap: the hand-tapped track points are ground truth — the final
      track must pass exactly through them, with the matcher's detail between
      taps preserved (an off-track drift is corrected by an interpolated delta

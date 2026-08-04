@@ -1078,6 +1078,86 @@ export function applyObjFixes(path, fixes) {
   });
 }
 
+/* ⌖ TRAJECTORY BRUSH — paint a stroke over the tracked path in the world
+   view and the samples under the brush NORMALIZE onto it (field design: the
+   camera-motion error bends the WHOLE track a little, so the fix is a shape
+   prior over a stretch, not a point move). stroke = { pts: [{az,el}…], r }
+   (r = brush radius, degrees). Mechanics, each one load-bearing:
+     · every path sample within r of the stroke projects to its NEAREST point
+       on the (finely resampled) stroke — az distances scaled by cos(el);
+     · within each contiguous painted run the projections' arc-length is
+       forced MONOTONE (isotonic clamp in the run's dominant direction) — a
+       nearest-point projection alone can reverse time where a stroke bends
+       back on itself, and a time-reversed track is fabricated data;
+     · the pull FEATHERS at the run's edges (smoothstep over ~15% of the run,
+       ≥2 samples) so the painted stretch joins the untouched track without a
+       kink; full strength in the middle — the gesture asserts "the path goes
+       HERE";
+     · corrected samples are marked h:1 (witness-asserted, reported as such).
+   Strokes are stored on the source and re-applied in rederivePaths, so they
+   compose non-destructively with pose fixes and smoothing. Pure. */
+export function applyObjBrush(path, stroke) {
+  if (!Array.isArray(path) || path.length < 2 || !stroke || !Array.isArray(stroke.pts) || stroke.pts.length < 2 || !(+stroke.r > 0)) return path;
+  const D2Rb = Math.PI / 180, wrap = (d) => ((d + 540) % 360) - 180;
+  const r = +stroke.r;
+  /* resample the stroke to steps of r/4 so nearest-point search is smooth */
+  const raw = stroke.pts.filter((p) => Number.isFinite(+p.az) && Number.isFinite(+p.el)).map((p) => ({ az: +p.az, el: +p.el }));
+  if (raw.length < 2) return path;
+  const step = Math.max(0.02, r / 4);
+  const S = [{ az: raw[0].az, el: raw[0].el, s: 0 }];
+  for (let i = 1; i < raw.length; i++) {
+    const a = raw[i - 1], b = raw[i];
+    const c = Math.cos(((a.el + b.el) / 2) * D2Rb) || 1e-3;
+    const dAz = wrap(b.az - a.az), len = Math.hypot(dAz * c, b.el - a.el);
+    const n = Math.max(1, Math.ceil(len / step));
+    for (let j = 1; j <= n; j++) {
+      const u = j / n;
+      S.push({ az: (((a.az + dAz * u) % 360) + 360) % 360, el: a.el + (b.el - a.el) * u, s: S[S.length - 1].s + len / n });
+    }
+  }
+  /* nearest stroke point per path sample */
+  const near = path.map((p) => {
+    let bi = -1, bd = Infinity;
+    for (let i = 0; i < S.length; i++) {
+      const c = Math.cos(((+p.el + S[i].el) / 2) * D2Rb) || 1e-3;
+      const d = Math.hypot(wrap(S[i].az - +p.az) * c, S[i].el - +p.el);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return { bi, bd };
+  });
+  const out = path.slice();
+  let changed = false;
+  let i0 = 0;
+  while (i0 < path.length) {
+    if (near[i0].bd > r) { i0++; continue; }
+    let i1 = i0; while (i1 + 1 < path.length && near[i1 + 1].bd <= r) i1++;
+    const run = [];
+    for (let i = i0; i <= i1; i++) run.push(near[i].bi);
+    /* isotonic clamp in the run's dominant direction along the stroke */
+    const fwd = S[run[run.length - 1]].s >= S[run[0]].s;
+    const cl = run.slice();
+    for (let i = 1; i < cl.length; i++) cl[i] = fwd ? Math.max(cl[i], cl[i - 1]) : Math.min(cl[i], cl[i - 1]);
+    const k = Math.max(2, Math.ceil((i1 - i0 + 1) * 0.15));
+    for (let i = i0; i <= i1; i++) {
+      const edge = Math.min(i - i0 + 1, i1 - i + 1);
+      const u = Math.min(1, edge / k);
+      const w = u * u * (3 - 2 * u);                      // smoothstep feather
+      if (w < 0.02) continue;
+      const tgt = S[cl[i - i0]];
+      const p = out[i];
+      changed = true;
+      out[i] = {
+        ...p,
+        az: +((((+p.az + wrap(tgt.az - +p.az) * w) % 360) + 360) % 360).toFixed(3),
+        el: +Math.max(-89, Math.min(89, +p.el + (tgt.el - +p.el) * w)).toFixed(3),
+        h: 1,
+      };
+    }
+    i0 = i1 + 1;
+  }
+  return changed ? out : path;   // same reference when untouched — callers detect a stray stroke by identity
+}
+
 export function applyDirFixes(dirs, basePath, fixes, opts) {
   if (!Array.isArray(dirs) || !dirs.length || !Array.isArray(fixes) || !fixes.length) return dirs;
   const fixed = applyPoseFixes(basePath, fixes);
