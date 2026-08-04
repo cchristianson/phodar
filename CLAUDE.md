@@ -962,30 +962,6 @@ terrain stay frozen and only the object moves. Build ladder:
    slides live under your finger. Re-stabilizing clears poseFixes
    (corrections of the old solve); re-aligning the placement rotates
    them (reanchorPose), the PinMap bearing ray yaws them.
-   **⌖ TRAJECTORY BRUSH (applyObjBrush, postrack, pure + mathcheck-asserted)**
-   — paint a stroke over the tracked path in the world view and the samples
-   under the brush NORMALIZE onto it. v2 of this tool, and the field lesson
-   matters: v1 was drag-one-point-per-frame anchors (applyObjFixes — kept,
-   pure + asserted, still applied in rederivePaths for old data), which
-   required a scrubbed playback frame before the drag armed (read as "can't
-   move the points") and missed the intent — camera-motion error bends the
-   WHOLE track a little, so the correction is a SHAPE painted over a
-   stretch. Mechanics (each load-bearing): samples within `r` project to the
-   nearest point of the finely-resampled stroke (az × cos el); projections
-   are isotonic-clamped along stroke arc-length so a hairpin stroke can't
-   reverse time; the pull FEATHERS (smoothstep, ~15% of the run) so painted
-   joins unpainted without a kink; corrected samples carry `h:1` and the
-   report labels the stretches witness-asserted. Strokes persist as
-   `source.objBrush` and re-apply LAST in rederivePaths (after objFixes),
-   same lifecycle as poseFixes (cleared by re-stabilize/clearStab/
-   keep-ingest, rotated on re-align). applyObjBrush returns the SAME
-   reference when no sample is in radius — commitBrush uses identity to
-   flash "stroke didn't reach the track" instead of silently dropping a
-   stray gesture. UI: ⌖ on the playback row (no playback frame needed), the
-   dense track drawn as the paint surface, live stroke at true brush width
-   (r = fovH·0.045, floored 0.35° — pinch-zoom for finer), ↶ undo / ✕⌖
-   clear, stroke in a ref with rAF redraw (invariant #7), second finger
-   cancels. Verified in-browser on the Germany clip.
    **⌖ OBJECT ANCHORS (applyObjFixes, postrack, pure + mathcheck-asserted)**
    — ⚓'s sibling for the object track: absolute {t,az,el} anchors in
    `source.objFixes`, exact at anchors / blended between / held beyond,
