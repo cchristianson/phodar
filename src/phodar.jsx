@@ -11277,21 +11277,41 @@ async function reportPlotSvg(fix, traj) {
 /* speed + felt-load strip chart for the report */
 function reportTrajSvg(k) {
   if (!k?.segs?.length) return "";
-  const W = 560, H = 220, L = 46, Rm = 46, T = 16, B = 30;
+  /* full labeled grid (field ask): nice-step time ticks, speed ticks on the
+     LEFT axis, g-load ticks on the RIGHT, peaks flagged at their moment —
+     so the strip reads as a chart, not a sparkline */
+  const W = 680, H = 240, L = 58, Rm = 44, T = 20, B = 34;
   const t0 = k.segs[0].t, t1 = k.segs[k.segs.length - 1].t || t0 + 1;
   const vMax = Math.max(...k.segs.map((s) => s.speed)) * 1.15 || 1;
   const gMax = Math.max(1.5, ...(k.acc || []).map((a) => a.load)) * 1.15;
   const X = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - Rm);
   const Yv = (v) => T + (1 - v / vMax) * (H - T - B);
   const Yg = (gg) => T + (1 - gg / gMax) * (H - T - B);
+  const nice = (span, target) => { const p = Math.pow(10, Math.floor(Math.log10(span / target))); for (const mm of [1, 2, 5, 10]) if (mm * p * target >= span) return mm * p; return 10 * p; };
+  const xStep = nice(Math.max(t1 - t0, 0.5), 7), vStep = nice(vMax, 5), gStep = nice(gMax, 3);
+  let grid = "";
+  for (let t = Math.ceil(t0 / xStep) * xStep; t <= t1 + 1e-9; t += xStep)
+    grid += `<line x1="${X(t).toFixed(1)}" y1="${T}" x2="${X(t).toFixed(1)}" y2="${H - B}" stroke="#ececec"/><text x="${X(t).toFixed(1)}" y="${H - B + 14}" font-size="9.5" fill="#777" text-anchor="middle">${+t.toFixed(1)}</text>`;
+  for (let v = vStep; v <= vMax + 1e-9; v += vStep)
+    grid += `<line x1="${L}" y1="${Yv(v).toFixed(1)}" x2="${W - Rm}" y2="${Yv(v).toFixed(1)}" stroke="#ececec"/><text x="${L - 5}" y="${(Yv(v) + 3).toFixed(1)}" font-size="9.5" fill="#0e7d6f" text-anchor="end">${e2(fmtSpeedShort(v))}</text>`;
+  const lodTicks = (k.acc || []).length ? Array.from({ length: Math.floor((gMax - 1e-9) / gStep) }, (_, i) => (i + 1) * gStep)
+    .map((gg) => `<text x="${W - Rm + 5}" y="${(Yg(gg) + 3).toFixed(1)}" font-size="9.5" fill="#C77B14">${+gg.toFixed(1)} g</text>`).join("") : "";
   const spd = k.segs.map((s) => `${X(s.t).toFixed(1)},${Yv(s.speed).toFixed(1)}`).join(" ");
   const lod = (k.acc || []).map((a) => `${X(a.t).toFixed(1)},${Yg(a.load).toFixed(1)}`).join(" ");
+  const pkV = k.segs.reduce((b, s) => (s.speed > b.speed ? s : b), k.segs[0]);
+  const pkVnear = X(pkV.t) > L + (W - L - Rm) * 0.68;
+  const pkVm = `<circle cx="${X(pkV.t).toFixed(1)}" cy="${Yv(pkV.speed).toFixed(1)}" r="3.5" fill="#0e7d6f"/><text x="${(pkVnear ? X(pkV.t) - 6 : X(pkV.t) + 6).toFixed(1)}" y="${Math.max(T + 9, Yv(pkV.speed) - 6).toFixed(1)}" font-size="10" font-weight="700" fill="#0e7d6f" text-anchor="${pkVnear ? "end" : "start"}">peak ${e2(fmtSpeedShort(pkV.speed))} @ ${pkV.t.toFixed(1)} s</text>`;
+  const pkG = (k.acc || []).length ? (k.acc || []).reduce((b, a) => (a.load > b.load ? a : b), k.acc[0]) : null;
+  const pkGm = pkG ? `<circle cx="${X(pkG.t).toFixed(1)}" cy="${Yg(pkG.load).toFixed(1)}" r="3" fill="#C77B14"/>` : "";
   return `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
+${grid}${lodTicks}
+<line x1="${L}" y1="${H - B}" x2="${W - Rm}" y2="${H - B}" stroke="#bbb"/><line x1="${L}" y1="${T}" x2="${L}" y2="${H - B}" stroke="#bbb"/>
 <polyline points="${spd}" fill="none" stroke="#0e7d6f" stroke-width="2.2"/>
 ${lod ? `<polyline points="${lod}" fill="none" stroke="#C77B14" stroke-width="2" stroke-dasharray="5 4"/>` : ""}
-<text x="${L}" y="${T - 3}" font-size="10" fill="#0e7d6f">speed (peak ${fmtSpeedShort(k.peakSpeed)})</text>
-${lod ? `<text x="${W - Rm}" y="${T - 3}" font-size="10" fill="#C77B14" text-anchor="end">felt load (peak ${k.peakLoad?.toFixed(1)} g, dashed)</text>` : ""}
-<text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">${(t1 - t0).toFixed(1)} s</text>
+${pkVm}${pkGm}
+<text x="${L}" y="${T - 6}" font-size="10" fill="#0e7d6f">speed</text>
+${lod ? `<text x="${W - Rm}" y="${T - 6}" font-size="10" fill="#C77B14" text-anchor="end">felt load (peak ${k.peakLoad?.toFixed(1)} g, dashed)</text>` : ""}
+<text x="${(L + (W - L - Rm) / 2).toFixed(0)}" y="${H - 5}" font-size="9.5" fill="#888" text-anchor="middle">time (s)</text>
 </svg>`;
 }
 
@@ -12067,28 +12087,49 @@ ${momStrip}`;
           const Po = [(+s.lon - fix.ref.lon) * 111320 * Math.cos(fix.ref.lat * D2R), (+s.lat - fix.ref.lat) * 111320, (isNum(s.alt) ? +s.alt : 0) - fix.ref.alt];
           fixDist = Math.hypot(fix.solA.X[0] - Po[0], fix.solA.X[1] - Po[1], fix.solA.X[2] - Po[2]);
         }
-        /* candidate distance ladder (+ the fix distance if we have one) */
+        /* candidate distance ladder (+ the fix distance if we have one, + the
+           WITNESS'S OWN estimate from the sky view's 📏 tool as an emphasized
+           row — the row they actually believe, slotted in time order) */
         const ladder = [100, 300, 1000, 3000, 10000];
-        const dists = fixDist ? [fixDist] : ladder;
+        const aDw = !fixDist && isNum(s.assumedD) && +s.assumedD > 0 ? +s.assumedD : null;
+        const dists = fixDist ? [fixDist] : (aDw != null ? [...new Set([...ladder, aDw])].sort((a, b) => a - b) : ladder);
         const distRows = dists.map((D) => {
           const a = vk.atDistance(D);
           if (!a) return "";
-          return `<tr${fixDist ? ' style="background:#eef7ff"' : ""}><td>${fmtLenShort(D)}${fixDist ? " <b>(triangulated)</b>" : ""}</td><td>${a.sizeM != null ? fmtLenShort(a.sizeM) : "<span class='cap'>size not marked</span>"}</td><td>${spd(a.avgSpeed)}</td><td>${spd(a.peakSpeed)}</td><td>${fmtLenShort(a.path)}</td></tr>`;
+          const isW = aDw != null && Math.abs(D - aDw) < 0.5;
+          const sty = fixDist ? ' style="background:#eef7ff"' : isW ? ' style="background:#fdf1dc"' : "";
+          const tag = fixDist ? " <b>(triangulated)</b>" : isW ? " <b style=\"color:#C77B14\">(witness estimate)</b>" : "";
+          const bold = (x) => isW ? `<b>${x}</b>` : x;
+          return `<tr${sty}><td>${bold(fmtLenShort(D))}${tag}</td><td>${a.sizeM != null ? bold(fmtLenShort(a.sizeM)) : "<span class='cap'>size not marked</span>"}</td><td>${bold(spd(a.avgSpeed))}</td><td>${bold(spd(a.peakSpeed))}</td><td>${bold(fmtLenShort(a.path))}</td></tr>`;
         }).join("");
-        /* angular-rate mini plot (ω vs t), self-contained SVG */
+        /* angular-rate plot (ω vs t), self-contained SVG — full labeled grid
+           (field ask: "make the charts useful"): nice-step time + rate ticks,
+           the peak flagged at its moment, the average as a dashed line. */
         const rateSvg = (() => {
-          const W = 480, H = 120, m = 26;
+          const W = 680, H = 200, L = 44, Rm = 12, T = 14, B = 30;
           const ts = vk.rate.map((r) => r.t), ws = vk.rate.map((r) => r.omega);
-          const t0 = ts[0], t1 = ts[ts.length - 1], wMax = Math.max(...ws, 0.1);
-          const X = (t) => m + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (W - m - 8);
-          const Y = (w) => H - m - (w / wMax) * (H - m - 10);
+          const t0 = ts[0], t1 = ts[ts.length - 1], wMax = Math.max(...ws, 0.1) * 1.06;
+          const X = (t) => L + (t1 > t0 ? (t - t0) / (t1 - t0) : 0) * (W - L - Rm);
+          const Y = (w) => H - B - (w / wMax) * (H - T - B);
+          const nice = (span, target) => { const p = Math.pow(10, Math.floor(Math.log10(span / target))); for (const mm of [1, 2, 5, 10]) if (mm * p * target >= span) return mm * p; return 10 * p; };
+          const xStep = nice(Math.max(t1 - t0, 0.5), 7), yStep = nice(wMax, 5);
+          let grid = "";
+          for (let t = Math.ceil(t0 / xStep) * xStep; t <= t1 + 1e-9; t += xStep)
+            grid += `<line x1="${X(t).toFixed(1)}" y1="${T}" x2="${X(t).toFixed(1)}" y2="${H - B}" stroke="#ececec"/><text x="${X(t).toFixed(1)}" y="${H - B + 14}" font-size="9.5" fill="#777" text-anchor="middle">${+t.toFixed(1)}</text>`;
+          for (let w2 = yStep; w2 <= wMax + 1e-9; w2 += yStep)
+            grid += `<line x1="${L}" y1="${Y(w2).toFixed(1)}" x2="${W - Rm}" y2="${Y(w2).toFixed(1)}" stroke="#ececec"/><text x="${L - 5}" y="${(Y(w2) + 3).toFixed(1)}" font-size="9.5" fill="#777" text-anchor="end">${+w2.toFixed(2)}</text>`;
           const pts = vk.rate.map((r) => `${X(r.t).toFixed(1)},${Y(r.omega).toFixed(1)}`).join(" ");
+          const pk = vk.rate.reduce((b, r) => (r.omega > b.omega ? r : b), vk.rate[0]);
+          const pkNear = X(pk.t) > L + (W - L - Rm) * 0.7;
+          const avg = `<line x1="${L}" y1="${Y(vk.avgOmega).toFixed(1)}" x2="${W - Rm}" y2="${Y(vk.avgOmega).toFixed(1)}" stroke="#0e7d6f" stroke-dasharray="5 4" stroke-width="1.2"/><text x="${W - Rm - 3}" y="${(Y(vk.avgOmega) - 4).toFixed(1)}" font-size="9.5" fill="#0e7d6f" text-anchor="end">avg ${vk.avgOmega.toFixed(2)}°/s</text>`;
+          const peak = `<circle cx="${X(pk.t).toFixed(1)}" cy="${Y(pk.omega).toFixed(1)}" r="3.5" fill="#1188aa"/><text x="${(pkNear ? X(pk.t) - 6 : X(pk.t) + 6).toFixed(1)}" y="${Math.max(T + 9, Y(pk.omega) - 6).toFixed(1)}" font-size="10" font-weight="700" fill="#1188aa" text-anchor="${pkNear ? "end" : "start"}">peak ${pk.omega.toFixed(1)}°/s @ ${pk.t.toFixed(1)} s</text>`;
           return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto;border:1px solid #e2e2e2;border-radius:6px;background:#fff">
-<line x1="${m}" y1="${H - m}" x2="${W - 8}" y2="${H - m}" stroke="#bbb"/><line x1="${m}" y1="10" x2="${m}" y2="${H - m}" stroke="#bbb"/>
+${grid}
+<line x1="${L}" y1="${H - B}" x2="${W - Rm}" y2="${H - B}" stroke="#bbb"/><line x1="${L}" y1="${T}" x2="${L}" y2="${H - B}" stroke="#bbb"/>
 <polyline fill="none" stroke="#1188aa" stroke-width="1.8" points="${pts}"/>
-<text x="${m}" y="9" fill="#666" font-size="10">${wMax.toFixed(1)}°/s</text>
-<text x="${W - 8}" y="${H - 9}" font-size="10" fill="#666" text-anchor="end">${(t1 - t0).toFixed(1)} s</text>
-<text x="4" y="${(H) / 2}" font-size="10" fill="#666" transform="rotate(-90 10 ${H / 2})">angular rate</text></svg>`;
+${avg}${peak}
+<text x="${(L + (W - L - Rm) / 2).toFixed(0)}" y="${H - 4}" font-size="9.5" fill="#888" text-anchor="middle">time into clip (s)</text>
+<text x="11" y="${(H / 2).toFixed(0)}" font-size="9.5" fill="#888" transform="rotate(-90 11 ${(H / 2).toFixed(0)})" text-anchor="middle">angular rate (°/s)</text></svg>`;
         })();
         // keyframes: evenly spaced across the tracked span + the marked frame
         const span = vk.samples;
@@ -12112,7 +12153,7 @@ ${rateSvg}
 ${isNum(s.trim?.t0) && isNum(s.trim?.t1) ? `<p class="cap" style="margin-top:6px">Analysed span: <b>${(+s.trim.t0).toFixed(2)}–${(+s.trim.t1).toFixed(2)} s</b> of the clip — the witness trimmed the ends, so the figures above describe that span only. The original recording is unaltered.</p>` : ""}
 <p class="cap" style="margin-top:8px">Angular position &amp; rate are measured directly from the world-locked track — no distance needed. Linear size and speed below follow only once a distance is assumed${fixDist ? " (here fixed by triangulation)" : ""}:</p>
 <table><tr><th>Assumed distance</th><th>True size</th><th>Avg speed</th><th>Peak speed</th><th>Path length</th></tr>${distRows}</table>
-${fixDist ? "" : `<p class="cap">Single viewpoint — distance is unknown, so the row you believe fixes everything else. A second observer's video triangulates the true distance and collapses this to one row.</p>`}
+${fixDist ? "" : `<p class="cap">Single viewpoint — distance is unknown, so the row you believe fixes everything else.${(isNum(s.assumedD) && +s.assumedD > 0) ? ` <b>The highlighted row is the witness's own distance estimate</b> (set with 📏 in the sky view).` : ""} A second observer's video triangulates the true distance and collapses this to one row.</p>`}
 ${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tracked object marked (${s.shapeFit ? "shape colour" : "red"} reticle) at sampled moments:</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">${kfCards}</div>` : ""}`);
       }
       if (blocks.length) videoHtml = `<h2>Video analysis</h2>${blocks.join('<hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>')}`;

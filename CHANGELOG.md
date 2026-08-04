@@ -44,6 +44,16 @@ Notable changes to Phodar. Format loosely follows
 - **Sighting name**: an optional name field on the home screen that becomes
   the report's title/header and the filename of every export — report .html,
   .phodar.json share file, and the .zip bundle.
+- **Video-analysis section: witness estimate + real charts** (field ask):
+  the assumed-distance ladder gains the witness's own estimate as an
+  emphasized amber row slotted in order ("120 m (witness estimate)" with its
+  implied size/speed/path in bold), called out in the caption. The
+  angular-rate plot grew from a bare sparkline to a real chart — labeled
+  time and °/s grid, the peak flagged at its moment, the average as a
+  dashed line — and the stereo speed + felt-load strip got the same
+  treatment (labeled time axis, speed ticks left, g ticks right, peaks
+  marked). All verified by rendering the real report in a browser against
+  the Germany session.
 - **Size ⇄ distance chart overhaul** (field ask): bigger (760×400), with a
   full labeled log grid on both axes (decades plus 2×/5× minors), so values
   can be read off it rather than eyeballed. And the assumed distance set in
