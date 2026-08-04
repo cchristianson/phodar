@@ -65,6 +65,27 @@ Notable changes to Phodar. Format loosely follows
   rendering the real report in a browser against the Germany field session.
 
 ### Fixed
+- **Angular rate and implied speeds no longer inflated by tracker noise**
+  (field report: a balloon-smooth object showed a 9°/s spike and a
+  ~900 mph implied peak). Two causes, both fixed in the math core:
+  (1) the rate was a raw adjacent-frame difference, which multiplies every
+  per-frame pose/tracker error by 1/dt — and both trackers are noisiest
+  exactly while the camera pans or zooms. ω now comes from a weighted
+  windowed fit: samples are down-weighted by camera angular speed, zoom
+  rate (from the solved posePath) and low match confidence, the window
+  widens where the data is noisy, and the sweep is the integral of the
+  fitted rate so jitter can't random-walk it upward. A real sustained
+  maneuver is a ramp across many samples and passes through; a one-frame
+  excursion dies. (2) Two size keyframes a fraction of a second apart (a
+  sizing repeat — the field file had 0.957° and 0.714° just 0.11 s apart)
+  differentiated into ~300 m/s of phantom radial speed; near-coincident
+  keyframes are now merged and the range profile smoothed before
+  differencing. The report also states the estimated tracker-noise floor
+  ("rate variations below ≈0.4°/s are within tracker noise"). On the real
+  clip: peak 7.3→4.5°/s, implied peak at 120 m 910→169 mph. All
+  mathcheck-asserted: zoom-window noise rejected, a sustained maneuver
+  preserved to its true value, the sizing repeat neutralized, clean
+  constant-rate clips bit-exact as before.
 - **Range ratio no longer inflated by stale size stamps** (found auditing the
   same field file): sizing a track point stamps its angular size through the
   BASE FOV, and the stamp was only re-derived on placement commit — so a

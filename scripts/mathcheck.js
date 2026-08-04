@@ -1412,6 +1412,51 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     approx(vk2.rangeRatio, 2, 0.06, "videoKin: range ratio from a halving angular size ≈ 2×");
     const d2 = vk2.atDistance(1000);
     approx(d2.sizeM > 0 && d2.peakSpeed > flat.peakSpeed ? 1 : 0, 1, 0, "videoKin: receding object's speed exceeds the pure-tangential case");
+
+    /* ROBUST RATE (field case: a balloon-smooth object reported 9°/s peaks
+       and hundreds-of-m/s ladder speeds). Three failure modes, each asserted:
+       tracker noise concentrated in a pan/zoom window must NOT become a rate
+       peak; a real SUSTAINED maneuver must survive the smoothing; and two
+       size keyframes a fraction of a second apart (a sizing repeat) must not
+       read as radial speed. */
+    {
+      let seed = 424242;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+      // A: balloon drift 1.5°/s, noise σ0.03° — except σ0.35° + a lone 0.9°
+      // excursion inside the camera's pan+zoom window t∈[5,8]
+      const mkA = () => Array.from({ length: 85 }, (_, i) => {
+        const tt = i * 0.25;
+        const zoomy = tt >= 5 && tt <= 8;
+        const n = (zoomy ? 0.35 : 0.03) * rnd() * 2 + (Math.abs(tt - 6) < 0.13 ? 0.9 : 0);
+        return { t: +tt.toFixed(3), az: (350 + 1.5 * tt) % 360, el: 30 + n, q: 0.9 };
+      });
+      const ppZoom = [
+        { t: 0, az: 350, el: 30, fov: 46 }, { t: 5, az: 350, el: 30, fov: 46 },
+        { t: 6.5, az: 20, el: 32, fov: 20 }, { t: 8, az: 20, el: 32, fov: 10 }, { t: 21, az: 20, el: 32, fov: 10 },
+      ];
+      const vkA = videoKinematics({ objPath: mkA(), posePath: ppZoom });
+      approx(vkA.peakOmega < 2.8 ? 1 : 0, 1, 0, `videoKin robust: zoom-window noise + a 0.9° excursion does NOT spike the peak (${vkA.peakOmega.toFixed(2)}°/s vs truth 1.5)`);
+      const trueA = 1.5 * Math.cos(30 * Math.PI / 180);   // az rate × cos(el) = true sky rate
+      approx(vkA.avgOmega, trueA, 0.2, "videoKin robust: average rate stays ≈ truth through the noise");
+      approx(Math.abs(vkA.sweep - trueA * 21) / (trueA * 21) < 0.12 ? 1 : 0, 1, 0, "videoKin robust: sweep no longer random-walks upward with jitter");
+      approx(vkA.noiseOmega > 0.01 ? 1 : 0, 1, 0, "videoKin robust: a noise floor is estimated and reported");
+      // B: real sustained maneuver — 0.5°/s then 4°/s after t=10 (flat pose)
+      const mkB = () => Array.from({ length: 85 }, (_, i) => {
+        const tt = i * 0.25;
+        const az = tt < 10 ? 350 + 0.5 * tt : 350 + 5 + 4 * (tt - 10);
+        return { t: +tt.toFixed(3), az: az % 360, el: 30 + 0.05 * rnd() * 2, q: 0.9 };
+      });
+      const vkB = videoKinematics({ objPath: mkB() });
+      const trueB = 4 * Math.cos(30 * Math.PI / 180);      // 3.46°/s of sky at el 30
+      approx(vkB.peakOmega > trueB * 0.92 ? 1 : 0, 1, 0, `videoKin robust: a sustained maneuver survives the smoothing (peak ${vkB.peakOmega.toFixed(2)} vs truth ${trueB.toFixed(2)}°/s)`);
+      const at15 = vkB.rate.reduce((b, r) => (Math.abs(r.t - 15) < Math.abs(b.t - 15) ? r : b), vkB.rate[0]);
+      approx(at15.omega, trueB, 0.25, "videoKin robust: the fitted rate reaches the true post-maneuver value");
+      // C: the field file's sizing repeat — 0.957° and 0.714° just 0.11 s apart
+      const mkC = () => Array.from({ length: 85 }, (_, i) => ({ t: +(i * 0.25).toFixed(3), az: (350 + 1 * i * 0.25) % 360, el: 30, q: 0.9 }));
+      const trkC = [{ t: 2, ang: 1.0 }, { t: 6.64, ang: 0.957 }, { t: 6.75, ang: 0.714 }, { t: 18, ang: 0.8 }];
+      const dC = videoKinematics({ objPath: mkC(), track: trkC }).atDistance(120);
+      approx(dC.peakSpeed < 15 ? 1 : 0, 1, 0, `videoKin robust: a 0.11 s sizing repeat no longer reads as radial speed (peak ${dC.peakSpeed.toFixed(1)} m/s, was ~300)`);
+    }
   }
 
   // 4h-f. stereoVideo: two observers' DENSE object tracks triangulate into a 3D

@@ -765,23 +765,100 @@ export function videoKinematics(source) {
   if (op.length < 3) return null;
   const dirs = op.map((p) => dirFromAzEl(+p.az, +p.el));
   const t = op.map((p) => +p.t);
-  const rate = []; let sweep = 0;
-  for (let i = 0; i < op.length - 1; i++) {
-    const dt = t[i + 1] - t[i]; if (!(dt > 1e-6)) continue;
-    const dth = Math.acos(clampN(dot(dirs[i], dirs[i + 1]), -1, 1)) * R2D;
-    sweep += dth;
-    rate.push({ t: (t[i] + t[i + 1]) / 2, omega: dth / dt });
-  }
-  if (!rate.length) return null;
   const dur = t[t.length - 1] - t[0];
+  const dts = []; for (let i = 1; i < t.length; i++) dts.push(t[i] - t[i - 1]);
+  const medDt = dts.slice().sort((a, b) => a - b)[dts.length >> 1] || 0.25;
+  /* ── ANGULAR RATE, robustly (field case: a balloon-smooth object reported a
+     9°/s spike and monstrous implied speeds). Differentiating ADJACENT frames
+     multiplies every per-frame error by 1/dt — and both trackers are noisiest
+     exactly while the camera pans or zooms. So ω comes from a WEIGHTED
+     LINEAR FIT over a time window around each sample:
+       · weight ∝ match confidence, and ÷(1 + (camRate/25)² + (zoomRate/8)²)
+         from the solved posePath — samples taken during fast camera motion
+         or a zoom count less (the "smooth harder where the camera moved"
+         rule, made quantitative);
+       · the window WIDENS (0.55 → ×2 → ×3, capped 1.5 s) where the local
+         weights are poor, so noisy stretches get aggressive smoothing while
+         clean tripod footage keeps its resolution;
+       · sweep is the INTEGRAL of the fitted rate — per-frame jitter no
+         longer random-walks the total.
+     A real sustained maneuver is a ramp across many samples and passes
+     through the fit; a one-frame excursion is what dies. Mathcheck-asserted
+     both ways. */
+  const qw = (q) => (isNum(q) ? (q < 0.3 ? 0.15 : clampN(q, 0.3, 1)) : 0.7);
+  const pp = Array.isArray(source?.posePath) && source.posePath.length >= 2 ? source.posePath : null;
+  const wgt = op.map((p, i) => {
+    let cw = 1;
+    if (pp) {
+      const a = poseAtL(pp, t[i] - 0.15), b = poseAtL(pp, t[i] + 0.15);
+      const dAz = (((+b.az - +a.az + 540) % 360) - 180) * Math.cos((((+a.el + +b.el) / 2) || 0) * D2R);
+      const camRate = Math.hypot(dAz, +b.el - +a.el) / 0.3;
+      const zoomRate = Math.abs((+b.fov || 0) - (+a.fov || 0)) / 0.3;
+      cw = 1 / (1 + Math.pow(camRate / 25, 2) + Math.pow(zoomRate / 8, 2));
+    }
+    return qw(op[i].q) * cw;
+  });
+  const Wb = Math.max(0.45, 2.2 * medDt);
+  const fitOmega = (i) => {
+    for (const mult of [1, 2, 3]) {
+      const W = Math.min(1.5, Wb * mult);
+      let sw = 0, swt = 0, n = 0;
+      for (let j = 0; j < t.length; j++) if (Math.abs(t[j] - t[i]) <= W) { sw += wgt[j]; n++; }
+      if (n < 3) continue;
+      const mw = sw / n;
+      if (mult < 3 && mw < (mult === 1 ? 0.5 : 0.25)) continue;    // too noisy — widen
+      /* weighted LS slope of the 3D direction components vs t; |slope| of a
+         unit-vector path is the angular rate in rad/s (small-arc linear fit) */
+      let W0 = 0, Wt = 0, Wtt = 0; const Wd = [0, 0, 0], Wtd = [0, 0, 0];
+      for (let j = 0; j < t.length; j++) {
+        if (Math.abs(t[j] - t[i]) > W) continue;
+        const w = Math.max(wgt[j], 1e-3), tt = t[j] - t[i];
+        W0 += w; Wt += w * tt; Wtt += w * tt * tt;
+        for (let c = 0; c < 3; c++) { Wd[c] += w * dirs[j][c]; Wtd[c] += w * tt * dirs[j][c]; }
+      }
+      const den = W0 * Wtt - Wt * Wt;
+      if (!(Math.abs(den) > 1e-12)) continue;
+      const s = [0, 1, 2].map((c) => (W0 * Wtd[c] - Wt * Wd[c]) / den);
+      return Math.hypot(s[0], s[1], s[2]) * R2D;
+    }
+    return null;
+  };
+  const rate = [];
+  for (let i = 0; i < t.length; i++) { const om = fitOmega(i); if (om != null) rate.push({ t: t[i], omega: om }); }
+  if (!rate.length) return null;
+  let sweep = 0;
+  for (let i = 1; i < rate.length; i++) sweep += ((rate[i].omega + rate[i - 1].omega) / 2) * (rate[i].t - rate[i - 1].t);
   const peakOmega = Math.max(...rate.map((r) => r.omega));
   const avgOmega = dur > 0 ? sweep / dur : 0;
+  /* HONESTY FLOOR: high-frequency residual (each direction vs its neighbours'
+     midpoint) → a rough σ for the fitted rate. The report states it so a peak
+     that is indistinguishable from tracker noise isn't read as a maneuver. */
+  const resid = [];
+  for (let i = 1; i < dirs.length - 1; i++) {
+    const m = unit(add(dirs[i - 1], dirs[i + 1]));
+    resid.push(Math.acos(clampN(dot(dirs[i], m), -1, 1)) * R2D);
+  }
+  const sigTheta = resid.length ? 1.4826 * resid.slice().sort((a, b) => a - b)[resid.length >> 1] : 0;
+  const nW = Math.max(1, Math.round((2 * Wb) / medDt) + 1);
+  const noiseOmega = sigTheta * Math.SQRT2 / medDt / Math.sqrt(nW);
   /* per-frame angular SIZE: interpolate the sized measure-step points onto the
      objPath times (nearest-held at the ends). `ang` is degrees of full width,
      re-derived through the solved per-frame FOV (a stale base-FOV stamp on a
-     zoomed frame inflated a real clip's range ratio 3×). */
-  const sized = rederiveAng(source, (source && source.track) || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0)
+     zoomed frame inflated a real clip's range ratio 3×). Keyframes closer
+     than 0.75 s are MERGED (geometric mean): two sizings a fraction of a
+     second apart are a measurement repeat, not motion — differentiating a
+     real pair 0.11 s apart read as ~300 m/s of phantom radial speed. */
+  const sizedRaw = rederiveAng(source, (source && source.track) || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0)
     .map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
+  const sized = [];
+  for (const p of sizedRaw) {
+    const last = sized[sized.length - 1];
+    if (last && p.t - last.t < 0.75) {
+      last.t = (last.t * last.n + p.t) / (last.n + 1);
+      last.ang = Math.exp((Math.log(last.ang) * last.n + Math.log(p.ang)) / (last.n + 1));
+      last.n++;
+    } else sized.push({ t: p.t, ang: p.ang, n: 1 });
+  }
   let ang = null;
   if (sized.length) {
     ang = t.map((tt) => {
@@ -797,27 +874,39 @@ export function videoKinematics(source) {
   /* range ∝ 1/tan(½·angularSize): the range ratio (how much closer/farther the
      object got) is measurable from size alone, distance-free. */
   const rangeRatio = (angMin && angMax) ? Math.tan((angMax * D2R) / 2) / Math.tan((angMin * D2R) / 2) : null;
+  const omegaAt = (tt) => {
+    if (tt <= rate[0].t) return rate[0].omega;
+    if (tt >= rate[rate.length - 1].t) return rate[rate.length - 1].omega;
+    let i = 0; while (i < rate.length - 1 && rate[i + 1].t < tt) i++;
+    const a = rate[i], b = rate[i + 1], u = (tt - a.t) / Math.max(1e-9, b.t - a.t);
+    return a.omega + (b.omega - a.omega) * u;
+  };
   return {
-    n: op.length, dur, sweep, peakOmega, avgOmega,
+    n: op.length, dur, sweep, peakOmega, avgOmega, noiseOmega,
     samples: op.map((p, i) => ({ t: t[i], az: +p.az, el: +p.el, q: p.q, ang: ang ? ang[i] : null })),
     rate, ang, angMin, angMax, rangeRatio,
     /* at an assumed reference distance D (metres) at the reference time, return
        the object's true size (m) and its mean TANGENTIAL speed (m/s). If sizes
-       vary, range tracks size so the reported speed includes radial motion. */
+       vary, range tracks size so the reported speed includes radial motion.
+       Both components are the REGULARIZED estimates: tangential from the
+       fitted ω, radial from a log-range profile smoothed over ±0.6 s — the
+       raw finite differences turned per-frame noise and sizing jitter into
+       phantom hundreds-of-m/s peaks. */
     atDistance(D) {
       if (!(D > 0)) return null;
-      // reference: the first sized frame (or the first frame if unsized)
-      const iRef = ang ? 0 : 0;
-      const angRef = ang ? ang[iRef] : null;
-      const range = ang ? t.map((_, i) => D * Math.tan((angRef * D2R) / 2) / Math.tan((ang[i] * D2R) / 2)) : t.map(() => D);
-      // 3D positions in metres, then finite-difference speed
+      const angRef = ang ? ang[0] : null;
+      const rangeRaw = ang ? t.map((_, i) => D * Math.tan((angRef * D2R) / 2) / Math.tan((ang[i] * D2R) / 2)) : t.map(() => D);
+      const logR = rangeRaw.map(Math.log);
+      const range = t.map((tt) => { let s = 0, n2 = 0; for (let j = 0; j < t.length; j++) if (Math.abs(t[j] - tt) <= 0.6) { s += logR[j]; n2++; } return Math.exp(s / Math.max(1, n2)); });
       let pathLen = 0, peakSp = 0;
       for (let i = 0; i < op.length - 1; i++) {
-        const dt = t[i + 1] - t[i]; if (!(dt > 1e-6)) continue;
-        const p0 = scl(dirs[i], range[i]), p1 = scl(dirs[i + 1], range[i + 1]);
-        const seg = mag(sub(p1, p0));
+        const dtq = t[i + 1] - t[i]; if (!(dtq > 1e-6)) continue;
+        const Rm = (range[i] + range[i + 1]) / 2;
+        const tang = omegaAt((t[i] + t[i + 1]) / 2) * D2R * Rm * dtq;   // metres across the sky
+        const dR = range[i + 1] - range[i];                              // metres toward/away
+        const seg = Math.hypot(tang, dR);
         pathLen += seg;
-        peakSp = Math.max(peakSp, seg / dt);
+        peakSp = Math.max(peakSp, seg / dtq);
       }
       const avgSp = dur > 0 ? pathLen / dur : 0;
       const sizeRef = ang ? 2 * D * Math.tan((angRef * D2R) / 2) : null;
