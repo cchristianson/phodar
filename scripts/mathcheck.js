@@ -2868,6 +2868,16 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   // incomplete session → named gaps, no invented fix
   const v2 = analyzeSession({ sources: [{ name: "X", lat: 42.1, lon: -123.6, A: {}, B: {}, track: [] }] });
   ok(v2.fix && v2.fix.ok === false && v2.sources[0].missing.length === 1, "engine names what an incomplete witness is missing");
+  // LEAN API sessions: the app always creates A/B objects, an external caller
+  // may not — a source with no B (or no A at all) must analyze, not throw
+  // (found by a live smoke test: analyze() crashed on o.s.B.az)
+  const v3 = analyzeSession({ sources: [
+    { name: "A", lat: 42.4, lon: -123.3, alt: 400, A: { az: 90, el: 30 }, whenMs: 1754000000000 },
+    { name: "B", lat: 42.4, lon: -123.29, alt: 400, A: { az: 270, el: 35 }, whenMs: 1754000000000 },
+    { name: "C", lat: 42.41, lon: -123.31 },
+  ] });
+  ok(v3.fix?.ok === true, "engine: lean two-witness session (no B objects) solves a fix");
+  ok(v3.sources[2].missing.length === 1 && /sight-line/.test(v3.sources[2].missing[0]), "engine: a source with no A at all filters as missing, not a crash");
 }
 
 // --- Close-up pixel pin (pinStep): a poor track must not break the lock ---

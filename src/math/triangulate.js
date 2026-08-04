@@ -50,8 +50,10 @@ export function intersectLines(lines) {
 }
 
 export function analyze(sources, sigmaDeg = 1) {
+  /* optional-chained: the app always creates A/B objects, but a lean API/MCP
+     session may omit them entirely — that must filter, not throw */
   const valid = sources.filter(
-    (s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A.az) && isNum(s.A.el)
+    (s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el)
   );
   if (valid.length < 2) return { ok: false, validCount: valid.length };
 
@@ -134,7 +136,7 @@ export function analyze(sources, sigmaDeg = 1) {
 
   /* ---- Moment B: velocity ---- */
   let motion = null;
-  const obsB = obs.filter((o) => isNum(o.s.B.az) && isNum(o.s.B.el));
+  const obsB = obs.filter((o) => isNum(o.s.B?.az) && isNum(o.s.B?.el));
   if (obsB.length >= 2) {
     const solB = intersectLines(
       obsB.map((o) => ({ P: o.P, d: dirFromAzElAt(+o.s.B.az, +o.s.B.el, +o.s.lat, +o.s.lon, ref) }))

@@ -46,6 +46,14 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **API/MCP: lean sessions no longer crash the solver** (found by a smoke
+  test of the API stack): the app always creates `A`/`B` objects on every
+  source, so `analyze()` read `s.A.az` / `s.B.az` unguarded — an external
+  API or MCP caller sending a minimal session without those objects got
+  "analysis failed: Cannot read properties of undefined" instead of a
+  verdict. Both reads are now optional-chained; a source with no B still
+  solves the fix, a source with no A filters out with a named gap.
+  Mathcheck-asserted with lean sessions.
 - **The loupe now frames the whole shape with breathing room** (field
   report): the magnifier's zoom was derived from the shape's nominal size,
   but a stretched monolith, a balloon's string or a tilted attitude projects
