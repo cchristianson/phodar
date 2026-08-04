@@ -1456,6 +1456,31 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       const trkC = [{ t: 2, ang: 1.0 }, { t: 6.64, ang: 0.957 }, { t: 6.75, ang: 0.714 }, { t: 18, ang: 0.8 }];
       const dC = videoKinematics({ objPath: mkC(), track: trkC }).atDistance(120);
       approx(dC.peakSpeed < 15 ? 1 : 0, 1, 0, `videoKin robust: a 0.11 s sizing repeat no longer reads as radial speed (peak ${dC.peakSpeed.toFixed(1)} m/s, was ~300)`);
+      /* D — ROTATION-STARVED ZOOM (the Germany field case): the object glides
+         at 1°/s, but during a 3× zoom the solver held the camera's pointing
+         on 6-8 anchors while the operator tilted to re-center — a phantom
+         sustained ~4.4°/s ramp rides the track for ~1 s. Smoothing can't
+         remove a sustained bias; the reliability mask must exclude it from
+         the REPORTED peak while returning the excursion + its span honestly. */
+      const mkD = () => Array.from({ length: 85 }, (_, i) => {
+        const tt = i * 0.25;
+        const phantom = tt >= 15 && tt <= 16.25 ? -4.4 * Math.min(tt - 15, 1.25) : (tt > 16.25 ? -5.5 : 0);
+        return { t: +tt.toFixed(3), az: (350 + 1 * tt) % 360, el: 40 + phantom, q: 0.9 };
+      });
+      const ppD = Array.from({ length: 85 }, (_, i) => {
+        const tt = i * 0.25;
+        const fov = tt < 15 ? 16.6 : tt < 16 ? 16.6 - (16.6 - 5) * (tt - 15) : 5;
+        const n = tt >= 15 && tt <= 16.1 ? 7 : 25;
+        return { t: +tt.toFixed(3), az: 356.7, el: 41.3, roll: 0, fov, k: 0, n };
+      });
+      const vkD = videoKinematics({ objPath: mkD(), posePath: ppD });
+      approx(vkD.zoomSpans.length >= 1 ? 1 : 0, 1, 0, "videoKin mask: the rotation-starved zoom span is detected");
+      approx(vkD.peakOmegaAll > 3 ? 1 : 0, 1, 0, `videoKin mask: the phantom excursion is still visible in peakOmegaAll (${vkD.peakOmegaAll.toFixed(1)}°/s)`);
+      approx(vkD.peakOmega < 1.6 ? 1 : 0, 1, 0, `videoKin mask: the REPORTED peak excludes the zoom span (${vkD.peakOmega.toFixed(2)}°/s ≈ the 1°/s glide)`);
+      approx(videoKinematics({ objPath: mkD(), posePath: ppD }).atDistance(120).peakSpeed < 8 ? 1 : 0, 1, 0, "videoKin mask: implied peak speed also refuses the zoom-span excursion");
+      // a REAL maneuver away from any zoom must still be reported at value
+      const vkB2 = videoKinematics({ objPath: mkB(), posePath: ppD.map((p) => ({ ...p, fov: 16, n: 25 })) });
+      approx(vkB2.peakOmega > 4 * Math.cos(30 * Math.PI / 180) * 0.9 ? 1 : 0, 1, 0, "videoKin mask: a sustained maneuver on a clean solve keeps its true peak");
     }
   }
 

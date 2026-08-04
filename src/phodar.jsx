@@ -12118,16 +12118,24 @@ ${momStrip}`;
             grid += `<line x1="${X(t).toFixed(1)}" y1="${T}" x2="${X(t).toFixed(1)}" y2="${H - B}" stroke="#ececec"/><text x="${X(t).toFixed(1)}" y="${H - B + 14}" font-size="9.5" fill="#777" text-anchor="middle">${+t.toFixed(1)}</text>`;
           for (let w2 = yStep; w2 <= wMax + 1e-9; w2 += yStep)
             grid += `<line x1="${L}" y1="${Y(w2).toFixed(1)}" x2="${W - Rm}" y2="${Y(w2).toFixed(1)}" stroke="#ececec"/><text x="${L - 5}" y="${(Y(w2) + 3).toFixed(1)}" font-size="9.5" fill="#777" text-anchor="end">${+w2.toFixed(2)}</text>`;
+          /* rotation-starved zoom spans: shaded so a reader sees WHERE the
+             track can't be trusted to separate camera from object */
+          const spans = (vk.zoomSpans || []).filter((sp) => sp.t1 >= t0 && sp.t0 <= t1).map((sp) => {
+            const x0 = X(Math.max(t0, sp.t0 - 0.3)), x1 = X(Math.min(t1, sp.t1 + 0.3));
+            return `<rect x="${x0.toFixed(1)}" y="${T}" width="${Math.max(1, x1 - x0).toFixed(1)}" height="${H - T - B}" fill="rgba(200,120,20,.10)"/>`;
+          }).join("");
           const pts = vk.rate.map((r) => `${X(r.t).toFixed(1)},${Y(r.omega).toFixed(1)}`).join(" ");
-          const pk = vk.rate.reduce((b, r) => (r.omega > b.omega ? r : b), vk.rate[0]);
+          const relRates = vk.rate.filter((r) => r.rel);
+          const pk = (relRates.length ? relRates : vk.rate).reduce((b, r) => (r.omega > b.omega ? r : b), (relRates.length ? relRates : vk.rate)[0]);
           const pkNear = X(pk.t) > L + (W - L - Rm) * 0.7;
           const avg = `<line x1="${L}" y1="${Y(vk.avgOmega).toFixed(1)}" x2="${W - Rm}" y2="${Y(vk.avgOmega).toFixed(1)}" stroke="#0e7d6f" stroke-dasharray="5 4" stroke-width="1.2"/><text x="${W - Rm - 3}" y="${(Y(vk.avgOmega) - 4).toFixed(1)}" font-size="9.5" fill="#0e7d6f" text-anchor="end">avg ${vk.avgOmega.toFixed(2)}°/s</text>`;
           const peak = `<circle cx="${X(pk.t).toFixed(1)}" cy="${Y(pk.omega).toFixed(1)}" r="3.5" fill="#1188aa"/><text x="${(pkNear ? X(pk.t) - 6 : X(pk.t) + 6).toFixed(1)}" y="${Math.max(T + 9, Y(pk.omega) - 6).toFixed(1)}" font-size="10" font-weight="700" fill="#1188aa" text-anchor="${pkNear ? "end" : "start"}">peak ${pk.omega.toFixed(1)}°/s @ ${pk.t.toFixed(1)} s</text>`;
           return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto;border:1px solid #e2e2e2;border-radius:6px;background:#fff">
-${grid}
+${spans}${grid}
 <line x1="${L}" y1="${H - B}" x2="${W - Rm}" y2="${H - B}" stroke="#bbb"/><line x1="${L}" y1="${T}" x2="${L}" y2="${H - B}" stroke="#bbb"/>
 <polyline fill="none" stroke="#1188aa" stroke-width="1.8" points="${pts}"/>
 ${avg}${peak}
+${spans ? `<text x="${W - Rm}" y="${H - B - 5}" font-size="9" fill="#b06a10" text-anchor="end">shaded: hard zoom — camera solve rotation-starved</text>` : ""}
 <text x="${(L + (W - L - Rm) / 2).toFixed(0)}" y="${H - 4}" font-size="9.5" fill="#888" text-anchor="middle">time into clip (s)</text>
 <text x="11" y="${(H / 2).toFixed(0)}" font-size="9.5" fill="#888" transform="rotate(-90 11 ${(H / 2).toFixed(0)})" text-anchor="middle">angular rate (°/s)</text></svg>`;
         })();
@@ -12148,7 +12156,7 @@ ${avg}${peak}
           ? `Its apparent width ranged ${vk.angMin.toFixed(2)}°–${vk.angMax.toFixed(2)}°${vk.rangeRatio && Math.abs(vk.rangeRatio - 1) > 0.05 ? ` — a <b>${vk.rangeRatio.toFixed(2)}× range change</b> (it moved ${vk.rangeRatio > 1 ? "closer then" : ""} ${vk.angMax > vk.angMin ? "nearer" : "farther"} over the clip)` : " (near-constant — little toward/away motion)"}.`
           : `Angular size was not marked frame-to-frame, so only transverse (across-sky) motion is measured — mark the object's width on a few frames (measure step) to recover toward/away motion.`;
         blocks.push(`${vids.length > 1 ? `<h3>${e2(s.name || "Observer " + (vi + 1))}</h3>` : ""}
-<p class="lead"><b>Measured angular motion:</b> the object swept <b>${vk.sweep.toFixed(1)}°</b> of sky over <b>${vk.dur.toFixed(1)} s</b> (${vk.n} tracked frames), averaging <b>${vk.avgOmega.toFixed(2)}°/s</b> and peaking at <b>${vk.peakOmega.toFixed(2)}°/s</b>.${isNum(vk.noiseOmega) && vk.noiseOmega > 0.1 ? ` <span class="cap">Rate variations below ≈${vk.noiseOmega < 0.95 ? vk.noiseOmega.toFixed(2) : vk.noiseOmega.toFixed(1)}°/s are within tracker noise.</span>` : ""} ${angLine}${held ? ` <span class="cap">(${held} frame${held > 1 ? "s" : ""} held on the guide, not pixel-locked.)</span>` : ""}</p>
+<p class="lead"><b>Measured angular motion:</b> the object swept <b>${vk.sweep.toFixed(1)}°</b> of sky over <b>${vk.dur.toFixed(1)} s</b> (${vk.n} tracked frames), averaging <b>${vk.avgOmega.toFixed(2)}°/s</b> and peaking at <b>${vk.peakOmega.toFixed(2)}°/s</b>.${isNum(vk.peakOmegaAll) && vk.peakOmegaAll > vk.peakOmega * 1.25 && (vk.zoomSpans || []).length ? ` <span class="cap">An apparent ${vk.peakOmegaAll.toFixed(1)}°/s excursion coincides with a hard zoom (${vk.zoomSpans.map((sp) => `${sp.t0.toFixed(1)}–${sp.t1.toFixed(1)} s`).join(", ")}) where the camera solve had too few background anchors to separate camera motion from object motion — likely the camera re-centering during the zoom, so it is excluded from the peak.</span>` : ""}${isNum(vk.noiseOmega) && vk.noiseOmega > 0.1 ? ` <span class="cap">Rate variations below ≈${vk.noiseOmega < 0.95 ? vk.noiseOmega.toFixed(2) : vk.noiseOmega.toFixed(1)}°/s are within tracker noise.</span>` : ""} ${angLine}${held ? ` <span class="cap">(${held} frame${held > 1 ? "s" : ""} held on the guide, not pixel-locked.)</span>` : ""}</p>
 ${rateSvg}
 ${isNum(s.trim?.t0) && isNum(s.trim?.t1) ? `<p class="cap" style="margin-top:6px">Analysed span: <b>${(+s.trim.t0).toFixed(2)}–${(+s.trim.t1).toFixed(2)} s</b> of the clip — the witness trimmed the ends, so the figures above describe that span only. The original recording is unaltered.</p>` : ""}
 <p class="cap" style="margin-top:8px">Angular position &amp; rate are measured directly from the world-locked track — no distance needed. Linear size and speed below follow only once a distance is assumed${fixDist ? " (here fixed by triangulation)" : ""}:</p>

@@ -65,6 +65,26 @@ Notable changes to Phodar. Format loosely follows
   rendering the real report in a browser against the Germany field session.
 
 ### Fixed
+- **The phantom "sharp turn" during a zoom is now masked and named** (field
+  report: "the sharp turn never happens in the video — it glides like a
+  balloon"): the residual 4.4°/s peak sat exactly inside a 3.3× zoom-in
+  where the camera solve ran on 6-8 background anchors and held the
+  camera's pointing frozen while only FOV updated — but an operator zooming
+  in always tilts to re-center the subject, and that unmodeled tilt was
+  booked as the object diving. That is a sustained BIAS no smoothing can
+  remove, so it gets a reliability mask instead: spans where the solve had
+  <9 anchors or the FOV slewed >5°/s are excluded from the reported peak
+  rate and peak speed, shaded on the rate chart, and the report says what
+  was excluded and why (the excursion stays visible as peakOmegaAll —
+  masked, not hidden). Also: the range profile between sparse size
+  keyframes now interpolates at constant radial velocity (linear range in
+  time) — interpolating the ANGLE linearly implied an accelerating
+  recession (dR/dt ∝ 1/ang²) and manufactured a ~170 mph end-of-gap spike.
+  On the field clip the reported peak fell 4.4→2.9°/s and the implied peak
+  at 120 m 910→139 mph across the whole fix series, with the remainder
+  traceable to the measured tail recession. Mathcheck-asserted: the
+  phantom zoom-span ramp is excluded, a real maneuver on a clean solve
+  keeps its true peak, and the excursion is still returned honestly.
 - **Angular rate and implied speeds no longer inflated by tracker noise**
   (field report: a balloon-smooth object showed a 9°/s spike and a
   ~900 mph implied peak). Two causes, both fixed in the math core:

@@ -823,12 +823,47 @@ export function videoKinematics(source) {
     }
     return null;
   };
+  /* ── ROTATION-STARVED SPANS (field case: a balloon-smooth object "turned"
+     4°/s at the exact moment of a 3× zoom-in). During a deep zoom the solve
+     can run on a handful of anchors and effectively HOLD the camera's
+     pointing while only FOV updates — but a human zooming in always tilts to
+     CENTER the subject, and that unmodeled tilt is booked as object motion.
+     It is a sustained BIAS, so no amount of smoothing removes it; the honest
+     treatment is a reliability mask: a sample is suspect when the solve had
+     < 9 anchors or the FOV was slewing > 5°/s, and the REPORTED peak comes
+     from reliable spans only (the apparent excursion is still returned as
+     peakOmegaAll + its spans, so the report can say what was excluded and
+     why instead of silently hiding it). */
+  const nAt = (tt) => {
+    if (!pp) return 99;
+    let best = pp[0]; for (const q of pp) if (Math.abs(q.t - tt) < Math.abs(best.t - tt)) best = q;
+    return isNum(best.n) ? +best.n : 99;
+  };
+  const rel = t.map((tt) => {
+    if (!pp) return true;
+    const a = poseAtL(pp, tt - 0.15), b = poseAtL(pp, tt + 0.15);
+    const zoomRate = Math.abs((+b.fov || 0) - (+a.fov || 0)) / 0.3;
+    return zoomRate <= 5 && nAt(tt) >= 9;
+  });
+  const zoomSpans = [];
+  for (let i = 0; i < t.length; i++) {
+    if (rel[i]) continue;
+    const last = zoomSpans[zoomSpans.length - 1];
+    if (last && t[i] - last.t1 < 0.6) last.t1 = t[i];
+    else zoomSpans.push({ t0: t[i], t1: t[i] });
+  }
+  const inSpan = (tt, pad = 0) => zoomSpans.some((sp) => tt >= sp.t0 - pad && tt <= sp.t1 + pad);
   const rate = [];
-  for (let i = 0; i < t.length; i++) { const om = fitOmega(i); if (om != null) rate.push({ t: t[i], omega: om }); }
+  for (let i = 0; i < t.length; i++) {
+    const om = fitOmega(i);
+    if (om != null) rate.push({ t: t[i], omega: om, rel: !inSpan(t[i], 0.3) });
+  }
   if (!rate.length) return null;
   let sweep = 0;
   for (let i = 1; i < rate.length; i++) sweep += ((rate[i].omega + rate[i - 1].omega) / 2) * (rate[i].t - rate[i - 1].t);
-  const peakOmega = Math.max(...rate.map((r) => r.omega));
+  const relRates = rate.filter((r) => r.rel);
+  const peakOmegaAll = Math.max(...rate.map((r) => r.omega));
+  const peakOmega = relRates.length ? Math.max(...relRates.map((r) => r.omega)) : peakOmegaAll;
   const avgOmega = dur > 0 ? sweep / dur : 0;
   /* HONESTY FLOOR: high-frequency residual (each direction vs its neighbours'
      midpoint) → a rough σ for the fitted rate. The report states it so a peak
@@ -882,7 +917,7 @@ export function videoKinematics(source) {
     return a.omega + (b.omega - a.omega) * u;
   };
   return {
-    n: op.length, dur, sweep, peakOmega, avgOmega, noiseOmega,
+    n: op.length, dur, sweep, peakOmega, peakOmegaAll, zoomSpans, avgOmega, noiseOmega,
     samples: op.map((p, i) => ({ t: t[i], az: +p.az, el: +p.el, q: p.q, ang: ang ? ang[i] : null })),
     rate, ang, angMin, angMax, rangeRatio,
     /* at an assumed reference distance D (metres) at the reference time, return
@@ -895,9 +930,24 @@ export function videoKinematics(source) {
     atDistance(D) {
       if (!(D > 0)) return null;
       const angRef = ang ? ang[0] : null;
-      const rangeRaw = ang ? t.map((_, i) => D * Math.tan((angRef * D2R) / 2) / Math.tan((ang[i] * D2R) / 2)) : t.map(() => D);
-      const logR = rangeRaw.map(Math.log);
-      const range = t.map((tt) => { let s = 0, n2 = 0; for (let j = 0; j < t.length; j++) if (Math.abs(t[j] - tt) <= 0.6) { s += logR[j]; n2++; } return Math.exp(s / Math.max(1, n2)); });
+      /* RANGE PROFILE: piecewise-LINEAR range between the sized keyframes —
+         i.e. constant radial velocity across each gap, the least-committal
+         reading of two sizings with nothing measured between them.
+         Interpolating the ANGLE linearly instead implies an accelerating
+         recession as the angle shrinks (dR/dt ∝ 1/ang²) and manufactured a
+         ~170 mph "peak" at the end of a 7 s keyframe gap on a real clip. */
+      const rangeRaw = (() => {
+        if (!ang || !sized.length) return t.map(() => D);
+        const Rk = sized.map((p) => D * Math.tan((angRef * D2R) / 2) / Math.tan((p.ang * D2R) / 2));
+        return t.map((tt) => {
+          if (tt <= sized[0].t) return Rk[0];
+          if (tt >= sized[sized.length - 1].t) return Rk[Rk.length - 1];
+          let i = 0; while (i < sized.length - 1 && sized[i + 1].t < tt) i++;
+          const u = (tt - sized[i].t) / Math.max(1e-9, sized[i + 1].t - sized[i].t);
+          return Rk[i] + (Rk[i + 1] - Rk[i]) * u;
+        });
+      })();
+      const range = t.map((tt) => { let s = 0, n2 = 0; for (let j = 0; j < t.length; j++) if (Math.abs(t[j] - tt) <= 0.6) { s += rangeRaw[j]; n2++; } return s / Math.max(1, n2); });
       let pathLen = 0, peakSp = 0;
       for (let i = 0; i < op.length - 1; i++) {
         const dtq = t[i + 1] - t[i]; if (!(dtq > 1e-6)) continue;
@@ -906,7 +956,9 @@ export function videoKinematics(source) {
         const dR = range[i + 1] - range[i];                              // metres toward/away
         const seg = Math.hypot(tang, dR);
         pathLen += seg;
-        peakSp = Math.max(peakSp, seg / dtq);
+        /* the peak is a headline claim — never source it from a span where
+           the camera solve was rotation-starved (path still accumulates) */
+        if (!inSpan((t[i] + t[i + 1]) / 2, 0.3)) peakSp = Math.max(peakSp, seg / dtq);
       }
       const avgSp = dur > 0 ? pathLen / dur : 0;
       const sizeRef = ang ? 2 * D * Math.tan((angRef * D2R) / 2) : null;
