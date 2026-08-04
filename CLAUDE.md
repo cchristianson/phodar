@@ -962,6 +962,15 @@ terrain stay frozen and only the object moves. Build ladder:
    slides live under your finger. Re-stabilizing clears poseFixes
    (corrections of the old solve); re-aligning the placement rotates
    them (reanchorPose), the PinMap bearing ray yaws them.
+   **⌖ OBJECT ANCHORS (applyObjFixes, postrack, pure + mathcheck-asserted)**
+   — ⚓'s sibling for the object track: absolute {t,az,el} anchors in
+   `source.objFixes`, exact at anchors / blended between / held beyond,
+   applied LAST in rederivePaths (after dir fixes + waypoint snap — the
+   dome correction is the human's final word). Corrected samples carry
+   `h:1` and the report labels those stretches witness-asserted. Same
+   lifecycle as poseFixes (cleared by re-stabilize/clearStab/keep-ingest,
+   rotated on re-align). UI: ⌖ on the playback row, drag moves the outline
+   (az scaled 1/cos el), pending is display-only and discarded on scrub.
    **⛰ AUTO-ANCHOR TO TERRAIN: TRIED AND REVERTED** — do not rebuild it
    this way. The diagnosis behind it still stands and is worth keeping:
    MEASURED on a real field clip (22.8 s, 1.35x zoom, handheld, ridge
