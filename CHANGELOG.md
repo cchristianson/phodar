@@ -44,6 +44,15 @@ Notable changes to Phodar. Format loosely follows
 - **Sighting name**: an optional name field on the home screen that becomes
   the report's title/header and the filename of every export — report .html,
   .phodar.json share file, and the .zip bundle.
+- **Size ⇄ distance chart overhaul** (field ask): bigger (760×400), with a
+  full labeled log grid on both axes (decades plus 2×/5× minors), so values
+  can be read off it rather than eyeballed. And the assumed distance set in
+  the sky view's 📏 size tool (slider or 📍 map pick) now persists on the
+  observer as their own range estimate — the report chart draws it as an
+  emphasized amber vertical with dots where it crosses the size and altitude
+  lines and the implied numbers spelled out ("witness estimate — 394 ft →
+  5.1 ft across · 225 ft above you"), plus a caption sentence. Verified by
+  rendering the real report in a browser against the Germany field session.
 
 ### Fixed
 - **Range ratio no longer inflated by stale size stamps** (found auditing the

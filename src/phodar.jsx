@@ -653,7 +653,7 @@ const HELP_SECTIONS = [
       { h: "Distance, size & the path", items: [
         { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair." },
         { t: "🔄 Rotate (stills)", d: "In the ⊕ Trajectory tool on a photo, sets the object's ATTITUDE at the selected path point — ⟲ ⟳ tumble the fitted model, reset clears it. Set it at two or more points and the displayed model turns smoothly between them along the path, so a craft that rolled or pitched as it went is shown doing that rather than sliding along rigidly." },
-        { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that)." },
+        { t: "📏 size", d: "Object size vs distance — slide an assumed distance to see the size and altitude it implies, with the nearest everyday reference. If there was a cloud deck, it also shows the cloud-base range cap (a below-cloud object can't be farther than that). The distance you set is remembered as the witness's own estimate and drawn, with its implied size and altitude, on the report's size ⇄ distance chart." },
         { t: "📍 Set distance on a map", d: "In the size or compare tool, opens a satellite map centred near where the photo was taken, with your camera's field-of-view wedge and the object's sight-line drawn on it. Tap (or drag the ✦) where the object was overhead; the straight-line distance from the camera — carried up the sight-line to a true line-of-sight range — sets the assumed distance. Often easier than guessing on the slider: you place it over the ridge/field/town it was above." },
         { t: "⚖ compare", d: "Drop a reference ghost (balloon, drone, aircraft…) at the crosshair and slide its distance to compare its apparent size to your object's — or set that distance on the map." },
         { t: "Path vs moments", d: "The trajectory can come from the points you tap on step 1, OR from two or more timestamped photos (moments) placed in the sky — and the two interleave on one path when you have both. Timing comes from the video's frames, the moments' capture times, or the Δt chips you set." },
@@ -3670,7 +3670,17 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [cmpD, setCmpD] = useState(1000);       // ghost's assumed distance, meters
   const [ghostIdx, setGhostIdx] = useState(3);
   const [cmpPos, setCmpPos] = useState(null);   // ghost's sky anchor {az, el}
-  const [objD, setObjD] = useState(1000);       // YOUR OBJECT's assumed distance — size↔distance guesstimate
+  /* YOUR OBJECT's assumed distance — the witness's own range estimate. Seeded
+     from the persisted value; a touched slider/map pick writes it back
+     (debounced — invariant #7) so the report can pin the estimate on its
+     size⇄distance chart. Never written on mere open. */
+  const [objD, setObjD] = useState(() => (isNum(source?.assumedD) && +source.assumedD >= 30 ? +source.assumedD : 1000));
+  const objDSaveT = useRef(null);
+  const setObjDSave = (d) => {
+    setObjD(d);
+    if (objDSaveT.current) clearTimeout(objDSaveT.current);
+    objDSaveT.current = setTimeout(() => update({ assumedD: Math.round(d) }), 400);
+  };
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
   const [trajOn, setTrajOn] = useState(false);  // trajectory drop-point tools — its own mode
   /* clean-viewing collapses (field ask): tuck the header layer chips and the
@@ -8238,7 +8248,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)" }}>measured {objAngW.toFixed(2)}° wide{isNum(objEl) ? ` · ${objEl.toFixed(0)}° up` : ""}</div>
                       <input type="range" min={0} max={1} step={0.004} value={t}
                         onPointerDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}
-                        onChange={(e) => setObjD(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
+                        onChange={(e) => setObjDSave(Math.round(30 * Math.pow(80000 / 30, +e.target.value)))}
                         style={{ width: "100%", marginTop: 4, touchAction: "auto", pointerEvents: "auto" }} />
                       <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--amber)" }}>
                         if it was <b>{fmtLenShort(objD)}</b> away → <b>{fmtLenShort(size)}</b> across
@@ -8319,7 +8329,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             objAng={isSize ? objAngW : null} initDist={isSize ? objD : cmpD}
             title={isSize ? "WHERE WAS THE OBJECT?" : "WHERE WAS THE REFERENCE?"}
             onClose={() => setMapPick(null)}
-            onAccept={(d) => { if (isSize) setObjD(clampN(d, 30, 80000)); else setCmpD(clampN(d, 5, 120000)); setMapPick(null); }} />
+            onAccept={(d) => { if (isSize) setObjDSave(clampN(d, 30, 80000)); else setCmpD(clampN(d, 5, 120000)); setMapPick(null); }} />
         );
       })()}
     </div>
@@ -11561,13 +11571,13 @@ async function reportHtml(sources, est, opts = {}) {
     const w = (() => {
       for (const s of origAct) {
         const a = angSizeFromPoints(s.A?.p1, s.A?.p2, s.natW, s.natH, +s.fovH, lensK(s)) ?? (isNum(s.A?.angManual) ? +s.A.angManual : null);
-        if (a != null && a > 0) return { ang: a, el: isNum(s.A?.el) ? +s.A.el : null };
+        if (a != null && a > 0) return { ang: a, el: isNum(s.A?.el) ? +s.A.el : null, assumedD: isNum(s.assumedD) && +s.assumedD > 0 ? +s.assumedD : null };
       }
       return null;
     })();
     if (w != null) {
       const wAng = w.ang, el = w.el;
-      const W = 560, H = 300, L = 62, Rm = 16, T = 34, B = 44;
+      const W = 760, H = 400, L = 74, Rm = 20, T = 40, B = 50;
       const D0 = 50, D1 = 50000;
       const s0 = 2 * D0 * Math.tan(wAng * D2R / 2), s1 = 2 * D1 * Math.tan(wAng * D2R / 2);
       /* single witness: assumed distance implies BOTH size (2·D·tan(ang/2))
@@ -11593,8 +11603,21 @@ async function reportHtml(sources, est, opts = {}) {
         .map((r) => ({ ...r, Dr: r.alt / sinEl }))
         .filter((r) => r.alt >= sLo && r.alt <= sHi && r.Dr >= D0 && r.Dr <= D1)
         .map((r) => { const x = X(r.Dr), near = x > L + (W - L - Rm) * 0.6; return `<circle cx="${x.toFixed(1)}" cy="${Y(r.alt).toFixed(1)}" r="3.2" fill="#2563c9"/><text x="${(near ? x - 6 : x + 6).toFixed(1)}" y="${(Y(r.alt) + 12).toFixed(1)}" font-size="10" fill="#2563c9" text-anchor="${near ? "end" : "start"}">${r.name} — ${fmtLenShort(r.Dr)}</text>`; }).join("") : "";
-      const xTicks = [100, 1000, 10000].map((d) => `<line x1="${X(d)}" y1="${T}" x2="${X(d)}" y2="${H - B}" stroke="#eee"/><text x="${X(d)}" y="${H - B + 16}" font-size="10" fill="#555" text-anchor="middle">${fmtLenShort(d)}</text>`).join("");
-      const yTicks = [1, 10, 100, 1000, 10000].filter((s) => s >= sLo && s <= sHi).map((s) => `<text x="${L - 6}" y="${(Y(s) + 3).toFixed(1)}" font-size="10" fill="#555" text-anchor="end">${fmtLenShort(s)}</text>`).join("");
+      /* FULL LOG GRID (field ask — "more grid and labeling"): labeled decades
+         plus labeled 2×/5× minors on BOTH axes, so a value can actually be
+         READ off the chart instead of eyeballed between two ticks */
+      const logSteps = (lo, hi) => {
+        const out = [];
+        for (let e = Math.floor(Math.log10(lo)); Math.pow(10, e) <= hi; e++)
+          for (const m of [1, 2, 5]) { const v = m * Math.pow(10, e); if (v > lo * 1.04 && v < hi * 0.96) out.push({ v, major: m === 1 }); }
+        return out;
+      };
+      const xTicks = logSteps(D0, D1).map(({ v, major }) =>
+        `<line x1="${X(v).toFixed(1)}" y1="${T}" x2="${X(v).toFixed(1)}" y2="${H - B}" stroke="${major ? "#d5d5d5" : "#ececec"}"/>` +
+        `<text x="${X(v).toFixed(1)}" y="${H - B + 15}" font-size="${major ? 10 : 8.5}" fill="${major ? "#444" : "#999"}" text-anchor="middle">${fmtLenShort(v)}</text>`).join("");
+      const yTicks = logSteps(sLo, sHi).map(({ v, major }) =>
+        `<line x1="${L}" y1="${Y(v).toFixed(1)}" x2="${W - Rm}" y2="${Y(v).toFixed(1)}" stroke="${major ? "#e2e2e2" : "#f1f1f1"}"/>` +
+        `<text x="${L - 6}" y="${(Y(v) + 3).toFixed(1)}" font-size="${major ? 10 : 8.5}" fill="${major ? "#444" : "#999"}" text-anchor="end">${fmtLenShort(v)}</text>`).join("");
       const altLine = drawAlt ? `<line x1="${X(D0)}" y1="${Y(a0).toFixed(1)}" x2="${X(D1)}" y2="${Y(a1).toFixed(1)}" stroke="#2563c9" stroke-width="2.5"/>${altRefs}` : "";
       /* cloud-base cap: if the object was below the deck, its range < base/sin(el),
          so everything to the RIGHT of this line is ruled out for a below-cloud object */
@@ -11605,15 +11628,34 @@ async function reportHtml(sources, est, opts = {}) {
           `<line x1="${xc.toFixed(1)}" y1="${T}" x2="${xc.toFixed(1)}" y2="${H - B}" stroke="#7a7a7a" stroke-width="1.5" stroke-dasharray="5 3"/>` +
           `<text x="${(xc - 5).toFixed(1)}" y="${T + 12}" font-size="10" fill="#555" text-anchor="end">cloud base ≈ ${fmtLenShort(cb.maxRange)} if below</text>`;
       })() : "";
+      /* WITNESS ESTIMATE (field ask): the distance set with the 📏 size tool
+         (slider or 📍 map pick) is the witness's own range call — pin it on
+         the chart as the emphasized reading: an amber vertical at that
+         distance, dots where it crosses the size/altitude lines, and the
+         implied numbers spelled out. */
+      const aD = w.assumedD != null && w.assumedD >= D0 && w.assumedD <= D1 ? w.assumedD : null;
+      const swW = aD != null ? 2 * aD * Math.tan(wAng * D2R / 2) : null;
+      const awW = aD != null && drawAlt ? aD * sinEl : null;
+      const witnessMark = aD != null ? (() => {
+        const xw = X(aD), near = xw > L + (W - L - Rm) * 0.62;
+        const tx = (near ? xw - 8 : xw + 8).toFixed(1), anc = near ? "end" : "start";
+        return `<line x1="${xw.toFixed(1)}" y1="${T}" x2="${xw.toFixed(1)}" y2="${H - B}" stroke="#C77B14" stroke-width="2"/>` +
+          `<circle cx="${xw.toFixed(1)}" cy="${Y(swW).toFixed(1)}" r="5" fill="#0e7d6f" stroke="#fff" stroke-width="1.5"/>` +
+          (awW != null ? `<circle cx="${xw.toFixed(1)}" cy="${Y(awW).toFixed(1)}" r="5" fill="#2563c9" stroke="#fff" stroke-width="1.5"/>` : "") +
+          `<text x="${tx}" y="${T + 15}" font-size="11.5" font-weight="700" fill="#C77B14" text-anchor="${anc}">witness estimate — ${e2(fmtLenShort(aD))}</text>` +
+          `<text x="${tx}" y="${T + 29}" font-size="10.5" font-weight="600" fill="#0e7d6f" text-anchor="${anc}">→ ${e2(fmtLenShort(swW))} across</text>` +
+          (awW != null ? `<text x="${tx}" y="${T + 42}" font-size="10.5" font-weight="600" fill="#2563c9" text-anchor="${anc}">→ ${e2(fmtLenShort(awW))} above you</text>` : "");
+      })() : "";
       fixHtml += `<svg viewBox="0 0 ${W} ${H}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff">
-<text x="${L}" y="20" font-size="12" font-weight="700" fill="#333">Assumed distance ⇄ implied size${drawAlt ? " &amp; altitude" : ""} (${wAng.toFixed(2)}° wide${drawAlt ? `, ${el.toFixed(0)}° up` : ""})</text>
+<text x="${L}" y="20" font-size="13" font-weight="700" fill="#333">Assumed distance ⇄ implied size${drawAlt ? " &amp; altitude" : ""} (${wAng.toFixed(2)}° wide${drawAlt ? `, ${el.toFixed(0)}° up` : ""})</text>
 <text x="${W - Rm}" y="13" font-size="10" fill="#0e7d6f" text-anchor="end">■ size</text>${drawAlt ? `<text x="${W - Rm}" y="26" font-size="10" fill="#2563c9" text-anchor="end">■ altitude above you</text>` : ""}
 ${xTicks}${yTicks}${cloudCut}${refs}${altLine}
 <line x1="${X(D0)}" y1="${Y(s0).toFixed(1)}" x2="${X(D1)}" y2="${Y(s1).toFixed(1)}" stroke="#0e7d6f" stroke-width="2.5"/>
+${witnessMark}
 <text x="${W / 2}" y="${H - 8}" font-size="10" fill="#888" text-anchor="middle">assumed distance →</text>
-<text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">size / altitude (m) →</text>
+<text x="14" y="${H / 2}" font-size="10" fill="#888" transform="rotate(-90 14 ${H / 2})" text-anchor="middle">size / altitude →</text>
 </svg>
-<p class="cap">One witness can't fix the distance — but every assumed distance implies both a size and ${drawAlt ? `an altitude above you (from the ${el.toFixed(0)}° sight-line). Amber dots mark common objects at that size; blue dots mark notable altitudes.` : "a size. Dots mark where common objects would sit on this sight-line. (Add the object's elevation to also read altitude.)"}${cb && cb.maxRange >= D0 && cb.maxRange <= D1 ? ` <b>If the object was below the cloud deck</b> (base est. ${fmtLenShort(wx.baseAGL)} AGL), it was within <b>${fmtLenShort(cb.maxRange)}</b>${cb.maxSize != null ? ` and no larger than <b>${fmtLenShort(cb.maxSize)}</b>` : ""} — everything right of the grey line is ruled out. Above the deck flips this into a floor.` : ""}</p>`;
+<p class="cap">One witness can't fix the distance — but every assumed distance implies both a size and ${drawAlt ? `an altitude above you (from the ${el.toFixed(0)}° sight-line). Amber dots mark common objects at that size; blue dots mark notable altitudes.` : "a size. Dots mark where common objects would sit on this sight-line. (Add the object's elevation to also read altitude.)"}${aD != null ? ` <b>The amber line is the witness's own distance estimate</b> (set in the sky view's 📏 size tool): at <b>${fmtLenShort(aD)}</b> the object was <b>${fmtLenShort(swW)}</b> across${awW != null ? ` and <b>${fmtLenShort(awW)}</b> above the observer` : ""}.` : ""}${cb && cb.maxRange >= D0 && cb.maxRange <= D1 ? ` <b>If the object was below the cloud deck</b> (base est. ${fmtLenShort(wx.baseAGL)} AGL), it was within <b>${fmtLenShort(cb.maxRange)}</b>${cb.maxSize != null ? ` and no larger than <b>${fmtLenShort(cb.maxSize)}</b>` : ""} — everything right of the grey line is ruled out. Above the deck flips this into a floor.` : ""}</p>`;
     }
   }
   /* --- object dimensions: dimensioned front/side/top of the fitted shape.
