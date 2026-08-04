@@ -46,6 +46,17 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Range ratio no longer inflated by stale size stamps** (found auditing the
+  same field file): sizing a track point stamps its angular size through the
+  BASE FOV, and the stamp was only re-derived on placement commit — so a
+  point re-sized on a zoomed frame after the last commit kept a value wrong
+  by the zoom ratio, and the report's "how much closer did it get" math read
+  it (the Germany clip reported a 15.25× range change; the true figure is
+  5.3×). The math core now re-derives every sized point's angular size from
+  its wpx through the solved per-frame FOV at the mouth of each consumer
+  (sourceTrack / videoKinematics / mixedStereo), and the size panel stamps
+  through the frame's own FOV in the first place. Un-stabilized and tripod
+  sessions are unchanged. Mathcheck-asserted with the field file's numbers.
 - **World-view wireframe scaled wrong while scrubbing a zoomed clip** (field
   report, Germany sighting): per-point size keyframes store the object's
   width in PIXELS on their own frame — and on a zooming clip (this one swept

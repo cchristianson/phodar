@@ -23,6 +23,36 @@ import { intersectLines } from "./triangulate.js";
      • otherwise        → the source's own manual `track` (the single-photo
        hand-drawn path — unchanged, so existing sightings behave identically).
    Pure + deterministic so the whole trajectory pipeline stays testable. */
+/* A sized track point's angular size, re-derived through the SOLVED per-frame
+   FOV whenever a posePath exists. The UI stamps `ang` through the BASE FOV at
+   size-time, and the stamp is only refreshed on placement commit — so a point
+   re-sized after the last commit carries a stale value, wrong by the zoom
+   ratio on a zooming clip (field case: 3.04° stored vs 1.05° true at a 5°-FOV
+   frame; it inflated the report's range ratio 3×). wpx is the ground truth
+   the user actually set; convert it fresh. Falls back to the stored stamp
+   (still, tripod, no solve). Pure. */
+export function trackAngAt(s, p) {
+  const stored = isNum(p?.ang) && +p.ang > 0 ? +p.ang : null;
+  if (!isNum(p?.wpx) || !(+p.wpx > 0) || !s?.natW || !isNum(p?.t)) return stored;
+  const pp = Array.isArray(s.posePath) && s.posePath.length >= 2 ? poseAtL(s.posePath, +p.t) : null;
+  const fov = pp && isNum(pp.fov) && +pp.fov > 0 ? +pp.fov : null;
+  if (fov == null) return stored;
+  const fpx = (+s.natW / 2) / Math.tan((fov * D2R) / 2);
+  return 2 * Math.atan((+p.wpx / 2) / fpx) * R2D;
+}
+/* apply trackAngAt across a track — identity (same reference) when nothing
+   changes, so un-zoomed sessions stay byte-identical */
+const rederiveAng = (s, track) => {
+  let changed = false;
+  const out = (track || []).map((p) => {
+    const a = trackAngAt(s, p);
+    if (a == null || (isNum(p.ang) && Math.abs(a - +p.ang) < 1e-6)) return p;
+    changed = true;
+    return { ...p, ang: +a };
+  });
+  return changed ? out : track;
+};
+
 export function sourceTrack(s) {
   if (!s) return [];
   const placedShot = (m) => isNum(m?.A?.az) && isNum(m?.A?.el) && isNum(m?.whenMs);
@@ -33,7 +63,10 @@ export function sourceTrack(s) {
     else if (isNum(m.A?.angManual) && +m.A.angManual > 0) pt.ang = +m.A.angManual;
     return pt;
   };
-  const manual = s.track || [];
+  /* per-frame sized points get their ang re-derived through the solved FOV
+     here, at the mouth of the pipeline — soloTrack, analyzeTracks and the
+     engine all inherit the correction */
+  const manual = rederiveAng(s, s.track || []);
   const extras = (s.moments || []).filter(placedShot);        // moments beyond the primary
   const shots = [s, ...extras].filter(placedShot);            // primary + placed moments
 
@@ -688,8 +721,9 @@ export function mixedStereo(sources) {
   scan(best.t - span / 100, best.t + span / 100, Math.max(span / 2000, 0.005));
   const distAnchor = mag(sub(best.X, Pv));
   if (!(distAnchor > 0)) return null;
-  /* size profile → absolute range at every frame */
-  const sized = (vid.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0).map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
+  /* size profile → absolute range at every frame (ang re-derived through the
+     solved per-frame FOV — a stale base-FOV stamp is wrong by the zoom ratio) */
+  const sized = rederiveAng(vid, vid.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0).map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
   const angAt = sized.length ? (t) => {
     if (t <= sized[0].t) return sized[0].ang;
     if (t >= sized[sized.length - 1].t) return sized[sized.length - 1].ang;
@@ -743,8 +777,10 @@ export function videoKinematics(source) {
   const peakOmega = Math.max(...rate.map((r) => r.omega));
   const avgOmega = dur > 0 ? sweep / dur : 0;
   /* per-frame angular SIZE: interpolate the sized measure-step points onto the
-     objPath times (nearest-held at the ends). `ang` is degrees of full width. */
-  const sized = (source?.track || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0)
+     objPath times (nearest-held at the ends). `ang` is degrees of full width,
+     re-derived through the solved per-frame FOV (a stale base-FOV stamp on a
+     zoomed frame inflated a real clip's range ratio 3×). */
+  const sized = rederiveAng(source, (source && source.track) || []).filter((p) => isNum(p.t) && isNum(p.ang) && +p.ang > 0)
     .map((p) => ({ t: +p.t, ang: +p.ang })).sort((a, b) => a.t - b.t);
   let ang = null;
   if (sized.length) {

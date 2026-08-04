@@ -2245,7 +2245,16 @@ function MediaMeasure({ src, update, wizard }) {
   const delTarget = isVid ? delIdx : selClamped;
   const wFit = src.shapeFit ? (() => { const pr = shapeProjNat(src.shapeFit); return Math.hypot(pr.p2.x - pr.p1.x, pr.p2.y - pr.p1.y) || 1; })() : 1;
   const fpxM = natW && isNum(src.fovH) ? (natW / 2) / Math.tan((+src.fovH * D2R) / 2) : null;
-  const angOfW = (w) => (fpxM ? 2 * Math.atan((w / 2) / fpxM) * R2D : null);
+  /* angular size of w native px AT frame t: through the SOLVED per-frame FOV
+     when a stabilize path exists — a zoomed frame has many more px per
+     degree, and stamping through the base FOV wrote an ang wrong by the zoom
+     ratio (the stamp is what the report's range math reads). No solve or no
+     t ⇒ the base fovH, as before. */
+  const angOfW = (w, t) => {
+    const pp = Array.isArray(src.posePath) && src.posePath.length > 1 && isNum(t) ? posePathAt(src.posePath, +t) : null;
+    const fp = pp && isNum(pp.fov) && pp.fov > 0 && natW ? (natW / 2) / Math.tan((pp.fov * D2R) / 2) : fpxM;
+    return fp ? 2 * Math.atan((w / 2) / fp) * R2D : null;
+  };
   /* the selected point's ghost model as a loupe-ready shapeFit (centred on the
      point, width normalised through the rotated projection to hit `w`) — so
      tuning a SMALL object at a point pops the same magnifier as the initial
@@ -2279,7 +2288,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (selIdx < 0) return;
     snapToPtFrame();
     const w2 = clampN(w, 2, natW * 0.6);
-    const a2 = angOfW(w2);
+    const a2 = angOfW(w2, trkSorted[selIdx]?.t);
     update({ track: trkSorted.map((p, i) => (i === selIdx ? { ...p, wpx: +w2.toFixed(1), ...(a2 != null ? { ang: +a2.toFixed(5) } : {}) } : p)) });
     const sfG = ptGhostSf(trkSorted[selIdx], w2, ptRotOf(selIdx)); if (sfG) shapeLoupeFor(sfG);
   };
@@ -3089,7 +3098,7 @@ function MediaMeasure({ src, update, wizard }) {
                   const w = isNum(p.wpx) ? +p.wpx : wFit;
                   const lo = Math.max(2, wFit / 40), hi = Math.min(natW * 0.6, wFit * 40);
                   const sv = clampN(Math.log(w / lo) / Math.log(hi / lo), 0, 1);
-                  const aP = angOfW(w), aF = angOfW(wFit);
+                  const aP = angOfW(w, +p.t), aF = angOfW(wFit, isNum(src.A?.videoTime) ? +src.A.videoTime : null);
                   const rho = aP != null && aF != null ? Math.tan(aF * D2R / 2) / Math.tan(aP * D2R / 2) : null;
                   return (
                     <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.08)" }}>

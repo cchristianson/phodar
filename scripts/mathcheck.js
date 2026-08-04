@@ -6,7 +6,7 @@ import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/tri
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
+import { trackAngAt, trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -1569,6 +1569,29 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       // interpolated fov between samples: t=2.5 sits halfway 41.6→20
       const mid = normSizedTrack([{ t: 2.5, wpx: 100 }], pp, 41.6)[0].wpx;
       approx(mid, 100 * Math.tan(((41.6 + 20) / 2) * D2Rl / 2) / Math.tan(20.8 * D2Rl), 1e-9, "normSizedTrack: FOV interpolates linearly between pose samples");
+
+      /* trackAngAt + the range math: the UI stamps `ang` through the BASE
+         FOV, refreshed only on placement commit — the Germany field file
+         carried one stale stamp (50.3 px on a ~15°-FOV frame stored as
+         3.04°, true ≈1.05°) that inflated the report's range ratio ~3×. The
+         math core now re-derives ang from wpx through the solved per-frame
+         FOV at the mouth of every consumer. */
+      const src5 = {
+        natW: 720, fovH: 41.6,
+        posePath: [{ t: 0, az: 0, el: 30, fov: 41.6 }, { t: 10, az: 0, el: 30, fov: 15 }],
+        track: [
+          { t: 0, x: 1, y: 1, wpx: wpxOf(0.8, 41.6), ang: 0.8 },        // fresh stamp, base frame
+          { t: 10, x: 1, y: 1, wpx: 50.3, ang: 3.04123 },               // STALE: stamped at base FOV
+        ],
+      };
+      const a10 = trackAngAt(src5, src5.track[1]);
+      approx(a10, 2 * Math.atan((50.3 / 2) / fpx(15)) / D2Rl, 1e-9, "trackAngAt: stale stamp re-derived through the frame's solved FOV");
+      approx(a10 < 1.2 && a10 > 1.0 ? 1 : 0, 1, 0, `trackAngAt: Germany-style 3.04° stamp corrects to ~1.1° (${a10.toFixed(3)})`);
+      approx(trackAngAt({ natW: 720, fovH: 41.6 }, { t: 1, wpx: 10, ang: 0.5 }), 0.5, 1e-9, "trackAngAt: no posePath ⇒ the stored stamp stands");
+      // flows through videoKinematics: rangeRatio uses corrected angs
+      const op5 = Array.from({ length: 21 }, (_, i) => ({ t: i * 0.5, az: 0, el: 30 + i * 0.1, q: 0.9 }));
+      const vk5 = videoKinematics({ ...src5, objPath: op5 });
+      approx(vk5.rangeRatio, Math.tan((a10 * D2Rl) / 2) / Math.tan((0.8 * D2Rl) / 2), 1e-6, "videoKinematics: range ratio built from re-derived angs, not stale stamps (1.32×, not the stale 3.8×)");
     }
 
     /* CUBE ↔ DIAMOND (squash). The solid must actually BE a cube at 0 and a
