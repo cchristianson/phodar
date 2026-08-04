@@ -66,9 +66,10 @@ Notable changes to Phodar. Format loosely follows
 
 ### Added (quality of life)
 - **🎥 Track-quality rating** (field ask): a camera-motion risk rating
-  (excellent/good/fair/poor) rendered wherever the trajectory lives — under
-  the sky view's playback row and above the results screen's trajectory
-  section — naming its reasons: what share of the clip sits in hard zooms /
+  (excellent/good/fair/poor) rendered in the reporting surfaces — above the
+  results screen's trajectory section and at the top of the report's video
+  analysis (kept out of the sky view itself, which it cluttered) — naming
+  its reasons: what share of the clip sits in hard zooms /
   anchor-starved stretches where camera motion can read as object motion
   (already excluded from reported peaks), and whether the tracker-noise
   floor rivals the measured motion. Silence means a clean track. The
