@@ -46,6 +46,24 @@ Notable changes to Phodar. Format loosely follows
   .phodar.json share file, and the .zip bundle.
 
 ### Fixed
+- **Videos vanishing from the installed app while points survive** (field
+  report: "the PWA goes stale — no video loading from memory even though
+  track points and other data are there"): the sighting metadata lives in
+  localStorage (tiny, survives), but the clips live in IndexedDB — which,
+  as best-effort storage, is exactly what iOS reclaims under disk pressure,
+  hundreds-of-MB video blobs first. Three defenses now: (1) the app
+  requests **persistent storage** on boot (`navigator.storage.persist()` —
+  granted automatically for a home-screen PWA), so the media store stops
+  being first in line for eviction; (2) a **refused write is reported at
+  upload time** (storage full / private mode) instead of surfacing days
+  later as silent data loss; (3) when a clip IS found missing on boot, the
+  measure step **says exactly what happened** — and that re-attaching the
+  same file keeps every point, mark and placement (the keep-your-work
+  re-attach already existed; now you're told about it). The IndexedDB open
+  is also watchdogged and retried, since iOS has been seen hanging it
+  after a cold relaunch. Boot flow verified in a real browser (missing
+  record → notice + flag persists across reloads; record present → clip
+  re-attaches, flag clears).
 - **API/MCP: lean sessions no longer crash the solver** (found by a smoke
   test of the API stack): the app always creates `A`/`B` objects on every
   source, so `analyze()` read `s.A.az` / `s.B.az` unguarded — an external

@@ -38,7 +38,7 @@ import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
-import { mediaPut, mediaGet, mediaDel, mediaClear } from "./mediaStore.js";
+import { mediaPut, mediaGet, mediaDel, mediaClear, requestPersist } from "./mediaStore.js";
 import { parseMediaMeta } from "./exif.js";
 import { SHAPES, I3, rotX3, rotY3, rotZ3, mul3, SHAPE_R0, shapeProjNat, shapeWire, sampleShapeAt, pinApparentCenter } from "./shapes.js";
 import { planetPositions } from "./math/planets.js";
@@ -753,7 +753,7 @@ const HELP_SECTIONS = [
     intro: "Your work is saved automatically on this device and stays on it. Nothing is uploaded unless you export and share it yourself.",
     groups: [
       { h: "How data lives", items: [
-        { t: "Autosave", d: "Points, positions and settings save to this browser automatically; photos/videos are kept in the browser's local media store and re-attached when you return." },
+        { t: "Autosave", d: "Points, positions and settings save to this browser automatically; photos/videos are kept in the browser's local media store and re-attached when you return. The app asks the system to treat that storage as persistent, but iOS can still reclaim it when the device runs low on space (large videos go first) — if that happens, the measure step says which observer's file is missing, and re-attaching the SAME file keeps every measurement." },
         { t: "Import / export", d: "Move a sighting between devices or witnesses with the .phodar.json share file, the report .html, or the .zip bundle — all re-importable from the home screen." },
         { t: "units", d: "The metric/imperial choice is remembered for next time." },
       ]},
@@ -1215,6 +1215,11 @@ function MediaMeasure({ src, update, wizard }) {
   /* Load a File into the source: mine its EXIF, normalize on display, reset marks.
      `opts.sensorPose` (from the in-app sensor capture) overlays the up/down angle
      and roll the photo's EXIF can't carry — see the SENSOR OVERLAY note below. */
+  /* on-device persistence honesty: mediaPut resolves false when the write is
+     refused (quota, private mode) — warn at upload time, not at the reload
+     days later where it reads as data loss */
+  const [storeWarn, setStoreWarn] = useState("");
+  const warnPut = (p) => p.then((okP) => setStoreWarn(okP ? "" : "⚠ This file couldn't be saved to on-device storage (storage full or private mode) — it will NOT survive closing the app. Your points and measurements do persist; free up space or export a bundle to keep the media."));
   const ingestFile = async (f, opts = {}) => {
     setLoadErr(""); setLoading(true);
     const kind = f.type.startsWith("video") ? "video" : "image";
@@ -1239,14 +1244,17 @@ function MediaMeasure({ src, update, wizard }) {
     const hasWork = !!(src.A?.p1 || src.A?.p2 || (src.track || []).length || src.shapeFit);
     const keepWork = !!opts.keep || (!src.mediaUrl && hasWork);
     update({
-      mediaUrl: url, mediaKind: kind, mediaNorm: false,
+      mediaUrl: url, mediaKind: kind, mediaNorm: false, mediaLost: null,
       natW: null, natH: null, meta: null, capture: null,
       ...(keepWork
         ? { posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null }
         : { A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [], trim: null }),
     });
     if (keepWork) { mediaDel(src.id + ":stab"); setLoadErr(""); }
-    if (kind === "video") mediaPut(src.id, { kind: "video", data: f }); // survives reload via IndexedDB
+    /* survives reload via IndexedDB — and if the write is REFUSED (quota,
+       private mode), say so NOW: a silently unsaved clip surfaces days later
+       as "my video vanished" with nothing to act on (field report) */
+    if (kind === "video") warnPut(mediaPut(src.id, { kind: "video", data: f }));
     const sp = opts.sensorPose || null;
     /* instrumented capture: the continuous attitude log rides on the source and
        is fused with the visual solve later (src/video/sensorpath.js) */
@@ -1336,7 +1344,7 @@ function MediaMeasure({ src, update, wizard }) {
     if (cap.pose) patch.mediaAim = { az: cap.pose.az, el: cap.pose.el, roll: cap.pose.roll };
     if (cap.gps && isNum(cap.gps.lat)) { patch.lat = cap.gps.lat.toFixed(6); patch.lon = cap.gps.lon.toFixed(6); if (isNum(cap.gps.alt)) patch.alt = cap.gps.alt.toFixed(0); }
     update(patch);
-    mediaPut(src.id, { kind: "image", data: cap.dataUrl });
+    warnPut(mediaPut(src.id, { kind: "image", data: cap.dataUrl }));
     setCapOpen(false);
   };
 
@@ -1514,7 +1522,7 @@ function MediaMeasure({ src, update, wizard }) {
           const durl = cv.toDataURL("image/jpeg", 0.98);
           const pf = autoPortraitFov(W, Hh);
           update(pf ? { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh, fovH: pf } : { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
-          mediaPut(src.id, { kind: "image", data: durl }); // survives reload via IndexedDB
+          warnPut(mediaPut(src.id, { kind: "image", data: durl })); // survives reload via IndexedDB — warn if refused
           setLoading(false); setLoadErr("");
           measureWrap();
           return;
@@ -2409,6 +2417,16 @@ function MediaMeasure({ src, update, wizard }) {
       </div>
 
       {loadErr && <div className="warn">{loadErr}</div>}
+      {storeWarn && !loadErr && <div className="warn">{storeWarn}</div>}
+      {/* MEDIA LOST from on-device storage (iOS eviction / refused write): the
+          measurements are all here — say what happened and that re-attaching
+          the same file keeps every one of them, instead of presenting a bare
+          upload prompt that reads as total data loss (field report). */}
+      {!media && !loading && src.mediaLost && (
+        <div className="warn">
+          This observer's {src.mediaLost === "video" ? "video" : "photo"} is no longer in this device's storage — the system reclaimed the space (large files go first). Your points, marks and placements are all still here: tap <b>Load photo or video</b> and pick the <b>same file</b> to re-attach it and keep every measurement{src.mediaLost === "video" ? " (then re-run 🎞 Stabilize)" : ""}.
+        </div>
+      )}
       {/* an in-app recording is NOT in the camera roll until it's shared out —
           the footage would die with the site data, so say it once, plainly */}
       {rollNag && !loadErr && (
@@ -11047,7 +11065,7 @@ async function packSources(sources) {
     /* preStab is the undo snapshot for the last stabilize run — private working
        state, and a full duplicate of both paths. It has no meaning to a
        recipient and would roughly double the video payload of every share. */
-    const { mediaUrl, mediaKind, mediaNorm, open, preStab, ...r } = s;
+    const { mediaUrl, mediaKind, mediaNorm, mediaLost, open, preStab, ...r } = s;
     /* moments carry their own (heavy) photos — keep the measurements (whenMs +
        A.az/el + marks + natW/H/fovH) so an imported sighting still reconstructs
        the multi-photo trajectory via sourceTrack, and bundle a modest thumbnail
@@ -12966,6 +12984,10 @@ export default function App() {
 
   /* restore session (migrates pre-rename SkyFix sessions transparently) */
   useEffect(() => {
+    /* mark this origin's storage persistent so iOS stops treating the media
+       store (hundreds of MB of video) as first-in-line for eviction — the
+       "app went stale, videos gone but points survived" field failure */
+    requestPersist();
     (async () => {
       let d = null;
       for (const key of ["phodar-v1", "skyfix-v1"]) {
@@ -12984,9 +13006,20 @@ export default function App() {
             const recFor = (id) => rs.find((r) => r.id === id)?.rec;
             const attach = (o) => {
               const hit = recFor(o.id);
-              if (!hit || o.mediaUrl) return o;
+              if (o.mediaUrl) return o;
+              if (!hit) {
+                /* the source HAD media (saved mediaKind survives autosave now)
+                   that the store no longer holds — iOS eviction or a refused
+                   write. Flag it so the measure step can SAY so, and drop
+                   mediaKind so every "is a video" gate behaves exactly as if
+                   no media were attached (which is the truth). */
+                const was = o.mediaKind || o.mediaLost;
+                if (!was) return o;
+                const { mediaKind, ...rest } = o;
+                return { ...rest, mediaLost: was };
+              }
               const url = hit.kind === "video" ? URL.createObjectURL(hit.data) : hit.data;
-              return { ...o, mediaUrl: url, mediaKind: hit.kind, mediaNorm: hit.kind === "image" };
+              return { ...o, mediaUrl: url, mediaKind: hit.kind, mediaNorm: hit.kind === "image", mediaLost: null };
             };
             setSources((ss) => ss.map((s) => {
               const s2 = attach(s);
@@ -13007,8 +13040,12 @@ export default function App() {
       try {
         /* strip heavy media URLs — the observer's own AND each moment's (data
            URLs are MBs; localStorage caps ~5 MB). The pixels live in IndexedDB
-           and are re-attached on boot; only measurements/points persist here. */
-        const stripMedia = ({ mediaUrl, mediaKind, mediaNorm, ...rest }) => rest;
+           and are re-attached on boot; only measurements/points persist here.
+           mediaKind (a few bytes) is KEPT: it's how a reload can tell "this
+           source HAD a clip that is now missing from the media store" apart
+           from "never had media", and say so instead of silently showing the
+           upload prompt (field: videos vanished, points survived). */
+        const stripMedia = ({ mediaUrl, mediaNorm, ...rest }) => rest;
         const lean = sources.map((s) => {
           const s2 = stripMedia(s);
           return (s2.moments || []).length ? { ...s2, moments: s2.moments.map(stripMedia) } : s2;
