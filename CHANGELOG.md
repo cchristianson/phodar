@@ -64,6 +64,17 @@ Notable changes to Phodar. Format loosely follows
   5.1 ft across · 225 ft above you"), plus a caption sentence. Verified by
   rendering the real report in a browser against the Germany field session.
 
+### Added (quality of life)
+- **🎥 Track-quality rating** (field ask): a camera-motion risk rating
+  (excellent/good/fair/poor) rendered wherever the trajectory lives — under
+  the sky view's playback row and above the results screen's trajectory
+  section — naming its reasons: what share of the clip sits in hard zooms /
+  anchor-starved stretches where camera motion can read as object motion
+  (already excluded from reported peaks), and whether the tracker-noise
+  floor rivals the measured motion. Silence means a clean track. The
+  Germany field clip rates "fair — 39% masked". Pure + mathcheck-asserted
+  (`trackQuality` in the math core).
+
 ### Fixed
 - **The phantom "sharp turn" during a zoom is now masked and named** (field
   report: "the sharp turn never happens in the video — it glides like a

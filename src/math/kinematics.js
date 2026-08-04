@@ -760,6 +760,29 @@ export function mixedStereo(sources) {
    range-ratio) — so linear size and speed at ANY assumed distance follow via
    the returned helpers. `q` (match confidence) rides along so the report can
    flag stretches held on the guide rather than pixel-locked. Pure. */
+/* One-line QUALITY RATING for a solved object track — how much camera motion
+   could be leaking into the trajectory (field ask: "a hint when camera
+   movement is likely to cause incorrect trajectory data, with a rating").
+   Grades follow the app's excellent/good/fair/poor vocabulary:
+     · pct of the tracked span inside rotation-starved zoom stretches (the
+       masked spans — where the solve can't separate camera from object);
+     · whether the tracker-noise floor is comparable to the measured motion.
+   Pure; the UI and report render it, the affected stretches are already
+   excluded from reported peaks by videoKinematics itself. */
+export function trackQuality(s) {
+  const vk = videoKinematics(s);
+  if (!vk || !vk.samples.length) return null;
+  const t0 = vk.samples[0].t, t1 = vk.samples[vk.samples.length - 1].t;
+  const maskedDur = (vk.zoomSpans || []).reduce((a, sp) => a + Math.max(0, Math.min(sp.t1 + 0.3, t1) - Math.max(sp.t0 - 0.3, t0)), 0);
+  const pct = vk.dur > 0 ? maskedDur / vk.dur : 0;
+  const noisy = vk.noiseOmega > Math.max(0.3, vk.avgOmega * 0.8);
+  const reasons = [];
+  if (pct > 0) reasons.push(`${Math.round(pct * 100)}% of the clip sits in hard zooms / anchor-starved stretches where camera motion can read as object motion (excluded from reported peaks)`);
+  if (noisy) reasons.push(`the tracker-noise floor (≈${vk.noiseOmega.toFixed(2)}°/s) is comparable to the measured motion — treat rate details as approximate`);
+  const grade = pct > 0.45 || (noisy && pct > 0.2) ? "poor" : pct > 0.15 || noisy ? "fair" : pct > 0 ? "good" : "excellent";
+  return { grade, pct, maskedDur, spans: vk.zoomSpans || [], noiseOmega: vk.noiseOmega, noisy, reasons };
+}
+
 export function videoKinematics(source) {
   const op = (source?.objPath || []).filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el)).sort((a, b) => a.t - b.t);
   if (op.length < 3) return null;

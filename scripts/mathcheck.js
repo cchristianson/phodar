@@ -6,7 +6,7 @@ import { intersectLines, analyze, aspectSpan, covEllipse } from "../src/math/tri
 import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
-import { trackAngAt, trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
+import { trackQuality, trackAngAt, trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
 import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
 import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
@@ -1481,6 +1481,14 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       // a REAL maneuver away from any zoom must still be reported at value
       const vkB2 = videoKinematics({ objPath: mkB(), posePath: ppD.map((p) => ({ ...p, fov: 16, n: 25 })) });
       approx(vkB2.peakOmega > 4 * Math.cos(30 * Math.PI / 180) * 0.9 ? 1 : 0, 1, 0, "videoKin mask: a sustained maneuver on a clean solve keeps its true peak");
+      /* trackQuality — the camera-motion risk RATING the UI hint renders */
+      const tqD = trackQuality({ objPath: mkD(), posePath: ppD });
+      approx(["good", "fair", "poor"].includes(tqD.grade) ? 1 : 0, 1, 0, `trackQuality: a zoom-contaminated clip is rated below excellent (${tqD.grade})`);
+      approx(tqD.reasons.length >= 1 ? 1 : 0, 1, 0, "trackQuality: the rating names its reasons");
+      const tqClean = trackQuality({ objPath: mkB(), posePath: ppD.map((p) => ({ ...p, fov: 16, n: 25 })) });
+      approx(tqClean.grade === "excellent" ? 1 : 0, 1, 0, `trackQuality: a steady-camera clean solve rates excellent (${tqClean.grade})`);
+      const tqNoisy = trackQuality({ objPath: Array.from({ length: 85 }, (_, i) => ({ t: i * 0.25, az: 350 + 0.05 * rnd() * 6, el: 30 + 0.05 * rnd() * 6, q: 0.9 })) });
+      approx(tqNoisy.grade === "fair" || tqNoisy.grade === "poor" ? 1 : 0, 1, 0, `trackQuality: a near-hover where noise rivals motion is flagged (${tqNoisy.grade})`);
     }
   }
 

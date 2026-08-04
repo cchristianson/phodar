@@ -20,7 +20,7 @@ import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearin
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
-import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo } from "./math/kinematics.js";
+import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
 import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
 import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibration, witnessClockCheck, witnessStatedMs, DRONE_PRESETS } from "./checks/flightlog.js";
@@ -647,7 +647,7 @@ const HELP_SECTIONS = [
         { t: "🎯 Solve from marks", d: "The manual fallback: solves each frame's pose from the background features you hand-marked with 🎥 Cam refs on step 1 — for a clip the automatic pass can't hold (near-black, low contrast, no skyline). A smoothing slider appears to average out imperfect placement." },
         { t: "⟳ Re-stabilize to apply", d: "An amber line that appears next to the stabilize button when something the solve DEPENDED on has been edited since it ran — new ⊕ Track points, a moved object mark, a different alignment frame, a changed trim or FOV. It names what changed. Until you re-stabilize, the stored camera path and object track still reflect the old inputs, and nothing else in the app would tell you." },
         { t: "🛸 object overlay", d: "Header toggle for the fitted 3D wireframe and its marks over the photo. It rides the tracked path during stabilized playback, and it is burned into the exported video ONLY while this is on — so turn it off for a clean evidence render." },
-        { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it." },
+        { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it. Under the row, a 🎥 track-quality rating (excellent/good/fair/poor) warns when camera motion could be leaking into the trajectory — hard zooms leave the solver too few background anchors to separate camera from object, so those stretches are excluded from reported peak rates and named in the rating (also shown on the results screen and in the report)." },
         { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Distance, size & the path", items: [
@@ -4851,6 +4851,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     source?.stabSig, source?.alignT, source?.A?.videoTime, source?.A?.p1, source?.A?.p2,
     source?.trim, source?.fovH, source?.track, source?.posePath,
   ]);
+  /* camera-motion risk rating for the solved object track — memoised: the
+     windowed rate fit is O(n·window) and SkyAimer re-renders per drag frame */
+  const trackQ = useMemo(
+    () => (Array.isArray(source?.objPath) && source.objPath.length > 2 ? trackQuality(source) : null),
+    [source?.objPath, source?.posePath, source?.track],
+  );
   const markT = clampN(isNum(source?.A?.videoTime) ? +source.A.videoTime : alignT, trimS.t0, isFinite(trimS.t1) ? trimS.t1 : 1e9);
   /* MARKED-frame pixel → world dir. The object marks/track pixels live on the
      MARKED frame, so their sky position is fixed by that frame's pose. During
@@ -7914,6 +7920,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 </div>
               </div>
             )}
+            {/* CAMERA-MOTION RISK HINT (field ask): a rating right where the
+               track lives, so the provenance of the numbers is visible before
+               anyone quotes them. Only rendered when there's something to say. */}
+            {!calibOn && pMode !== "place" && !sizeOn && !cmpOn && !fixOn && trackQ && trackQ.grade !== "excellent" && (
+              <div style={{ fontSize: 10.5, lineHeight: 1.45, color: "var(--dim)", margin: "0 0 6px" }}>
+                🎥 track quality: <b style={{ color: trackQ.grade === "good" ? "var(--teal)" : trackQ.grade === "fair" ? "var(--amber)" : "var(--red)" }}>{trackQ.grade}</b> — {trackQ.reasons.join("; ")}
+              </div>
+            )}
             {fixOn && !calibOn && pMode !== "place" && !sizeOn && !cmpOn && source?.mediaKind === "video" && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
               <div style={{ display: "grid", gap: 4, marginBottom: 8, background: "rgba(15,23,42,.65)", border: "1px solid var(--amber)", borderRadius: 10, padding: "6px 8px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -10911,6 +10925,18 @@ function ResultsPanel({ sources, onLog }) {
             : <>⚠ Multiple observers have tracks, but their time windows don't overlap. Track times sync through each source's Moment-A clock time — set "Set time A" on the anchor frame, then put both observers' A times on a common clock.</>}
         </div>
       )}
+      {/* CAMERA-MOTION RISK per tracked clip (field ask): rate the trajectory's
+         provenance right above the numbers it feeds. Silence = clean. */}
+      {sources.filter((s) => Array.isArray(s.objPath) && s.objPath.length > 2).map((s) => {
+        const tq = trackQuality(s);
+        if (!tq || tq.grade === "excellent") return null;
+        const col = tq.grade === "good" ? "var(--teal)" : tq.grade === "fair" ? "var(--amber)" : "var(--red)";
+        return (
+          <div key={"tq" + s.id} className={tq.grade === "good" ? undefined : "warn"} style={{ margin: "10px 12px", fontSize: 11.5, lineHeight: 1.45, ...(tq.grade === "good" ? { color: "var(--dim)" } : {}) }}>
+            🎥 {s.name || "Observer"} — track quality <b style={{ color: col }}>{tq.grade}</b>: {tq.reasons.join("; ")}.
+          </div>
+        );
+      })}
       {trk.stereo && trk.stereo.k && <TrajectoryStereoSection stereo={trk.stereo} />}
       {!(trk.stereo && trk.stereo.k) && trk.solo.length > 0 && (
         <SoloTrackSection solo={trk.solo} t={soloT} setT={setSoloT} />
