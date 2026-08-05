@@ -10946,14 +10946,20 @@ function ResultsPanel({ sources, onLog }) {
         </div>
       )}
       {/* CAMERA-MOTION RISK per tracked clip (field ask): rate the trajectory's
-         provenance right above the numbers it feeds. Silence = clean. */}
+         provenance right above the numbers it feeds. Silence = clean. When the
+         solo section below carries the strong at-figure g caveat, its camera-
+         work sentence is dropped here — the same warning twice reads as a bug
+         (field report), and the remaining reasons still justify the grade. */}
       {sources.filter((s) => Array.isArray(s.objPath) && s.objPath.length > 2).map((s) => {
         const tq = trackQuality(s);
         if (!tq || tq.grade === "excellent") return null;
+        const soloShown = !(trk.stereo && trk.stereo.k) && trk.solo.length > 0;
+        const rs = soloShown && tq.camReason ? tq.reasons.filter((r) => r !== tq.camReason) : tq.reasons;
+        if (!rs.length) return null;   // the at-figure caveat carries it alone
         const col = tq.grade === "good" ? "var(--teal)" : tq.grade === "fair" ? "var(--amber)" : "var(--red)";
         return (
           <div key={"tq" + s.id} className={tq.grade === "good" ? undefined : "warn"} style={{ margin: "10px 12px", fontSize: 11.5, lineHeight: 1.45, ...(tq.grade === "good" ? { color: "var(--dim)" } : {}) }}>
-            🎥 {s.name || "Observer"} — track quality <b style={{ color: col }}>{tq.grade}</b>: {tq.reasons.join("; ")}.
+            🎥 {s.name || "Observer"} — track quality <b style={{ color: col }}>{tq.grade}</b>: {rs.join("; ")}.
           </div>
         );
       })}

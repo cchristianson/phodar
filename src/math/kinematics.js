@@ -802,17 +802,23 @@ export function trackQuality(s) {
   const reasons = [];
   if (pct > 0) reasons.push(`${Math.round(pct * 100)}% of the clip sits in hard zooms / anchor-starved stretches where camera motion can read as object motion (excluded from reported peaks)`);
   if (noisy) reasons.push(`the tracker-noise floor (≈${vk.noiseOmega.toFixed(2)}°/s) is comparable to the measured motion — treat rate details as approximate`);
+  /* camReason is returned SEPARATELY as well: the results panel filters it out
+     of its banner when the solo section renders the strong at-figure g caveat
+     right below (same sentence twice reads as a bug — field report); the
+     report keeps the full reasons since it has no at-figure caveat. */
+  let camReason = null;
   if (camHeavy) {
     const bits = [];
     if (camSweep > 5) bits.push(`swept ~${Math.round(camSweep)}°`);
     if (zoomX > 1.3) bits.push(`${zoomX.toFixed(1)}× zoom`);
     if (chainPct > 0.05) bits.push(`${Math.round(chainPct * 100)}% frame-to-frame lock`);
-    reasons.push(`the camera itself was worked hard (${bits.join(", ")}) — small stabilization errors differentiate into large apparent accelerations, so treat any g figure as an upper bound`);
+    camReason = `the camera itself was worked hard (${bits.join(", ")}) — small stabilization errors differentiate into large apparent accelerations, so treat any g figure as an upper bound`;
+    reasons.push(camReason);
   }
   let grade = pct > 0.45 || (noisy && pct > 0.2) ? "poor" : pct > 0.15 || noisy ? "fair" : pct > 0 ? "good" : "excellent";
   if (camHeavy && (grade === "excellent" || grade === "good")) grade = "fair";
   if (camHeavy && (chainPct > 0.45 || noisy)) grade = "poor";
-  return { grade, pct, maskedDur, spans: vk.zoomSpans || [], noiseOmega: vk.noiseOmega, noisy, camSweep, chainPct, heldPct, zoomX, camHeavy, reasons };
+  return { grade, pct, maskedDur, spans: vk.zoomSpans || [], noiseOmega: vk.noiseOmega, noisy, camSweep, chainPct, heldPct, zoomX, camHeavy, camReason, reasons };
 }
 
 export function videoKinematics(source) {

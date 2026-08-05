@@ -1632,6 +1632,9 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(tqCam.camHeavy ? 1 : 0, 1, 0, "trackQuality: heavy camera work (sweep + zoom + chain) is detected");
       approx(tqCam.grade === "fair" || tqCam.grade === "poor" ? 1 : 0, 1, 0, `trackQuality: camHeavy caps the grade (${tqCam.grade})`);
       approx(tqCam.reasons.some((r) => r.includes("upper bound")) ? 1 : 0, 1, 0, "trackQuality: the g upper-bound caveat is in the reasons");
+      /* camReason is the SAME element (identity) — the results panel filters it
+         out of the banner when the at-figure caveat renders below */
+      approx(tqCam.camReason && tqCam.reasons.includes(tqCam.camReason) ? 1 : 0, 1, 0, "trackQuality: camReason rides in reasons by identity (banner dedupe)");
       approx(tqCam.chainPct > 0.4 ? 1 : 0, 1, 0, `trackQuality: chain fraction measured (${(tqCam.chainPct * 100).toFixed(0)}%)`);
       /* and a steady tripod solve must NOT trip the camera-work flag */
       approx(tqClean.camHeavy ? 1 : 0, 0, 0, "trackQuality: a steady camera is not flagged camHeavy");
