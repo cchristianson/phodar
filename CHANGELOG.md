@@ -123,6 +123,27 @@ Notable changes to Phodar. Format loosely follows
   Mathcheck-asserted (a Germany-like sweep+zoom+chain clip rates poor with
   the upper-bound caveat; a steady tripod solve stays unflagged).
 
+### Fixed (this batch)
+- **The in-app manual was painted over by the sky view's bottom controls**
+  (field report). The ? button lives inside the sky view's HUD, which is a
+  positioned, z-indexed element — a CSS stacking context — so the overlay's own
+  z-index was scoped inside it and the bottom bar (same z-index, later in the
+  DOM) drew straight over the manual. The overlay now renders through a portal
+  to `<body>`, which takes it out of every ancestor context and holds wherever
+  a help button is placed. Pointer events are stopped at its backdrop too: a
+  portal escapes the DOM tree but NOT React's synthetic event tree, so without
+  that a tap on the open manual would have rotated the dome behind it.
+  (Affected edit mode as much as review mode.)
+- **🎯 Solve from marks was not a toggle**: every tap re-opened its smoothing
+  panel, so tapping the button again could never close it — the only ways out
+  were ✓ Done or switching to another tool (field report). It now behaves like
+  every other mode button: tap to open and solve, tap again to close,
+  highlighted while open.
+- **🎯 Solve from marks is hidden in view-only mode** — it writes a solved
+  camera path, so it had no business being reachable while reviewing. It only
+  appears when a clip carries hand-marked camera refs, which is why the first
+  dead-control sweep missed it.
+
 ### Changed
 - **The wizard's last two steps step BACK one page, and gained a 🏠 button**
   (field ask). Their ‹ used to jump all the way to the sighting list, so

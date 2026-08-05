@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { D2R, R2D, RAD, clampN, dot, sub, add, scl, unit, mag, geoFromEnu, dirFromAzEl, dirToAzEl } from "./math/geodesy.js";
@@ -794,7 +795,7 @@ function HelpButton({ section, style }) {
   return (
     <>
       <button className="help-q" title="Help & guide" aria-label="Help and guide" style={style} onClick={() => setOpen(true)}>?</button>
-      {open && <HelpOverlay start={section} onClose={() => setOpen(false)} />}
+      {open && createPortal(<HelpOverlay start={section} onClose={() => setOpen(false)} />, document.body)}
     </>
   );
 }
@@ -808,7 +809,9 @@ function HelpOverlay({ start, onClose }) {
     if (el) el.scrollIntoView({ block: "start" });
   }, [start]);
   return (
-    <div className="help-back" onClick={onClose}>
+    <div className="help-back" onClick={onClose}
+      onPointerDown={(e) => e.stopPropagation()} onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
       <div className="help-panel" onClick={(e) => e.stopPropagation()}>
         <div className="help-head">
           <img src={phodarLogo} alt="PHODAR" style={{ height: 24, width: "auto", borderRadius: 5, display: "block" }} />
@@ -7835,10 +7838,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   {/* MANUAL solve: only when the clip has hand-marked camera refs
                       (the auto pass couldn't do it) — solves instantly from marks,
                       then a smoothing slider pops up to tune the result live */}
-                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && (source?.camRefs || []).some((r) => (r.marks || []).filter((m) => isNum(m.x)).length) && (
-                    <button className="btn sm green" style={{ flex: "0 0 auto" }}
-                      title="Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"
-                      onClick={() => { setMSolveOpen(true); solveFromMarks(mSmooth); }}>🎯 Solve from marks</button>
+                  {!viewOnly && pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && (source?.camRefs || []).some((r) => (r.marks || []).filter((m) => isNum(m.x)).length) && (
+                    <button className={"btn sm green" + (mSolveOpen ? " amber" : "")} style={{ flex: "0 0 auto" }}
+                      title={mSolveOpen
+                        ? "Close the smoothing panel. The solve stays — ↶ Undo or ✕ clear remove it."
+                        : "Solve each frame's pose from your hand-marked camera references (Cam refs on the measure step) — the fallback when the automatic stabilizer can't lock on"}
+                      onClick={() => { if (mSolveOpen) { setMSolveOpen(false); return; } setMSolveOpen(true); solveFromMarks(mSmooth); }}>🎯 Solve from marks</button>
                   )}
                   {/* hidden while placing — the place tools' "aligning on" line
                       already says which frame matters there (screen space) */}
