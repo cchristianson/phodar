@@ -12842,13 +12842,20 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
   );
 }
 
-function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt, onLog }) {
+function WizFinish({ sources, est, onAdd, onReport, onBack, onHome, onFixAlt, onLog }) {
   const fix = analyze(sources);
   const tr = analyzeTracks(sources);
   return (
     <div style={{ padding: "14px 12px 40px" }}>
+      {/* ‹ steps ONE page back (to the sky view that produced these numbers) —
+          it used to jump all the way home, which made a small correction to the
+          placement a full re-walk of the wizard (field ask). 🏠 is the explicit
+          way out to the sighting list. */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <button className="btn sm" onClick={onHome}>‹</button>
+        <div style={{ display: "flex", gap: 5 }}>
+          <button className="btn sm" onClick={onBack}>‹</button>
+          <button className="btn sm" onClick={onHome} title="Back to the sighting list">🏠</button>
+        </div>
         <div>
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>SIGHTING CAPTURED</div>
           <WizDots n={4} style={{ marginTop: 4 }} />
@@ -12907,8 +12914,9 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt, o
       </div>
       <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
         <button className="btn amber" style={{ padding: 13 }} onClick={onAdd}>➕ Add another perspective</button>
-        <button className="btn teal" style={{ padding: 13 }} onClick={onReport}>📄 Generate report</button>
-        <button className="btn" style={{ padding: 13 }} onClick={onShare}>💾 Share file (.phodar.json)</button>
+        {/* the .phodar.json share file lives on the report step now, beside the
+            other two exports it belongs with (field ask) */}
+        <button className="btn teal" style={{ padding: 13 }} onClick={onReport}>📄 Generate report &amp; share</button>
       </div>
       {/* full results: top-down plot, per-observer table, motion, quality, trajectory, ADS-B */}
       <div style={{ margin: "6px -12px 0" }}>
@@ -12918,7 +12926,7 @@ function WizFinish({ sources, est, onAdd, onReport, onShare, onHome, onFixAlt, o
   );
 }
 
-function ReportView({ sources, est, onBack }) {
+function ReportView({ sources, est, onBack, onHome }) {
   const [msg, setMsg] = useState("");
   const [prevHtml, setPrevHtml] = useState(null);   // iframe preview
   const [manual, setManual] = useState(null);       // { name, text } fallback copy box
@@ -13039,10 +13047,26 @@ function ReportView({ sources, est, onBack }) {
     deliver(repName, html, "text/html");
   };
   const openReport = async () => { setMsg("packing…"); wakeHold(); try { setPrevHtml(await reportHtml(sources, est, { exhibits: "full" })); } finally { wakeRelease(); } setMsg(""); };
+  /* the .phodar.json share file — moved here from the results step so all three
+     exports sit together. It goes through this page's own `deliver`, which
+     falls back download → clipboard → a select-all copy box, instead of the
+     old alert() that could leave the user with nothing on a blocked download. */
+  const shareJson = async () => {
+    setMsg("packing share file…");
+    wakeHold();
+    let j; try { j = await buildShareJson(sources, est); } finally { wakeRelease(); }
+    deliver(`${slugName(est) || "sighting"}.phodar.json`, j, "application/json");
+  };
   return (
     <div style={{ padding: "14px 12px 40px" }}>
+      {/* ‹ steps back one page (to the results step, or the sighting list when
+          the report was opened straight from there); 🏠 is the way out to the
+          list from the end of the wizard (field ask). */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <button className="btn sm" onClick={onBack}>‹</button>
+        <div style={{ display: "flex", gap: 5 }}>
+          <button className="btn sm" onClick={onBack}>‹</button>
+          <button className="btn sm" onClick={onHome} title="Back to the sighting list">🏠</button>
+        </div>
         <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>REPORT &amp; SHARE</div>
         <HelpButton section="report" style={{ marginLeft: "auto" }} />
       </div>
@@ -13066,6 +13090,7 @@ function ReportView({ sources, est, onBack }) {
         <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
           <button className="btn amber" style={{ padding: 14, fontSize: 15 }} onClick={openReport}>👁 View report</button>
           <button className="btn" style={{ padding: 12 }} onClick={downloadBundle}>⬇ Download bundle (.zip — report + photos + videos + data)</button>
+          <button className="btn" style={{ padding: 12 }} onClick={shareJson}>💾 Share file (.phodar.json — data only)</button>
           {pendingZip && (
             <button className="btn teal" style={{ padding: 12 }} onClick={savePendingZip}>
               💾 Save bundle ({pendingZip.label.split(" · ")[0]}) — opens the share sheet
@@ -13278,14 +13303,10 @@ export default function App() {
   };
   /* ——— guided wizard shell — the one and only workflow ——— */
   const goView = (view) => setUi((u) => ({ ...u, view }));
-  const shareJsonNow = async () => {
-    wakeHold(); // media packing (thumbnails/crops) can run long on big sightings
-    let j; try { j = await buildShareJson(sources, est); } finally { wakeRelease(); }
-    const dl = download(`${slugName(est) || "sighting"}.phodar.json`, j, "application/json");
-    let cp = false;
-    try { await navigator.clipboard.writeText(j); cp = true; } catch (e) { }
-    alert(cp ? "Share file copied to clipboard ✓" + (dl ? " (download also attempted)" : "") : dl ? "Download started" : "Open the Report page to copy the share file.");
-  };
+  /* the report is reachable from the results step AND straight from the
+     sighting list, so its ‹ can't be a constant — remember which one opened it
+     (the 🏠 button is the unconditional way out). */
+  const goReport = (from) => setUi((u) => ({ ...u, view: "report", reportFrom: from }));
   const importShared = (text, media = []) => {
     try {
       let str = text;
@@ -13332,9 +13353,15 @@ export default function App() {
     const momIdx = wmom ? (wsrc.moments || []).findIndex((m) => m.id === wmom.id) : -1;
     let page = null;
     if (ui.view === "report") {
-      page = <ReportView sources={sources} est={est} onBack={() => goView("home")} />;
+      page = <ReportView sources={sources} est={est}
+        onBack={() => goView(ui.reportFrom === "s4" ? "s4" : "home")} onHome={() => goView("home")} />;
     } else if (ui.view === "s4") {
-      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goView("report")} onShare={shareJsonNow} onHome={() => goView("home")} onFixAlt={(id, alt) => updateSource(id, { alt })} onLog={(id, flightLog) => updateSource(id, { flightLog })} />;
+      /* ‹ goes back to the sky view that produced these numbers — but only when
+         there IS a working source to return to (an imported sighting opened
+         from the list has none); otherwise the list is the honest step back. */
+      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goReport("s4")}
+        onBack={() => goView(wsrc ? "s3" : "home")} onHome={() => goView("home")}
+        onFixAlt={(id, alt) => updateSource(id, { alt })} onLog={(id, flightLog) => updateSource(id, { flightLog })} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
@@ -13401,7 +13428,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => setEst((e) => ({ ...e, name }))} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goView("report")}
+    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => setEst((e) => ({ ...e, name }))} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goReport("home")}
       onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
       unitsImp={unitsImp} onToggleUnits={toggleUnits} appMode={appMode} onSetMode={setMode} />;
     return (

@@ -75,6 +75,22 @@ Notable changes to Phodar. Format loosely follows
   Mathcheck-asserted (a Germany-like sweep+zoom+chain clip rates poor with
   the upper-bound caveat; a steady tripod solve stays unflagged).
 
+### Changed
+- **The wizard's last two steps step BACK one page, and gained a 🏠 button**
+  (field ask). Their ‹ used to jump all the way to the sighting list, so
+  correcting a sky placement after reading the results meant walking the whole
+  wizard again: the results step's ‹ now returns to the sky view that produced
+  those numbers, and the report step's ‹ returns to the results step (or to
+  the list when the report was opened straight from there — no forward jump
+  into a step the user never visited). 🏠 on both is the unconditional way out.
+- **💾 Share file (.phodar.json) moved to the report step**, beside the report
+  and bundle downloads where the other two exports live. It also goes through
+  that page's own delivery chain now (download → clipboard → a select-all copy
+  box) instead of an alert that could leave the user with nothing when the
+  download was blocked. The results step's remaining button reads
+  "📄 Generate report & share". Nav + button placement verified end-to-end in
+  a real browser.
+
 ### Added (quality of life)
 - **Cube depth slider — the monolith axis** (field ask): the ⬛ cube gains a
   third independent proportion, `depth` (0.1–3×), thinning the footprint's

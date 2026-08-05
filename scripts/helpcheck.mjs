@@ -28,6 +28,7 @@ const STRUCTURAL = {
   "↑": "nudge arrow",
   "↓": "nudge arrow",
   "‹": "back chevron, documented as '‹ Back'",
+  "🏠": "home — the wizard's last two steps step BACK one page on ‹, so this is their unconditional way out to the sighting list; navigation, not a feature",
   "▸": "'Open ▸' disclosure on the observer row",
   "▾": "dropdown caret",
   "▼": "dropdown caret",
