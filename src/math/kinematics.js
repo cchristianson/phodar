@@ -379,7 +379,9 @@ export function analyzeTracks(sources) {
     if (!dirs || dirs.length < 3) return null;
     const cts = dirs.map((d) => d.ct);
     const k = kinematics(cts, dirs.map((d) => d.d), { maxSegDt: gapThreshold(cts) });
-    return k ? { name: s.name, k, rad: soloTrack(s) } : null;
+    /* tq rides along so the UI can caveat the g figure AT the figure when the
+       camera solve was worked hard (null for photo-only / untracked sources) */
+    return k ? { name: s.name, k, rad: soloTrack(s), tq: trackQuality(s) } : null;
   }).filter(Boolean);
 
   /* stereo: interpolate each observer's direction to common sample times */
@@ -776,11 +778,41 @@ export function trackQuality(s) {
   const maskedDur = (vk.zoomSpans || []).reduce((a, sp) => a + Math.max(0, Math.min(sp.t1 + 0.3, t1) - Math.max(sp.t0 - 0.3, t0)), 0);
   const pct = vk.dur > 0 ? maskedDur / vk.dur : 0;
   const noisy = vk.noiseOmega > Math.max(0.3, vk.avgOmega * 0.8);
+  /* CAMERA-WORK signals (field ask: the g figure needs a strong caveat when
+     heavy stabilization was needed). The object track is measured THROUGH the
+     camera solve, and acceleration double-differentiates it — so how hard the
+     solve was worked bounds how literally g can be read:
+       · camSweep — how far the camera itself rotated over the track's span;
+       · zoomX    — the FOV ratio (deep zoom magnifies every solve error);
+       · chainPct — fraction of frames on the frame-to-frame lock (the view
+         left the reference frame, so the solve is differential there and
+         drift accumulates — real motion, weaker absolute anchoring). */
+  const pp = Array.isArray(s.posePath) ? s.posePath.filter((p) => isNum(p.t) && +p.t >= t0 - 0.3 && +p.t <= t1 + 0.3) : [];
+  let camSweep = 0, chainN = 0, heldN = 0, fovLo = Infinity, fovHi = 0;
+  for (let i = 1; i < pp.length; i++) {
+    const a = pp[i - 1], b = pp[i];
+    const dAz = (((+b.az - +a.az + 540) % 360) - 180) * Math.cos((((+a.el + +b.el) / 2) || 0) * D2R);
+    camSweep += Math.hypot(dAz, (+b.el) - (+a.el));
+  }
+  for (const p of pp) { if (p.c) chainN++; if (p.h) heldN++; if (isNum(p.fov) && +p.fov > 0) { fovLo = Math.min(fovLo, +p.fov); fovHi = Math.max(fovHi, +p.fov); } }
+  const chainPct = pp.length ? chainN / pp.length : 0;
+  const heldPct = pp.length ? heldN / pp.length : 0;
+  const zoomX = fovLo < Infinity ? fovHi / fovLo : 1;
+  const camHeavy = pp.length >= 2 && (chainPct > 0.25 || camSweep > 25 || zoomX > 2.5);
   const reasons = [];
   if (pct > 0) reasons.push(`${Math.round(pct * 100)}% of the clip sits in hard zooms / anchor-starved stretches where camera motion can read as object motion (excluded from reported peaks)`);
   if (noisy) reasons.push(`the tracker-noise floor (≈${vk.noiseOmega.toFixed(2)}°/s) is comparable to the measured motion — treat rate details as approximate`);
-  const grade = pct > 0.45 || (noisy && pct > 0.2) ? "poor" : pct > 0.15 || noisy ? "fair" : pct > 0 ? "good" : "excellent";
-  return { grade, pct, maskedDur, spans: vk.zoomSpans || [], noiseOmega: vk.noiseOmega, noisy, reasons };
+  if (camHeavy) {
+    const bits = [];
+    if (camSweep > 5) bits.push(`swept ~${Math.round(camSweep)}°`);
+    if (zoomX > 1.3) bits.push(`${zoomX.toFixed(1)}× zoom`);
+    if (chainPct > 0.05) bits.push(`${Math.round(chainPct * 100)}% frame-to-frame lock`);
+    reasons.push(`the camera itself was worked hard (${bits.join(", ")}) — small stabilization errors differentiate into large apparent accelerations, so treat any g figure as an upper bound`);
+  }
+  let grade = pct > 0.45 || (noisy && pct > 0.2) ? "poor" : pct > 0.15 || noisy ? "fair" : pct > 0 ? "good" : "excellent";
+  if (camHeavy && (grade === "excellent" || grade === "good")) grade = "fair";
+  if (camHeavy && (chainPct > 0.45 || noisy)) grade = "poor";
+  return { grade, pct, maskedDur, spans: vk.zoomSpans || [], noiseOmega: vk.noiseOmega, noisy, camSweep, chainPct, heldPct, zoomX, camHeavy, reasons };
 }
 
 export function videoKinematics(source) {

@@ -59,6 +59,21 @@ Notable changes to Phodar. Format loosely follows
   the actual field clip: the solved elevation now climbs 30°→61° through
   the formerly frozen span with zero held frames. Re-run 🎞 Stabilize on
   affected sightings to pick it up.
+- **Strong g-figure caveat when the camera solve was worked hard** (field
+  ask: a maneuver-load figure computed through heavy stabilization is not a
+  measurement). `trackQuality` now also measures the CAMERA's workload over
+  the tracked span — total sweep, zoom ratio, and the fraction of frames on
+  the frame-to-frame lock — and flags `camHeavy` when any is substantial,
+  capping the quality grade at fair (poor when the chain carried most of the
+  clip). The single-observer trajectory section renders a hard warning
+  directly under the maneuver-load readout: acceleration
+  double-differentiates a track measured through the camera solve, so
+  residual stabilization wobble shows up as g the object never pulled —
+  treat the figure as an upper bound and distrust any maneuver the rate
+  plot doesn't show as a sustained ramp. The same reason line flows into
+  the results-panel quality banner and the report's video-analysis lead.
+  Mathcheck-asserted (a Germany-like sweep+zoom+chain clip rates poor with
+  the upper-bound caveat; a steady tripod solve stays unflagged).
 
 ### Added (quality of life)
 - **Cube depth slider — the monolith axis** (field ask): the ⬛ cube gains a

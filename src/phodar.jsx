@@ -257,6 +257,20 @@ function SoloTrackSection({ solo, t, setT }) {
                 <div className="readsub">{g != null ? g.toFixed(1) + " g maneuver + gravity" : "needs ≥4 points"}</div>
               </div>
             </div>
+            {/* the g figure double-differentiates a track measured THROUGH the
+               camera solve — when that solve was worked hard (big sweep, deep
+               zoom, frame-to-frame lock), stabilization error masquerades as
+               acceleration. Say so AT the figure, strongly (field ask). */}
+            {s.tq && (s.tq.camHeavy || s.tq.grade === "fair" || s.tq.grade === "poor") && felt != null && (
+              <div className="warn" style={{ marginTop: 8 }}>
+                ⚠ <b>Treat this g as an upper bound, not a measurement.</b> This clip needed heavy stabilization ({[
+                  s.tq.camSweep > 5 ? `camera swept ~${Math.round(s.tq.camSweep)}°` : null,
+                  s.tq.zoomX > 1.3 ? `${s.tq.zoomX.toFixed(1)}× zoom` : null,
+                  s.tq.chainPct > 0.05 ? `${Math.round(s.tq.chainPct * 100)}% frame-to-frame lock` : null,
+                  s.tq.noisy ? "tracker noise rivals the motion" : null,
+                ].filter(Boolean).join(" · ")}), and acceleration double-differentiates the track — residual solve wobble shows up as g the object never pulled. The speed and path shape are far less sensitive; distrust any maneuver the rate plot doesn't show as a sustained ramp.
+              </div>
+            )}
             {k.peakA != null && k.peakA > 1e-6 && (
               <table className="tbl" style={{ marginTop: 8 }}>
                 <thead><tr><th>For the maneuver to stay…</th><th>It must be within</th></tr></thead>

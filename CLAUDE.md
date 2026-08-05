@@ -39,7 +39,7 @@ imported by both `phodar.jsx` and the test scripts):
 - `triangulate.js` — `solve3`, `intersectLines`, `analyze`,
   `arbitrateBearings`, `aspectSpan`.
 - `kinematics.js` — `trackDirections`, `kinematics`, `analyzeTracks`,
-  `videoKinematics` (dense objPath angular kinematics — robust: weighted windowed rate fit, ROTATION-STARVED ZOOM MASK (a pose hold during a deep zoom books the operator's re-centering tilt as object motion — a sustained bias no smoothing removes; spans with <9 anchors or >5°/s FOV slew are excluded from reported peaks and declared), size-keyframe dedupe + constant-radial-velocity range interpolation, stated noise floor), `stereoVideo`
+  `videoKinematics` (dense objPath angular kinematics — robust: weighted windowed rate fit, ROTATION-STARVED ZOOM MASK (a pose hold during a deep zoom books the operator's re-centering tilt as object motion — a sustained bias no smoothing removes; spans with <9 anchors or >5°/s FOV slew are excluded from reported peaks and declared), size-keyframe dedupe + constant-radial-velocity range interpolation, stated noise floor), `trackQuality` (excellent/good/fair/poor from the masked fraction + noise floor + CAMERA WORKLOAD: total sweep, zoom ratio, chain-locked fraction from the posePath — `camHeavy` caps the grade and adds a "g is an upper bound" reason; the solo trajectory UI renders a hard warning at the maneuver-load figure, because acceleration double-differentiates a track measured through the camera solve), `stereoVideo`
   (two-video dense triangulation with auto time-sync), `mixedStereo`
   (video + still: anchor the dense clip to absolute scale via one photo's
   sight-line). **VISIBILITY SEGMENTS** (`trackSegments`/`interSegments`,

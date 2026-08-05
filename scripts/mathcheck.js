@@ -1619,6 +1619,22 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(tqClean.grade === "excellent" ? 1 : 0, 1, 0, `trackQuality: a steady-camera clean solve rates excellent (${tqClean.grade})`);
       const tqNoisy = trackQuality({ objPath: Array.from({ length: 85 }, (_, i) => ({ t: i * 0.25, az: 350 + 0.05 * rnd() * 6, el: 30 + 0.05 * rnd() * 6, q: 0.9 })) });
       approx(tqNoisy.grade === "fair" || tqNoisy.grade === "poor" ? 1 : 0, 1, 0, `trackQuality: a near-hover where noise rivals motion is flagged (${tqNoisy.grade})`);
+      /* CAMERA-WORK rating (the Germany case): a smooth glide tracked through a
+         camera that swept ~30°, zoomed 4× and ran half its frames on the
+         frame-to-frame lock must be flagged camHeavy with the g caveat — the
+         object's own motion being gentle is exactly why the caveat matters */
+      const ppCam = Array.from({ length: 85 }, (_, i) => {
+        const tt = i * 0.25;
+        return { t: +tt.toFixed(3), az: 356, el: 30 + tt * 1.5, roll: 0, fov: 41.6 - tt * 1.5, k: 0, n: 20, ...(tt > 9 ? { c: 1 } : {}) };
+      });
+      const glide = Array.from({ length: 85 }, (_, i) => ({ t: i * 0.25, az: 356, el: 33 + i * 0.25 * 1.4, q: 0.9 }));
+      const tqCam = trackQuality({ objPath: glide, posePath: ppCam });
+      approx(tqCam.camHeavy ? 1 : 0, 1, 0, "trackQuality: heavy camera work (sweep + zoom + chain) is detected");
+      approx(tqCam.grade === "fair" || tqCam.grade === "poor" ? 1 : 0, 1, 0, `trackQuality: camHeavy caps the grade (${tqCam.grade})`);
+      approx(tqCam.reasons.some((r) => r.includes("upper bound")) ? 1 : 0, 1, 0, "trackQuality: the g upper-bound caveat is in the reasons");
+      approx(tqCam.chainPct > 0.4 ? 1 : 0, 1, 0, `trackQuality: chain fraction measured (${(tqCam.chainPct * 100).toFixed(0)}%)`);
+      /* and a steady tripod solve must NOT trip the camera-work flag */
+      approx(tqClean.camHeavy ? 1 : 0, 0, 0, "trackQuality: a steady camera is not flagged camHeavy");
     }
   }
 
