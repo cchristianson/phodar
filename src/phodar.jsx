@@ -525,7 +525,7 @@ const HELP_SECTIONS = [
         { t: "4 · Results", d: "See the fix (or, with one viewpoint, the honest angular numbers), run cross-checks, and grade the quality." },
       ]},
       { h: "On the home screen", items: [
-        { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: pinch-zoom the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. It is enforced in the DATA layer as well as by hiding buttons, so nothing you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
+        { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: pinch-zoom the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. BRIGHTNESS / CONTRAST stays live, because it is a display aid that never touches the original pixels — a reviewer can brighten a dark clip to actually see the object. It is enforced in the DATA layer as well as by hiding buttons, so nothing else you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. Anything that would be dead is HIDDEN rather than left there greyed out, and where a control is removed its value is shown as a readout instead (your position and viewing direction on step 2, the field of view and the witness statement on step 1). A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours)." },
@@ -1497,6 +1497,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
        value is never clobbered; EXIF (which handles orientation itself)
        overrides later anyway. */
     const autoPortraitFov = (nw2, nh2) => {
+      if (viewOnly) return;                       // never guess a measurement input for a sighting under review
       if (!(nw2 > 0 && nh2 > nw2)) return;
       if (isNum(src.meta?.fovH) || +src.fovH !== 68) return;
       return +(2 * Math.atan(Math.tan(34 * D2R) * (nw2 / nh2)) * R2D).toFixed(1);
@@ -3097,7 +3098,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
                      alignment, clearest object for measurement. Compact label
                      so it shares the frame-step row on a phone (tooltip + the
                      teal slider tick carry the detail). */
-                  <button className="btn sm teal" style={{ marginLeft: "auto", padding: "6px 8px" }}
+                  <button className="btn sm teal" style={{ marginLeft: "auto", padding: "6px 8px", display: viewOnly ? "none" : undefined }}
                     title="Alignment frame: the sky view shows THIS frame and the horizon/star alignment is done on it. Scrub to the clearest-horizon (or star) moment and tap. The object stays measured on the frame where you fitted the shape."
                     onClick={() => update({ alignT: +vidT.toFixed(3) })}>
                     ⛰ Align{isNum(src.alignT) ? " ✓" : ""}
@@ -3395,7 +3396,13 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
         </>
       )}
 
-      {wizard && isNum(src.meta?.fovH) ? (
+      {viewOnly ? (
+        isNum(src.fovH) ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "var(--dim)", fontFamily: "var(--mono)" }}>
+            FOV {(+src.fovH).toFixed(1)}°{isNum(src.meta?.fovH) ? " — from the lens metadata ✓" : ""}
+          </div>
+        ) : null
+      ) : wizard && isNum(src.meta?.fovH) ? (
         <div style={{ marginTop: 10, fontSize: 12, color: "var(--dim)", fontFamily: "var(--mono)" }}>
           FOV {(+src.fovH).toFixed(1)}° — from the lens metadata ✓
         </div>
@@ -3470,6 +3477,12 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
         </div>
       </div>
 
+      {viewOnly ? (src.statement ? (
+        <div style={{ marginTop: 14 }}>
+          <ML>In their words</ML>
+          <div style={{ fontSize: 12.5, color: "var(--ink)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{src.statement}</div>
+        </div>
+      ) : null) : (
       <div style={{ marginTop: 14 }}>
         <ML>In your words — what did you see? (optional)</ML>
         <textarea value={src.statement || ""} onChange={(e) => update({ statement: e.target.value })}
@@ -3478,6 +3491,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
           style={{ width: "100%", marginTop: 4, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, color: "var(--ink)", padding: "8px 10px", fontSize: 13, fontFamily: "inherit", lineHeight: 1.5, resize: "vertical", boxSizing: "border-box" }} />
         <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 3 }}>Shown on the report as this observer's witness statement.</div>
       </div>
+      )}
     </div>
   );
 }
@@ -3703,6 +3717,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const setObjDSave = (d) => {
     setObjD(d);
     if (objDSaveT.current) clearTimeout(objDSaveT.current);
+    if (viewOnly) return;   // the gauge still moves; only its persistence is off
     objDSaveT.current = setTimeout(() => update({ assumedD: Math.round(d) }), 400);
   };
   const [sizeOn, setSizeOn] = useState(false);  // object size↔distance tool — its own toggle (was stacked under compare)
@@ -4026,8 +4041,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the wizard UNMOUNTS the aimer on step change, so the
      unmount cleanup must drain too (updateRef dodges the stale closure). */
   const updateRef = useRef(update); updateRef.current = update;
+  const viewOnlyRef = useRef(viewOnly); viewOnlyRef.current = viewOnly;
   const drainSnap = () => {
-    if (acSnapRef.current && updateRef.current) { updateRef.current({ adsb: acSnapRef.current }); acSnapRef.current = null; }
+    if (acSnapRef.current && updateRef.current && !viewOnlyRef.current) { updateRef.current({ adsb: acSnapRef.current }); acSnapRef.current = null; }
   };
   useEffect(() => { if (!open) drainSnap(); }, [open]);
   useEffect(() => drainSnap, []);
@@ -9281,6 +9297,14 @@ function PositionEditor({ src, update, others, viewOnly }) {
                   )}
                 </div>
                 {/* aim sliders live UNDER the map so you set the ray you can see */}
+                {viewOnly ? (
+                  <div style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.7 }}>
+                    viewing direction <b style={{ color: "var(--teal)" }}>{isNum(bearing) ? `${Math.round(bearing)}° ${compass8(bearing)}` : "—"}</b>
+                    {" · "}up-angle <b style={{ color: "var(--teal)" }}>{Math.round(tilt)}°</b>
+                    {" · "}FOV <b style={{ color: "var(--teal)" }}>{Math.round(fovH)}°</b>
+                    {" · "}camera height <b style={{ color: "var(--teal)" }}>{fmtLenShort(camH)}</b>
+                  </div>
+                ) : (<>
                 <div style={{ marginTop: 6 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <ML style={{ marginBottom: 1 }}>Viewing direction</ML>
@@ -9376,6 +9400,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
                   </div>
                   <div style={{ fontSize: 10, color: "var(--dim)", marginTop: 1 }}>Only matters for the 🏙 building layer — raise it if you shot from an upstairs window or balcony (metadata usually can't tell). Leave at ground for a normal shot.</div>
                 </div>
+                </>)}
               </div>
             )}
     </>
@@ -10661,7 +10686,7 @@ const FT_M = 0.3048;
    The log persists on the first witness (source.flightLog, downsampled),
    so it survives autosave/share and reaches the report.
    ============================================================ */
-function FlightLogCheck({ sources, fix, onLog }) {
+function FlightLogCheck({ sources, fix, onLog, viewOnly }) {
   const [err, setErr] = useState("");
   const fileRef = useRef(null);
   const valid = sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el));
@@ -10733,10 +10758,10 @@ function FlightLogCheck({ sources, fix, onLog }) {
       </div>
       <input ref={fileRef} type="file" accept=".csv,.srt,.txt,text/csv,text/plain" style={{ display: "none" }} onChange={onFile} />
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button className="btn teal" style={{ flex: 1 }} onClick={() => fileRef.current && fileRef.current.click()}>
+        {!viewOnly && <button className="btn teal" style={{ flex: 1 }} onClick={() => fileRef.current && fileRef.current.click()}>
           🛩 {log ? "Replace flight log" : "Load flight log (CSV / SRT)"}
-        </button>
-        {log && <button className="btn" onClick={() => onLog(ownerId, null)} title="Remove the flight log">✕</button>}
+        </button>}
+        {log && !viewOnly && <button className="btn" onClick={() => onLog(ownerId, null)} title="Remove the flight log">✕</button>}
       </div>
       {err && <div className="warn">{err}</div>}
       {!valid.length && (
@@ -10842,7 +10867,7 @@ function FlightLogCheck({ sources, fix, onLog }) {
 /* ============================================================
    RESULTS PANEL
    ============================================================ */
-function ResultsPanel({ sources, onLog }) {
+function ResultsPanel({ sources, onLog, viewOnly }) {
   const result = useMemo(() => analyze(sources), [sources]);
   const trk = useMemo(() => analyzeTracks(sources), [sources]);
   const [soloT, setSoloT] = useState(0.42);
@@ -10995,8 +11020,8 @@ function ResultsPanel({ sources, onLog }) {
 
       <AdsbCheck sources={sources} />
       {(hasLog || calOpen) ? (
-        <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} />
-      ) : (
+        <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} viewOnly={viewOnly} />
+      ) : viewOnly ? null : (
         <div style={{ textAlign: "right", padding: "0 14px 8px" }}>
           <button onClick={() => setCalOpen(true)}
             style={{ background: "none", border: "none", boxShadow: "none", color: "var(--dim)", opacity: 0.55, fontFamily: "var(--mono)", fontSize: 10, letterSpacing: ".08em", padding: 4, cursor: "pointer" }}>
@@ -12830,11 +12855,15 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
           <ML>Sighting name</ML>
-          <input value={est?.name || ""} placeholder="e.g. Applegate orb — Jul 14" readOnly={viewOnly}
-            onChange={(e) => onName(e.target.value)} />
-          <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
-            Optional — becomes the report's title and the filename of every export (report, share file, bundle).
-          </div>
+          {viewOnly ? (
+            <div style={{ fontFamily: "var(--mono)", fontSize: 14, color: est?.name ? "var(--ink)" : "var(--dim)" }}>{est?.name || "unnamed sighting"}</div>
+          ) : (<>
+            <input value={est?.name || ""} placeholder="e.g. Applegate orb — Jul 14"
+              onChange={(e) => onName(e.target.value)} />
+            <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
+              Optional — becomes the report's title and the filename of every export (report, share file, bundle).
+            </div>
+          </>)}
         </div>
       )}
       {real.length > 0 && (
@@ -12860,10 +12889,10 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
                     </div>
                   </div>
                   <button className="btn sm" onClick={() => onResume(s.id)}>Open ▸</button>
-                  <button className="btn sm ghost" style={{ color: "var(--red)", padding: "6px 8px" }}
+                  {!viewOnly && <button className="btn sm ghost" style={{ color: "var(--red)", padding: "6px 8px" }}
                     onClick={() => {
                       if (window.confirm(`Remove ${s.name || `Observer ${i + 1}`} from this sighting? Their photo and measurements go with them.`)) onRemove(s.id);
-                    }}>✕</button>
+                    }}>✕</button>}
                 </div>
                 {/* moment tree: the primary photo is the first moment; each extra
                    photo of the same object (at another time) adds a trajectory point */}
@@ -12877,12 +12906,12 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
                       <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--dim)", padding: "2px 0" }}>
                         <span style={{ color: isNum(m.A?.az) ? "var(--teal)" : "var(--line)" }}>◷</span>
                         <span style={{ flex: 1 }}>📷 Moment {mi + 2} · {timeLbl(m.whenMs)}{isNum(m.A?.az) ? "" : " · needs placing"}</span>
-                        <button className="btn sm ghost" style={{ padding: "3px 7px", fontSize: 11 }} onClick={() => onOpenMoment(s.id, m.id)}>{m.mediaUrl ? "Edit" : "Add photo"}</button>
-                        <button className="btn sm ghost" style={{ color: "var(--red)", padding: "3px 6px", fontSize: 11 }}
-                          onClick={() => { if (window.confirm(`Remove Moment ${mi + 2} from ${s.name || `Observer ${i + 1}`}?`)) onRemoveMoment(s.id, m.id); }}>✕</button>
+                        {(m.mediaUrl || !viewOnly) && <button className="btn sm ghost" style={{ padding: "3px 7px", fontSize: 11 }} onClick={() => onOpenMoment(s.id, m.id)}>{m.mediaUrl ? (viewOnly ? "View" : "Edit") : "Add photo"}</button>}
+                        {!viewOnly && <button className="btn sm ghost" style={{ color: "var(--red)", padding: "3px 6px", fontSize: 11 }}
+                          onClick={() => { if (window.confirm(`Remove Moment ${mi + 2} from ${s.name || `Observer ${i + 1}`}?`)) onRemoveMoment(s.id, m.id); }}>✕</button>}
                       </div>
                     ))}
-                    {!!s.mediaUrl && (
+                    {!!s.mediaUrl && !viewOnly && (
                       <button className="btn sm ghost" style={{ marginTop: 4, fontSize: 11.5, padding: "4px 8px" }} onClick={() => onAddMoment(s.id)}>＋ Add moment</button>
                     )}
                     {placedShots >= 2 && (
@@ -12985,7 +13014,7 @@ function WizFinish({ sources, est, viewOnly, onAdd, onReport, onBack, onHome, on
       </div>
       {/* full results: top-down plot, per-observer table, motion, quality, trajectory, ADS-B */}
       <div style={{ margin: "6px -12px 0" }}>
-        <ResultsPanel sources={sources} onLog={onLog} />
+        <ResultsPanel sources={sources} onLog={onLog} viewOnly={viewOnly} />
       </div>
     </div>
   );
@@ -13352,13 +13381,33 @@ export default function App() {
      this one is integrity. Importing stays open — loading the file to review
      is the whole point — as does everything downstream (results, report,
      bundle, share), which only reads. */
-  const wLock = () => {
+  /* the ONE exception, and it is narrow by construction: `imgAdj` (brightness /
+     contrast) is a DISPLAY aid — it never touches the original pixels, and every
+     measurement path reads the raw media, so a reviewer brightening a dark clip
+     to actually SEE the object changes nothing about the sighting. The allowlist
+     is keyed on the patch, not the caller: a write passes only when EVERY key in
+     it is display-only, so no future call site can smuggle a measurement through
+     alongside it. */
+  /* Also allowed: the fields DERIVED FROM THE MEDIA FILE itself, which the app
+     re-computes on every load and which carry no measurement meaning —
+     natural pixel size, the canvas-normalized data URL (invariant #1: an
+     un-normalized image must never reach the renderer), the media kind, and
+     clearing the "media lost" flag on a successful re-read. Blocking those
+     didn't protect anything; it just raised a toast at mount and risked
+     leaving an imported sighting without the dimensions it needs to draw.
+     fovH is deliberately NOT here — it is a measurement input (the portrait
+     default-guess that used to ride along with natW/natH is suppressed in
+     review mode instead). */
+  const DISPLAY_KEYS = ["imgAdj", "natW", "natH", "mediaNorm", "mediaUrl", "mediaKind", "mediaLost"];
+  const displayOnly = (patch) => patch && Object.keys(patch).every((k) => DISPLAY_KEYS.includes(k));
+  const wLock = (patch) => {
     if (!viewOnly) return false;
-    setFlash2("👁 View-only mode — nothing here can change this sighting. Switch to Edit on step 1 to make changes.");
+    if (displayOnly(patch)) return false;
+    setFlash2("👁 View-only mode — nothing here can change this sighting. Switch to ✎ Edit on the home screen to make changes.");
     return true;
   };
   const updateSource = (id, patch) => {
-    if (wLock()) return;
+    if (wLock(patch)) return;
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
   const removeSource = (id) => {
@@ -13370,7 +13419,7 @@ export default function App() {
   };
   /* ——— moments: additional timestamped photos under ONE observer ——— */
   const updateMoment = (srcId, momId, patch) => {
-    if (wLock()) return;
+    if (wLock(patch)) return;
     setSources((ss) => ss.map((s) => (s.id !== srcId ? s
       : { ...s, moments: (s.moments || []).map((m) => (m.id === momId ? { ...m, ...patch } : m)) })));
   };

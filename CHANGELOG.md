@@ -31,6 +31,23 @@ Notable changes to Phodar. Format loosely follows
   end-to-end in a real browser: 34 assertions across the full wizard walk,
   including that the stored sighting is byte-identical after reviewing every
   screen.
+- **Brightness/contrast stays usable in view-only mode**, and every control
+  that WOULDN'T work there is now hidden (field asks). B/C is a display aid
+  that never touches the original pixels, so a reviewer can brighten a dark
+  clip to see the object; it is allowlisted by patch key, alongside the fields
+  the app re-derives from the media file on every load (natural size, the
+  canvas-normalized URL) — blocking those protected nothing and risked leaving
+  an imported sighting without the dimensions it needs to draw. The FOV
+  default-guess that used to ride along with them is suppressed instead, since
+  that IS a measurement input. The dead-control audit was done by enumerating
+  every visible button and input per screen in a browser: gone in review mode
+  are ⛰ Align on this frame, the FOV preset + custom field and the witness
+  statement box (step 1); all four aim sliders — bearing, FOV, up-angle,
+  camera height (step 2, replaced by a readout); the home screen's remove-
+  observer ✕, ＋ Add moment and name field (now shown as the title it is); and
+  the flight-log loader plus the 🛩 calibration link when no log is present.
+  Verified: 17 assertions, and a keyed diff proving no MEASUREMENT changed
+  across a full review walk.
 - **In-app manual brought back up to date**, and `helpcheck` extended so these
   can't drift again (21 named features guarded, up from 14). New entries: the
   Edit/View master toggle; ‹ / 🏠 navigation on the last two steps; what the

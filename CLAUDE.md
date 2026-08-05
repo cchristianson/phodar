@@ -1263,6 +1263,25 @@ WizFinish / ReportView. Keep both layers when adding features: a new write goes
 through updateSource (so it is already locked), and a new edit control needs a
 `viewOnly` guard so it doesn't sit there doing nothing.
 
+**Two narrow write exceptions, allowlisted BY PATCH KEY** (so no call site can
+smuggle a measurement through beside them): `imgAdj` — brightness/contrast is a
+display aid that never touches the original pixels, and a reviewer needs it to
+see a dark clip — and the fields DERIVED FROM THE MEDIA FILE on every load
+(`natW/natH/mediaNorm/mediaUrl/mediaKind/mediaLost`). Blocking the latter
+protected nothing, raised a toast at mount, and risked leaving an imported
+sighting without the dimensions it needs to draw (or un-normalized, against
+invariant #1). `fovH` is deliberately NOT allowlisted — it is a measurement
+input, so the portrait FOV default-guess that used to ride along with natW/natH
+is suppressed in review mode instead.
+
+Anything that would be DEAD is hidden, not greyed out, and where a control is
+removed its value is shown as a readout (position + viewing direction on step 2,
+FOV and the witness statement on step 1, the sighting name on the home screen).
+The audit was done by enumerating every visible button and input per screen in
+the browser, not by reading — that is how the ⛰ Align button, the FOV preset,
+the statement box, the four aim sliders, the home-screen ✕/＋/name field and the
+flight-log loader were found.
+
 What stays live in review mode is everything that only READS: pinch-zoom on the
 photo (MediaMeasure's `onDown` returns right at the marking branch — the
 two-finger pinch/pan path above it is untouched), video scrub + stabilized
