@@ -545,6 +545,7 @@ const HELP_SECTIONS = [
     intro: "Load the sighting media and tell Phodar how big the object appeared by fitting a 3D wireframe shape over it. The projected silhouette of that shape becomes the measured angular size — the seed for real size once distance is known. The original pixels are never altered; brightness/contrast here is display-only.",
     groups: [
       { h: "Load the media (the top row)", items: [
+        { t: "✎ Edit / 👁 View only (master toggle)", d: "At the very top of step 1, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is review mode, for walking through a sighting someone shared without any risk of altering it: every editing tool is hidden throughout — the media row, the tap-mode selector and shape controls here, the position inputs and pin-move on step 2, ✥ Place / 🎞 Stabilize / ⚓ Fix frames in the sky view, add-witness and new-sighting — while everything that only READS stays: pinch-zoom the photo, scrub and play the clip, look around the dome with every sky layer, the full results, the report, the bundle and the share file. It is enforced at the data layer too, not just by hiding buttons, so nothing you tap can change the sighting; a 👁 VIEW ONLY badge sits in every step header so it is never a mystery why a control is missing. The mode is remembered between sessions. Importing stays enabled in both modes — that is how you load a sighting to review." },
         { t: "Load photo or video / Replace", d: "Pick any image or video from your device. Replace swaps the media and starts the measurement fresh." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
         { t: "💾 Save to camera roll (video)", d: "Hands the clip to your phone's share sheet — on iPhone choose “Save Video” to put it in Photos. A web app can't write to Photos directly, so this is the way out. It matters most for a clip you recorded IN Phodar: that lives only inside the app until you save it, so an unsaved one is flagged in amber. (Photos accepts .mp4/.mov and refuses .webm — an iPhone in-app recording is .mp4, so it's fine.)" },
@@ -1006,7 +1007,7 @@ const SHAPE_MIN_FRAC = 0.00025;
 /* ============================================================
    MEDIA MEASURE — photo/video + tap-to-mark angular measurement
    ============================================================ */
-function MediaMeasure({ src, update, wizard }) {
+function MediaMeasure({ src, update, wizard, viewOnly }) {
   const media = src.mediaUrl ? { url: src.mediaUrl, kind: src.mediaKind } : null;
   const isVid = media?.kind === "video";
   const fileRef = useRef(null);
@@ -1686,6 +1687,12 @@ function MediaMeasure({ src, update, wizard }) {
       };
       return;
     }
+    /* VIEW ONLY: everything ABOVE this line is the viewing gesture (two-finger
+       pinch-zoom + pan, which a reviewer needs); everything below places or
+       moves a mark. Cutting here keeps the photo explorable and the
+       measurements untouchable — and it stops the marks visibly jumping under
+       a finger before the write lock silently refuses them. */
+    if (viewOnly) return;
     if (active === "trk" && !media) return;   // trk works on a still OR a video (lay the recalled path on the photo)
     if (active === "cref" && media?.kind !== "video") return;   // camera refs are a video-only stabilization aid
     if (active === "shape" && !src.shapeFit) return; // pick a shape first — no stray marks
@@ -2354,12 +2361,12 @@ function MediaMeasure({ src, update, wizard }) {
   return (
     <div>
       {capOpen && <SensorCapture onCapture={applyCapture} onClose={() => setCapOpen(false)} />}
-      <ML>Photo / video (optional — used to measure angular size)</ML>
+      <ML>Photo / video{viewOnly ? "" : " (optional — used to measure angular size)"}</ML>
       {/* ONE ROW for every media action (field ask — vertical space on a phone
           is the scarcest thing on this step): replace · save-out · re-attach ·
           capture · trim. Only Replace carries a word; the rest are icons with
           titles, which is what makes them fit at 430 px. */}
-      <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
+      <div style={{ display: viewOnly ? "none" : "flex", gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
         <label className="btn sm amber" style={{ display: "inline-block", padding: "6px 9px", whiteSpace: "nowrap", flex: "0 1 auto", overflow: "hidden" }}>
           {media ? "Replace" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
@@ -2415,7 +2422,7 @@ function MediaMeasure({ src, update, wizard }) {
       </div>
       {/* the tap-MODE selector is not a media action — its own line, so the
           media row above can stay nowrap without being squeezed */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+      <div style={{ display: viewOnly ? "none" : "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
         {media && wizard ? (
           /* explicit MODE TOGGLE — tapping the photo either places/rotates the
              3D object (measures size) or drops trajectory track points. A
@@ -2471,7 +2478,7 @@ function MediaMeasure({ src, update, wizard }) {
       )}
       {media && !loadErr && (
         <>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+          <div style={{ display: viewOnly ? "none" : "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
             <button className={"btn sm" + (src.shapeFit ? " amber" : "")} onClick={() => setShapePicker((v) => !v)}
               title="Pick a 3D shape to fit to the object">
               {src.shapeFit ? `${(SHAPES.find((s) => s.k === src.shapeFit.kind) || {}).label || "Object"} ▾` : "＋ Add object"}
@@ -2496,17 +2503,17 @@ function MediaMeasure({ src, update, wizard }) {
               trajectory can be laid down frame-accurately (the frame slider
               below scrubs the clip BEFORE any stabilization; sky-view taps
               can't — pre-solve, only the marked frame's pose is known) */}
-          {wizard && media.kind === "video" && src.shapeFit && (src.track || []).length < 2 && active !== "trk" && (
+          {!viewOnly && wizard && media.kind === "video" && src.shapeFit && (src.track || []).length < 2 && active !== "trk" && (
             <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--track)", borderRadius: 10, background: "rgba(143,180,255,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
               🎯 <b style={{ color: "var(--track)" }}>Moving object?</b> Tap <b style={{ color: "var(--track)" }}>Track</b> (top row), then scrub the clip with the slider below and tap the object every second or so. Your taps become the trajectory the auto-tracker locks onto during Stabilize.
             </div>
           )}
-          {wizard && media.kind === "video" && src.shapeFit && !isNum(src.alignT) && active !== "trk" && (
+          {!viewOnly && wizard && media.kind === "video" && src.shapeFit && !isNum(src.alignT) && active !== "trk" && (
             <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--teal)", borderRadius: 10, background: "rgba(64,199,178,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
               ⛰ <b style={{ color: "var(--teal)" }}>Pick an alignment frame:</b> scrub to the moment with the clearest horizon (or stars) and tap <b style={{ color: "var(--teal)" }}>⛰ Align on this frame</b> below the slider. The sky alignment is done on that frame — otherwise the object's frame is used, which may be zoomed or horizon-free.
             </div>
           )}
-          {src.shapeFit && active !== "trk" && (
+          {!viewOnly && src.shapeFit && active !== "trk" && (
             <>
               {/* SHAPE_MIN_FRAC: the smallest the model can be drawn, as a
                   fraction of the image width. A genuinely distant object is a
@@ -3591,7 +3598,7 @@ function TrackObj({ sf, px, color }) {
   );
 }
 
-function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext, single }) {
+function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, which, onCapture, source, update, wizard, onWizardBack, onWizardNext, single, viewOnly }) {
   const [vpRef, vp] = useSize();
   const [topBarRef, topBar] = useSize(); // top HUD height — reserve it while placing
   const [botBarRef, botBar] = useSize(); // bottom controls height — reserve it while placing
@@ -7494,6 +7501,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               {wizard ? "‹ Back" : "✕ Close"}
             </button>
             {wizard && <WizDots n={3} style={{ background: "rgba(15,23,42,.7)", padding: "6px 8px", borderRadius: 6 }} />}
+            {viewOnly && <ViewBadge style={{ background: "rgba(15,23,42,.7)" }} />}
           </div>
           {/* right: readouts */}
           <div style={{ textAlign: "right", flex: "1 1 auto", minWidth: 0 }}>
@@ -7685,7 +7693,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                pure vertical cost. */}
             {!single && !calibOn && (
               <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
-                {[["place", "✥ Place", pMode === "place"], ["traj", "⊕ Trajectory", trajOn], ["size", "📏 Size", sizeOn], ["compare", "⚖ Compare", cmpOn]].map(([k, label, on]) => (
+                {[...(viewOnly ? [] : [["place", "✥ Place", pMode === "place"]]), ["traj", "⊕ Trajectory", trajOn], ["size", "📏 Size", sizeOn], ["compare", "⚖ Compare", cmpOn]].map(([k, label, on]) => (
                   <button key={k} className={"btn sm" + (on ? " amber" : "")} style={{ flex: "1 1 0", minWidth: 0, whiteSpace: "nowrap", padding: "6px 2px", fontSize: 11, overflow: "hidden" }}
                     onClick={() => selectMode(k)}>{label}</button>
                 ))}
@@ -7777,7 +7785,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   {/* stabilize LIVES IN LOOK MODE — running it from place mode made
                       it too easy to nudge the placement mid-solve (field report) */}
-                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
+                  {!viewOnly && pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && (
                     <button className="btn sm teal" disabled={!!stabBusy} style={{ opacity: stabBusy ? 0.6 : 1, flex: "0 0 auto" }}
                       title="Stabilize: track the static background (skyline, stars) through every frame and solve each frame's camera pose. Then ▶ play — the sky stays locked to the dome and only the object moves. Align the marked frame first (place mode: snap/star-align) for an accurate result."
                       onClick={stabilize}>{stabBusy ? `🎞 ${stabBusy}${stabTotal ? `/${stabTotal}` : ""}…` : Array.isArray(source?.posePath) && source.posePath.length > 1 ? "🎞 Re-stabilize" : "🎞 Stabilize video"}</button>
@@ -7786,7 +7794,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       snapshot taken before the last run (anchors included), or
                       clears the solve when there is no snapshot, which now lands
                       on the original clip rather than a dead screen. */}
-                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+                  {!viewOnly && pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
                     <button className="btn sm" style={{ flex: "0 0 auto" }}
                       title={source?.preStab
                         ? (source.preStab.posePath && source.preStab.posePath.length > 1
@@ -7800,7 +7808,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       history. Undo only reaches one run back; this always
                       works, and it's the clean slate to re-stabilize after a
                       ✂ trim or a ⟳ re-attach. */}
-                  {pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
+                  {!viewOnly && pMode !== "place" && !calibOn && !trajOn && !sizeOn && !cmpOn && !stabBusy && Array.isArray(source?.posePath) && source.posePath.length > 1 && (
                     <button className="btn sm" style={{ flex: "0 0 auto", color: "var(--red)" }}
                       title="Remove the stabilization for good and go back to the original clip. Your object placement, track waypoints, alignment frame and sky placement all stay — only the solved camera path and object track are dropped, so you can stabilize again from scratch."
                       onClick={clearStab}>✕ clear</button>
@@ -7922,7 +7930,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       they only appear once there is one, while ⬇ works on any
                       playable path — the render is just as world-locked as the
                       path it draws, and its menu says which. */}
-                  {solvedPath && <>
+                  {solvedPath && !viewOnly && <>
                   <button className="btn sm" style={fixOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                     onClick={() => {
                       playingRef.current = false; setPlaying(false);
@@ -8503,7 +8511,7 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizO
       if (progRef.current) { progRef.current = false; return; }
       if (!moveModeRef.current) return;   // free-look pan — don't move the position
       const c = map.getCenter();
-      onChangeRef.current(c.lat, c.lng);
+      if (onChangeRef.current) onChangeRef.current(c.lat, c.lng);
     });
     mapRef.current = map; layersRef.current = { sat, street, trans, ref };
     hud(); drawAim();
@@ -8582,7 +8590,7 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizO
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
         <ML style={{ marginBottom: 0 }}>{moveMode ? "Move pin — drag the map to reposition" : "Look around — pan/zoom freely"}</ML>
         <div style={{ display: "flex", gap: 4 }}>
-          <button className={"btn sm" + (moveMode ? " amber" : "")} onClick={() => setMoveMode((v) => !v)} title={moveMode ? "Repositioning — the pin follows the map centre; tap to lock it and look around freely" : "Pan/zoom moves the view only; tap to move your pin"}>✥ Move</button>
+          {onChange && <button className={"btn sm" + (moveMode ? " amber" : "")} onClick={() => setMoveMode((v) => !v)} title={moveMode ? "Repositioning — the pin follows the map centre; tap to lock it and look around freely" : "Pan/zoom moves the view only; tap to move your pin"}>✥ Move</button>}
           <button className="btn sm" onClick={() => setBaseSat((s) => !s)}>{baseSat ? "🗺 street" : "🛰 sat"}</button>
           {onHoriz && <button className={"btn sm" + (horizOn ? " teal" : "")} onClick={onHoriz}
             title="Horizon preview — the terrain skyline (and OSM buildings where mapped) as seen from the pin, docked to the map's bottom edge. Drag the pin until the profile matches the photo's ridgeline to home in on where a shot was taken. Trees aren't in the elevation data.">⛰</button>}
@@ -8730,7 +8738,7 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
 /* ============================================================
    POSITION EDITOR — the wizard's map step
    ============================================================ */
-function PositionEditor({ src, update, others }) {
+function PositionEditor({ src, update, others, viewOnly }) {
   const [geoBusy, setGeoBusy] = useState(false);
   const [geoErr, setGeoErr] = useState("");
   const [demBusy, setDemBusy] = useState(false);
@@ -9159,6 +9167,19 @@ function PositionEditor({ src, update, others }) {
   };
   return (
     <>
+            {viewOnly && (
+              <div style={{ marginBottom: 8 }}>
+                <ML>Where this observer stood</ML>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--teal)" }}>
+                  {posDone ? `${(+src.lat).toFixed(6)}, ${(+src.lon).toFixed(6)}` : "not set"}
+                  {isNum(src.alt) ? <span style={{ color: "var(--dim)" }}>{`  ·  ${(+src.alt).toFixed(0)} m elev`}</span> : null}
+                </div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)", marginTop: 3 }}>
+                  {new Date(isNum(src.whenMs) ? +src.whenMs : Date.now()).toLocaleString()}
+                </div>
+              </div>
+            )}
+            <div style={{ display: viewOnly ? "none" : "block" }}>
             <ML>Find your spot by name</ML>
             <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
               <input value={q} onChange={(e) => setQ(e.target.value)}
@@ -9213,6 +9234,7 @@ function PositionEditor({ src, update, others }) {
               <input type="datetime-local" value={toLocalInput(new Date(isNum(src.whenMs) ? +src.whenMs : Date.now()))}
                 onChange={(e) => { const t = new Date(e.target.value).getTime(); if (!isNaN(t)) update({ whenMs: t }); }} />
             </div>
+            </div>
             {posDone && (
               <div style={{ marginTop: 8 }}>
                 {/* the horizon strip DOCKS onto the satellite view's bottom edge
@@ -9225,7 +9247,7 @@ function PositionEditor({ src, update, others }) {
                     origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
                     others={others} bearing={bearing} tilt={tilt} fov={fovH}
                     horizOn={horizOn} onHoriz={togHoriz}
-                    onChange={(la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) })} />
+                    onChange={viewOnly ? undefined : ((la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) }))} />
                   {horizOn && (
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 96, zIndex: 900, background: "#08101F", borderTop: "1px solid var(--line)" }}>
                       {horiz && horiz.err
@@ -12633,7 +12655,41 @@ function WizDots({ n, style }) {
   );
 }
 
-function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel, help }) {
+/* ═══ VIEW-ONLY affordances ═══
+   ModeToggle is the master switch (step 1, at the top — the field ask); the
+   badge is its receipt on every other screen, so a control that has been taken
+   away is never a mystery. Both read the SAME global flag the write lock uses,
+   so the UI can't disagree with what the data will actually accept. */
+function ViewBadge({ style }) {
+  return (
+    <span title="View-only mode — this sighting cannot be changed. Switch to Edit at the top of step 1."
+      style={{ fontFamily: "var(--mono)", fontSize: 9.5, fontWeight: 800, letterSpacing: ".1em", color: "var(--teal)", border: "1px solid var(--teal)", borderRadius: 6, padding: "2px 5px", whiteSpace: "nowrap", ...style }}>
+      👁 VIEW ONLY
+    </span>
+  );
+}
+
+function ModeToggle({ viewOnly, onChange }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "inline-flex", borderRadius: 9, overflow: "hidden", border: "1px solid var(--line)", width: "100%" }}>
+        {[[false, "✎ Edit", "var(--amber)", "rgba(245,169,63,.18)"], [true, "👁 View only", "var(--teal)", "rgba(95,211,188,.18)"]].map(([v, label, col, bg]) => (
+          <button key={String(v)} className="btn sm" onClick={() => onChange(v)}
+            style={{ flex: "1 1 0", borderRadius: 0, border: "none", padding: "8px 10px", fontWeight: viewOnly === v ? 700 : 500, background: viewOnly === v ? bg : "transparent", color: viewOnly === v ? col : "var(--dim)" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: viewOnly ? "var(--teal)" : "var(--dim)", marginTop: 5, lineHeight: 1.45 }}>
+        {viewOnly
+          ? "Reviewing a finished sighting: every step, measurement and result is here to read, play and export — but nothing can be changed. Editing tools are hidden throughout."
+          : "Normal mode — you can measure, place and edit. Switch to View only to walk through a sighting someone shared without any risk of altering it."}
+      </div>
+    </div>
+  );
+}
+
+function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, disabledLabel, help, viewOnly }) {
   return (
     /* no 96 px bottom reserve any more — the footer below is STICKY, so it
        occupies real space in the flow instead of floating over the content */
@@ -12644,7 +12700,8 @@ function WizStep({ n, title, children, onBack, onNext, nextLabel, nextDisabled, 
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>{title}</div>
           <WizDots n={n} style={{ marginTop: 4 }} />
         </div>
-        {help && <HelpButton section={help} style={{ marginLeft: "auto" }} />}
+        {viewOnly && <ViewBadge style={{ marginLeft: "auto" }} />}
+        {help && <HelpButton section={help} style={viewOnly ? undefined : { marginLeft: "auto" }} />}
       </div>
       <div className="card" style={{ margin: 0 }}>{children}</div>
       {/* STICKY, NOT FIXED. On iOS a fixed element is positioned against the
@@ -12694,7 +12751,7 @@ function MomentTimeCtl({ m, onChange }) {
   );
 }
 
-function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
+function WizHome({ sources, est, viewOnly, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -12703,6 +12760,7 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
   return (
     <div style={{ padding: "26px 14px 40px", position: "relative" }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
+      {viewOnly && <ViewBadge style={{ position: "absolute", top: "calc(16px + env(safe-area-inset-top))", left: 14, zIndex: 30 }} />}
       {/* the shim fell back to memory (private browsing / site data blocked):
           everything still works, but nothing survives a reload — say so once,
           here, rather than letting someone lose an hour of marking to it */}
@@ -12742,7 +12800,7 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
           </button>
         </div>
       </div>
-      <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>
+      {!viewOnly && <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>}
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => {
@@ -12766,7 +12824,7 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
           <ML>Sighting name</ML>
-          <input value={est?.name || ""} placeholder="e.g. Applegate orb — Jul 14"
+          <input value={est?.name || ""} placeholder="e.g. Applegate orb — Jul 14" readOnly={viewOnly}
             onChange={(e) => onName(e.target.value)} />
           <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 4 }}>
             Optional — becomes the report's title and the filename of every export (report, share file, bundle).
@@ -12834,7 +12892,7 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
               FIX: {fmtLenShort(fix.solA.X[2])} up{fix.sizeAvg != null ? ` · ${fmtLenShort(fix.sizeAvg)} across` : ""} · {fix.rating}
             </div>
           )}
-          <button className="btn amber" style={{ width: "100%", marginTop: 10 }} onClick={onAddWitness}>➕ Add a witness / perspective</button>
+          {!viewOnly && <button className="btn amber" style={{ width: "100%", marginTop: 10 }} onClick={onAddWitness}>➕ Add a witness / perspective</button>}
           <button className="btn teal" style={{ width: "100%", marginTop: 8 }} onClick={onReport}>📄 Report</button>
         </div>
       )}
@@ -12842,7 +12900,7 @@ function WizHome({ sources, est, onName, onNew, onAddWitness, onResume, onRemove
   );
 }
 
-function WizFinish({ sources, est, onAdd, onReport, onBack, onHome, onFixAlt, onLog }) {
+function WizFinish({ sources, est, viewOnly, onAdd, onReport, onBack, onHome, onFixAlt, onLog }) {
   const fix = analyze(sources);
   const tr = analyzeTracks(sources);
   return (
@@ -12860,7 +12918,8 @@ function WizFinish({ sources, est, onAdd, onReport, onBack, onHome, onFixAlt, on
           <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>SIGHTING CAPTURED</div>
           <WizDots n={4} style={{ marginTop: 4 }} />
         </div>
-        <HelpButton section="results" style={{ marginLeft: "auto" }} />
+        {viewOnly && <ViewBadge style={{ marginLeft: "auto" }} />}
+        <HelpButton section="results" style={viewOnly ? undefined : { marginLeft: "auto" }} />
       </div>
       <div className="card" style={{ margin: 0 }}>
         {fix.ok ? (
@@ -12913,7 +12972,7 @@ function WizFinish({ sources, est, onAdd, onReport, onBack, onHome, onFixAlt, on
         })()}
       </div>
       <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
-        <button className="btn amber" style={{ padding: 13 }} onClick={onAdd}>➕ Add another perspective</button>
+        {!viewOnly && <button className="btn amber" style={{ padding: 13 }} onClick={onAdd}>➕ Add another perspective</button>}
         {/* the .phodar.json share file lives on the report step now, beside the
             other two exports it belongs with (field ask) */}
         <button className="btn teal" style={{ padding: 13 }} onClick={onReport}>📄 Generate report &amp; share</button>
@@ -12926,7 +12985,7 @@ function WizFinish({ sources, est, onAdd, onReport, onBack, onHome, onFixAlt, on
   );
 }
 
-function ReportView({ sources, est, onBack, onHome }) {
+function ReportView({ sources, est, viewOnly, onBack, onHome }) {
   const [msg, setMsg] = useState("");
   const [prevHtml, setPrevHtml] = useState(null);   // iframe preview
   const [manual, setManual] = useState(null);       // { name, text } fallback copy box
@@ -13068,7 +13127,8 @@ function ReportView({ sources, est, onBack, onHome }) {
           <button className="btn sm" onClick={onHome} title="Back to the sighting list">🏠</button>
         </div>
         <div style={{ fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".12em", fontSize: 14 }}>REPORT &amp; SHARE</div>
-        <HelpButton section="report" style={{ marginLeft: "auto" }} />
+        {viewOnly && <ViewBadge style={{ marginLeft: "auto" }} />}
+        <HelpButton section="report" style={viewOnly ? undefined : { marginLeft: "auto" }} />
       </div>
       <div className="card" style={{ margin: 0 }}>
         <ML>Sighting report</ML>
@@ -13140,6 +13200,22 @@ export default function App() {
   const [sources, setSources] = useState(() => [makeSource(1)]);
   const [est, setEst] = useState({ size: "", dist: "", speed: "" });
   const [ui, setUi] = useState({ view: "home", srcId: null });
+  /* VIEW-ONLY: a global, persisted review mode (see the write lock below).
+     Persisted like units/app-mode so a reviewer who set it stays in it across
+     reloads — the badge in every step header is what keeps that from being a
+     surprise. */
+  const [viewOnly, setViewOnlyRaw] = useState(() => {
+    try { return localStorage.getItem("phodar-viewonly") === "1"; } catch (e) { return false; }
+  });
+  const setViewOnly = (v) => {
+    setViewOnlyRaw(v);
+    try { localStorage.setItem("phodar-viewonly", v ? "1" : "0"); } catch (e) { }
+  };
+  /* one-line toast for a blocked write — the write lock is silent otherwise,
+     and a control that does nothing without saying why is a bug to the user */
+  const [lockMsg, setLockMsg] = useState("");
+  const lockTRef = useRef(0);
+  const setFlash2 = (m) => { setLockMsg(m); clearTimeout(lockTRef.current); lockTRef.current = setTimeout(() => setLockMsg(""), 3200); };
   const [unitsImp, setUnitsImp] = useState(() => {
     try { return localStorage.getItem("phodar-units") === "imp"; } catch (e) { return false; }
   });
@@ -13259,19 +13335,41 @@ export default function App() {
     return () => clearTimeout(id);
   }, [sources, est]);
 
-  const updateSource = (id, patch) =>
+  /* ═══ VIEW-ONLY MODE ═══ (field ask: "load a finished file/bundle and just
+     see the steps without making any changes"). It is enforced HERE, at the
+     single write path, not by disabling controls: updateSource/updateMoment
+     are the only way any measurement in this app changes, so closing them is
+     a guarantee rather than a hope — no control anywhere in the wizard, seen
+     or unseen, can alter a reviewed sighting. The editors ALSO hide their
+     edit affordances (they take `viewOnly`), because a mode that silently
+     swallows input would be worse than no mode at all; that layer is honesty,
+     this one is integrity. Importing stays open — loading the file to review
+     is the whole point — as does everything downstream (results, report,
+     bundle, share), which only reads. */
+  const wLock = () => {
+    if (!viewOnly) return false;
+    setFlash2("👁 View-only mode — nothing here can change this sighting. Switch to Edit on step 1 to make changes.");
+    return true;
+  };
+  const updateSource = (id, patch) => {
+    if (wLock()) return;
     setSources((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  };
   const removeSource = (id) => {
+    if (wLock()) return;
     const s = sources.find((x) => x.id === id);
     mediaDel(id); mediaDel(id + ":stab");
     (s?.moments || []).forEach((m) => mediaDel(m.id));
     setSources((ss) => ss.filter((s) => s.id !== id));
   };
   /* ——— moments: additional timestamped photos under ONE observer ——— */
-  const updateMoment = (srcId, momId, patch) =>
+  const updateMoment = (srcId, momId, patch) => {
+    if (wLock()) return;
     setSources((ss) => ss.map((s) => (s.id !== srcId ? s
       : { ...s, moments: (s.moments || []).map((m) => (m.id === momId ? { ...m, ...patch } : m)) })));
+  };
   const addMoment = (srcId) => {
+    if (wLock()) return;
     const parent = sources.find((s) => s.id === srcId);
     if (!parent) return;
     const m = makeMoment(parent.fovH);
@@ -13279,12 +13377,14 @@ export default function App() {
     setUi({ view: "m1", srcId, momId: m.id });
   };
   const removeMoment = (srcId, momId) => {
+    if (wLock()) return;
     mediaDel(momId);
     setSources((ss) => ss.map((s) => (s.id !== srcId ? s
       : { ...s, moments: (s.moments || []).filter((m) => m.id !== momId) })));
   };
   /* a SIGHTING is the event; each witness/perspective is a source within it */
   const addWitness = () => {
+    if (wLock()) return;
     const blank = sources.find(isEmptySource);
     if (blank) { setUi({ view: "s1", srcId: blank.id }); return; }
     const ns = makeSource(sources.length + 1);
@@ -13292,6 +13392,7 @@ export default function App() {
     setUi({ view: "s1", srcId: ns.id });
   };
   const newSighting = () => {
+    if (wLock()) return;
     const real = sources.filter((s) => !isEmptySource(s));
     if (real.length && !window.confirm(
       `Start a NEW sighting? The current one (${real.length} observer${real.length > 1 ? "s" : ""}) will be cleared.\n\nExport a report or backup first if you want to keep it.`)) return;
@@ -13353,44 +13454,47 @@ export default function App() {
     const momIdx = wmom ? (wsrc.moments || []).findIndex((m) => m.id === wmom.id) : -1;
     let page = null;
     if (ui.view === "report") {
-      page = <ReportView sources={sources} est={est}
+      page = <ReportView sources={sources} est={est} viewOnly={viewOnly}
         onBack={() => goView(ui.reportFrom === "s4" ? "s4" : "home")} onHome={() => goView("home")} />;
     } else if (ui.view === "s4") {
       /* ‹ goes back to the sky view that produced these numbers — but only when
          there IS a working source to return to (an imported sighting opened
          from the list has none); otherwise the list is the honest step back. */
-      page = <WizFinish sources={sources} est={est} onAdd={addWitness} onReport={() => goReport("s4")}
+      page = <WizFinish sources={sources} est={est} viewOnly={viewOnly} onAdd={addWitness} onReport={() => goReport("s4")}
         onBack={() => goView(wsrc ? "s3" : "home")} onHome={() => goView("home")}
         onFixAlt={(id, alt) => updateSource(id, { alt })} onLog={(id, flightLog) => updateSource(id, { flightLog })} />;
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
-          <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE PHOTO"} help="photo" onBack={() => goView("home")} onNext={() => goView("s2")}
+          <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE PHOTO"} help="photo" viewOnly={viewOnly} onBack={() => goView("home")} onNext={() => goView("s2")}
             nextLabel={appMode === "aerial" ? "Next · platform & geolocate →" : (wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →")}>
-            <MediaMeasure wizard src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
+            {/* the MASTER edit/view switch lives at the top of step 1 (field
+                ask) — the first thing you meet when you open a sighting */}
+            <ModeToggle viewOnly={viewOnly} onChange={setViewOnly} />
+            <MediaMeasure wizard viewOnly={viewOnly} src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
           </WizStep>
         );
       } else if (ui.view === "s2" && appMode === "aerial") {
         /* AERIAL (looking down): platform pose + single-frame ground geolocation.
            Results are inline; no sky triangulation step, so Next returns home. */
         page = (
-          <WizStep n={2} title="PLATFORM & TARGET" help="photo" onBack={() => goView("s1")} onNext={() => goView("home")}
+          <WizStep n={2} title="PLATFORM & TARGET" help="photo" viewOnly={viewOnly} onBack={() => goView("s1")} onNext={() => goView("home")}
             nextLabel="Done · back to sightings →">
             <AerialMeasure src={wsrc} update={(p) => updateSource(wsrc.id, p)} unitsImp={unitsImp} />
           </WizStep>
         );
       } else if (ui.view === "s2") {
         page = (
-          <WizStep n={2} title="YOUR POSITION" help="position" onBack={() => goView("s1")} onNext={() => goView("s3")}
+          <WizStep n={2} title="YOUR POSITION" help="position" viewOnly={viewOnly} onBack={() => goView("s1")} onNext={() => goView("s3")}
             nextDisabled={!(isNum(wsrc.lat) && isNum(wsrc.lon))} nextLabel="Next · place it in the sky →"
             disabledLabel="Enter where you stood — GPS, paste coords, or type — to continue">
-            <PositionEditor src={wsrc} update={(p) => updateSource(wsrc.id, p)}
+            <PositionEditor viewOnly={viewOnly} src={wsrc} update={(p) => updateSource(wsrc.id, p)}
               others={sources.filter((x) => x.id !== wsrc.id && isNum(x.lat) && isNum(x.lon)).map((x) => ({ lat: +x.lat, lon: +x.lon, name: x.name }))} />
           </WizStep>
         );
       } else if (ui.view === "s3") {
         page = (
-          <SkyAimer open wizard source={wsrc} update={(p) => updateSource(wsrc.id, p)}
+          <SkyAimer open wizard viewOnly={viewOnly} source={wsrc} update={(p) => updateSource(wsrc.id, p)}
             onClose={() => goView("s4")} onWizardBack={() => goView("s2")} onWizardNext={() => goView("s4")}
             lat={isNum(wsrc.lat) ? +wsrc.lat : 42.16} lng={isNum(wsrc.lon) ? +wsrc.lon : -123.66}
             whenMs={isNum(wsrc.whenMs) ? +wsrc.whenMs : Date.now()}
@@ -13404,20 +13508,20 @@ export default function App() {
         );
       } else if (ui.view === "m1" && wmom) {
         page = (
-          <WizStep n={2} title={`MOMENT ${momIdx + 2} · PHOTO`} help="photo"
+          <WizStep n={2} title={`MOMENT ${momIdx + 2} · PHOTO`} help="photo" viewOnly={viewOnly}
             onBack={() => { if (!wmom.mediaUrl) removeMoment(wsrc.id, wmom.id); goView("home"); }} onNext={() => goView("m2")}
             nextDisabled={!wmom.mediaUrl} nextLabel="Next · place it in the sky →"
             disabledLabel="Add this moment's photo to continue">
             <div style={{ fontSize: 12, color: "var(--dim)", padding: "0 2px 8px", lineHeight: 1.5 }}>
               Another photo of the <b style={{ color: "var(--ink)" }}>same object</b> from <b style={{ color: "var(--ink)" }}>{wsrc.name}</b>'s spot, at a different time. Mark where the object sits — its direction plus this moment's time add a point to the trajectory.
             </div>
-            <MediaMeasure wizard src={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)} />
+            <MediaMeasure wizard viewOnly={viewOnly} src={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)} />
             {wmom.mediaUrl && <MomentTimeCtl m={wmom} onChange={(p) => updateMoment(wsrc.id, wmom.id, p)} />}
           </WizStep>
         );
       } else if (ui.view === "m2" && wmom) {
         page = (
-          <SkyAimer open wizard single source={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)}
+          <SkyAimer open wizard single viewOnly={viewOnly} source={wmom} update={(p) => updateMoment(wsrc.id, wmom.id, p)} 
             onClose={() => goView("home")} onWizardBack={() => goView("m1")} onWizardNext={() => goView("home")}
             lat={isNum(wsrc.lat) ? +wsrc.lat : 42.16} lng={isNum(wsrc.lon) ? +wsrc.lon : -123.66}
             whenMs={isNum(wmom.whenMs) ? +wmom.whenMs : Date.now()}
@@ -13428,13 +13532,23 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => setEst((e) => ({ ...e, name }))} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goReport("home")}
+    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => { if (!wLock()) setEst((e) => ({ ...e, name })); }} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goReport("home")} viewOnly={viewOnly}
       onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
       unitsImp={unitsImp} onToggleUnits={toggleUnits} appMode={appMode} onSetMode={setMode} />;
     return (
       <div className="phodar" style={{ maxWidth: 520, margin: "0 auto", minHeight: "100vh" }}>
         <style>{css}</style>
         {page}
+        {/* the write lock's voice. FIXED is correct here: this is a transient
+            full-width overlay pinned to the viewport bottom, not chrome inside
+            a scrollport, so there is no stale-offset failure to inherit. */}
+        {lockMsg && (
+          <div onClick={() => setLockMsg("")} style={{ position: "fixed", left: 0, right: 0, bottom: "calc(12px + env(safe-area-inset-bottom))", zIndex: 400, display: "flex", justifyContent: "center", padding: "0 12px", pointerEvents: "auto" }}>
+            <div style={{ maxWidth: 480, background: "var(--panel2)", border: "1px solid var(--teal)", color: "var(--ink)", borderRadius: 10, padding: "9px 12px", fontSize: 12, lineHeight: 1.45, boxShadow: "0 6px 22px rgba(0,0,0,.5)" }}>
+              {lockMsg}
+            </div>
+          </div>
+        )}
         <div className="rotate-lock">
           <div className="ic">📱</div>
           <div style={{ fontWeight: 800, letterSpacing: ".1em" }}>ROTATE TO PORTRAIT</div>

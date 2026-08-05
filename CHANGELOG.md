@@ -7,6 +7,29 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **👁 View-only mode — a master Edit/View toggle at the top of step 1** (field
+  ask: "a view-only mode for people who just want to load a finished
+  file/bundle and see the steps and everything without making any changes").
+  It governs the whole app and is remembered between sessions. Every editing
+  tool is hidden throughout — the media row, tap-mode selector and shape
+  controls on step 1; the search, coordinate inputs and pin-move on step 2;
+  ✥ Place, 🎞 Stabilize, ⚓ Fix frames and 🎛 Smoothing in the sky view;
+  add-witness, new-sighting and the sighting name — while everything that only
+  READS stays live: pinch-zoom the photo, scrub and play the clip, look around
+  the dome with every sky layer, the full results panel, the report, the
+  bundle and the share file. Import stays enabled in both modes, since that is
+  how a reviewer loads the sighting in the first place.
+
+  Enforced at the DATA layer, not by hiding buttons: `updateSource` /
+  `updateMoment` are the only way any measurement changes, so review mode
+  closes them and a blocked write says so in a toast. Hiding the controls is
+  the honesty layer on top — a mode that silently swallowed input would be
+  worse than no mode. A 👁 VIEW ONLY badge sits in every step header (and the
+  sky view's HUD) so a missing control is never a mystery. Verified
+  end-to-end in a real browser: 34 assertions across the full wizard walk,
+  including that the stored sighting is byte-identical after reviewing every
+  screen.
+
 - **Headless analysis engine + API access** (`src/analyze/engine.js`,
   `scripts/analyze.mjs`, `POST /api/analyze` — see `docs/API.md`): the full
   results pipeline with no UI. Feed it a session's measurements (the app's

@@ -1245,6 +1245,33 @@ and HEVC are Safari-only, so an iPhone original handed to an Android or desktop
 witness simply won't decode — `onMediaError` now NAMES that instead of blaming
 the file generically.
 
+## View-only mode (`viewOnly`)
+A global, persisted review mode (`localStorage phodar-viewonly`), toggled by the
+master ✎ Edit / 👁 View only control at the TOP of wizard step 1. It exists so a
+reviewer can walk a shared sighting end to end without any chance of altering it.
+
+**Enforced at the data layer, not by hiding buttons.** `updateSource` /
+`updateMoment` (plus removeSource/addWitness/addMoment/removeMoment/newSighting
+and the sighting-name setter) are the ONLY ways a measurement changes, so review
+mode closes them via `wLock()` — which also raises a one-line toast, because a
+control that silently does nothing is a bug to the user. That is the guarantee:
+no control anywhere in these 13k lines, seen or unseen, can write. Hiding the
+edit affordances is the SECOND layer (honesty), threaded as a `viewOnly` prop
+into MediaMeasure / PositionEditor / PinMap / SkyAimer / WizStep / WizHome /
+WizFinish / ReportView. Keep both layers when adding features: a new write goes
+through updateSource (so it is already locked), and a new edit control needs a
+`viewOnly` guard so it doesn't sit there doing nothing.
+
+What stays live in review mode is everything that only READS: pinch-zoom on the
+photo (MediaMeasure's `onDown` returns right at the marking branch — the
+two-finger pinch/pan path above it is untouched), video scrub + stabilized
+playback, the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare
+as gauges, ⬇ video export, the results panel, the report, the bundle and the
+share file. Import stays enabled in BOTH modes — it is how a reviewer loads the
+sighting. A 👁 VIEW ONLY badge sits in every step header and the sky HUD.
+Browser-verified (34 assertions), including that the stored sighting is
+byte-identical after reviewing every screen.
+
 ## Style
 Functional React, hooks only, no state libraries. The entire aesthetic (night
 instrument: `--bg #070B14`, amber inputs, teal computed values, mono readouts)
