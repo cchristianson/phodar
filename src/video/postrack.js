@@ -31,8 +31,7 @@ const gray = (data, w, h) => {
 /* daytime corners — per-cell peak of gradient energy (gx²+gy²), min-separated.
    Lands features on ridgelines, tree edges and rooftops — the static structure a
    daytime clip has instead of stars. Returns [{x,y,score}] strongest-first. */
-function dayCorners(data, w, h, o) {
-  const g = gray(data, w, h);
+function grayCorners(g, w, h, o) {
   const en = new Float32Array(w * h);
   for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
     const i = y * w + x, gx = g[i + 1] - g[i - 1], gy = g[i + w] - g[i - w];
@@ -57,6 +56,7 @@ function dayCorners(data, w, h, o) {
   }
   return out;
 }
+function dayCorners(data, w, h, o) { return grayCorners(gray(data, w, h), w, h, o); }
 
 /* Pick trackable static background features from a frame buffer (RGBA).
    'night' → bright star blobs (detectStars); 'day' → gradient corners;
@@ -77,6 +77,40 @@ export function detectBgFeatures(data, w, h, opts = {}) {
     if (out.length >= maxN) break;
     if (out.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < sep)) continue;
     out.push(c);
+  }
+  /* SOFT-SKY FALLBACK (field ask: "most UFO videos have nothing to reference
+     except clouds"): a soft cloud edge ramps brightness over 10-20 px, so
+     its PER-PIXEL gradient is tiny and whole cloud banks contribute nothing
+     to the corner pass above. Detecting on a 3× box-downsampled gray
+     multiplies per-pixel gradients ×3 (energy ×9) — soft structure becomes
+     corner-sharp — and this pass only fires when the strict pass is STARVED
+     (< softMin references), so clips with real corners are byte-identical.
+     Soft features carry `soft: 1`: trackFeatures gives them a larger patch
+     and a relaxed flat-template gate (a 15 px window on a cloud IS nearly
+     flat; a ~31 px one has real structure). Clouds do move, but it's
+     inconsequential at these timescales: a 2 km cloud in a 20 km/h wind
+     drifts ~0.3° over a whole 21 s clip — dwarfed by the multi-degree
+     camera motion it helps solve, and poseFromTracks' median trim eats the
+     residual like any other outlier. */
+  const softMin = opts.softMin == null ? 16 : opts.softMin;
+  if (out.length < softMin && softMin > 0) {
+    const k = 3, w2 = Math.floor(w / k), h2 = Math.floor(h / k);
+    if (w2 > 8 && h2 > 8) {
+      const g = gray(data, w, h);
+      const g2 = new Float32Array(w2 * h2);
+      for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) {
+        let sm = 0;
+        for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) sm += g[(y * k + dy) * w + (x * k + dx)];
+        g2[y * w2 + x] = sm / (k * k);
+      }
+      for (const c of grayCorners(g2, w2, h2, { cell: Math.max(8, Math.round((opts.cell || 32) / k)), minSep: Math.max(3, Math.round(sep / k)), maxN, minEnergy: opts.softMinEnergy == null ? 2 : opts.softMinEnergy })) {
+        if (out.length >= maxN) break;
+        const x = c.x * k + (k >> 1), y = c.y * k + (k >> 1);
+        if (inExcl && inExcl(x, y)) continue;
+        if (out.some((p) => Math.hypot(p.x - x, p.y - y) < sep * 1.5)) continue;
+        out.push({ x, y, score: c.score, soft: 1 });
+      }
+    }
   }
   return out;
 }
@@ -102,7 +136,6 @@ const bilin = (g, w, h, x, y) => {
 export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
   const P = opts.patch || 15, S = opts.search || 12, minNcc = opts.minNcc == null ? 0.6 : opts.minNcc;
   const tScale = opts.tScale || 1;
-  const hp = P >> 1, n = (2 * hp + 1) * (2 * hp + 1);
   const gt = gray(prevData, w, h), gc = gray(nextData, w, h);
   /* opts.centerW: Gaussian center weighting (σ = patch/3.4) — for OBJECT
      templates, where a small target sits amid unrelated background: unweighted
@@ -110,15 +143,30 @@ export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
      grass" instead of the moved object (field-observed latch). Weighted, the
      center pixels dominate the score whatever the patch size. Background
      features keep the unweighted path — their whole patch IS signal. */
-  let W = null, wSum = n;
-  if (opts.centerW) {
-    W = new Float32Array(n); wSum = 0;
-    const sg = P / 3.4;
-    let k3 = 0;
-    for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) { const v = Math.exp(-(dx * dx + dy * dy) / (2 * sg * sg)); W[k3++] = v; wSum += v; }
-  }
+  /* per-feature patch context: SOFT features (cloud texture — see the
+     soft-sky fallback in detectBgFeatures) get a LARGER patch and a relaxed
+     flat-template gate; everything else keeps the exact old numbers. */
+  const softP = opts.softPatch || Math.min(31, P * 2 + 1);
+  const ctxCache = new Map();
+  const ctxFor = (Pf) => {
+    let c = ctxCache.get(Pf);
+    if (c) return c;
+    const hp = Pf >> 1, n = (2 * hp + 1) * (2 * hp + 1);
+    let W = null, wSum = n;
+    if (opts.centerW) {
+      W = new Float32Array(n); wSum = 0;
+      const sg = Pf / 3.4;
+      let k3 = 0;
+      for (let dy = -hp; dy <= hp; dy++) for (let dx = -hp; dx <= hp; dx++) { const v = Math.exp(-(dx * dx + dy * dy) / (2 * sg * sg)); W[k3++] = v; wSum += v; }
+    }
+    c = { hp, n, W, wSum };
+    ctxCache.set(Pf, c);
+    return c;
+  };
   const out = [];
   for (const f of feats) {
+    const { hp, n, W, wSum } = ctxFor(f.soft ? softP : P);
+    const minVarF = f.soft ? (opts.softMinVar == null ? 6 : opts.softMinVar) : (opts.minVar || 25);
     const cx = Math.round(f.px), cy = Math.round(f.py);
     // extract the template (scale-resampled) and its stats; reject flat patches
     const T = new Float32Array(n);
@@ -133,7 +181,7 @@ export function trackFeatures(prevData, nextData, w, h, feats, opts = {}) {
       tMean /= wSum;
       let tVar = 0;
       for (let i = 0; i < n; i++) { const d = T[i] - tMean; tVar += (W ? W[i] : 1) * d * d; }
-      if (tVar < (opts.minVar || 25) * (wSum / n)) ok = false; else tInv = 1 / Math.sqrt(tVar);
+      if (tVar < minVarF * (wSum / n)) ok = false; else tInv = 1 / Math.sqrt(tVar);
     }
     if (!ok) { out.push({ px: f.px, py: f.py, ncc: 0, ok: false }); continue; }
     const nccC = (px0, py0) => { // zero-mean NCC of T vs the next-frame patch centred at an integer pixel (weighted when W)
@@ -385,14 +433,14 @@ export function initTracker(refData, w, h, natW, natH, refPose, opts = {}) {
   const features = seeds.map((f, i) => ({
     id: i, prime: true,                              // prime = seeded on the ALIGNED reference frame (uncontaminated g)
     g: pixToDirK(f.x * sc, f.y * sc, natW, natH, refPose.az, refPose.el, refPose.roll, refPose.fov, refPose.k || 0),
-    tx: f.x, ty: f.y, px: f.x, py: f.y,
+    tx: f.x, ty: f.y, px: f.x, py: f.y, ...(f.soft ? { soft: 1 } : {}),
   }));
   return {
     w, h, natW, natH, sc, prevData: refData, lastPose: { ...refPose }, features, nextId: features.length, opts,
     /* the reference frame is kept forever: every frame globally registers
        against it (zoom + drift proof), and near its scale frames re-anchor
        feature-precisely against it too (see stepTracker) */
-    ref: { data: refData, pose: { ...refPose }, feats: features.map((f) => ({ g: f.g, tx: f.tx, ty: f.ty })) },
+    ref: { data: refData, pose: { ...refPose }, feats: features.map((f) => ({ g: f.g, tx: f.tx, ty: f.ty, ...(f.soft ? { soft: 1 } : {}) })) },
     refG: grayDown(refData, w, h, 96),
   };
 }
@@ -642,7 +690,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
         if (!p) continue;
         const bx = p.px / sc, by = p.py / sc;
         if (bx < 0 || bx > w || by < 0 || by > h) continue;
-        fR.push({ g: rf.g, tx: rf.tx, ty: rf.ty, px: bx, py: by });
+        fR.push({ g: rf.g, tx: rf.tx, ty: rf.ty, px: bx, py: by, ...(rf.soft ? { soft: 1 } : {}) });
       }
       if (fR.length >= minMatch) {
         const trR = trackFeatures(ref.data, nextData, w, h, fR, { ...o, search: 12, tScale: tS });
@@ -693,7 +741,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   if ((solved || glob) && kept.length < minMatch + 4) {
     for (const f of detectBgFeatures(nextData, w, h, { ...o, maxN })) {
       if (kept.some((k) => Math.hypot(k.tx - f.x, k.ty - f.y) < sep)) continue;
-      kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y });
+      kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y, ...(f.soft ? { soft: 1 } : {}) });
       if (kept.length >= maxN) break;
     }
   }

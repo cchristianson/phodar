@@ -704,6 +704,22 @@ terrain stay frozen and only the object moves. Build ladder:
    star blobs + gradient corners (a dusk clip uses stars AND the tree
    line; either alone was wasteful). Asserted in mathcheck (60→46° zoom
    sweep recovered to ~1°, az locked; tree + stars both contribute).
+   **SOFT-SKY FALLBACK (clouds — field ask: "most UFO videos have nothing
+   to reference except clouds")**: a soft cloud edge ramps over 10-20 px,
+   so its per-pixel gradient sits below the corner gate (minEnergy 4) and
+   cloud banks contribute NOTHING — the solve starved on exactly the clips
+   that need it. When the strict pass yields < softMin (16) references,
+   detection re-runs on a 3× box-downsampled gray (gradients ×3, energy ×9
+   — soft structure becomes corner-sharp; minEnergy 2), coords mapped back,
+   features flagged `soft: 1`. trackFeatures gives soft features a larger
+   patch (softPatch = min(31, 2P+1)) and a relaxed flat-template gate
+   (softMinVar 6 vs 25) via a per-patch-size context cache; the flag rides
+   initTracker seeds, ref.feats, the absolute re-anchor and top-up. Only
+   fires when starved, so well-featured clips are byte-identical
+   (asserted); cloud drift is inconsequential (~0.3° over a 21 s clip in
+   20 km/h wind, and the median trim eats it). Mathcheck: strict pass
+   starves on a synthetic cloud sky, fallback recovers 50+ refs, a
+   10-frame pan holds to 0.07° on clouds alone.
 2. Track points convert through their own frame's pose. **DONE for solved
    clips** (trackDirections uses s.posePath when present; a tripod clip
    without one keeps the static path, which is then actually true). Field-

@@ -1308,6 +1308,77 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     }
   }
 
+  // 4i. SOFT SKY (clouds only — field ask: "most UFO videos have nothing to
+  // reference except clouds"). A cloud edge ramps brightness over 10-20 px, so
+  // its per-pixel gradient sits BELOW the strict corner gate and the detector
+  // starves. The soft-sky fallback (3× downsampled detection + larger patch,
+  // relaxed variance) must recover references and hold a pan on clouds alone.
+  {
+    // ~14 soft gaussian blobs at fixed world dirs — amplitude/σ tuned so the
+    // per-pixel central-diff gradient energy stays under the strict gate (4)
+    const clouds = [];
+    let cq = 0;
+    for (let u = -3; u <= 3; u++) for (let v = -2; v <= 2; v++) {
+      cq++;
+      if (cq % 2) continue; // sparse, irregular
+      const ju = (((cq * 41) % 9) / 9 - 0.5) * 3, jv = (((cq * 29) % 7) / 7 - 0.5) * 3;
+      clouds.push({ g: dirFromAzEl(P0.az + u * 8 + ju, P0.el + v * 8 + jv), sig: 13 + ((cq * 5) % 4) * 2, amp: 9 + ((cq * 3) % 3) * 2 });
+    }
+    const renderClouds = (pose) => {
+      const data = new Uint8ClampedArray(TW * TH * 4);
+      for (let i = 0; i < TW * TH; i++) { data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = 140; data[i * 4 + 3] = 255; }
+      for (const b of clouds) {
+        const p = dirToPixK(b.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+        if (!p) continue;
+        const bx = p.px / sc, by = p.py / sc, R = Math.ceil(b.sig * 2.8);
+        if (bx < -R || bx > TW + R || by < -R || by > TH + R) continue;
+        for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+          const x = Math.round(bx) + dx, y = Math.round(by) + dy;
+          if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+          const g = b.amp * Math.exp(-(dx * dx + dy * dy) / (2 * b.sig * b.sig)), i = (y * TW + x) * 4;
+          data[i] = Math.min(255, data[i] + g); data[i + 1] = Math.min(255, data[i + 1] + g); data[i + 2] = Math.min(255, data[i + 2] + g);
+        }
+      }
+      return data;
+    };
+    const c0 = renderClouds(P0);
+    const strict = detectBgFeatures(c0, TW, TH, { mode: "day", maxN: 60, softMin: 0 });
+    approx(strict.length < 8 ? 1 : 0, 1, 0, `soft sky: the strict corner pass STARVES on clouds (${strict.length} found)`);
+    const withSoft = detectBgFeatures(c0, TW, TH, { mode: "day", maxN: 60 });
+    const nSoft = withSoft.filter((f) => f.soft).length;
+    approx(withSoft.length >= 16 ? 1 : 0, 1, 0, `soft sky: fallback recovers references (${withSoft.length} total)`);
+    approx(nSoft >= 10 ? 1 : 0, 1, 0, `soft sky: soft-flagged cloud features present (${nSoft})`);
+    // byte-identical guarantee: a frame with real corners must never take the
+    // soft path — the star-grid frame from block 3 has plenty of hard features
+    {
+      const hard = renderFrame(P0);
+      const a = detectBgFeatures(hard, TW, TH, { mode: "auto", maxN: 60 });
+      const b = detectBgFeatures(hard, TW, TH, { mode: "auto", maxN: 60, softMin: 0 });
+      approx(a.length, b.length, 0, "soft sky: a well-featured frame is untouched by the fallback");
+      approx(a.some((f) => f.soft) ? 1 : 0, 0, 0, "soft sky: no soft features on a well-featured frame");
+    }
+    // the walk: a 10-frame pan with slight el/roll drift, clouds the ONLY
+    // reference. Soft features localize coarser than hard corners (broad NCC
+    // peak + 3×-grid placement), so the bar is looser than the star-grid walk —
+    // but it must hold the pan instead of losing the world.
+    {
+      const wposes = Array.from({ length: 10 }, (_, i) => ({ az: 250 + i * 0.3, el: 12 + i * 0.06, roll: i * 0.08, fov: 60, k: 0 }));
+      const wframes = wposes.map(renderClouds);
+      const tk = initTracker(wframes[0], TW, TH, natW, natH, P0, { mode: "auto", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+      approx(tk.features.length >= 16 ? 1 : 0, 1, 0, `soft sky: tracker seeded on clouds (${tk.features.length} refs)`);
+      let maxAzE = 0, maxElE = 0, minInl = 999;
+      for (let i = 1; i < wframes.length; i++) {
+        const r = stepTracker(tk, wframes[i]);
+        maxAzE = Math.max(maxAzE, Math.abs(r.pose.az - wposes[i].az));
+        maxElE = Math.max(maxElE, Math.abs(r.pose.el - wposes[i].el));
+        minInl = Math.min(minInl, r.nInliers || 0);
+      }
+      approx(maxAzE < 0.6 ? 1 : 0, 1, 0, `soft sky: pan held on clouds alone (az err ${maxAzE.toFixed(2)}° < 0.6°)`);
+      approx(maxElE < 0.6 ? 1 : 0, 1, 0, `soft sky: el held (${maxElE.toFixed(2)}° < 0.6°)`);
+      approx(minInl >= 8 ? 1 : 0, 1, 0, `soft sky: healthy inlier count throughout (min ${minInl})`);
+    }
+  }
+
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked
   // a +0.4° az error into every g and the pose) — the incremental solve alone
   // would confirm the drift, but matching the pristine REFERENCE features must

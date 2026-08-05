@@ -25,6 +25,21 @@ Notable changes to Phodar. Format loosely follows
   URL path because every client can paste a URL while header auth varies.
   Full client lifecycle (initialize → tools/list → tools/call, auth and
   error paths) verified against the real two-video drone session.
+- **Stabilizer tracks clouds** (field ask: "most UFO videos have nothing to
+  reference except clouds"): a soft cloud edge ramps brightness over 10–20 px,
+  so its per-pixel gradient sat below the corner detector's gate and whole
+  cloud banks contributed zero references — the camera solve starved on
+  exactly the clips that need it most. When the strict pass finds too few
+  references (<16), a soft-sky fallback now re-detects on a 3×-downsampled
+  frame (gradients concentrate ×3, so soft structure becomes corner-sharp)
+  and those features track with a larger template patch and a relaxed
+  flat-patch gate. Clips with real corners are byte-identical — the fallback
+  only fires when starved. Cloud drift is inconsequential at these
+  timescales (a 2 km cloud in 20 km/h wind moves ~0.3° over a 21 s clip,
+  dwarfed by multi-degree camera motion) and the pose solve's median trim
+  absorbs the residual. Mathcheck-asserted: the strict detector starves on a
+  synthetic cloud sky, the fallback recovers 50+ references, and a 10-frame
+  pan is held to 0.07° on clouds alone.
 
 ### Added (quality of life)
 - **Cube depth slider — the monolith axis** (field ask): the ⬛ cube gains a
