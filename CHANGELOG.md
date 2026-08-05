@@ -7,9 +7,11 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
-- **👁 View-only mode — a master Edit/View toggle at the top of step 1** (field
+- **👁 View-only mode — a master Edit/View toggle on the home screen** (field
   ask: "a view-only mode for people who just want to load a finished
   file/bundle and see the steps and everything without making any changes").
+  It sits above Import, because that is the order a review actually happens in:
+  set the mode, then load the file you were sent.
   It governs the whole app and is remembered between sessions. Every editing
   tool is hidden throughout — the media row, tap-mode selector and shape
   controls on step 1; the search, coordinate inputs and pin-move on step 2;
@@ -29,7 +31,13 @@ Notable changes to Phodar. Format loosely follows
   end-to-end in a real browser: 34 assertions across the full wizard walk,
   including that the stored sighting is byte-identical after reviewing every
   screen.
-
+- **In-app manual brought back up to date**, and `helpcheck` extended so these
+  can't drift again (21 named features guarded, up from 14). New entries: the
+  Edit/View master toggle; ‹ / 🏠 navigation on the last two steps; what the
+  stabilizer can track (a cloud-only sky, and the frame-to-frame lock that
+  carries a sweep off the reference frame, reported per-clip); the 🎥 track
+  quality rating and what lowers it; why the maneuver-load g is an upper bound
+  on a heavily-stabilized clip; and the aircraft sky-tracks drawn on the dome.
 - **Headless analysis engine + API access** (`src/analyze/engine.js`,
   `scripts/analyze.mjs`, `POST /api/analyze` — see `docs/API.md`): the full
   results pipeline with no UI. Feed it a session's measurements (the app's

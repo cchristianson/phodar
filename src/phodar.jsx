@@ -525,11 +525,13 @@ const HELP_SECTIONS = [
         { t: "4 · Results", d: "See the fix (or, with one viewpoint, the honest angular numbers), run cross-checks, and grade the quality." },
       ]},
       { h: "On the home screen", items: [
-        { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1." },
+        { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: pinch-zoom the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. It is enforced in the DATA layer as well as by hiding buttons, so nothing you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
+        { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours)." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
+        { t: "Moving around — ‹ and 🏠", d: "‹ always steps back ONE page, so a correction is one tap away: from Results it returns to the sky view that produced the numbers, and from Report & share it returns to Results (or straight to this list, if that is where you opened the report from). The last two screens also carry a 🏠 button, which jumps all the way back to this sighting list from anywhere." },
         { t: "units: … — tap to switch", d: "Flip every readout in the app between metric (m · km · m/s) and imperial (ft · mi · mph)." },
         { t: "Observer row dots", d: "Green marks which facets are done — photo · position · direction · (trajectory). Open ▸ resumes that observer; ✕ removes them." },
         { t: "＋ Add moment", d: "Under each observer is a moment tree — the primary photo is Moment 1. Add another photo of the SAME object taken a moment later (from the same spot) and place it too; two or more placed photos build that observer's trajectory (direction over time) without any manual drawing. Each moment carries its own capture time (from EXIF, or set by hand)." },
@@ -545,7 +547,6 @@ const HELP_SECTIONS = [
     intro: "Load the sighting media and tell Phodar how big the object appeared by fitting a 3D wireframe shape over it. The projected silhouette of that shape becomes the measured angular size — the seed for real size once distance is known. The original pixels are never altered; brightness/contrast here is display-only.",
     groups: [
       { h: "Load the media (the top row)", items: [
-        { t: "✎ Edit / 👁 View only (master toggle)", d: "At the very top of step 1, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is review mode, for walking through a sighting someone shared without any risk of altering it: every editing tool is hidden throughout — the media row, the tap-mode selector and shape controls here, the position inputs and pin-move on step 2, ✥ Place / 🎞 Stabilize / ⚓ Fix frames in the sky view, add-witness and new-sighting — while everything that only READS stays: pinch-zoom the photo, scrub and play the clip, look around the dome with every sky layer, the full results, the report, the bundle and the share file. It is enforced at the data layer too, not just by hiding buttons, so nothing you tap can change the sighting; a 👁 VIEW ONLY badge sits in every step header so it is never a mystery why a control is missing. The mode is remembered between sessions. Importing stays enabled in both modes — that is how you load a sighting to review." },
         { t: "Load photo or video / Replace", d: "Pick any image or video from your device. Replace swaps the media and starts the measurement fresh." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
         { t: "💾 Save to camera roll (video)", d: "Hands the clip to your phone's share sheet — on iPhone choose “Save Video” to put it in Photos. A web app can't write to Photos directly, so this is the way out. It matters most for a clip you recorded IN Phodar: that lives only inside the app until you save it, so an unsaved one is flagged in amber. (Photos accepts .mp4/.mov and refuses .webm — an iPhone in-app recording is .mp4, so it's fine.)" },
@@ -656,7 +657,7 @@ const HELP_SECTIONS = [
         { t: "🎛 fine tune", d: "Precise one-axis nudge buttons for roll (⟲ ⟳, 0.2° per tap) and FOV (− ＋, 0.3°). The two-finger twist and pinch are great for the rough placement but bleed into each other at small adjustments — these move exactly one thing. Each tap is undoable." },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
-        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly." },
+        { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly. WHAT IT CAN TRACK: ridgelines, tree lines, rooftops and stars are ideal, but a sky of nothing but CLOUD works too — soft cloud edges are picked up by a coarse-scale pass when nothing sharper exists (their own drift, a fraction of a degree over a clip, is negligible against the camera's motion). When the view pans or zooms so far that the frame no longer overlaps the one you aligned on, the solve switches to locking each frame against the PREVIOUS one, which is what lets a sweep up to the zenith keep tracking; the summary line reports how many frames were locked that way, and those drift a little more than reference-locked ones. If a stretch still goes wrong, ⚓ Fix frames is the manual repair." },
         { t: "↶ Undo (right after a solve)", d: "Steps back to the PREVIOUS stabilization — one level, offered just after a run. A bad solve is otherwise unrecoverable without redoing the work." },
         { t: "✕ clear", d: "Removes the stabilization for good and returns to the original clip. Every measurement stays — object placement, track waypoints, alignment frame, sky placement — and only the solved camera path and object track are dropped, so you can trim, re-align and solve again from scratch." },
         { t: "🎯 Solve from marks", d: "The manual fallback: solves each frame's pose from the background features you hand-marked with 🎥 Cam refs on step 1 — for a clip the automatic pass can't hold (near-black, low contrast, no skyline). A smoothing slider appears to average out imperfect placement." },
@@ -699,10 +700,12 @@ const HELP_SECTIONS = [
         { t: "⚠ Bearings don't converge", d: "Names which observer's compass looks off and by how much — usually metal near the phone (see Accuracy)." },
         { t: "⚠ GPS altitudes differ + ⛰ Set every observer's elevation from terrain", d: "Phone-altitude wobble warning, with a one-tap fix that sets every observer's elevation from DEM terrain." },
         { t: "Solution quality (table)", d: "Baseline, convergence angle, ray-miss distance (how close the sight-lines actually pass), and range/baseline ratio — the raw geometry behind the grade." },
+        { t: "🎥 Track quality (excellent / good / fair / poor)", d: "Grades the TRAJECTORY's provenance, above the numbers it feeds, and stays silent when the track is clean. Three things lower it: stretches inside a hard zoom or with too few background references, where the camera's own motion can read as the object's (those are excluded from the reported peaks); a tracker-noise floor comparable to the motion being measured; and heavy CAMERA WORK — a big sweep, a deep zoom, or many frames on the frame-to-frame lock. The reasons are spelled out, and the same line appears in the report." },
+        { t: "Maneuver load (g) — read it as an upper bound", d: "Acceleration is the second derivative of a track that was itself measured through the camera solve, so it magnifies error more than any other number here: residual stabilization wobble shows up as g the object never pulled. When the clip needed heavy stabilization a warning says so directly under the figure. The speed and the path SHAPE are far less sensitive — trust those first, and distrust any maneuver the angular-rate plot doesn't show as a sustained ramp rather than a spike. (With one viewpoint everything also scales with the distance you assume; the ladder below the figure shows how close the object must be for the maneuver to stay within balloon, light-aircraft or fighter limits.)" },
       ]},
       { h: "Cross-checks & plots", items: [
         { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory. When a triangulated trajectory exists, a ▶ + scrubber under the map plays the object's movement in real time — a marker rides the path with a growing progress trail, and the readout shows elapsed time, clock time, altitude and speed at that instant." },
-        { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off." },
+        { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off. In the sky view the same traffic is drawn on the dome as ✈ chips at their true bearing and up-angle, rotated to their heading, each trailing a faint dashed SKY-TRACK of where it flew in the minutes around the sighting — so you can see whether a candidate's path matches what you watched, not just its position at one instant. A sighting more than ~15 minutes old is answered from the historical archive at the sighting time (teal provenance line); a fresh one polls live traffic every 20 s." },
         { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so). It also runs a per-witness ⏱ clock check — one sight-line swept against the whole flight is the sharpest clock reference there is, and a capture time that's seconds or minutes wrong gets named with the offset." },
       ]},
     ],
@@ -12751,7 +12754,7 @@ function MomentTimeCtl({ m, onChange }) {
   );
 }
 
-function WizHome({ sources, est, viewOnly, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
+function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
   const real = sources.filter((s) => !isEmptySource(s));
@@ -12760,7 +12763,7 @@ function WizHome({ sources, est, viewOnly, onName, onNew, onAddWitness, onResume
   return (
     <div style={{ padding: "26px 14px 40px", position: "relative" }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
-      {viewOnly && <ViewBadge style={{ position: "absolute", top: "calc(16px + env(safe-area-inset-top))", left: 14, zIndex: 30 }} />}
+
       {/* the shim fell back to memory (private browsing / site data blocked):
           everything still works, but nothing survives a reload — say so once,
           here, rather than letting someone lose an hour of marking to it */}
@@ -12800,7 +12803,10 @@ function WizHome({ sources, est, viewOnly, onName, onNew, onAddWitness, onResume
           </button>
         </div>
       </div>
-      {!viewOnly && <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15, marginTop: 22 }} onClick={onNew}>📸 New sighting</button>}
+      {/* MASTER edit/view switch — on the sighting list, because that is where
+          a review begins: set the mode, then import the file you were sent. */}
+      <div style={{ marginTop: 22 }}><ModeToggle viewOnly={viewOnly} onChange={onSetViewOnly} /></div>
+      {!viewOnly && <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15 }} onClick={onNew}>📸 New sighting</button>}
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => {
@@ -13468,9 +13474,6 @@ export default function App() {
         page = (
           <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE PHOTO"} help="photo" viewOnly={viewOnly} onBack={() => goView("home")} onNext={() => goView("s2")}
             nextLabel={appMode === "aerial" ? "Next · platform & geolocate →" : (wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →")}>
-            {/* the MASTER edit/view switch lives at the top of step 1 (field
-                ask) — the first thing you meet when you open a sighting */}
-            <ModeToggle viewOnly={viewOnly} onChange={setViewOnly} />
             <MediaMeasure wizard viewOnly={viewOnly} src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
           </WizStep>
         );
@@ -13532,7 +13535,7 @@ export default function App() {
         );
       }
     }
-    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => { if (!wLock()) setEst((e) => ({ ...e, name })); }} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goReport("home")} viewOnly={viewOnly}
+    if (!page) page = <WizHome sources={sources} est={est} onName={(name) => { if (!wLock()) setEst((e) => ({ ...e, name })); }} onNew={newSighting} onAddWitness={addWitness} onResume={(id) => setUi({ view: "s1", srcId: id })} onRemove={removeSource} onImport={importShared} onReport={() => goReport("home")} viewOnly={viewOnly} onSetViewOnly={setViewOnly}
       onAddMoment={addMoment} onOpenMoment={(sid, mid) => setUi({ view: "m1", srcId: sid, momId: mid })} onRemoveMoment={removeMoment}
       unitsImp={unitsImp} onToggleUnits={toggleUnits} appMode={appMode} onSetMode={setMode} />;
     return (

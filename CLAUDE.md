@@ -1247,7 +1247,8 @@ the file generically.
 
 ## View-only mode (`viewOnly`)
 A global, persisted review mode (`localStorage phodar-viewonly`), toggled by the
-master ✎ Edit / 👁 View only control at the TOP of wizard step 1. It exists so a
+master ✎ Edit / 👁 View only control on the HOME screen (above Import — a
+review starts by setting the mode, then loading the file). It exists so a
 reviewer can walk a shared sighting end to end without any chance of altering it.
 
 **Enforced at the data layer, not by hiding buttons.** `updateSource` /

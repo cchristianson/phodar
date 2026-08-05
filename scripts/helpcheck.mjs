@@ -95,6 +95,13 @@ const NAMED = [
   ["matchSkyline", /Snap to ridges/, "terrain skyline snapping"],
   ["FlightLogCheck", /flight-log check/i, "the drone flight-log calibration check"],
   ["slugName", /Sighting name/, "naming the sighting (report title + export filenames)"],
+  ["viewOnly", /View only/, "view-only review mode (the master Edit/View toggle)"],
+  ["trackQuality", /Track quality/, "the trajectory's track-quality rating"],
+  ["camHeavy", /upper bound/, "the 'g is an upper bound' caveat on heavily-stabilized clips"],
+  ["chained", /frame-to-frame/, "frame-to-frame locking when the view leaves the reference frame"],
+  ["softMin", /cloud/, "tracking a cloud-only sky"],
+  ["goReport", /‹ always steps back/, "the ‹ / 🏠 navigation on the last two steps"],
+  ["fetchAircraftAt", /sky-track/i, "aircraft sky-tracks drawn on the dome"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {
