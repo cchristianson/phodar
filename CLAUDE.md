@@ -634,10 +634,39 @@ terrain stay frozen and only the object moves. Build ladder:
    sparse layer's predictions/tScale; the sparse solve then polishes
    (FOV freed only with ≥10 well-spread anchors — rung quantization is
    ~±0.5° so the polish matters); if sparse fails the global coarse pose
-   is adopted rather than holding (absolute > held). The differential
+   is adopted rather than holding (absolute > held). **CHAIN REGISTER
+   (the Germany-clip fix: a tilt to zenith on a cloud-only sky)**: when
+   the primary register can't lock (frame panned/zoomed off the
+   reference's coverage — registerToRef → null or gate-rejected), the
+   SAME whole-frame machinery (`registerGray`, the extracted core)
+   registers this frame against the PREVIOUS frame: narrow ladder
+   (s 0.76–1.33), relaxed area gate (0.045 — consecutive frames share
+   content; a dusk cloud sky at areaFrac ~0.11 registers at ncc 0.9+,
+   measured) but a higher score bar (0.6), per-step plausibility gate
+   (9°). It seeds the sparse predictions exactly like the global fix —
+   which is the actual cure: without it, a fast pan on self-similar soft
+   clouds LATCHES (every patch finds a lookalike near its stale
+   prediction, the solve confirms near-zero motion at 24–45 "inliers"
+   while the whole frame visibly slides — field-measured: the solve froze
+   at el 42° through a tilt to ~62°; whole-frame structure can't alias in
+   place). If the sparse solve still reports far less motion than the
+   chain measured (dSol < 0.35·dReg, dReg > 0.5°, score ≥ 0.75), the
+   chain pose is adopted and every feature re-derived under it (latch
+   arbitration — inlier count is not a truth signal); if sparse fails
+   outright the chain pose is adopted rather than holding. Chain frames
+   are differential (drift accumulates per step, unlike glob) — flagged
+   `c: 1` in posePath entries and stated in the stabilize flash. Chain
+   only runs when glob is null, so reference-covered clips are
+   byte-identical; `chain: false` disables (tests). tracker.prevG rides
+   the walk's bisection SNAPSHOT (phodar.jsx `snap()`) — rewinding
+   prevData without prevG would register against the wrong frame.
+   Mathcheck-asserted: a 2.4°/step cloud tilt off the reference loses
+   >8° without the chain and tracks to 0.28° with it; verified on the
+   real clip (el 30→61 recovered, 47 chained steps, zero holds). The
+   remaining differential
    machinery (scale probe by radial-fit coherence, collapse ladder
-   rescue) remains as the FALLBACK for frames that pan off the reference
-   coverage (registerToRef → null). The feature-precise re-anchor still
+   rescue) is the LAST fallback when the chain also fails (point
+   content, a blank frame). The feature-precise re-anchor still
    runs near reference scale, but its FOV vote is gated to near-native
    template scale (0.77–1.3) — heavy resampling biases it worse than the
    sparse polish it would override. Top-up only on solved/global steps

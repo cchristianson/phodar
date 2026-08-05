@@ -1377,6 +1377,65 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(maxElE < 0.6 ? 1 : 0, 1, 0, `soft sky: el held (${maxElE.toFixed(2)}° < 0.6°)`);
       approx(minInl >= 8 ? 1 : 0, 1, 0, `soft sky: healthy inlier count throughout (min ${minInl})`);
     }
+
+    // 4j. CHAIN REGISTER — the Germany-clip failure: a sustained fast tilt on a
+    // cloud-only sky, panning OFF the reference frame's coverage. The primary
+    // global register dies (no overlap), and the sparse layer alone LATCHES:
+    // every soft patch finds a lookalike near its stale prediction (per-step
+    // motion exceeds the search window), so the solve confirms near-zero
+    // motion with a confident inlier count while the camera sweeps tens of
+    // degrees (field-measured: 42° frozen vs a tilt to ~62°). The chain
+    // register (whole-frame vs the PREVIOUS frame) is the motion floor: it
+    // seeds the predictions so the sparse layer matches truth again.
+    {
+      // taller cloud field so the whole pan stays populated
+      const cl2 = [];
+      let cq2 = 0;
+      for (let u = -3; u <= 3; u++) for (let v = -2; v <= 9; v++) {
+        cq2++;
+        if (cq2 % 2) continue;
+        const ju = (((cq2 * 41) % 9) / 9 - 0.5) * 3, jv = (((cq2 * 29) % 7) / 7 - 0.5) * 3;
+        cl2.push({ g: dirFromAzEl(P0.az + u * 8 + ju, P0.el + v * 8 + jv), sig: 13 + ((cq2 * 5) % 4) * 2, amp: 9 + ((cq2 * 3) % 3) * 2 });
+      }
+      const renderC2 = (pose) => {
+        const data = new Uint8ClampedArray(TW * TH * 4);
+        for (let i = 0; i < TW * TH; i++) { data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = 140; data[i * 4 + 3] = 255; }
+        for (const b of cl2) {
+          const p = dirToPixK(b.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k);
+          if (!p) continue;
+          const bx = p.px / sc, by = p.py / sc, R = Math.ceil(b.sig * 2.8);
+          if (bx < -R || bx > TW + R || by < -R || by > TH + R) continue;
+          for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+            const x = Math.round(bx) + dx, y = Math.round(by) + dy;
+            if (x < 0 || y < 0 || x >= TW || y >= TH) continue;
+            const g = b.amp * Math.exp(-(dx * dx + dy * dy) / (2 * b.sig * b.sig)), i = (y * TW + x) * 4;
+            data[i] = Math.min(255, data[i] + g); data[i + 1] = Math.min(255, data[i + 1] + g); data[i + 2] = Math.min(255, data[i + 2] + g);
+          }
+        }
+        return data;
+      };
+      // 2.4°/step tilt (beyond the sparse search window) climbing 43° — well
+      // off the reference's coverage by the end
+      const tposes = Array.from({ length: 19 }, (_, i) => ({ az: 250 + i * 0.1, el: 12 + i * 2.4, roll: 0, fov: 60, k: 0 }));
+      const tframes = tposes.map(renderC2);
+      const runTilt = (chainOn) => {
+        const tk = initTracker(tframes[0], TW, TH, natW, natH, P0, { mode: "day", minMatch: 6, maxN: 40, patch: 11, search: 14, ...(chainOn ? {} : { chain: false }) });
+        let elEnd = P0.el, maxElErr = 0, chained = 0, heldN = 0;
+        for (let i = 1; i < tframes.length; i++) {
+          const r = stepTracker(tk, tframes[i]);
+          elEnd = r.pose.el;
+          maxElErr = Math.max(maxElErr, Math.abs(r.pose.el - tposes[i].el));
+          if (r.chained != null) chained++;
+          if (r.held) heldN++;
+        }
+        return { elEnd, maxElErr, chained, heldN };
+      };
+      const off = runTilt(false), on = runTilt(true);
+      approx(off.maxElErr > 8 ? 1 : 0, 1, 0, `chain register: WITHOUT it the tilt is lost (el err ${off.maxElErr.toFixed(1)}° — the latch/freeze)`);
+      approx(on.maxElErr < 1.5 ? 1 : 0, 1, 0, `chain register: tilt tracked to the top (el err ${on.maxElErr.toFixed(2)}° < 1.5°)`);
+      approx(on.chained >= 5 ? 1 : 0, 1, 0, `chain register: engaged once off the reference (${on.chained} chained steps)`);
+      approx(on.heldN, 0, 0, "chain register: no frozen frames on the sweep");
+    }
   }
 
   // 4c. ABSOLUTE RE-ANCHOR: simulate accumulated drift (feature turnover baked

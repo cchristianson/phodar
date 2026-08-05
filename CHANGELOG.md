@@ -40,6 +40,25 @@ Notable changes to Phodar. Format loosely follows
   absorbs the residual. Mathcheck-asserted: the strict detector starves on a
   synthetic cloud sky, the fallback recovers 50+ references, and a 10-frame
   pan is held to 0.07° on clouds alone.
+- **Stabilizer chain register — sweeps across the dome are no longer lost**
+  (field case, the Germany sighting: the camera tilts from 30° elevation to
+  near-zenith on a cloud-only sky, and the solve froze at 42° — the object
+  trajectory piled into a knot instead of climbing the dome). Once the view
+  pans or zooms off the marked reference frame, the absolute whole-frame
+  registration has nothing to lock to, and the sparse feature layer alone
+  can freeze on self-similar clouds: every patch finds a lookalike near its
+  stale prediction and the solve confirms near-zero motion with a
+  confident-looking inlier count, while the whole frame visibly slides.
+  Now the same whole-frame registration runs against the PREVIOUS frame
+  whenever the reference can't lock — a motion floor that seeds the feature
+  predictions where the content actually went, so the sparse layer matches
+  truth again. Frame-to-frame lock counts are stated in the stabilize
+  summary (it measures real motion but can drift slowly, unlike a
+  reference lock). Mathcheck-asserted (a fast cloud tilt off the reference
+  loses >8° without it, tracks to 0.28° with it) and verified offline on
+  the actual field clip: the solved elevation now climbs 30°→61° through
+  the formerly frozen span with zero held frames. Re-run 🎞 Stabilize on
+  affected sightings to pick it up.
 
 ### Added (quality of life)
 - **Cube depth slider — the monolith axis** (field ask): the ⬛ cube gains a

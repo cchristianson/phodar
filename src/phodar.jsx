@@ -5494,7 +5494,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       if (t0.features.length < 8) { setStabBusy(0); setFlash(`🎞 only ${t0.features.length} background feature(s) on the marked frame — too few to track. A frame with skyline/terrain edges or stars stabilizes best.`); return; }
       const fwd = times.filter((t) => t > refT + 1e-6);
       const bwd = times.filter((t) => t < refT - 1e-6).reverse();
-      const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0 });
+      const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0, ...(r2.chained != null ? { c: 1 } : {}) });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
       let done = 0, ancCount = 0;
       const total = (fwd.length + bwd.length) * (objMid ? 2 : 1);
@@ -5512,7 +5512,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
              zoom/whip-pan at the 0.25 s cadence can outrun even the zoom
              rescue; halving the gap halves the per-step change exactly where
              the motion is fastest. Two levels → down to ~0.06 s. */
-          const snap = () => ({ prevData: tracker.prevData, lastPose: tracker.lastPose, features: tracker.features, nextId: tracker.nextId });
+          const snap = () => ({ prevData: tracker.prevData, prevG: tracker.prevG, lastPose: tracker.lastPose, features: tracker.features, nextId: tracker.nextId });
           const stepAt = async (tt) => { await seek(tt); return stepTracker(tracker, grab()); };
           const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
             const s0 = snap();
@@ -5755,6 +5755,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const zoomNote = fovHi - fovLo > 3 ? ` · zoom tracked (FOV ${fovHi.toFixed(0)}°→${fovLo.toFixed(0)}°)` : "";
       const trimNote = trS.on ? ` · ✂ trimmed span only (${trS.t0.toFixed(1)}–${trS.t1.toFixed(1)}s of ${dur.toFixed(1)}s)` : "";
       const ancNote = ancCount ? ` · ${ancCount} drift anchors` : "";
+      /* frames carried by the frame-to-frame whole-frame lock — the motion
+         floor when the view pans/zooms off the marked reference frame (a
+         cloud-only tilt is the field case). Honest to say: it measures real
+         motion but drifts slowly, unlike an absolute reference lock. */
+      const chainN = path.filter((p) => p.c).length;
+      const chainNote = chainN ? ` · ${chainN} frame${chainN > 1 ? "s" : ""} locked frame-to-frame (view left the marked reference frame)` : "";
       const glitchNote = deglitched ? ` · ${deglitched} glitch${deglitched > 1 ? "es" : ""} smoothed` : "";
       const bridgeNote = bridged ? ` · ${bridged} weak frame${bridged > 1 ? "s" : ""} bridged` : "";
       const sizeNote = resized ? ` · ${resized} sized point${resized > 1 ? "s" : ""} re-scaled to the solved zoom` : "";
@@ -5772,7 +5778,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})${lostNote}` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
       setFlash(weak > path.length * 0.25
         ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${chainNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };

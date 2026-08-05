@@ -301,24 +301,27 @@ function shrinkGray(im, k) {
   return { g, w: tw, h: th };
 }
 
-/* Register a frame against the reference across a scale ladder. `tracker`
-   carries refG (coarse gray of the reference) + ref.pose. `curData` is the
-   frame at tracking resolution. Returns {s, fov, az, el, score} — the frame's
-   ABSOLUTE center pose and zoom (roll assumed ≈ reference; the sparse refine
-   recovers it) — or null when the frame no longer overlaps the reference well
-   enough (pan-away → caller falls back to the differential chain). */
-export function registerToRef(tracker, curG, opts = {}) {
-  const refG = tracker.refG; if (!refG) return null;
-  const { natW, natH } = tracker;
-  const rp = tracker.ref.pose;
+/* Register a coarse gray frame against a coarse gray REFERENCE image whose
+   pose is known, across a scale ladder. The shared core of registerToRef
+   (primary reference — wide ladder, absolute) and the CHAIN register in
+   stepTracker (previous frame — narrow ladder, differential): same crop /
+   area gate / roll hint / sweep / sub-rung parabola / center→world mapping,
+   parameterized by `refIm`+`rp` and opts {minScore, fovMax, areaMin, sLo,
+   sHi, sStep, rollHint}. Returns {s, fov, az, el, score} or null. */
+export function registerGray(refIm, rp, curG, natW, natH, opts = {}) {
+  const refG = refIm; if (!refG) return null;
   const minScore = opts.minScore == null ? 0.5 : opts.minScore;
+  const areaMin = opts.areaMin == null ? 0.12 : opts.areaMin;
+  const sLo = opts.sLo == null ? 0.7 : opts.sLo;
+  const sHi = opts.sHi == null ? 5.05 : opts.sHi;
+  const sStep = opts.sStep == null ? 1.115 : opts.sStep;
   /* physical FOV cap: the camera can never see WIDER than the lens's widest
      (digital zoom only narrows). Without it the s<1 rungs — whose templates
      are the SMALLEST and therefore decorrelate least under handheld
      roll/parallax mismatch — win at the zoom-out landing and report an
      impossible 110–127° FOV (field-observed: the s=0.7 rung beating truth
      s≈1 exactly when the clip returns to full wide). */
-  const fovCap = opts.fovMax || (tracker.opts && tracker.opts.fovMax) || 150;
+  const fovCap = opts.fovMax || 150;
   const sMin = Math.tan((rp.fov * D2R) / 2) / Math.tan((Math.min(150, fovCap) * D2R) / 2);
   /* the template is a CENTRAL CROP (80%) of the moving frame, so every rung —
      including s≈1 — has translation freedom. Without the crop, the s=1
@@ -346,7 +349,7 @@ export function registerToRef(tracker, curG, opts = {}) {
     for (let i = 0; i < im.g.length; i++) if (Math.abs(im.g[i] - m) > 6) act++;
     return act / im.g.length;
   };
-  if (areaFrac(refG) < 0.12 || areaFrac(curG) < 0.12) return null;
+  if (areaFrac(refG) < areaMin || areaFrac(curG) < areaMin) return null;
   /* ROLL COMPENSATION: the sweep assumes the frame sits at the reference's
      roll — a handheld tilt of ~5°+ decorrelates the whole-frame NCC (field-
      observed: the clip's rolled tail lost every global lock, or worse, a
@@ -379,7 +382,7 @@ export function registerToRef(tracker, curG, opts = {}) {
   function sweepLadder(curG) {
   const curC = crop(curG, 0.8), refC = crop(refG, 0.8);
   const rungs = [];
-  for (let s = 0.7; s <= 5.05; s *= 1.115) if (s >= sMin - 1e-9) rungs.push(+s.toFixed(4));
+  for (let s = sLo; s <= sHi; s *= sStep) if (s >= sMin - 1e-9) rungs.push(+s.toFixed(4));
   if (!rungs.length) return null;
   const tryS = (s) => {
     if (s >= 1) {              // zoomed IN vs ref: cur = magnified sub-region of ref
@@ -409,7 +412,7 @@ export function registerToRef(tracker, curG, opts = {}) {
     const d = lo.ncc - 2 * best.ncc + hi.ncc;
     if (Math.abs(d) > 1e-9) {
       const off = clampN(0.5 * (lo.ncc - hi.ncc) / d, -1, 1);
-      sFine = best.s * Math.pow(1.115, off);
+      sFine = best.s * Math.pow(sStep, off);
     }
   }
   /* matched center (refG coords) → native ref pixel → absolute world dir */
@@ -419,6 +422,19 @@ export function registerToRef(tracker, curG, opts = {}) {
   const fov = clampN(2 * Math.atan(Math.tan((rp.fov * D2R) / 2) / sFine) * R2D, 5, fovCap);
   return { s: sFine, fov, az: ae.az, el: ae.el, score: best.ncc };
   }
+}
+
+/* Register a frame against the PRIMARY reference across the wide scale ladder.
+   `tracker` carries refG (coarse gray of the reference) + ref.pose. Returns
+   {s, fov, az, el, score} — the frame's ABSOLUTE center pose and zoom (roll
+   assumed ≈ reference; the sparse refine recovers it) — or null when the frame
+   no longer overlaps the reference well enough (pan-away → caller falls back
+   to the chain register / differential layer). */
+export function registerToRef(tracker, curG, opts = {}) {
+  if (!tracker.refG) return null;
+  return registerGray(tracker.refG, tracker.ref.pose, curG, tracker.natW, tracker.natH, {
+    ...opts, fovMax: opts.fovMax || (tracker.opts && tracker.opts.fovMax) || 150,
+  });
 }
 
 /* ---------- orchestration: seed on the reference frame, step per frame ---------- */
@@ -442,6 +458,7 @@ export function initTracker(refData, w, h, natW, natH, refPose, opts = {}) {
        feature-precisely against it too (see stepTracker) */
     ref: { data: refData, pose: { ...refPose }, feats: features.map((f) => ({ g: f.g, tx: f.tx, ty: f.ty, ...(f.soft ? { soft: 1 } : {}) })) },
     refG: grayDown(refData, w, h, 96),
+    prevG: null,   // coarse gray of the previous stepped frame (chain register); refG until the first step
   };
 }
 
@@ -460,9 +477,10 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    layer starts at the right scale and place); when the frame has panned
   //    off the reference coverage it returns null and the differential chain
   //    below carries the step alone.
-  let glob = null;
-  if (tracker.refG && o.global !== false) {
-    glob = registerToRef(tracker, grayDown(nextData, w, h, 96), { rollHint: (p0.roll || 0) - (tracker.ref.pose.roll || 0) });
+  let glob = null, chain = null, curG = null;
+  if (o.global !== false) curG = grayDown(nextData, w, h, 96);
+  if (tracker.refG && curG) {
+    glob = registerToRef(tracker, curG, { rollHint: (p0.roll || 0) - (tracker.ref.pose.roll || 0) });
     /* CONTINUITY GATE: a handheld camera can't teleport between adjacent
        samples (≤¼ s). A global fix far from the chain is a wrong-placement
        match — at deep zoom the template is tiny and self-similar content
@@ -478,8 +496,35 @@ export function stepTracker(tracker, nextData, opts = {}) {
     }
     if (glob) glob.pose = { az: glob.az, el: glob.el, roll: p0.roll, fov: glob.fov, k: p0.k || 0 };
   }
-  const basePose = glob ? glob.pose : p0;
-  const tScale0 = glob ? clampN(Math.tan((p0.fov * D2R) / 2) / Math.tan((glob.fov * D2R) / 2), 0.25, 4) : 1; // appearance scale prev→next per the global fix
+  /* 0b. CHAIN registration — the motion floor when the primary reference can't
+     lock (frame panned/zoomed off its coverage, or its content is stale).
+     The same whole-frame machinery registers this frame against the PREVIOUS
+     frame: differential (drift accumulates per step) but AREA-based, so it
+     cannot freeze the way the sparse layer can. On self-similar soft content
+     (clouds — the field case: a tilt to zenith on a cloud-only sky) every
+     sparse patch finds a lookalike near its stale prediction and the solve
+     confirms near-zero motion with a healthy inlier count, while the WHOLE
+     frame visibly slides — whole-frame structure can't alias in place.
+     Narrow ladder (per-step zoom is small; a violent zoom is bisected by the
+     walk), relaxed area gate (consecutive frames share content — a dusk
+     cloud sky at areaFrac ~0.11 still registers at ncc 0.9+, measured on the
+     field clip) but a HIGHER score bar than the primary register (0.6): a
+     wrong differential fix poisons the chain, and consecutive frames should
+     correlate strongly or not at all. */
+  const prevG = tracker.prevG || tracker.refG;
+  if (!glob && curG && prevG && o.chain !== false) {
+    chain = registerGray(prevG, p0, curG, natW, natH, { minScore: 0.6, fovMax: fovCap, areaMin: 0.045, sLo: 0.76, sHi: 1.33, sStep: 1.075 });
+    /* per-step plausibility: adjacent samples are ≤¼ s apart — a fix implying
+       a teleport is a misregistration (aliased cloud rows), not motion */
+    if (chain) {
+      const dAzC = Math.abs(((chain.az - p0.az + 540) % 360) - 180);
+      if (dAzC > 9 || Math.abs(chain.el - p0.el) > 9) chain = null;
+    }
+    if (chain) chain.pose = { az: chain.az, el: chain.el, roll: p0.roll, fov: chain.fov, k: p0.k || 0 };
+  }
+  const coarse = glob || chain;
+  const basePose = coarse ? coarse.pose : p0;
+  const tScale0 = coarse ? clampN(Math.tan((p0.fov * D2R) / 2) / Math.tan((coarse.fov * D2R) / 2), 0.25, 4) : 1; // appearance scale prev→next per the coarse fix
   // 1. predict search centers from the base pose (drop features now off-frame)
   const feats = [];
   for (const ft of tracker.features) {
@@ -584,7 +629,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //     lookalike matches land wherever the nearest neighbour sits — a large,
   //     incoherent median residual. A hypothesis that's markedly more coherent
   //     than s=1 is zoom evidence — refine it from the pairs and re-track all.
-  if (!glob && feats.length >= 4) {   // differential fallback only — the global fix already owns scale
+  if (!coarse && feats.length >= 4) {   // differential fallback only — a coarse fix (global or chain) already owns scale
     const s1 = probeAt(subEdge, 1, 10);
     /* only probe when s=1 still HAS a population (the masking scenario);
        an outright collapse belongs to the wide-ladder rescue below */
@@ -602,7 +647,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //     finds nothing anywhere), sweep a wide factor ladder and adopt the one
   //     that makes the background reappear.
   let okIdx0 = 0; for (const t of tracked) if (t.ok) okIdx0++;
-  if (!glob && okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
+  if (!coarse && okIdx0 < Math.max(minMatch, Math.ceil(feats.length * 0.3)) && feats.length >= 4) {
     const LADDER = [0.35, 0.45, 0.55, 0.67, 0.8, 1.25, 1.5, 1.8, 2.15, 2.6];
     let best = null;
     for (const sh of LADDER) {
@@ -672,6 +717,26 @@ export function stepTracker(tracker, nextData, opts = {}) {
       pose = { az: sol.az, el: sol.el, roll: sol.roll, fov: Math.min(sol.fov, fovCap), k: sol.k }; nInliers = sol.n; solved = true;
     }
   }
+  /* 4a. LATCH ARBITRATION (chain-only frames): a sparse solve that reports far
+     LESS motion than the whole frame measurably moved is presumed latched —
+     lookalike matches near the stale positions outvoted the truth (inlier
+     count is not a truth signal; the whole-frame register is the witness that
+     can't alias in place). Adopt the chain-registered motion, keep the sparse
+     roll/k (the chain doesn't measure roll), and re-derive every feature's
+     position from its world dir under the adopted pose so the latched matches
+     don't poison the next step's templates. Only on a STRONG chain fix —
+     the asymmetric-cost logic of the continuity gate, in reverse: a wrongly
+     adopted chain step costs a fraction of a degree once (smoothing eats it),
+     a wrongly kept freeze costs the whole remaining pan. */
+  let relock = false;
+  if (!glob && chain && solved) {
+    const mv = (a, b) => Math.hypot((((a.az - b.az + 540) % 360) - 180) * Math.cos(b.el * D2R), a.el - b.el);
+    const dSol = mv(pose, p0), dReg = mv(chain.pose, p0);
+    if (chain.score >= 0.75 && dReg > 0.5 && dSol < dReg * 0.35) {
+      pose = { az: chain.az, el: chain.el, roll: pose.roll, fov: chain.fov, k: pose.k };
+      relock = true;
+    }
+  }
   // 4b. ABSOLUTE RE-ANCHOR — incremental tracking drifts through feature
   //     TURNOVER: replacements get their world dir from the current pose
   //     estimate, baking in its error (a zoom episode churns many features).
@@ -729,7 +794,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   const kept = [];
   for (let i = 0; i < feats.length; i++) {
     const ft = feats[i];
-    if (tracked[i].ok) { kept.push({ ...ft, tx: tracked[i].px, ty: tracked[i].py, px: tracked[i].px, py: tracked[i].py }); continue; }
+    if (tracked[i].ok && !relock) { kept.push({ ...ft, tx: tracked[i].px, ty: tracked[i].py, px: tracked[i].px, py: tracked[i].py }); continue; }
     const p = dirToPixK(ft.g, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
     if (p) { const bx = p.px / sc, by = p.py / sc; if (bx >= 0 && bx < w && by >= 0 && by < h) kept.push({ ...ft, tx: bx, ty: by, px: bx, py: by }); }
   }
@@ -738,7 +803,7 @@ export function stepTracker(tracker, nextData, opts = {}) {
   //    bakes the held pose's error into every new feature's world dir — an
   //    unresolved zoom then rebuilds the whole population at the wrong FOV and
   //    the tracker goes self-consistently blind to it (field-observed).
-  if ((solved || glob) && kept.length < minMatch + 4) {
+  if ((solved || glob || chain) && kept.length < minMatch + 4) {
     for (const f of detectBgFeatures(nextData, w, h, { ...o, maxN })) {
       if (kept.some((k) => Math.hypot(k.tx - f.x, k.ty - f.y) < sep)) continue;
       kept.push({ id: tracker.nextId++, prime: false, g: pixToDirK(f.x * sc, f.y * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0), tx: f.x, ty: f.y, px: f.x, py: f.y, ...(f.soft ? { soft: 1 } : {}) });
@@ -749,11 +814,11 @@ export function stepTracker(tracker, nextData, opts = {}) {
   // assigned from a possibly-drifted estimate) get their world dir re-derived
   // under the corrected pose
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
-  tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept;
-  /* held = neither the sparse solve nor the global register placed this frame
-     — the pose is the PREVIOUS frame's, frozen. Known-wrong whenever the
-     camera kept moving; callers can bridge such frames by interpolation. */
-  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, held: !solved && !glob };
+  tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept; tracker.prevG = curG;
+  /* held = neither the sparse solve nor a coarse register (global OR chain)
+     placed this frame — the pose is the PREVIOUS frame's, frozen. Known-wrong
+     whenever the camera kept moving; callers can bridge by interpolation. */
+  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, chained: !glob && chain ? +chain.score.toFixed(2) : null, relocked: relock ? 1 : 0, held: !solved && !glob && !chain };
 }
 
 /* Snap an object seed onto the object itself. Marks are rarely centred to
