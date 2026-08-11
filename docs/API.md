@@ -57,7 +57,7 @@ honesty caveat the app would show, as strings.
 ### Example
 
 ```bash
-curl -s https://<your-app>.up.railway.app/api/analyze \
+curl -s https://phodar.app/api/analyze \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d @- << EOF | jq .flightLog.calibration
 { "session": $(cat sighting.phodar.json),
@@ -76,7 +76,7 @@ consume remote MCP servers over the same Streamable-HTTP transport this
 serves. Stateless JSON responses, no OAuth required.
 
 ```
-URL:   https://<your-app>.up.railway.app/mcp/<api-key>
+URL:   https://phodar.app/mcp/<api-key>
 ```
 
 The key rides the URL because every client can paste a URL, while header

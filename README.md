@@ -15,7 +15,7 @@ browser; your photos never leave your device.
 
 ## Try it
 
-### ▶ [phodar-production.up.railway.app](https://phodar-production.up.railway.app/)
+### ▶ [phodar.app](https://phodar.app/)
 
 No account, nothing to install — open it in a phone browser. Add it to your
 home screen if you want the motion-sensor capture mode; on iPhone that is the
