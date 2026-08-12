@@ -73,7 +73,7 @@ export async function ingestFromUrl(url, { filename, trim } = {}) {
   finally { clearTimeout(t); }
   if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${resp.statusText}`);
   const len = +resp.headers.get("content-length") || 0;
-  if (len > MAX_MEDIA) throw new Error(`media is ${(len / 1e6).toFixed(0)} MB — cap is ${MAX_MEDIA / 1e6} MB`);
+  if (len > MAX_MEDIA) throw new Error(`media is ${(len / 1e6).toFixed(0)} MB — the whole-file download cap is ${Math.round(MAX_MEDIA / 1e6)} MB. Call ingest_media again with trim:{t0,t1} (seconds, span ≤150) around where the object is visible: the span is remux-copied straight off the URL via range requests, so only its bytes are fetched — this is the intended route for large 4K clips`);
   const mediaId = "m" + id6() + id6();
   const dir = path.join(ROOT, "media-" + mediaId);
   mkdirSync(dir, { recursive: true });
@@ -83,7 +83,7 @@ export async function ingestFromUrl(url, { filename, trim } = {}) {
   let size = 0;
   for await (const c of resp.body) {
     size += c.length;
-    if (size > MAX_MEDIA) { rmSync(dir, { recursive: true, force: true }); throw new Error(`media exceeds the ${MAX_MEDIA / 1e6} MB cap`); }
+    if (size > MAX_MEDIA) { rmSync(dir, { recursive: true, force: true }); throw new Error(`media exceeds the ${Math.round(MAX_MEDIA / 1e6)} MB whole-file cap — re-call with trim:{t0,t1} (span ≤150 s) to fetch only the sighting span`); }
     chunks.push(c);
   }
   writeFileSync(filePath, Buffer.concat(chunks));
