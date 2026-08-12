@@ -12,8 +12,9 @@ Notable changes to Phodar. Format loosely follows
   choice). Collapsible card at the bottom of the sighting list: explains
   the MCP server in plain language (your AI is the eyes and
   context-gatherer, Phodar does the math, you own the review), an
-  optional API-key field (persisted locally; keys stated as free-but-
-  personal while in beta), and "📋 Copy the AI prompt" — a complete
+  optional API-key field (persisted locally; keys stated as free and
+  handed out personally — Phodar will never charge), and "📋 Copy the
+  AI prompt" — a complete
   ready-to-paste prompt carrying the MCP URL (key filled in when
   entered), the five-step workflow (fetch_report → ingest_media with
   trim guidance → keyframe look + inspect_frame confirmation →
