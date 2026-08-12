@@ -6,6 +6,25 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Modality-aware gesture hints** (user ask: every screen/mode should hint
+  mouse actions on desktop and finger gestures on mobile). A module-level
+  switch (`FINE_PTR`, from the `(hover: hover) and (pointer: fine)` media
+  query, evaluated once at load) picks the WORDING of every gesture hint —
+  the in-app manual and all inline hint lines. Touch devices read
+  pinch / twist / second finger exactly as before; a mouse-driven page
+  reads scroll / Shift+drag / Alt+drag / click. Covered: step 1's shape
+  readout, adjust-mode line, bottom marking hints and the manual's
+  photo-step items; the sky view's place/look banners, fix-frames banner,
+  🎛 and ⚓ tooltips and the manual's sky items; the view-only manual
+  entry. The "On a DESKTOP" summary tips now render only on desktop (they
+  were noise on a phone). Gestures themselves are unchanged — both input
+  paths always work; only the teaching text adapts. helpcheck reads the
+  source, where both wordings remain visible, so coverage still asserts.
+  Browser-verified: the same build shows mouse wording in a desktop
+  context and touch wording in an emulated-mobile context across step 1,
+  the manual and the sky view (12 assertions).
+
 ### Fixed
 - **Desktop scrollbar no longer collapses on step 1** (field report: "when
   holding shift the main page's scroll bar disappears which shifts

@@ -515,6 +515,17 @@ const ML = ({ children, style }) => <div className="microlabel" style={style}>{c
    that screen's section. Content is data (HELP_SECTIONS); the overlay just
    renders it. Keep entries in sync when controls change — this is the manual.
    ============================================================ */
+/* Primary input modality — picks the WORDING of every gesture hint app-wide
+   (manual + inline). (hover:hover)+(pointer:fine) = a real mouse/trackpad
+   drives the page (desktop/laptop) → mouse phrasing (scroll / Shift+drag /
+   Alt+drag); otherwise touch phrasing (pinch / twist / second finger).
+   Evaluated once at load — plugging a mouse into an iPad picks up on reload.
+   Node (helpcheck reads the SOURCE, both wordings visible) and SSR default to
+   touch. The gestures themselves are unaffected — both input paths always
+   work; this only chooses which one the hints teach. */
+const FINE_PTR = typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+const gest = (touch, mouse) => (FINE_PTR ? mouse : touch);
+
 const HELP_SECTIONS = [
   {
     id: "start", icon: "🛰", title: "How Phodar works",
@@ -527,7 +538,7 @@ const HELP_SECTIONS = [
         { t: "4 · Results", d: "See the fix (or, with one viewpoint, the honest angular numbers), run cross-checks, and grade the quality." },
       ]},
       { h: "On the home screen", items: [
-        { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: pinch-zoom the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. BRIGHTNESS / CONTRAST stays live, because it is a display aid that never touches the original pixels — a reviewer can brighten a dark clip to actually see the object. It is enforced in the DATA layer as well as by hiding buttons, so nothing else you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. Anything that would be dead is HIDDEN rather than left there greyed out, and where a control is removed its value is shown as a readout instead (your position and viewing direction on step 2, the field of view and the witness statement on step 1). A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
+        { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: " + gest("pinch-zoom", "scroll-zoom") + " the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. BRIGHTNESS / CONTRAST stays live, because it is a display aid that never touches the original pixels — a reviewer can brighten a dark clip to actually see the object. It is enforced in the DATA layer as well as by hiding buttons, so nothing else you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. Anything that would be dead is HIDDEN rather than left there greyed out, and where a control is removed its value is shown as a readout instead (your position and viewing direction on step 2, the field of view and the witness statement on step 1). A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
@@ -558,7 +569,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
         { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · 🪃 V / delta · ⬛ Cube · 🔺 Pyramid · ◤ Stealth jet · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · 🎈 Balloon · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
-        { t: "Rotate / move / twist", d: "Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll)." },
+        { t: "Rotate / move / twist", d: gest("Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll).", "Drag the shape body to tumble it in 3D, click to move it, drag the centre dot to fine-place, Alt+drag to twist (roll).") },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
         { t: "aspect / spin / squash / stretch / depth / height / sweep / notch / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), depth for the cube’s footprint thickness against its fixed width — thin a box into a rectangular slab or monolith; the mono readout beside that slider shows the proportions with the thinnest side as 1, so a specific ratio can be dialled exactly (the classic monolith is 1 : 4 : 9 — depth 0.25 + stretch 2.25), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
@@ -574,7 +585,7 @@ const HELP_SECTIONS = [
         { t: "🎥 Cam refs (video)", d: "Hand-mark fixed background features (a cloud edge, a star, a ground light) across a few frames to stabilize a clip the automatic pass can't hold — a manual fallback for low-contrast or near-black footage." },
       ]},
       { h: "See it clearly", items: [
-        { t: "Pinch-zoom / two-finger pan", d: "Magnify a small object; two-finger drag pans; a second finger never places a point. ×N · reset returns to fit." },
+        { t: gest("Pinch-zoom / two-finger pan", "Scroll-zoom / Shift+drag pan"), d: gest("Magnify a small object; two-finger drag pans; a second finger never places a point. ×N · reset returns to fit.", "Scroll to magnify a small object toward the pointer; Shift+drag pans while zoomed; neither places a point. ×N · reset returns to fit.") },
         { t: "Loupe", d: "A magnifier pops up above your fingertip during any drag, showing a sharp, brightness-matched close-up with crosshair for precise placement." },
         { t: "☀ Brightness / ◐ Contrast", d: "Display-only sliders that lift a dark night shot so you can see the object — carries into the sky view and report; measurements still use the original. ↺ reset restores neutral." },
       ]},
@@ -610,7 +621,7 @@ const HELP_SECTIONS = [
     tips: [
       "Shared/messaged copies are usually stripped of EXIF. To keep it: Photos → Share → Options (top) → All Photos Data ON, then AirDrop the original.",
       "HEIC files can't expose metadata in-browser — export or share as JPEG to auto-fill GPS, time, bearing and FOV.",
-      "On a DESKTOP (mouse): drag-and-drop a photo/video anywhere on this step to load it, scroll on the photo to zoom toward the pointer (the pinch), Shift+drag to pan while zoomed, Alt+drag to roll the placed shape or a selected track point about the view axis (the two-finger twist), and ← / → to step the video one frame while nothing is focused.",
+      ...(FINE_PTR ? ["DESKTOP extras: drag-and-drop a photo/video anywhere on this step to load it, and ← / → steps the video one frame while nothing is focused."] : []),
     ],
   },
   {
@@ -648,7 +659,7 @@ const HELP_SECTIONS = [
     intro: "The calibration heart of Phodar. Your photo is seated onto a dome showing the real sky at your time and place (Sun, Moon, stars, horizon, terrain skyline). Getting the photo's pointing right here is what makes every downstream number trustworthy. A row of tool buttons — ✥ Place · ⊕ Trajectory · 📏 Size · ⚖ Compare — switches modes; only one is active at a time, and each reveals its own controls.",
     groups: [
       { h: "The four tools (one at a time)", items: [
-        { t: "✥ Place", d: "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). ONE AXIS PER GESTURE: the first movement (twist or pinch) claims the gesture so the other can't bleed in — lift your fingers to switch, or use 🎛 fine-tune taps. Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines." },
+        { t: "✥ Place", d: gest("Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), pinch to calibrate its FOV (fingers apart = tighter), and twist to roll it — the roll pivots on your fingers (or on the first finger if you set one down before the other). ONE AXIS PER GESTURE: the first movement (twist or pinch) claims the gesture so the other can't bleed in — lift your fingers to switch, or use 🎛 fine-tune taps. Line its horizon/ridges onto the dome. Tap ✥ Place again (or Continue) to commit and auto-derive your sight-lines.", "Seat the photo. It's pinned undistorted and fills the space; drag to slide the SKY behind it (grab-style), scroll to calibrate its FOV (scroll up = tighter), and Shift+drag left/right to roll it — or use 🎛 fine-tune taps for one-axis nudges. Line its horizon/ridges onto the dome. Click ✥ Place again (or Continue) to commit and auto-derive your sight-lines.") },
         { t: "⊕ Trajectory", d: "Shows the object's path over the dome — read-only. You lay it down and edit it back on step 1 (⊕ Track points / ✎ Adjust); here it's drawn for reference so you can see it against the real sky." },
         { t: "📏 Size / ⚖ Compare", d: "Gauge distance: read the object's size/altitude at an assumed range, or compare a reference ghost — including by placing it on a map." },
       ]},
@@ -657,7 +668,7 @@ const HELP_SECTIONS = [
         { t: "⛰ Snap to ridges", d: "One tap matches the photo's skyline to the DEM terrain skyline and applies the az/pitch/roll fix. The calibration answer when you can see a horizon of hills." },
         { t: "✦ Manual star align", d: "The hands-on alternative to auto: pick a named star/planet, aim the crosshair on it in the photo, ✓ Set. One star fixes roll+FOV, two adds lens distortion, three+ is a full solve. It drops to the warped view so you can aim, then ✓ Done aligning returns you; ↺ reset undoes it." },
         { t: "+ / − zoom · ✋ pan", d: "The +/− buttons (right) magnify the photo and sky together to line up fine detail — a distant ridge, a rooftop — without changing the calibration. Once zoomed, ✋ lets you drag around the magnified view; sky-slide also gets finer." },
-        { t: "🎛 fine tune", d: "Precise one-axis nudge buttons for roll (⟲ ⟳, 0.2° per tap) and FOV (− ＋, 0.3°). The two-finger twist and pinch are great for the rough placement but bleed into each other at small adjustments — these move exactly one thing. Each tap is undoable." },
+        { t: "🎛 fine tune", d: gest("Precise one-axis nudge buttons for roll (⟲ ⟳, 0.2° per tap) and FOV (− ＋, 0.3°). The two-finger twist and pinch are great for the rough placement but bleed into each other at small adjustments — these move exactly one thing. Each tap is undoable.", "Precise one-axis nudge buttons for roll (⟲ ⟳, 0.2° per tap) and FOV (− ＋, 0.3°). The Shift+drag roll and FOV scroll are great for the rough placement but coarse at small adjustments — these move exactly one thing. Each tap is undoable.") },
         { t: "↩ Undo · Reset placement", d: "Undo steps back the last placement change (a gesture or a button); Reset restores the whole placement to how the screen opened." },
         { t: "color (slider under the tool row)", d: "One hue for every overlay drawn over your photo — the crosshair, the object outline, and the terrain ridge/peak lines — so you can pick a color that stands out against your particular sky or scene. Set it before entering a mode; saved for next time." },
         { t: "🎞 Stabilize video (video only)", d: "Tracks the static background (skyline, stars) through every frame and solves each frame's camera pose — align first (place mode: snap/star-align) so the whole path inherits an accurate anchor. On the MEASURE step, '⛰ Align on this frame' picks WHICH frame the alignment is done on (scrub to the clearest horizon/stars) — independent of the frame the object was marked on; the object still measures on its own frame through the solved path. The button lives OUTSIDE place mode so a running solve can't be nudged; progress shows in the button (n/total). It also auto-tracks the MARKED OBJECT through the clip: during playback the outline rides the real object, and the Object close-up export follows it. BEST RESULTS: on the measure step, use the Track tool to tap the object at a few moments through the clip — 2+ points become a GUIDE, and the tracker only fine-tunes each frame around your trajectory instead of finding the object on its own. Frames with too few background references hold the previous pose and are reported honestly. WHAT IT CAN TRACK: ridgelines, tree lines, rooftops and stars are ideal, but a sky of nothing but CLOUD works too — soft cloud edges are picked up by a coarse-scale pass when nothing sharper exists (their own drift, a fraction of a degree over a clip, is negligible against the camera's motion). When the view pans or zooms so far that the frame no longer overlaps the one you aligned on, the solve switches to locking each frame against the PREVIOUS one, which is what lets a sweep up to the zenith keep tracking; the summary line reports how many frames were locked that way, and those drift a little more than reference-locked ones. If a stretch still goes wrong, ⚓ Fix frames is the manual repair." },
@@ -684,11 +695,11 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
-      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, and Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist). In place mode the scroll wheel resizes the photo's FIELD OF VIEW instead (the pinch — no modifier needed). On a wide window the placed photo scales to fit the visible band and the view zooms out farther than on a phone, so a portrait photo's full perimeter fits on screen. Esc leaves the sky view the same way the ‹ Back / ✕ button does (the placement is committed first).",
+      ...(FINE_PTR ? ["DESKTOP summary: drag to look around or move the photo, scroll to zoom the view (in place mode it resizes the photo's FIELD OF VIEW instead), Shift+drag left/right to ROLL the photo (place and ⚓ fix modes). On a wide window the placed photo scales to fit the visible band and the view zooms out farther than on a phone, so a portrait photo's full perimeter fits on screen. Esc leaves the sky view the same way the ‹ Back / ✕ button does (the placement is committed first)."] : []),
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
-      "⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist tilts it), fine-tune with the always-on nudge taps (az/el arrows, roll, − ＋ photo size), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.",
+      `⚓ on the playback row opens Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (${gest("two-finger twist tilts it", "Shift+drag left/right tilts it")}), fine-tune with the always-on nudge taps (az/el arrows, roll, − ＋ photo size), then ⚓ Anchor that frame. Corrections blend smoothly between anchors and hold past the ends; the object trajectory and waypoints move with them (toggle 🛸 to watch live). Re-stabilizing clears anchors.`,
     ],
   },
   {
@@ -2784,7 +2795,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
                 const aN = fpx ? (pr.minorNat / fpx) * R2D : null;
                 return aM != null ? (
                   <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--amber)", marginTop: 4 }}>
-                    projected {aM.toFixed(3)}°{aN != null ? ` × ${aN.toFixed(3)}° · aspect ${(aM / Math.max(aN, 1e-6)).toFixed(1)}:1` : ""} — drag to rotate in 3D · add a second finger to twist (roll) · tap to move it
+                    projected {aM.toFixed(3)}°{aN != null ? ` × ${aN.toFixed(3)}° · aspect ${(aM / Math.max(aN, 1e-6)).toFixed(1)}:1` : ""} — {gest("drag to rotate in 3D · add a second finger to twist (roll) · tap to move it", "drag to rotate in 3D · Alt+drag to twist (roll) · click to move it")}
                   </div>
                 ) : null;
               })()}
@@ -3364,7 +3375,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
                             }}>{label}</button>
                         ))}
                       </div>
-                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{isVid ? "scrub to a point · drag it to move · drag off it to rotate · twist = roll" : "tap a point · drag it to move · drag off it to rotate · twist = roll"}</span>}
+                      {trkAdjust && <span style={{ fontSize: 10, color: "var(--dim)" }}>{(isVid ? "scrub to a point" : gest("tap a point", "click a point")) + " · drag it to move · drag off it to rotate · " + gest("twist = roll", "Alt+drag = roll")}</span>}
                     </div>
                   )}
                   {/* COLOUR — recolour the object and/or the track points so they
@@ -3496,10 +3507,10 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
 
           <div style={{ marginTop: 8, fontSize: 12, color: "var(--dim)" }}>
             {wizard
-              ? <>Fit a 3D shape to the object: <b style={{ color: "var(--amber)" }}>drag it to rotate in 3D</b>, tap to move it, drag the <b style={{ color: "var(--teal)" }}>center dot</b> to fine-place, sliders for size &amp; spin. Pinch to zoom in on small objects — the loupe follows your adjustments.</>
-              : <>Fit a 3D shape to the object — drag rotates it in 3D, tap moves it, sliders set size. The projected silhouette becomes the measurement.
-            Optionally mark where it moved to (<b style={{ color: "var(--teal)" }}>B</b>), or for video switch to <b style={{ color: "var(--track)" }}>Track</b> and tap the object frame by frame.
-            Pinch with two fingers to zoom (two-finger drag pans) — a second finger never places points.</>}
+              ? <>Fit a 3D shape to the object: <b style={{ color: "var(--amber)" }}>drag it to rotate in 3D</b>, {gest("tap", "click")} to move it, drag the <b style={{ color: "var(--teal)" }}>center dot</b> to fine-place, sliders for size &amp; spin. {gest("Pinch", "Scroll")} to zoom in on small objects — the loupe follows your adjustments.</>
+              : <>Fit a 3D shape to the object — drag rotates it in 3D, {gest("tap", "click")} moves it, sliders set size. The projected silhouette becomes the measurement.
+            Optionally mark where it moved to (<b style={{ color: "var(--teal)" }}>B</b>), or for video switch to <b style={{ color: "var(--track)" }}>Track</b> and {gest("tap", "click")} the object frame by frame.
+            {gest(" Pinch with two fingers to zoom (two-finger drag pans) — a second finger never places points.", " Scroll to zoom toward the pointer (Shift+drag pans) — zooming never places points.")}</>}
           </div>
         </>
       )}
@@ -7939,7 +7950,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 {calibApplied && <button className="btn sm" onClick={resetCalib} title="Undo the star alignment — restore the lens FOV & roll">↺ align</button>}
                 <button className="btn sm" style={fineOn ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                   onClick={() => setFineOn((o) => !o)}
-                  title="Fine tune: precise roll/FOV nudge buttons — the two-finger twist and pinch bleed into each other at small adjustments">🎛</button>
+                  title={gest("Fine tune: precise roll/FOV nudge buttons — the two-finger twist and pinch bleed into each other at small adjustments", "Fine tune: precise roll/FOV nudge buttons — the Shift+drag roll and FOV scroll are coarse at small adjustments")}>🎛</button>
                 {/* FINE TUNE row (field ask): twist and pinch are great for the
                     initial rough placement but bleed into each other when fine
                     tuning — these nudge exactly one axis per tap. Behind a
@@ -8138,7 +8149,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       if (!fixOn && !playPose) showFrame(playIdx); // entering fix mode needs a frame on screen at its path pose
                       setFixOn((o) => !o);
                     }}
-                    title="Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (two-finger twist = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.">⚓</button>
+                    title={`Fix frames: scrub to where the auto-stabilize lost the world lock, drag the photo back onto the true horizon/terrain (${gest("two-finger twist", "Shift+drag")} = tilt), then ⚓ Anchor it. Corrections blend smoothly between anchors and the object trajectory follows.`}>⚓</button>
                   <button className="btn sm" style={smoothOpen ? { borderColor: "var(--amber)", color: "var(--amber)" } : undefined}
                     onClick={() => { setSmoothOpen((o) => !o); setExportMenu(false); setFixOn(false); }}
                     title="Smoothing — camera steadiness + object-track smoothing, re-applied non-destructively from the raw solve">🎛</button>
@@ -8201,7 +8212,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     wrapped onto its own orphan line on narrow phones */}
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
                   <div style={{ flex: 1, fontSize: 9.5, color: "var(--dim)", lineHeight: 1.3 }}>
-                    drag photo onto the true horizon · twist = tilt · ⚓ per frame — blends between anchors
+                    drag photo onto the true horizon · {gest("twist", "Shift+drag")} = tilt · ⚓ per frame — blends between anchors
                   </div>
                   <button className="btn sm" style={{ flex: "0 0 auto" }} onClick={() => setFixOn(false)}>✓</button>
                 </div>
@@ -8518,8 +8529,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         <div style={{ fontSize: 9.5, lineHeight: 1.3, color: "rgba(255,255,255,.6)", marginTop: 2, marginBottom: 6 }}>
           {pMode === "place" && photoOn
             ? (panMode
-              ? "✋ Pan mode — drag moves the magnified view. Tap ✋ again to slide the sky."
-              : "drag = slide sky · pinch = FOV · twist = roll (first move wins the gesture) · 🎛 fine taps")
+              ? `✋ Pan mode — drag moves the magnified view. ${gest("Tap", "Click")} ✋ again to slide the sky.`
+              : gest("drag = slide sky · pinch = FOV · twist = roll (first move wins the gesture) · 🎛 fine taps", "drag = slide sky · scroll = FOV · Shift+drag = roll · 🎛 fine taps"))
             : wizard
               ? (single
                 ? "Align this moment's photo to the sky, then Continue — it becomes one direction (its time comes from the moment). Together with the other moments it builds the trajectory."
@@ -8531,10 +8542,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                       ? "Slide an assumed distance — or 📍 set it on a map — to read the object's true size and altitude at that range."
                       : cmpOn
                         ? "Aim the crosshair, ⌖ drop the reference ghost there, then slide its distance — or set it on a map — to compare its apparent size to your object's."
-                        : "Drag to look around · pinch to zoom · pick a tool below.")
+                        : `Drag to look around · ${gest("pinch", "scroll")} to zoom · pick a tool below.`)
               : motionOn
                 ? "Point the phone exactly where the object was, then capture."
-                : "Drag to look around · pinch to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing."}
+                : `Drag to look around · ${gest("pinch", "scroll")} to zoom · put the crosshair where the object was. The Sun/Moon are drawn where they really were at the sighting time — use them to anchor your bearing.`}
         </div>
         )}
         {/* the PERSISTENT bottom row — never collapsed, hosts the ⌃/⌄ toggle */}

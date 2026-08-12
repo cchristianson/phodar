@@ -1289,6 +1289,11 @@ on stacked overlays (manual, distance-map) so only the top one closes; the sky
 view's Escape COMMITS the placement exactly like a tap on ‹ Back. Home screen
 accepts a dropped share file. When adding a gesture, add its mouse twin under
 the same gate — and when adding an overlay, give it a capture-phase Escape.
+**Hints are modality-aware**: `gest(touchWording, mouseWording)` (keyed off
+`FINE_PTR`, the `(hover:hover)+(pointer:fine)` media query at load) picks the
+phrasing of every gesture hint — manual items and inline lines both. A new
+gesture hint must go through `gest()`; helpcheck reads the SOURCE, so both
+wordings stay visible to it.
 
 Everything else was already feature-detected with a real fallback (WebCodecs →
 MediaRecorder, `requestVideoFrameCallback` → timeout, Wake Lock / Web Share →
