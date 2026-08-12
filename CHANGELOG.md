@@ -7,6 +7,17 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Desktop scrollbar no longer collapses on step 1** (field report: "when
+  holding shift the main page's scroll bar disappears which shifts
+  everything over a little"). Any press on the marking canvas engages the
+  body scroll-lock (`overflow: hidden`) that exists to stop iOS page
+  scroll / pull-to-refresh during a touch drag. iOS scrollbars are
+  overlays with no layout width, so touch never saw a side effect — but a
+  desktop scrollbar has real width, so every mouse press shifted the whole
+  centered column sideways. The lock is now touch-only (gesture pointerType
+  tracked in a ref): a mouse drag can't scroll the page, so it never needed
+  the lock. Browser-verified: mouse press/drag leaves body overflow
+  untouched; a touch press still locks and releases on lift.
 - **Place-mode desktop follow-ups** (field report). Three fixes:
   (1) Shift+scroll zoomed one direction no matter which way the wheel
   turned — with Shift held, browsers deliver the wheel delta on `deltaX`

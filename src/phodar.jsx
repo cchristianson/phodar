@@ -1061,6 +1061,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const trkRotRef = useRef(null);    // ADJUST mode: live 3D-rotation gesture on the selected point's model ({R0,sx,sy,pid,cur})
   const panMouseRef = useRef(null);  // DESKTOP: Shift+drag pans the zoomed photo (the two-finger drag)
   const mouseTwistRef = useRef(null); // DESKTOP: Alt+drag rolls the shape/point about the view axis (the two-finger twist)
+  const ptrTypeRef = useRef("");     // pointerType of the current gesture — the body scroll-lock is touch-only
   const trkHistRef = useRef([]);     // Track-point undo stack (snapshots before each place/delete/clear)
 
   const natW = src.natW, natH = src.natH;
@@ -1202,9 +1203,14 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
 
   /* While dragging a marker, hard-lock page scroll & pull-to-refresh.
      pointermove preventDefault doesn't stop iOS scrolling — a non-passive
-     touchmove listener at the document level does. */
+     touchmove listener at the document level does. TOUCH ONLY: a mouse
+     drag can't scroll the page, and on desktop the body lock collapses a
+     REAL-width scrollbar, shifting the whole centered column sideways on
+     every press (field report: "the scroll bar disappears which shifts
+     everything over"). iOS scrollbars are overlays, so touch never saw it. */
   useEffect(() => {
     if (!drag && !touching) return;
+    if (ptrTypeRef.current === "mouse") return;
     const prevent = (e) => { if (e.cancelable) e.preventDefault(); };
     document.addEventListener("touchmove", prevent, { passive: false });
     const prevOverflow = document.body.style.overflow;
@@ -1662,6 +1668,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
     e.preventDefault();
     const r = wrapRef.current.getBoundingClientRect();
     ptsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    ptrTypeRef.current = e.pointerType;
     setTouching(true);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
     /* DESKTOP: Shift+drag pans the zoomed photo — the two-finger drag. A
