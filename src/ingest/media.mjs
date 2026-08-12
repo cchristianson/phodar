@@ -37,8 +37,12 @@ export async function remuxSpanFromUrl(url, outPath, t0, t1) {
   const ff = await ffmpegAvailable();
   if (!ff) throw new Error("ffmpeg/ffprobe not available on this server — raw-media ingestion is disabled");
   const span = Math.max(0.5, t1 - t0);
+  /* -map_metadata 0 + use_metadata_tags: without them a copy remux silently
+     DROPS the QuickTime metadata phodar's parser mines (ISO-6709 GPS,
+     creation time) — proven with a metacheck before/after. On a fresh phone
+     clip that metadata is the position and clock for the whole sighting. */
   const args = ["-v", "error", "-ss", String(Math.max(0, t0)), "-i", url, "-t", String(span),
-    "-c", "copy", "-movflags", "+faststart", "-y", outPath];
+    "-c", "copy", "-map_metadata", "0", "-movflags", "use_metadata_tags+faststart", "-y", outPath];
   await run(ff.ffmpeg, args, { timeout: 300000 });
 }
 
