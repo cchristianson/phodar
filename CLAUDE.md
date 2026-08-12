@@ -1275,8 +1275,15 @@ Measure step: wheel = pinch-zoom toward the pointer, Shift+drag = pan
 (a viewing gesture — above the view-only cut, never places a mark), Alt+drag =
 the twist (rolls the shape / selected track point about the view axis), ←/→ =
 ±1 frame (skipped while a form control has focus), drag-and-drop loads media.
-Sky view: wheel = dome zoom (aspect-aware cap so a landscape window can frame a
-portrait photo's perimeter), Shift+drag = roll, Shift+scroll = photo FOV.
+Sky view: wheel = dome zoom in look mode, but the PHOTO's FOV in place mode
+(the pinch — no modifier; the look zoom is meaningless while placing, the view
+is slaved to the photo), Shift+drag = roll. Wheel handlers must read
+`deltaY || deltaX`: with Shift held browsers deliver the delta on deltaX, which
+once stuck the zoom one-directional. The place-mode photo width floor is
+aspect-aware (0.15 on landscape viewports, 0.5 portrait, never below
+tan(fovM/2)/tan(67.5°) or effFov hits its 135° cap and un-locks the overlays)
+— the 0.5 floor left a portrait photo taller than the visible band on a
+landscape window with no zoom-out (pZoom floors at 1).
 Escape mirrors the visible close/back button: capture-phase + stopPropagation
 on stacked overlays (manual, distance-map) so only the top one closes; the sky
 view's Escape COMMITS the placement exactly like a tap on ‹ Back. Home screen

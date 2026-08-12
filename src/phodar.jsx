@@ -684,7 +684,7 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
-      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist), and Shift+scroll in place mode to resize the photo's field of view (the pinch). On a wide window the view zooms out farther than on a phone so a portrait photo's full perimeter fits on screen. Esc leaves the sky view the same way the ‹ Back / ✕ button does (the placement is committed first).",
+      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, and Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist). In place mode the scroll wheel resizes the photo's FIELD OF VIEW instead (the pinch — no modifier needed). On a wide window the placed photo scales to fit the visible band and the view zooms out farther than on a phone, so a portrait photo's full perimeter fits on screen. Esc leaves the sky view the same way the ‹ Back / ✕ button does (the placement is committed first).",
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
@@ -4355,7 +4355,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     placeDY = ((bandTop + bandBot) / 2 - vp.h / 2) / vp.h;     // shift the placement center into the band
     const aspect = (source?.natW && source?.natH) ? source.natH / source.natW : 9 / 16;
     const fit = (bandBot - bandTop) / (vp.w * aspect);         // width fraction that fills the band height
-    FRAMEeff = clampN(Math.min(0.96, fit), 0.5, 0.96);         // fill up to ~full width; height-bound for tall photos
+    /* The width floor is 0.5 on portrait viewports (phones — where the band
+       is tall relative to the width, so fit rarely dips below it anyway).
+       On a LANDSCAPE window (desktop, iPad landscape) the band is SHORT
+       relative to the width, fit for a portrait photo computes ~0.2–0.3,
+       and clamping it up to 0.5 left the photo taller than the band with no
+       way out — pZoom can't go below 1 (field report: "in place mode you
+       still can't zoom out enough to see the whole image on desktop"). The
+       second floor keeps the photo↔sky lock intact: effFov caps at 135°,
+       and FRAMEeff below tan(fovM/2)/tan(67.5°) would hit that cap and
+       un-lock the overlays from the pinned photo. */
+    const minF = Math.max(vp.w > vp.h ? 0.15 : 0.5, Math.tan((fovM * RAD) / 2) / Math.tan((135 * RAD) / 2));
+    FRAMEeff = clampN(Math.min(0.96, fit), clampN(minF, 0.1, 0.96), 0.96); // fill up to ~full width; height-bound for tall photos
   }
   /* display zoom (pZoom) + pan (pPan) fold straight into the placement frame and
      centre — magnifying photo+sky together while keeping them locked (the frame
@@ -4700,15 +4711,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const el = vpRef.current; if (!el || !open) return;
     const onWheel = (ev) => {
       ev.preventDefault();
-      /* DESKTOP pinch equivalent: Shift+scroll in place mode resizes the
-         PHOTO's field of view (what the two-finger pinch does on touch) */
-      if (wheelCtxRef.current.placing && ev.shiftKey) {
-        setFovM((f) => clampN(+(f * (ev.deltaY > 0 ? 1.03 : 1 / 1.03)).toFixed(1), 12, 120));
+      /* With Shift held, browsers deliver the wheel delta on deltaX (the
+         horizontal-scroll convention) — deltaY sits at 0, which made the
+         old `deltaY > 0` test stick to ONE zoom direction (field report).
+         Read whichever axis actually moved. */
+      const d = ev.deltaY || ev.deltaX;
+      if (!d) return;
+      /* DESKTOP pinch equivalent: in place mode the wheel resizes the
+         PHOTO's field of view — what the two-finger pinch does on touch.
+         No modifier needed (field ask): the look-mode view zoom is
+         meaningless while placing (the view is slaved to the photo), so
+         plain scroll and Shift+scroll both land here. */
+      if (wheelCtxRef.current.placing) {
+        setFovM((f) => clampN(+(f * (d > 0 ? 1.03 : 1 / 1.03)).toFixed(1), 12, 120));
         return;
       }
       const w2 = el.clientWidth || 1, h2 = el.clientHeight || 1;
       const mx = w2 > h2 ? clampN(+(2 * Math.atan(Math.tan(45 * RAD) * (w2 / h2)) * R2D).toFixed(1), 90, 130) : 90;
-      setFov((f) => clampN(+(f * (ev.deltaY > 0 ? 1.08 : 1 / 1.08)).toFixed(1), 2, mx));
+      setFov((f) => clampN(+(f * (d > 0 ? 1.08 : 1 / 1.08)).toFixed(1), 2, mx));
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);

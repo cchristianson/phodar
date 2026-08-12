@@ -6,6 +6,29 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **Place-mode desktop follow-ups** (field report). Three fixes:
+  (1) Shift+scroll zoomed one direction no matter which way the wheel
+  turned — with Shift held, browsers deliver the wheel delta on `deltaX`
+  (the horizontal-scroll convention), so the `deltaY > 0` test was stuck
+  false; the handler now reads whichever axis moved. (2) No modifier is
+  needed anymore: in place mode the scroll wheel resizes the photo's field
+  of view directly (the two-finger pinch) — the look-mode view zoom is
+  meaningless while placing since the view is slaved to the photo, so
+  plain scroll and Shift+scroll both do the pinch. (3) "Still can't zoom
+  out enough to see the whole image": the placed photo's width floor was
+  0.5 of the viewport — tuned for portrait phones, but on a LANDSCAPE
+  window the visible band is short relative to the width, the height-fit
+  fraction for a portrait photo computes ~0.2–0.3, and clamping it up to
+  0.5 left the photo taller than the band with no way out (display zoom
+  can't go below 1×). The floor is now 0.15 on landscape viewports
+  (portrait unchanged), with a second floor at tan(fovM/2)/tan(67.5°) so
+  the derived view FOV never hits its 135° cap and un-locks the sky
+  overlays from the pinned photo. Also helps iPad landscape. Browser-
+  verified at 1440×810 with a portrait photo: whole photo inside the
+  band, wheel resizes FOV both directions with and without Shift, look
+  mode still zooms the view.
+
 ### Added
 - **Desktop audit — the rest of the app** (user ask: "I have really only
   used the app on my iPhone and iPad up until now — audit for anything else
