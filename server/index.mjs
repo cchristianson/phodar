@@ -639,10 +639,60 @@ async function apiAnalyze(req, res) {
 const MCP_PROTOS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const MCP_INSTRUCTIONS =
   "Phodar turns UFO/UAP sighting photos and videos into measured claims: triangulated position, altitude, true size, speed and heading, cross-checked against aircraft/satellites/stars/weather. " +
-  "These tools consume a SESSION's measurements — the .phodar.json file the phodar app exports via '💾 Share file' (or the sighting.phodar.json inside a bundle .zip). " +
-  "Workflow: the witness measures in the app (positions, sky placement, tracks), exports the share file, and you analyze it here — optionally with the drone's flight-log CSV when this is a calibration flight. " +
+  "TWO ENTRY POINTS. (1) A finished session: the witness measured in the app and exported the .phodar.json ('💾 Share file', or inside a bundle .zip) — call analyze_session on it, optionally with a drone flight-log CSV for a calibration flight. " +
+  "(2) RAW MEDIA (phase 2): given a video/photo URL — or a report page via fetch_report — run ingest_media, LOOK at the returned keyframes, confirm the object with inspect_frame, then auto_measure with every fact you can supply (position, time, camera bearing and up-angle, witness text; trim long clips to the sighting). You are the eyes and the context-gatherer; phodar is the instrument. The output is a DRAFT sighting for HUMAN review in the app — always hand over the bundle link and the guessed-values list, and say plainly that the sky placement is approximate until refined there. " +
   "The verdict includes honest quality grades and warnings; relay them faithfully, including 'poor' and every caveat. Large share files: you may delete mediaJpeg/detailJpeg fields before sending — the engine never reads pixels.";
 const MCP_TOOLS = [
+  {
+    name: "ingest_media",
+    title: "Ingest raw media (photo or video) by URL",
+    description: "Phase-2 entry point: fetch a sighting photo/video from a URL, probe it, read its EXIF/QuickTime metadata (GPS, capture time, bearing, lens FOV), and return keyframe IMAGES so you can see the footage. Look at the keyframes, identify the anomalous object, then inspect_frame to confirm the spot and auto_measure to run the measurement pipeline. Media is held ~2 hours. Requires ffmpeg on the server.",
+    inputSchema: { type: "object", properties: {
+      url: { type: "string", description: "Direct http(s) URL of the media file (≤300 MB). For a report page, call fetch_report first to find the media URL." },
+      filename: { type: "string", description: "Optional filename hint (helps container detection)." },
+    }, required: ["url"] },
+  },
+  {
+    name: "inspect_frame",
+    title: "Zoom into a frame to confirm the object",
+    description: "Decode one frame of ingested media. With fx/fy (fractions of frame width/height, 0..1) it snaps the mark onto the nearest compact object and returns a ×3 zoomed crop with a crosshair at the refined centre — LOOK at it and verify the crosshair is on the object, not a star/light/artifact. Without fx/fy it returns the full frame. Iterate until the mark is right; use the refined fractions in auto_measure.",
+    inputSchema: { type: "object", properties: {
+      mediaId: { type: "string" },
+      t: { type: "number", description: "Frame time in seconds (0 for a photo)." },
+      fx: { type: "number" }, fy: { type: "number" },
+    }, required: ["mediaId"] },
+  },
+  {
+    name: "auto_measure",
+    title: "Run the auto-measurement pipeline",
+    description: "Runs phodar's real measurement pipeline on ingested media: EXIF + your context become the witness facts, the object mark is snapped and sized, and for video the full stabilizer solves every frame's camera pose and auto-tracks the object (minutes of compute — returns a jobId; poll job_status). Output: a .phodar.json + an importable bundle the HUMAN reviews in the app. Every defaulted/guessed value is listed for review — relay that list faithfully. The sky placement is approximate until refined in the app (star-align / terrain snap / by hand); directions inherit its error until then.",
+    inputSchema: { type: "object", properties: {
+      mediaId: { type: "string" },
+      context: { type: "object", description: "Everything you know: {lat, lon, elevM, whenMs or whenText (ISO), bearingDeg (compass the camera faced), elevationDeg (camera up-angle), fovH, name, observerName, witnessText, trim:{t0,t1} (seconds — REQUIRED for clips over 90s, and wise anyway: trim to the sighting)}. Omit what you don't know; EXIF fills what it can, the rest is defaulted and flagged.", properties: {
+        lat: { type: "number" }, lon: { type: "number" }, elevM: { type: "number" },
+        whenMs: { type: "number" }, whenText: { type: "string" },
+        bearingDeg: { type: "number" }, elevationDeg: { type: "number" }, fovH: { type: "number" },
+        name: { type: "string" }, observerName: { type: "string" }, witnessText: { type: "string" },
+        trim: { type: "object", properties: { t0: { type: "number" }, t1: { type: "number" } } },
+      } },
+      object: { type: "object", description: "The object mark from your keyframe inspection: {t (seconds; the clearest frame), fx, fy (fractions 0..1), wfrac (apparent width as a fraction of frame width — estimate from the zoom crop)}.", properties: {
+        t: { type: "number" }, fx: { type: "number" }, fy: { type: "number" }, wfrac: { type: "number" },
+      }, required: ["fx", "fy"] },
+      track: { type: "array", description: "Video: optional waypoints [{t, fx, fy}] marking the object on OTHER frames (use inspect_frame per frame). Two or more become the guide the auto-tracker follows — strongly recommended when the object is small or the camera moves a lot.", items: { type: "object", properties: { t: { type: "number" }, fx: { type: "number" }, fy: { type: "number" } } } },
+    }, required: ["mediaId", "object"] },
+  },
+  {
+    name: "job_status",
+    title: "Poll a measurement job",
+    description: "State of an auto_measure job: queued/running (stage + %), error, or done with the summary, the guessed-values list the human must review, and download links for the session (.phodar.json) and the importable bundle (.zip with the original media).",
+    inputSchema: { type: "object", properties: { jobId: { type: "string" } }, required: ["jobId"] },
+  },
+  {
+    name: "fetch_report",
+    title: "Scrape a sighting-report page",
+    description: "Best-effort scrape of a report page (e.g. a ufosighting.report record): og/twitter metas, JSON-LD, media-file URLs, datetime and coordinate-looking hints, plus a text excerpt. It does NOT understand the page — you do: combine the hints with your own reading, pick the media URL for ingest_media, and carry position/time/witness text into auto_measure context.",
+    inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+  },
   {
     name: "analyze_session",
     title: "Analyze a phodar session",
@@ -700,16 +750,161 @@ function mcpToolCall(name, args) {
     });
     return { ok: true, summary: summarizeVerdictRef(verdict).join("\n"), verdict };
   }
+  if (name === "ingest_media") {
+    return (async () => {
+      const r = await ingestRef.ingestFromUrl(String(args?.url || ""), { filename: args?.filename });
+      const p = r.probe;
+      return {
+        ok: true, mediaId: r.mediaId,
+        probe: { kind: p.kind, w: p.w, h: p.h, durS: +p.durS.toFixed(2), codec: p.codec },
+        metadata: metaBrief(r.meta),
+        meta: r.meta ? { lat: r.meta.lat ?? null, lon: r.meta.lon ?? null, timeMs: r.meta.timeMs ?? null, azTrue: r.meta.azTrue ?? r.meta.az ?? null, fovH: r.meta.fovH ?? null } : null,
+        summary: `Ingested ${p.kind} ${p.w}×${p.h}${p.kind === "video" ? ` · ${p.durS.toFixed(1)}s` : ""} (${p.codec}). ${metaBrief(r.meta)}. mediaId: ${r.mediaId}. The images below are keyframes${p.kind === "video" ? " at spread times — their t values are " + r.keyframes.map((k) => k.t + "s").join(", ") : ""}. LOOK at them, find the anomalous object, then call inspect_frame to confirm the exact spot before auto_measure.`,
+        keyframeTimes: r.keyframes.map((k) => k.t),
+        images: kfImages(r.keyframes),
+      };
+    })();
+  }
+  if (name === "inspect_frame") {
+    return (async () => {
+      const r = await ingestRef.inspectFrame(String(args?.mediaId || ""), { t: +args?.t || 0, fx: args?.fx, fy: args?.fy, zoomW: 240 });
+      return {
+        ok: true,
+        refined: r.refined,
+        summary: r.refined
+          ? `Zoomed crop around your mark (crosshair = the snapped centre, refined to fx=${r.refined.fx}, fy=${r.refined.fy}). If the crosshair sits ON the object, use these refined fractions in auto_measure; if it latched onto something else, call again with a better fx/fy.`
+          : "Full frame at the requested time — mark the object with fx/fy (fractions of width/height) to get a zoomed confirmation crop.",
+        images: kfImages([{ t: +args?.t || 0, jpeg: r.jpeg }]),
+      };
+    })();
+  }
+  if (name === "auto_measure") {
+    return (async () => {
+      const jobId = ingestRef.startJob(String(args?.mediaId || ""), {
+        context: args?.context || {}, object: args?.object || null, track: args?.track || [],
+      });
+      return { ok: true, jobId, summary: `Measurement job ${jobId} started (a video runs one to several minutes — the stabilizer solves every frame's camera pose). Poll job_status every ~20s until state is done, then relay the guessed/notes lists faithfully: they are what the human must review.` };
+    })();
+  }
+  if (name === "job_status") {
+    const st = ingestRef.jobStatus(String(args?.jobId || ""));
+    if (!st) return { ok: false, error: "unknown jobId (jobs are forgotten on redeploy and after ~2 h)" };
+    if (st.state === "done") {
+      const base = process.env.PHODAR_PUBLIC_URL || "https://phodar.app";
+      st.download = {
+        bundle: `${base}/api/job/${args.jobId}/bundle.zip?key=<api-key>`,
+        session: `${base}/api/job/${args.jobId}/session.json?key=<api-key>`,
+      };
+      st.summary = `Done. ${st.summary || ""}
+Sight-line ${st.sightLine ? `${st.sightLine.az}°/${st.sightLine.el}°` : "—"} · posePath ${st.posePathPts} pts · objPath ${st.objPathPts} pts.
+GUESSED (the human must review these in the app): ${(st.guessed || []).join("; ") || "nothing"}.
+Notes: ${(st.notes || []).join("; ") || "none"}.
+Hand the human the bundle link (fill in the api key): ${st.download.bundle} — they import it on phodar.app (📥 Import a shared sighting) and adjust from there.`;
+    } else {
+      st.summary = `Job ${args.jobId}: ${st.state} — ${st.stage} ${(st.frac * 100).toFixed(0)}%${st.error ? ` · ${st.error}` : ""}`;
+    }
+    return { ok: st.state !== "error", ...st };
+  }
+  if (name === "fetch_report") {
+    return (async () => {
+      const r = await ingestRef.fetchReport(String(args?.url || ""));
+      return {
+        ok: true, ...r,
+        summary: r.kind === "json" ? "The URL returned JSON (excerpt in structuredContent.json) — read it for media URLs and metadata."
+          : `Scraped "${r.title}". Media URLs found: ${r.mediaUrls.length ? r.mediaUrls.join(" · ") : "none — read textExcerpt/jsonLd for links or ask the human"}. Datetime hints: ${r.datetimes.join(", ") || "none"}. Coordinate-looking pairs: ${r.geoCandidates.join(" | ") || "none"}. This scrape is best-effort: combine it with your own reading of the page, pick the best media URL, and pass what you learned as auto_measure context.`,
+      };
+    })();
+  }
   throw Object.assign(new Error(`unknown tool: ${name}`), { code: -32602 });
 }
-let analyzeSessionRef, summarizeVerdictRef, parseFlightLogRef;
+let analyzeSessionRef, summarizeVerdictRef, parseFlightLogRef, ingestRef;
 async function mcpEnsureEngine() {
   if (!analyzeSessionRef) {
     const eng = await import("../src/analyze/engine.js");
     const fl = await import("../src/checks/flightlog.js");
     analyzeSessionRef = eng.analyzeSession; summarizeVerdictRef = eng.summarizeVerdict; parseFlightLogRef = fl.parseFlightLog;
   }
+  if (!ingestRef) {
+    ingestRef = await import("../src/ingest/serve.mjs");
+    setInterval(() => ingestRef.gcSweep(), 10 * 60 * 1000).unref?.();
+  }
 }
+
+/* keyframe images → MCP image blocks, downscaled hard: they ride in the tool
+   result the model reads, so every extra pixel is context spent */
+const kfImages = (keyframes) => (keyframes || []).slice(0, 5).map((k) => ({ data: Buffer.from(k.jpeg).toString("base64"), mimeType: "image/jpeg" }));
+
+const metaBrief = (meta) => {
+  if (!meta) return "no EXIF/QuickTime metadata (stripped or re-encoded)";
+  const bits = [];
+  if (meta.lat != null) bits.push(`GPS ${meta.lat}, ${meta.lon}${meta.alt != null ? ` · ${meta.alt} m` : ""}`);
+  if (meta.timeMs) bits.push(`captured ${new Date(meta.timeMs).toISOString()}`);
+  if (meta.azTrue != null) bits.push(`camera bearing ${meta.azTrue}° true`);
+  else if (meta.az != null) bits.push(`camera bearing ${meta.az}° ${meta.azRef || ""}`);
+  if (meta.fovH != null) bits.push(`FOV ${meta.fovH}°`);
+  if (meta.model) bits.push(meta.model);
+  return bits.join(" · ") || "metadata present but carries no position/time/lens facts";
+};
+/* ── phase-2 ingest over plain HTTP (the MCP tools' curl-able mirror) ──
+   POST /api/ingest            {url} JSON, or raw media bytes (spooled to disk)
+   GET  /api/job/<id>          job status
+   GET  /api/job/<id>/bundle.zip | session.json   artifacts (browser-friendly:
+                               the key rides ?key= so a human can click it) */
+async function apiIngest(req, res, u) {
+  if (!API_KEYS.size) return json(res, 503, { error: "ingest API not enabled (set PHODAR_API_KEYS)" });
+  const key = req.headers["x-api-key"] || u.searchParams.get("key") || "";
+  if (!API_KEYS.has(String(key))) return json(res, 401, { error: "invalid or missing key (X-API-Key header or ?key=)" });
+  await mcpEnsureEngine();
+  if (u.pathname === "/api/ingest") {
+    if (req.method !== "POST") return json(res, 405, { error: "POST {url, filename?} as JSON, or the raw media bytes (with ?filename=)" });
+    const ctype = String(req.headers["content-type"] || "");
+    if (ctype.includes("json")) {
+      const chunks = [];
+      for await (const c of req) { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 1e6) return json(res, 413, { error: "JSON body too large" }); }
+      let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch (e) { return json(res, 400, { error: "bad JSON" }); }
+      try {
+        const r = await ingestRef.ingestFromUrl(String(body.url || ""), { filename: body.filename });
+        return json(res, 200, { mediaId: r.mediaId, probe: r.probe, meta: r.meta, keyframeTimes: r.keyframes.map((k) => k.t) });
+      } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+    }
+    try {
+      const r = await ingestRef.ingestFromStream(req, { filename: u.searchParams.get("filename") || "" });
+      return json(res, 200, { mediaId: r.mediaId, probe: r.probe, meta: r.meta, keyframeTimes: r.keyframes.map((k) => k.t) });
+    } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+  }
+  const mm = u.pathname.match(/^\/api\/job\/([a-z0-9]+)(?:\/(bundle\.zip|session\.json))?$/i);
+  if (!mm) return json(res, 404, { error: "unknown ingest path" });
+  if (mm[2]) {
+    const p = ingestRef.jobFile(mm[1], mm[2] === "bundle.zip" ? "bundle" : "session");
+    if (!p) return json(res, 404, { error: "artifact not ready (or the job was forgotten on a redeploy)" });
+    res.writeHead(200, {
+      "content-type": mm[2] === "bundle.zip" ? "application/zip" : "application/json",
+      "content-disposition": `attachment; filename="phodar-${mm[2]}"`,
+      "cache-control": "no-store",
+    });
+    return createReadStream(p).pipe(res);
+  }
+  const st = ingestRef.jobStatus(mm[1]);
+  if (!st) return json(res, 404, { error: "unknown job (jobs are forgotten on redeploy and after ~2 h)" });
+  return json(res, 200, st);
+}
+
+/* POST /api/measure — start a job over HTTP: {mediaId, context, object, track} */
+async function apiMeasure(req, res, u) {
+  if (!API_KEYS.size) return json(res, 503, { error: "ingest API not enabled (set PHODAR_API_KEYS)" });
+  const key = req.headers["x-api-key"] || u.searchParams.get("key") || "";
+  if (!API_KEYS.has(String(key))) return json(res, 401, { error: "invalid or missing key" });
+  if (req.method !== "POST") return json(res, 405, { error: "POST {mediaId, context, object:{t,fx,fy,wfrac?}, track?}" });
+  await mcpEnsureEngine();
+  const chunks = [];
+  for await (const c of req) { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 2e6) return json(res, 413, { error: "body too large" }); }
+  let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch (e) { return json(res, 400, { error: "bad JSON" }); }
+  try {
+    const jobId = ingestRef.startJob(String(body.mediaId || ""), { context: body.context || {}, object: body.object || null, track: body.track || [] });
+    return json(res, 200, { jobId, poll: `/api/job/${jobId}` });
+  } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+}
+
 async function apiMcp(req, res, u, pathKey) {
   const cors = {
     "access-control-allow-origin": "*",
@@ -734,7 +929,7 @@ async function apiMcp(req, res, u, pathKey) {
     return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }));
   }
   await mcpEnsureEngine();
-  const one = (m) => {
+  const one = async (m) => {
     const id = m?.id;
     const reply = (result) => ({ jsonrpc: "2.0", id, result });
     const fail = (code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
@@ -753,9 +948,15 @@ async function apiMcp(req, res, u, pathKey) {
         case "tools/list": return reply({ tools: MCP_TOOLS });
         case "tools/call": {
           try {
-            const out = mcpToolCall(m.params?.name, m.params?.arguments || {});
+            const out = await mcpToolCall(m.params?.name, m.params?.arguments || {});
             const text = out.ok === false ? `error: ${out.error}` : (out.summary || JSON.stringify(out, null, 1));
-            return reply({ content: [{ type: "text", text }], structuredContent: out, isError: out.ok === false });
+            /* image blocks (keyframes, crops) ride the content array so vision
+               clients SEE them; they are stripped from structuredContent —
+               duplicating megabytes of base64 there helps no one */
+            const { images, ...structured } = out;
+            const content = [{ type: "text", text }];
+            for (const im of images || []) content.push({ type: "image", data: im.data, mimeType: im.mimeType || "image/jpeg" });
+            return reply({ content, structuredContent: structured, isError: out.ok === false });
           } catch (e) {
             if (e.code === -32602) return fail(-32602, e.message);
             return reply({ content: [{ type: "text", text: `analysis failed: ${e.message || e}` }], isError: true });
@@ -767,7 +968,7 @@ async function apiMcp(req, res, u, pathKey) {
       }
     } catch (e) { return fail(-32603, String(e.message || e)); }
   };
-  const out = Array.isArray(msg) ? msg.map(one).filter(Boolean) : one(msg);
+  const out = Array.isArray(msg) ? (await Promise.all(msg.map(one))).filter(Boolean) : await one(msg);
   if (out == null || (Array.isArray(out) && !out.length)) { res.writeHead(202, cors); return res.end(); }
   res.writeHead(200, { ...cors, "content-type": "application/json", "cache-control": "no-store" });
   return res.end(JSON.stringify(out));
@@ -784,6 +985,8 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (u.pathname === "/api/analyze") return await apiAnalyze(req, res);
+    if (u.pathname === "/api/ingest" || u.pathname.startsWith("/api/job/")) return await apiIngest(req, res, u);
+    if (u.pathname === "/api/measure") return await apiMeasure(req, res, u);
     {
       const mm = u.pathname === "/mcp" ? [null, null] : u.pathname.match(/^\/mcp\/([^/]+)$/);
       if (mm) {

@@ -465,8 +465,39 @@ permitted; what both Claude and ChatGPT accept), GET → 405 (no server-push
 SSE), notifications → 202, key in URL path since header/OAuth support
 varies by client. initialize carries `instructions` orienting the AI
 (workflow + "strip mediaJpeg fields to shrink"). Keep it dependency-free
-and stateless — that is why it can ride the same Railway dyno. Phase 2 = raw-media ingestion (needs ffmpeg in the
-deploy image + auto-calibration); phase 3 = an agentic analyst wrapping this
+and stateless — that is why it can ride the same Railway dyno.
+**PHASE 2 — RAW-MEDIA INGESTION: DONE** (`src/ingest/{media,auto,serve,worker}.mjs`
++ `/api/ingest|measure|job` + MCP tools `ingest_media / inspect_frame /
+auto_measure / job_status / fetch_report`). Architecture: **the AI is the
+eyes, phodar is the instrument** — full auto-detection of "the object" is a
+research project, but the MCP client HAS vision, so `ingest_media` returns
+keyframes as MCP image content, the AI marks the object (confirmed via
+`inspect_frame`'s ×3 crosshair crop + snapToObject refine) and supplies
+context gleaned from the report text; the server then runs the SAME pure
+modules the app runs (parseMediaMeta works on Buffers; the stabilize walk +
+object pass reimplemented faithfully in `auto.mjs` from phodar.jsx — bridge
+≤0.55 s held runs, despike, smooth 0.25, guided stepObject, snapDirsToAnchors)
+and returns a draft `.phodar.json` + an IMPORTABLE BUNDLE (the shared
+`src/report/zip.js` writer — extracted from phodar.jsx, byte-compatible, zip
+reader/writer mathcheck-asserted). Every defaulted value lands in
+`source.ingest.guessed`; the sky placement is explicitly approximate until a
+human (or star/terrain solve) refines it in the app. `media.mjs` is the ONLY
+place server pixels are minted (ffmpeg/ffprobe child processes,
+dependency-free; named errors when absent/HEVC/HEIC; railway.toml installs
+ffmpeg via nixpacksPlan aptPkgs). The solve runs in a FORKED WORKER
+(`worker.mjs`) — minutes of blocking NCC on the dyno's event loop would
+freeze the app it also serves; jobs are an in-memory registry + temp files,
+honestly forgotten on redeploy, GC'd after ~2 h, one at a time. URL fetches
+are SSRF-guarded (private hosts refused; PHODAR_INGEST_ALLOW_LOCAL=1 for
+tests). `fetch_report` scrapes og/twitter/JSON-LD/media-links/datetime/geo
+hints from a report page — written BLIND (no network in the dev sandbox), so
+it reports what it found and leaves interpretation to the AI; field-test it
+against ufosighting.report before trusting it. E2E-verified end to end on
+the real Germany clip driven through the actual MCP conversation (keyframes
+seen, object confirmed at the crosshair, job polled): sight-line
+359.54/35.13 vs the human's 359.85/34.91, 86-pt posePath tracking the tilt,
+84-pt objPath, and the produced bundle imported through the real app UI.
+Phase 3 = an agentic analyst wrapping this
 engine as tools. The engine consumes MEASUREMENTS — keep it pure and free of
 pixel work so it stays testable and server-safe.
 

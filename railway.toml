@@ -2,6 +2,12 @@
 builder = "NIXPACKS"
 buildCommand = "npm install && npm run build"
 
+# ffmpeg powers phase-2 raw-media ingestion (decode/probe/keyframes). The
+# server detects its absence and disables ingestion with a named error, so a
+# build without it still serves everything else.
+[build.nixpacksPlan.phases.setup]
+aptPkgs = ["ffmpeg"]
+
 [deploy]
 startCommand = "npm run start"
 healthcheckPath = "/"

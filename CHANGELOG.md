@@ -7,6 +7,37 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Phase 2 — raw-media ingestion: hand an AI a video/photo URL (or a report
+  page) and get back a reviewable phodar sighting.** The server now runs the
+  real measurement pipeline on raw media: EXIF/QuickTime metadata, object
+  snap + sizing, the full video stabilizer (per-frame camera pose, same walk
+  as the app: bisection, held-run bridging, despike, smoothing) and the
+  guided object auto-tracker — then returns a draft `.phodar.json` plus an
+  importable bundle (.zip with the original media) for HUMAN review in the
+  app. The division of labour is explicit: the AI is the eyes and the
+  context-gatherer — `ingest_media` returns keyframes as images the AI looks
+  at, `inspect_frame` returns a ×3 crosshair crop to confirm the object
+  mark, and the AI passes position/time/bearing/witness text gleaned from
+  the report — while phodar is the instrument, and every defaulted value is
+  listed in `source.ingest.guessed` for the human to review. The sky
+  placement is carried as approximate until refined in the app (star-align /
+  terrain snap / by hand).
+
+  New: `src/ingest/{media,auto,serve,worker}.mjs` (ffmpeg decode; the
+  pipeline; jobs + report-page scraping; a forked worker so minutes of solve
+  never block the dyno serving the app), HTTP `/api/ingest`, `/api/measure`,
+  `/api/job/<id>[/bundle.zip|/session.json]`, MCP tools `ingest_media`,
+  `inspect_frame`, `auto_measure`, `job_status`, `fetch_report` (best-effort
+  page scrape — og/JSON-LD/media links — written blind, needs field
+  testing), and ffmpeg in the Railway image. The app's zip writer moved to
+  `src/report/zip.js`, shared by both sides and mathcheck-asserted.
+
+  Verified end to end on the real Germany clip driven through the actual MCP
+  conversation — keyframes seen, object confirmed at the crosshair, job
+  polled to done: auto sight-line 359.54°/35.13° vs the human session's
+  359.85°/34.91°, an 86-point camera path tracking the tilt to ~57°, an
+  84-point object track, and the produced bundle imported through the real
+  app UI with every measurement intact.
 - **👁 View-only mode — a master Edit/View toggle on the home screen** (field
   ask: "a view-only mode for people who just want to load a finished
   file/bundle and see the steps and everything without making any changes").

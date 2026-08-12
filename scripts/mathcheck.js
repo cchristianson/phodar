@@ -3393,5 +3393,26 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(parseWhen("2026-08-01T17:00:00+00:00"), Date.parse("2026-08-01T17:00:00Z"), 0, "parseWhen explicit zone wins");
 }
 
+// --- share-bundle ZIP (src/report/zip.js) — shared by the app's export and
+// the server's phase-2 ingest, so a server bundle must be byte-compatible
+// with what the app reads. CRC vector is the classic check value; the
+// roundtrip goes through the module's own reader; python's zipfile
+// independently validated a real produced bundle during development.
+{
+  const { crc32buf, makeZip, strU8, unzipEntryText, unzipBinEntries } = await import("../src/report/zip.js");
+  approx(crc32buf(strU8("123456789")), 0xCBF43926, 0, "zip: crc32 check vector (123456789 → 0xCBF43926)");
+  const media = new Uint8Array(300); for (let i = 0; i < 300; i++) media[i] = (i * 37) & 255;
+  const z = makeZip([
+    { name: strU8("sighting.phodar.json"), data: strU8('{"phodar":1,"sources":[]}') },
+    { name: strU8("videos/observer-1-original.mp4"), data: media },
+  ]);
+  approx(z[0], 0x50, 0, "zip: local header magic");
+  const eocd = z.length - 22;
+  approx(z[eocd] | (z[eocd + 1] << 8) | (z[eocd + 2] << 16) | (z[eocd + 3] << 24), 0x06054b50 | 0, 0, "zip: EOCD record at the tail");
+  ok(unzipEntryText(z, "sighting.phodar.json") === '{"phodar":1,"sources":[]}', "zip: text entry roundtrips");
+  const vids = unzipBinEntries(z, "videos/");
+  ok(vids.length === 1 && vids[0].bytes.length === 300 && vids[0].bytes[299] === media[299], "zip: binary entry roundtrips under its prefix");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");

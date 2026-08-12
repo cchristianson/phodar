@@ -66,6 +66,45 @@ curl -s https://phodar.app/api/analyze \
 EOF
 ```
 
+## Phase 2 — raw-media ingestion (auto-measurement)
+
+Hand the server a sighting **video or photo by URL** and it runs the real
+measurement pipeline — EXIF/QuickTime metadata, object snap + sizing, the full
+video stabilizer (per-frame camera pose) and guided object auto-track — and
+returns a draft `.phodar.json` plus an importable bundle (.zip with the
+original media) for **human review in the app**. The caller supplies the
+judgment the app's user normally supplies: where the object is (a mark on a
+keyframe), and whatever context exists (position, time, camera bearing and
+up-angle, witness text). Every defaulted value is listed in
+`source.ingest.guessed`; the sky placement is carried as approximate until
+refined in the app.
+
+Requires ffmpeg on the server (railway.toml installs it; without it these
+endpoints answer with a named error). Media is held ~2 hours; jobs are
+in-memory on the single dyno (a redeploy forgets them — re-run).
+
+```
+POST /api/ingest        {url, filename?} JSON — or the raw media bytes
+                        → { mediaId, probe, meta, keyframeTimes }
+POST /api/measure       {mediaId, context, object:{t,fx,fy,wfrac?}, track?}
+                        → { jobId, poll }
+GET  /api/job/<id>                 → job status (stage, %, then summary)
+GET  /api/job/<id>/bundle.zip      → the importable bundle
+GET  /api/job/<id>/session.json    → the .phodar.json alone
+```
+
+All key-gated like `/api/analyze`; the GET artifact routes also accept
+`?key=` so a human can click the link. `context.trim {t0,t1}` is required
+for clips over 90 s and wise regardless — trim to the sighting.
+
+The MCP tools (below) wrap the same pipeline **with vision**: `ingest_media`
+returns keyframes as images the AI looks at, `inspect_frame` returns a zoomed
+crosshair crop to confirm the object mark, `auto_measure`/`job_status` run
+and poll the job, and `fetch_report` scrapes a report page (og/JSON-LD/media
+links) so an AI can go from a sighting-report URL to a reviewed draft in one
+conversation. The AI is the eyes and context-gatherer; phodar is the
+instrument; the human owns the review.
+
 ## MCP server (bring your own AI)
 
 The same engine speaks the **Model Context Protocol**, so users drive phodar

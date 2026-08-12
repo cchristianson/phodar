@@ -20,6 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
+import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
@@ -11044,16 +11045,6 @@ function ResultsPanel({ sources, onLog, viewOnly }) {
 /* ============================================================
    WIZARD — one page at a time. The only workflow.
    ============================================================ */
-let _crcT = null;
-function crc32buf(u8) {
-  if (!_crcT) {
-    _crcT = new Int32Array(256);
-    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; _crcT[n] = c; }
-  }
-  let crc = -1;
-  for (let i = 0; i < u8.length; i++) crc = (crc >>> 8) ^ _crcT[(crc ^ u8[i]) & 255];
-  return (crc ^ -1) >>> 0;
-}
 /* --- shared screen wake lock: hold while ANY long job runs ----------------
    Refcounted so overlapping jobs (a stabilize + a report build) compose;
    iOS silently releases the lock when the page hides, so it re-arms on
@@ -11082,26 +11073,9 @@ function wakeRelease() {
   if (!_wakeJobs && _wakeLock) { try { _wakeLock.release(); } catch (e) { } _wakeLock = null; }
 }
 
-function makeZip(files) { // STORE-method zip: JPEGs are incompressible anyway
-  const chunks = [], central = [];
-  let offset = 0;
-  const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
-  const u32 = (v) => new Uint8Array([v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255]);
-  for (const f of files) {
-    const crc = crc32buf(f.data), sz = f.data.length;
-    chunks.push(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc), u32(sz), u32(sz), u16(f.name.length), u16(0), f.name, f.data);
-    central.push({ name: f.name, crc, sz, offset });
-    offset += 30 + f.name.length + sz;
-  }
-  const cdStart = offset;
-  for (const c of central) {
-    chunks.push(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0), u32(c.crc), u32(c.sz), u32(c.sz), u16(c.name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(c.offset), c.name);
-    offset += 46 + c.name.length;
-  }
-  chunks.push(u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length), u32(offset - cdStart), u32(cdStart), u16(0));
-  return new Blob(chunks, { type: "application/zip" });
-}
-const strU8 = (s) => new TextEncoder().encode(s);
+/* zip writer/reader live in src/report/zip.js now — shared with the server's
+   ingest pipeline, which builds import-compatible bundles with it */
+const makeZip = (files) => new Blob([makeZipBytes(files)], { type: "application/zip" });
 const dataUrlU8 = (durl) => {
   const b64 = durl.slice(durl.indexOf(",") + 1);
   const bin = atob(b64);
@@ -11109,43 +11083,6 @@ const dataUrlU8 = (durl) => {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
 };
-/* pull one STORE-method entry's text out of a zip (the reader half of makeZip
-   — the share bundle is uncompressed, so no inflate needed). Scans local file
-   headers; returns the named entry decoded as UTF-8, or null. */
-function unzipEntryText(u8, name) {
-  const u16 = (o) => u8[o] | (u8[o + 1] << 8);
-  const u32 = (o) => u8[o] + u8[o + 1] * 256 + u8[o + 2] * 65536 + u8[o + 3] * 16777216;
-  let o = 0;
-  while (o + 30 <= u8.length && u32(o) === 0x04034b50) {
-    const method = u16(o + 8), compSize = u32(o + 18);
-    const nameLen = u16(o + 26), extraLen = u16(o + 28);
-    const nm = new TextDecoder().decode(u8.subarray(o + 30, o + 30 + nameLen));
-    const dataStart = o + 30 + nameLen + extraLen;
-    if (nm === name) return method === 0 ? new TextDecoder().decode(u8.subarray(dataStart, dataStart + compSize)) : null;
-    o = dataStart + compSize;
-  }
-  return null;
-}
-
-/* every stored entry under a path prefix — how the bundle's video files come
-   back out on import. The bundle writer stores uncompressed (method 0), so
-   the bytes are a straight subarray. */
-function unzipBinEntries(u8, prefix) {
-  const u16 = (o) => u8[o] | (u8[o + 1] << 8);
-  const u32 = (o) => u8[o] + u8[o + 1] * 256 + u8[o + 2] * 65536 + u8[o + 3] * 16777216;
-  const out = [];
-  let o = 0;
-  while (o + 30 <= u8.length && u32(o) === 0x04034b50) {
-    const method = u16(o + 8), compSize = u32(o + 18);
-    const nameLen = u16(o + 26), extraLen = u16(o + 28);
-    const nm = new TextDecoder().decode(u8.subarray(o + 30, o + 30 + nameLen));
-    const dataStart = o + 30 + nameLen + extraLen;
-    if (method === 0 && nm.startsWith(prefix)) out.push({ name: nm, bytes: u8.subarray(dataStart, dataStart + compSize) });
-    o = dataStart + compSize;
-  }
-  return out;
-}
-
 /* which active observers are missing the facets a fix needs — named plainly,
    because "single viewpoint" with two witnesses on screen reads as a bug
    (field report) when the real cause is one uncommitted sky placement */
