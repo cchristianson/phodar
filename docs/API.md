@@ -102,6 +102,14 @@ All key-gated like `/api/analyze`; the GET artifact routes also accept
 `?key=` so a human can click the link. `context.trim {t0,t1}` is required
 for clips over 90 s and wise regardless — trim to the sighting.
 
+One route is deliberately **un-keyed**: `GET /api/report?url=` — the app's
+own "🔗 Fill from a report link" home-screen import calls it to scrape a
+sighting-report page (same `fetchReport` core as the MCP tool). Because it
+carries no key, the fetch target is host-allowlisted (default
+`ufosighting.report`; extend with the `PHODAR_REPORT_HOSTS` env var,
+comma-separated host suffixes) so it can never serve as an open
+scrape/SSRF proxy.
+
 The MCP tools (below) wrap the same pipeline **with vision**: `ingest_media`
 returns keyframes as images the AI looks at, `inspect_frame` returns a zoomed
 crosshair crop to confirm the object mark, `auto_measure`/`job_status` run

@@ -7,6 +7,33 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Report-link import** (user ask: drop a ufosighting.report link into
+  Phodar and it extracts the coordinates, metadata and witness statement;
+  the user downloads the video themselves). Home screen gains "🔗 Fill
+  from a report link": paste a report page URL (or drag the link onto the
+  screen on a desktop) and a new observer is pre-filled from what the page
+  states — position, date/time, the witness statement, and the sighting
+  name from the page title. Server side is a new un-keyed `GET
+  /api/report?url=` that wraps the existing phase-2 `fetchReport` scraper
+  (og:/twitter: metas, JSON-LD, datetime/geo hints, media links);
+  because it is un-keyed it is HOST-ALLOWLISTED (default
+  ufosighting.report, extend via `PHODAR_REPORT_HOSTS`) so it can't be
+  used as an open scrape/SSRF proxy. Interpretation is deterministic and
+  JSON-LD-first (structured data beats loose page-text hints), and every
+  value lands in normal wizard fields for review — the import message
+  says what was extracted and warns that a report's location is often
+  the town, not the exact spot. The media is DELIBERATELY not
+  downloaded (another site's video is not ours to hot-pull, and browser
+  CORS blocks it anyway): step 1 shows a callout linking back to the
+  report page and its media files — save them there, then load with the
+  normal picker, and every imported measurement stays. Verified offline
+  end-to-end against a mock report site through the real server + app
+  (9 assertions: position/time/statement/name/media links all land,
+  step 2 unlocks). Honest caveat: ufosighting.report currently 403s
+  non-browser clients (Cloudflare bot protection — confirmed again from
+  this sandbox), so until PhodarBot is allowlisted there the import may
+  fail with a clear message telling the user to copy the details by
+  hand; the flow degrades, it doesn't break.
 - **Modality-aware gesture hints** (user ask: every screen/mode should hint
   mouse actions on desktop and finger gestures on mobile). A module-level
   switch (`FINE_PTR`, from the `(hover: hover) and (pointer: fine)` media

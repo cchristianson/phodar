@@ -542,6 +542,7 @@ const HELP_SECTIONS = [
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
+        { t: "🔗 Fill from a report link", d: "Paste a sighting-report page URL (ufosighting.report) — or drag the link onto this screen on a desktop — and Phodar extracts what the page states: position, date/time and the witness statement, pre-filled into a new observer for your review. The location is often the town rather than the exact spot, so check the pin on step 2. The photo/video is deliberately NOT downloaded for you — step 1 links back to the report page; save the media there yourself and load it with the picker." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
         { t: "Moving around — ‹ and 🏠", d: "‹ always steps back ONE page, so a correction is one tap away: from Results it returns to the sky view that produced the numbers, and from Report & share it returns to Results (or straight to this list, if that is where you opened the report from). The last two screens also carry a 🏠 button, which jumps all the way back to this sighting list from anywhere." },
@@ -2584,6 +2585,21 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
       {!media && !loading && src.mediaLost && (
         <div className="warn">
           This observer's {src.mediaLost === "video" ? "video" : "photo"} is no longer in this device's storage — the system reclaimed the space (large files go first). Your points, marks and placements are all still here: tap <b>Load photo or video</b> and pick the <b>same file</b> to re-attach it and keep every measurement{src.mediaLost === "video" ? " (then re-run 🎞 Stabilize)" : ""}.
+        </div>
+      )}
+      {/* sighting filled from a report LINK: the metadata came over, the media
+          deliberately did not (another site's video is not ours to
+          hot-download, and browser CORS blocks it anyway) — point straight at
+          the report so the human saves the file and loads it here. */}
+      {!media && !loading && !viewOnly && src.report?.url && (
+        <div style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--teal)", borderRadius: 10, background: "rgba(94,234,212,.06)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.55 }}>
+          🔗 <b style={{ color: "var(--teal)" }}>Filled from a report page.</b> The photo/video stays on the report — open it, save the media to this device, then <b style={{ color: "var(--ink)" }}>Load photo or video</b> above.
+          <div style={{ marginTop: 4, display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <a href={src.report.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--teal)" }}>open the report ↗</a>
+            {(src.report.media || []).slice(0, 4).map((mu, i) => (
+              <a key={i} href={mu} target="_blank" rel="noopener noreferrer" style={{ color: "var(--teal)" }}>media {i + 1} ↗</a>
+            ))}
+          </div>
         </div>
       )}
       {/* an in-app recording is NOT in the camera roll until it's shared out —
@@ -12918,6 +12934,66 @@ function MomentTimeCtl({ m, onChange }) {
 function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
+  const [linkVal, setLinkVal] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
+  /* REPORT-LINK IMPORT: paste (or drop) a sighting-report page URL and the
+     server scrapes its machine-readable bones (/api/report → fetchReport:
+     og:/twitter: metas, JSON-LD, datetime/geo hints, media links). This
+     helper interprets them DETERMINISTICALLY into a pre-filled observer —
+     JSON-LD first (it's structured), then the loose page hints — and the
+     media is left to the HUMAN: the report page's video links are stored on
+     source.report so step 1 can point at them, because hot-downloading
+     another site's media into the browser is both CORS-blocked and not ours
+     to automate. Every filled value is user-reviewable in the wizard. */
+  const reportToSource = (r, link) => {
+    const s = { report: { url: link, media: (r.mediaUrls || []).slice(0, 8) } }; // no name — makeSource numbers the observer
+    let lat = null, lon = null, when = null, desc = "";
+    for (const t of r.jsonLd || []) {
+      try {
+        const walk = (x, depth) => {
+          if (!x || typeof x !== "object" || depth > 6) return;
+          if (Array.isArray(x)) return x.forEach((y) => walk(y, depth + 1));
+          const g = x.geo && typeof x.geo === "object" ? x.geo : x;
+          if (lat == null && isFinite(+g.latitude) && isFinite(+g.longitude)) { lat = +g.latitude; lon = +g.longitude; }
+          const d = x.datePublished || x.dateCreated || x.startDate || x.dateTime;
+          if (when == null && d) { const ms = Date.parse(d); if (isFinite(ms)) when = ms; }
+          if (typeof x.description === "string" && x.description.length > desc.length) desc = x.description;
+          for (const k of Object.keys(x)) walk(x[k], depth + 1);
+        };
+        walk(JSON.parse(t), 0);
+      } catch (e) { }
+    }
+    if (lat == null) for (const gc of r.geoCandidates || []) {
+      const [a, b] = String(gc).split(",").map(Number);
+      if (Math.abs(a) <= 90 && Math.abs(b) <= 180 && (a !== 0 || b !== 0)) { lat = a; lon = b; break; }
+    }
+    if (when == null) for (const d of r.datetimes || []) { const ms = Date.parse(d); if (isFinite(ms)) { when = ms; break; } }
+    if (lat != null && lon != null) { s.lat = String(+lat.toFixed(6)); s.lon = String(+lon.toFixed(6)); }
+    if (when != null) s.whenMs = when;
+    s.statement = (desc || r.description || (r.textExcerpt || "").slice(0, 600)).trim();
+    return s;
+  };
+  const importFromLink = async (raw) => {
+    const link = String(raw || "").trim();
+    if (!/^https?:\/\//i.test(link)) { setImpMsg("That doesn't look like a link — paste the report page's full URL."); return; }
+    setLinkBusy(true); setImpMsg("");
+    try {
+      const resp = await fetch("/api/report?url=" + encodeURIComponent(link));
+      const r = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(r?.error || `fetch failed (${resp.status})`);
+      const src = reportToSource(r, link);
+      const got = [src.lat != null && "position", src.whenMs != null && "time", src.statement && "statement", src.report.media.length && "media links"].filter(Boolean);
+      const n = onImport(JSON.stringify({ phodar: 1, sources: [src] }));
+      if (n && r.title && !est?.name) onName(String(r.title).slice(0, 80));
+      setImpMsg(n
+        ? `✓ filled from the report (${got.join(", ") || "page text only"}). Check the pin on step 2 — a report's location is often the town, not the exact spot — then download the video from the report page and load it on step 1.`
+        : "Couldn't build a sighting from that page.");
+      setLinkVal("");
+    } catch (e) {
+      setImpMsg(`Couldn't read that report page (${String(e.message || e)}). Open the link yourself, copy the details by hand, and download the video from the page.`);
+    }
+    setLinkBusy(false);
+  };
   const importShareFile = (f) => {
     const finish = (tx, media) => {
       const n = tx ? onImport(tx, media) : 0;
@@ -12940,12 +13016,18 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
     <div style={{ padding: "26px 14px 40px", position: "relative" }}
       /* DESKTOP: drop a share file (.phodar.json / report .html / sighting
          .zip) anywhere on the home screen — same path as 📥 Import. Import
-         works in BOTH modes; it is how a reviewer loads a sighting. */
+         works in BOTH modes; it is how a reviewer loads a sighting. A
+         dropped LINK (drag a report page's URL from another tab/window)
+         goes through the report-link import instead — edit mode only,
+         since it creates a sighting. */
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
         const f = e.dataTransfer?.files?.[0];
-        if (f) importShareFile(f);
+        if (f) return importShareFile(f);
+        const t = e.dataTransfer?.getData("text/uri-list") || e.dataTransfer?.getData("text/plain") || "";
+        const m = /https?:\/\/\S+/.exec(t);
+        if (m && !viewOnly) importFromLink(m[0]);
       }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
 
@@ -12995,6 +13077,17 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importShareFile(f); }} />
+      {!viewOnly && (
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <input value={linkVal} onChange={(e) => setLinkVal(e.target.value)} placeholder="…or paste a report link (ufosighting.report)"
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); importFromLink(linkVal); } }}
+            style={{ flex: 1, minWidth: 0 }} />
+          <button className="btn" disabled={linkBusy || !linkVal.trim()} onClick={() => importFromLink(linkVal)}
+            title="Fill a new sighting from a report page: position, time and the witness statement are extracted for you to review. The video stays on the report page — download it there and load it on step 1.">
+            {linkBusy ? <Spin /> : "🔗 Fill"}
+          </button>
+        </div>
+      )}
       {impMsg && <div style={{ fontSize: 12, color: impMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, textAlign: "center" }}>{impMsg}</div>}
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>

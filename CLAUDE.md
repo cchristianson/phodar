@@ -492,7 +492,16 @@ are SSRF-guarded (private hosts refused; PHODAR_INGEST_ALLOW_LOCAL=1 for
 tests). `fetch_report` scrapes og/twitter/JSON-LD/media-links/datetime/geo
 hints from a report page — written BLIND (no network in the dev sandbox), so
 it reports what it found and leaves interpretation to the AI; field-test it
-against ufosighting.report before trusting it. E2E-verified end to end on
+against ufosighting.report before trusting it. **The APP reuses the same
+scraper via un-keyed `GET /api/report?url=`** (host-ALLOWLISTED, default
+ufosighting.report + `PHODAR_REPORT_HOSTS` — un-keyed must never be an open
+scrape/SSRF proxy): the home screen's "🔗 Fill from a report link" pre-fills
+an observer deterministically (JSON-LD first, then loose hints) — position,
+time, statement, name — and step 1 links back at the report's media for the
+HUMAN to download and attach; the media is deliberately never auto-pulled.
+Verified offline e2e against a mock report site. NB ufosighting.report 403s
+non-browser clients (Cloudflare) — until PhodarBot is allowlisted there the
+import fails with a copy-by-hand message rather than breaking. E2E-verified end to end on
 the real Germany clip driven through the actual MCP conversation (keyframes
 seen, object confirmed at the crosshair, job polled): sight-line
 359.54/35.13 vs the human's 359.85/34.91, 86-pt posePath tracking the tilt,

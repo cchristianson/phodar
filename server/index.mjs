@@ -906,6 +906,30 @@ async function apiMeasure(req, res, u) {
   } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
 }
 
+/* GET /api/report?url= — the APP's report-link import (home screen: paste a
+   sighting-report link, get the page's machine-readable bones back to
+   pre-fill a sighting). UN-KEYED so the app itself can call it — which is
+   exactly why the fetch target is HOST-ALLOWLISTED: an open un-keyed
+   endpoint would otherwise be a free scrape/SSRF proxy. Default allowlist
+   is ufosighting.report; extend with PHODAR_REPORT_HOSTS (comma-separated
+   host suffixes). PHODAR_INGEST_ALLOW_LOCAL=1 bypasses for tests (the
+   fetchReport SSRF guard is separately bypassed by the same var). */
+async function apiReport(u, res) {
+  const raw = String(u.searchParams.get("url") || "");
+  let target;
+  try { target = new URL(raw); } catch (e) { return json(res, 400, { error: "invalid url" }); }
+  const hosts = (process.env.PHODAR_REPORT_HOSTS || "ufosighting.report").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const hn = target.hostname.toLowerCase();
+  const okHost = hosts.some((h) => hn === h || hn.endsWith("." + h)) || process.env.PHODAR_INGEST_ALLOW_LOCAL === "1";
+  if (!okHost) return json(res, 403, { error: `report links are limited to: ${hosts.join(", ")}` });
+  try {
+    const ing = await import("../src/ingest/serve.mjs");
+    return json(res, 200, await ing.fetchReport(raw));
+  } catch (e) {
+    return json(res, 502, { error: String(e?.message || e) });
+  }
+}
+
 async function apiMcp(req, res, u, pathKey) {
   const cors = {
     "access-control-allow-origin": "*",
@@ -988,6 +1012,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/analyze") return await apiAnalyze(req, res);
     if (u.pathname === "/api/ingest" || u.pathname.startsWith("/api/job/")) return await apiIngest(req, res, u);
     if (u.pathname === "/api/measure") return await apiMeasure(req, res, u);
+    if (u.pathname === "/api/report") return await apiReport(u, res);
     {
       const mm = u.pathname === "/mcp" ? [null, null] : u.pathname.match(/^\/mcp\/([^/]+)$/);
       if (mm) {
