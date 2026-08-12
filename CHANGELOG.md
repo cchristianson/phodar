@@ -6,6 +6,24 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **"🤖 Bring your own AI" card on the home screen** (user ask: a section
+  that explains the API with a full prompt to copy into your AI of
+  choice). Collapsible card at the bottom of the sighting list: explains
+  the MCP server in plain language (your AI is the eyes and
+  context-gatherer, Phodar does the math, you own the review), an
+  optional API-key field (persisted locally; keys stated as free-but-
+  personal while in beta), and "📋 Copy the AI prompt" — a complete
+  ready-to-paste prompt carrying the MCP URL (key filled in when
+  entered), the five-step workflow (fetch_report → ingest_media with
+  trim guidance → keyframe look + inspect_frame confirmation →
+  auto_measure with every real fact → job_status + bundle link), and
+  the honesty rules (never invent values, declare guesses, placement
+  approximate until refined in the app). Clipboard-blocked browsers fall
+  back to a selectable prompt; the full text also renders in the card.
+  Browser-verified: placeholder ↔ key completion, persistence across
+  reload, workflow text present.
+
 ### Changed
 - **Report-link import parked behind `ENABLE_REPORT_LINK` (default off)**
   after the first production attempt confirmed ufosighting.report's

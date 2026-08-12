@@ -553,6 +553,7 @@ const HELP_SECTIONS = [
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
         ...(ENABLE_REPORT_LINK ? [{ t: "🔗 Fill from a report link", d: "Paste a sighting-report page URL (ufosighting.report) — or drag the link onto this screen on a desktop — and Phodar extracts what the page states: position, date/time and the witness statement, pre-filled into a new observer for your review. The location is often the town rather than the exact spot, so check the pin on step 2. The photo/video is deliberately NOT downloaded for you — step 1 links back to the report page; save the media there yourself and load it with the picker." }] : []),
+        { t: "🤖 Bring your own AI", d: "Phodar's measurement engine is also an MCP server, so an AI assistant you already use (Claude, ChatGPT, or anything that speaks MCP) can run a full analysis for you — you hand it the sighting video and context, it returns a bundle you import here to review. 📋 Copy the AI prompt gives you a ready-to-paste prompt with the whole workflow; add your API key first and the prompt copies complete (keys are free while Phodar is in beta, handed out personally). Every AI-produced value stays reviewable in the app, and the sky placement is approximate until refined here." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
         { t: "Moving around — ‹ and 🏠", d: "‹ always steps back ONE page, so a correction is one tap away: from Results it returns to the sky view that produced the numbers, and from Report & share it returns to Results (or straight to this list, if that is where you opened the report from). The last two screens also carry a 🏠 button, which jumps all the way back to this sighting list from anywhere." },
@@ -12946,6 +12947,36 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
   const [impMsg, setImpMsg] = useState("");
   const [linkVal, setLinkVal] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
+  /* 🤖 BRING YOUR OWN AI — the MCP server exists but was invisible unless you
+     read the repo docs; this card explains it and hands over a ready prompt.
+     The key rides localStorage (phodar: prefix, like uiHue) so the prompt
+     copies complete; without one the placeholder stays in. */
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiKey, setAiKey] = useState(() => { try { return localStorage.getItem("phodar:apikey") || ""; } catch (e) { return ""; } });
+  const [aiCopied, setAiCopied] = useState(false);
+  const setAiKeySave = (v) => { setAiKey(v); try { localStorage.setItem("phodar:apikey", v); } catch (e) { } };
+  const aiPrompt = `Add this MCP server (Streamable HTTP, no OAuth) and use its tools:
+
+https://phodar.app/mcp/${(aiKey || "").trim() || "<your-api-key>"}
+
+It is Phodar, a photogrammetry instrument that turns UFO/UAP sighting photos and videos into real measurements — sight-lines, trajectories, angular sizes, size-at-distance, and cross-checks against aircraft, satellites, stars and weather. You are the eyes and the context-gatherer; Phodar is the instrument; I am the reviewer.
+
+I will give you a sighting: media (a video or photo URL) plus whatever context exists (a report link, where the witness stood, when it happened, which way the camera pointed, the witness statement).
+
+Workflow:
+1. If I gave a report LINK, call fetch_report for its machine-readable details, and read the page yourself if you can browse. Collect the position, time, statement and media URLs.
+2. Call ingest_media with the media URL. Clips longer than 90 s (or files over 300 MB) need trim: {t0, t1} in seconds around the sighting — pick the span from the report, or ask me.
+3. LOOK at the returned keyframes and find the object. Confirm with inspect_frame: the object must sit exactly at the crosshair of the zoomed crop — adjust and re-check until it does.
+4. Call auto_measure with the confirmed object mark and EVERY real fact you gathered (lat/lon, ISO date-time, camera bearing, up-angle, witness statement). Never invent values — ask me for anything missing.
+5. Poll job_status until it finishes, then give me: the bundle.zip download link, the sight-line / trajectory summary, and the complete list of values that were guessed or defaulted.
+
+Rules: report numbers exactly as Phodar returns them; say plainly that the sky placement is approximate until a human refines it in the app (star or terrain alignment); and always end with the bundle link so I can import it at https://phodar.app and review every measurement myself.
+
+Here is the sighting:`;
+  const copyAiPrompt = async () => {
+    try { await navigator.clipboard.writeText(aiPrompt); setAiCopied(true); setTimeout(() => setAiCopied(false), 2500); }
+    catch (e) { setAiCopied(false); window.prompt("Copy the prompt:", aiPrompt); } // clipboard blocked → selectable fallback
+  };
   /* REPORT-LINK IMPORT: paste (or drop) a sighting-report page URL and the
      server scrapes its machine-readable bones (/api/report → fetchReport:
      og:/twitter: metas, JSON-LD, datetime/geo hints, media links). This
@@ -13178,6 +13209,34 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
           <button className="btn teal" style={{ width: "100%", marginTop: 8 }} onClick={onReport}>📄 Report</button>
         </div>
       )}
+      {/* 🤖 BRING YOUR OWN AI — explains the MCP server and hands over a
+          ready-to-paste prompt. Visible in both modes: it only reads. */}
+      <div className="card" style={{ margin: "18px 0 0" }}>
+        <div style={{ display: "flex", alignItems: "center", cursor: "pointer" }} onClick={() => setAiOpen((v) => !v)}>
+          <ML style={{ marginBottom: 0, flex: 1 }}>🤖 Bring your own AI</ML>
+          <span style={{ color: "var(--dim)", fontSize: 13 }}>{aiOpen ? "⌃" : "⌄"}</span>
+        </div>
+        {aiOpen && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--dim)", lineHeight: 1.55, marginTop: 8 }}>
+              Phodar's measurement engine is also an <b style={{ color: "var(--ink)" }}>MCP server</b>, so an AI assistant you already use (Claude, ChatGPT, or anything that speaks MCP) can drive it for you: hand your AI a sighting video and the context, it runs the full analysis on phodar.app — keyframes, object confirmation, camera solve, object track — and gives you back a bundle you import <b style={{ color: "var(--ink)" }}>here</b> to review and refine. The AI is the eyes and context-gatherer; Phodar does the math; you own the review.
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--amber)", lineHeight: 1.5, marginTop: 8 }}>
+              You'll need an API key — free while Phodar is in beta, handed out personally by the developer.
+            </div>
+            <input value={aiKey} onChange={(e) => setAiKeySave(e.target.value)} placeholder="paste your API key here (optional — completes the prompt)"
+              autoCapitalize="none" autoCorrect="off" spellCheck={false}
+              style={{ marginTop: 8, fontFamily: "var(--mono)", fontSize: 12 }} />
+            <button className="btn amber" style={{ width: "100%", marginTop: 8 }} onClick={copyAiPrompt}>
+              {aiCopied ? "✓ Copied — paste it into your AI" : "📋 Copy the AI prompt"}
+            </button>
+            <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 6, lineHeight: 1.5 }}>
+              Paste the prompt into a new conversation with your AI (in clients with connector settings, add the MCP URL from the prompt there first), then give it the sighting — media link plus everything you know. The prompt is below if you'd rather copy it by hand.
+            </div>
+            <pre style={{ marginTop: 8, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "rgba(10,15,28,.6)", fontSize: 10.5, lineHeight: 1.5, color: "var(--dim)", whiteSpace: "pre-wrap", maxHeight: 220, overflowY: "auto", userSelect: "text", WebkitUserSelect: "text" }}>{aiPrompt}</pre>
+          </>
+        )}
+      </div>
     </div>
   );
 }
