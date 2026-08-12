@@ -526,6 +526,16 @@ const ML = ({ children, style }) => <div className="microlabel" style={style}>{c
 const FINE_PTR = typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 const gest = (touch, mouse) => (FINE_PTR ? mouse : touch);
 
+/* 🔗 report-link import — PARKED until ufosighting.report allowlists the
+   fetcher: Cloudflare bot protection 403s every non-browser client (the
+   site's robots.txt actually ALLOWS crawlers — the block is Cloudflare
+   acting against its own stated policy), so in the field the feature could
+   only fail. The /api/report endpoint stays live so the allowlist can be
+   verified the moment it lands (curl phodar.app/api/report?url=…) — then
+   flip this flag and redeploy. Must sit ABOVE HELP_SECTIONS (it gates a
+   manual item, and HELP_SECTIONS evaluates at module load). */
+const ENABLE_REPORT_LINK = false;
+
 const HELP_SECTIONS = [
   {
     id: "start", icon: "🛰", title: "How Phodar works",
@@ -542,7 +552,7 @@ const HELP_SECTIONS = [
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
-        { t: "🔗 Fill from a report link", d: "Paste a sighting-report page URL (ufosighting.report) — or drag the link onto this screen on a desktop — and Phodar extracts what the page states: position, date/time and the witness statement, pre-filled into a new observer for your review. The location is often the town rather than the exact spot, so check the pin on step 2. The photo/video is deliberately NOT downloaded for you — step 1 links back to the report page; save the media there yourself and load it with the picker." },
+        ...(ENABLE_REPORT_LINK ? [{ t: "🔗 Fill from a report link", d: "Paste a sighting-report page URL (ufosighting.report) — or drag the link onto this screen on a desktop — and Phodar extracts what the page states: position, date/time and the witness statement, pre-filled into a new observer for your review. The location is often the town rather than the exact spot, so check the pin on step 2. The photo/video is deliberately NOT downloaded for you — step 1 links back to the report page; save the media there yourself and load it with the picker." }] : []),
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
         { t: "Moving around — ‹ and 🏠", d: "‹ always steps back ONE page, so a correction is one tap away: from Results it returns to the sky view that produced the numbers, and from Report & share it returns to Results (or straight to this list, if that is where you opened the report from). The last two screens also carry a 🏠 button, which jumps all the way back to this sighting list from anywhere." },
@@ -13027,7 +13037,7 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
         if (f) return importShareFile(f);
         const t = e.dataTransfer?.getData("text/uri-list") || e.dataTransfer?.getData("text/plain") || "";
         const m = /https?:\/\/\S+/.exec(t);
-        if (m && !viewOnly) importFromLink(m[0]);
+        if (m && ENABLE_REPORT_LINK && !viewOnly) importFromLink(m[0]);
       }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
 
@@ -13077,7 +13087,7 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importShareFile(f); }} />
-      {!viewOnly && (
+      {ENABLE_REPORT_LINK && !viewOnly && (
         <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
           <input value={linkVal} onChange={(e) => setLinkVal(e.target.value)} placeholder="…or paste a report link (ufosighting.report)"
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); importFromLink(linkVal); } }}

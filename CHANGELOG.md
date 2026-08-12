@@ -6,6 +6,19 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- **Report-link import parked behind `ENABLE_REPORT_LINK` (default off)**
+  after the first production attempt confirmed ufosighting.report's
+  Cloudflare bot protection 403s the server fetch (and a reader-proxy
+  fallback gets the same challenge page — no clean workaround that isn't
+  bot-protection evasion). Notably the site's own robots.txt ALLOWS
+  general crawlers (`User-agent: * → Allow: /`; only the big AI-training
+  bots are disallowed, PhodarBot is not among them), so the block is
+  Cloudflare acting against the site's stated policy — the ask to
+  allowlist PhodarBot stands on solid ground. The `/api/report` endpoint
+  stays live so the allowlist can be verified without a redeploy; flip
+  the flag when it lands.
+
 ### Added
 - **Report-link import** (user ask: drop a ufosighting.report link into
   Phodar and it extracts the coordinates, metadata and witness statement;
