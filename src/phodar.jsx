@@ -683,6 +683,7 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
+      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist), and Shift+scroll in place mode to resize the photo's field of view (the pinch). On a wide window the view zooms out farther than on a phone so a portrait photo's full perimeter fits on screen.",
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
@@ -3945,12 +3946,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   /* the FOV that makes the photo fill the frame — i.e. the world view shown at
      the SAME scale as the flat photo on the measure step. Returns null until the
      dimensions are known. */
+  /* the widest the LOOK camera may go. 90° horizontal was tuned on portrait
+     phones, where the vertical then reaches 120°+; on a LANDSCAPE desktop
+     window the same 90° leaves a vertical of only ~55–60° — less than a
+     portrait photo spans, so its perimeter could never fit on screen no
+     matter how far you zoomed out (field report). Aspect-aware: let the
+     SHORT axis reach 90° (tangent-scaled, like the projection itself),
+     capped at 130° so an ultrawide monitor can't stretch the rectilinear
+     projection into soup. Portrait viewports are unchanged. */
+  const lookFovMax = () => (vp.w > vp.h && vp.h > 0)
+    ? clampN(+(2 * Math.atan(Math.tan(45 * RAD) * (vp.w / vp.h)) * R2D).toFixed(1), 90, 130) : 90;
   const fitFovToPhoto = () => {
     if (!(source?.natW > 0 && source?.natH > 0) || !(vp.w > 0 && vp.h > 0)) return null;
     const fovMm = isNum(source?.fovH) ? +source.fovH : 68;
     const aspect = source.natH / source.natW;
     const fitT = (Math.tan((fovMm * RAD) / 2) / 0.92) * Math.max(1, aspect * (vp.w / vp.h));
-    return clampN(+(2 * Math.atan(fitT) * R2D).toFixed(1), 2, 90);
+    return clampN(+(2 * Math.atan(fitT) * R2D).toFixed(1), 2, lookFovMax());
   };
   const didFitRef = useRef(false);
   useEffect(() => {
@@ -4324,6 +4335,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
     const n = pointersRef.current.size;
     if (placing && n === 1) { pendUndoRef.current = snapPose(); placeMovedRef.current = false; } // arm undo for this gesture
+    /* DESKTOP roll: a mouse has one pointer, so the two-finger twist gets a
+       modifier instead — Shift+drag rolls the photo (place mode) or the
+       frame pose (⚓ fix mode). pointerType-gated: touch never lands here. */
+    if (e.pointerType === "mouse" && e.shiftKey && n === 1 && (placing || (fixOn && playPose))) {
+      mouseRollRef.current = placing ? { kind: "place", x: e.clientX, roll: pRoll } : { kind: "fix", lastX: e.clientX };
+      panRef.current = null; placeRef.current = null; fixDragRef.current = null; dispPanRef.current = null;
+      return;
+    }
     if (n >= 2) {
       /* fix mode: two fingers = twist rolls the FRAME POSE, pinch zooms the
          view, midpoint drag pans the view — the photo edit stays in playPose */
@@ -4385,6 +4404,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   const onBgMove = (e) => {
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, t: pointersRef.current.get(e.pointerId)?.t ?? e.timeStamp });
+    if (mouseRollRef.current) {
+      const mr = mouseRollRef.current, k = 0.2; // 5 px per degree — a full-width drag ≈ a large twist
+      if (mr.kind === "place") { calibRecRef.current = null; placeMovedRef.current = true; setPRoll(clampN(mr.roll - (e.clientX - mr.x) * k, -90, 90)); }
+      else { const d = (e.clientX - mr.lastX) * k; mr.lastX = e.clientX; if (d) queueFix({ dRoll: -d }); }
+      return;
+    }
     const n = pointersRef.current.size;
     if (n >= 2) {
       /* fix mode: twist → frame roll, pinch → view zoom, midpoint drag → view pan */
@@ -4406,7 +4431,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           else if (t.pendScale > 1.015 || t.pendScale < 1 / 1.015) t.lock = "scale";
         }
         if (t.lock === "rot" && Math.abs(t.pendRot) > 0.001) { queueFix({ dRoll: t.pendRot }); t.pendRot = 0; t.pendScale = 1; }
-        if (t.lock === "scale" && t.pendScale !== 1) { setFov((f) => clampN(f / t.pendScale, 2, 90)); t.pendScale = 1; t.pendRot = 0; }
+        if (t.lock === "scale" && t.pendScale !== 1) { setFov((f) => clampN(f / t.pendScale, 2, lookFovMax())); t.pendScale = 1; t.pendRot = 0; }
         if (vp.w) queuePose("look",
           (((t.vAz - (g.mx - t.mx0) / vp.w * fovH) % 360) + 360) % 360,
           clampN(t.vAlt + (g.my - t.my0) / (vp.h || vp.w) * fovV, -15, EL_MAX));
@@ -4480,7 +4505,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const ratio = g.dist / t.dist;
         t.dist = g.dist;
         if (ratio < 0.67 || ratio > 1.5) return;
-        setFov((f) => clampN(f / ratio, 2, 90));
+        setFov((f) => clampN(f / ratio, 2, lookFovMax()));
       }
       return;
     }
@@ -4529,6 +4554,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     }
   };
   const onBgUp = (e) => {
+    mouseRollRef.current = null;
     pointersRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
     const n = pointersRef.current.size;
@@ -4576,7 +4602,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   };
   useEffect(() => {
     const el = vpRef.current; if (!el || !open) return;
-    const onWheel = (ev) => { ev.preventDefault(); setFov((f) => clampN(+(f * (ev.deltaY > 0 ? 1.08 : 1 / 1.08)).toFixed(1), 2, 90)); };
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      /* DESKTOP pinch equivalent: Shift+scroll in place mode resizes the
+         PHOTO's field of view (what the two-finger pinch does on touch) */
+      if (wheelCtxRef.current.placing && ev.shiftKey) {
+        setFovM((f) => clampN(+(f * (ev.deltaY > 0 ? 1.03 : 1 / 1.03)).toFixed(1), 12, 120));
+        return;
+      }
+      const w2 = el.clientWidth || 1, h2 = el.clientHeight || 1;
+      const mx = w2 > h2 ? clampN(+(2 * Math.atan(Math.tan(45 * RAD) * (w2 / h2)) * R2D).toFixed(1), 90, 130) : 90;
+      setFov((f) => clampN(+(f * (ev.deltaY > 0 ? 1.08 : 1 / 1.08)).toFixed(1), 2, mx));
+    };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [open]); // eslint-disable-line
@@ -4999,7 +5036,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
        effFov is the ZOOMED view FOV; divide the display zoom back out so Look
        mode opens at the true photo framing, not magnified. */
     setViewAz(pAz); setViewAlt(clampN(pEl, -15, EL_MAX));
-    setFov(clampN(2 * Math.atan(Math.tan((effFov * RAD) / 2) * pZoom) * R2D, 2, 90));
+    setFov(clampN(2 * Math.atan(Math.tan((effFov * RAD) / 2) * pZoom) * R2D, 2, lookFovMax()));
     resetPlaceView();
     commitPlacement();
     setPMode("look");
@@ -6917,6 +6954,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   }, [source?.mediaUrl]);
 
   const handleClose = () => { if (photoOn) commitPlacement(); onClose(); };
+  const wheelCtxRef = useRef({ placing: false });
+  const mouseRollRef = useRef(null); // Shift+drag roll gesture (desktop)
+  wheelCtxRef.current.placing = placing;
 
   const aimColor = which === "B" ? "var(--teal)" : accentCol;
   const recenter = (b) => { if (placing) { setPAz(b.az); setPEl(clampN(b.alt, -20, EL_MAX)); } else { setViewAz(b.az); setViewAlt(clampN(b.alt, -10, 80)); } };
@@ -7674,8 +7714,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       {/* view zoom — vertical stack on the right, out of the cramped bottom bar */}
       {pMode !== "place" && (
         <div style={{ position: "absolute", right: 10, top: ctrlBandPct + "%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 205, pointerEvents: "auto" }}>
-          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f * 0.72).toFixed(1), 2, 90))}>+</button>
-          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f / 0.72).toFixed(1), 2, 90))}>−</button>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f * 0.72).toFixed(1), 2, lookFovMax()))}>+</button>
+          <button className="btn" style={{ width: 42, height: 42, padding: 0, fontSize: 19, background: "rgba(15,23,42,.75)" }} onClick={() => setFov((f) => clampN(+(f / 0.72).toFixed(1), 2, lookFovMax()))}>−</button>
           {/* fix mode: one finger normally drags the PHOTO — ✋ flips it to
               panning the view (like place mode's ✋), so a zoomed-in horizon
               can be reached without disturbing the frame pose */}

@@ -7,6 +7,22 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Desktop (mouse) support in the sky view** (field report: "you can't zoom
+  out enough to show the full perimeter of the image, and there's no way to
+  drag/rotate like the mobile gestures"). Two causes, two fixes. The
+  zoom-out cap was 90° of HORIZONTAL field — tuned on portrait phones, where
+  the vertical then exceeds 120°; on a landscape desktop window the same cap
+  leaves only ~55–60° of vertical, less than a portrait photo spans, so the
+  perimeter could never fit. The cap is now aspect-aware (the short axis can
+  reach 90°, tangent-scaled like the projection itself, max 130°), applied to
+  the scroll-wheel, the +/− buttons, pinch and the auto-fit — portrait
+  viewports unchanged. And the two-finger gestures got mouse equivalents,
+  gated to pointerType "mouse" so the field-calibrated touch stack is
+  untouched: Shift+drag rolls the photo (place and ⚓ fix modes — the twist),
+  Shift+scroll resizes the photo's FOV in place mode (the pinch); plain drag
+  (look/place/fix/trackball) and plain scroll-zoom already worked. Manual
+  updated. Browser-verified at 1440×810: zoom-out reaches 121°, Shift+drag
+  persists roll −30° through commit, Shift+scroll takes fovH 41.6°→55.8°.
 - **Phase 2 field-test fixes** (first live run against a real
   ufosighting.report record, driven by an independent AI client):
   ffmpeg now installs via `nixpacks.toml` (the `railway.toml` nixpacksPlan
