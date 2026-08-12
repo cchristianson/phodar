@@ -1268,6 +1268,21 @@ alternative rather than a silent wrong answer:
    exactly the case it existed to handle and left `window.storage` undefined.
    `npm run storecheck` exists because of that and would have caught it.
 
+**Desktop (mouse/keyboard) parity — audited 2026-08.** Every two-finger
+gesture has a mouse equivalent, ALWAYS gated `e.pointerType === "mouse"` (or a
+keyboard/wheel event) so the field-calibrated touch stack is byte-identical.
+Measure step: wheel = pinch-zoom toward the pointer, Shift+drag = pan
+(a viewing gesture — above the view-only cut, never places a mark), Alt+drag =
+the twist (rolls the shape / selected track point about the view axis), ←/→ =
+±1 frame (skipped while a form control has focus), drag-and-drop loads media.
+Sky view: wheel = dome zoom (aspect-aware cap so a landscape window can frame a
+portrait photo's perimeter), Shift+drag = roll, Shift+scroll = photo FOV.
+Escape mirrors the visible close/back button: capture-phase + stopPropagation
+on stacked overlays (manual, distance-map) so only the top one closes; the sky
+view's Escape COMMITS the placement exactly like a tap on ‹ Back. Home screen
+accepts a dropped share file. When adding a gesture, add its mouse twin under
+the same gate — and when adding an overlay, give it a capture-phase Escape.
+
 Everything else was already feature-detected with a real fallback (WebCodecs →
 MediaRecorder, `requestVideoFrameCallback` → timeout, Wake Lock / Web Share →
 nothing). The one UA sniff in the codebase is the iOS export-size cap, which is

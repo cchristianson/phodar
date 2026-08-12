@@ -7,6 +7,40 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Desktop audit — the rest of the app** (user ask: "I have really only
+  used the app on my iPhone and iPad up until now — audit for anything else
+  that needs to get optimized for desktop"). Audited every screen at a
+  desktop viewport; the gaps were all interaction paths that only existed
+  as two-finger gestures or touch idioms, fixed with mouse/keyboard
+  equivalents gated so the field-calibrated touch stack is byte-identical:
+  - **Measure step (the big one — the marking screen had NO mouse zoom):**
+    scroll-wheel zooms the photo toward the pointer (the pinch, same
+    clamps), Shift+drag pans while zoomed (the two-finger drag; a viewing
+    gesture, so it works in view-only mode and never places a mark), and
+    Alt+drag rolls the fitted shape or the selected track point's model
+    about the view axis (the two-finger twist). All pointerType-"mouse"
+    gated.
+  - **← / → step one frame** on a loaded video (the keyboard −1/+1 fr) —
+    skipped whenever a form control has focus, so typing in the statement
+    box or nudging the frame slider's own native arrows never double-acts.
+  - **Escape closes things**: the ? manual and the 📍 distance-map modal
+    (capture-phase, so only the top overlay closes), and the sky view —
+    through the SAME path as the visible ‹ Back / ✕ button, committing the
+    placement exactly like a tap.
+  - **Drag-and-drop files**: a photo/video dropped anywhere on the measure
+    step loads it (same `ingestFile` path as the picker, with a drop
+    highlight on the Load button); a share file (.phodar.json / report
+    .html / sighting .zip) dropped on the home screen imports it.
+  - Checked and already fine: Leaflet maps (wheel zoom + drag native),
+    trim bar and all sliders (pointer events + cursors), the portrait
+    rotate-lock (gated `pointer: coarse` + small screen — desktops can't
+    match), the 520 px centered column, report/results scrolling, and the
+    storage/attitude fallbacks documented in CLAUDE.md.
+  Browser-verified at 1440×810 through the real built app (14 assertions:
+  zoom/pan/roll each move the render and place no marks, drop replaces
+  media, arrows step 0.05s→0.15s and ignore focused inputs, Escape closes
+  the manual and exits the sky view to the wizard). Manual updated
+  (photo-step + sky-view desktop tips, import item); helpcheck passes.
 - **Desktop (mouse) support in the sky view** (field report: "you can't zoom
   out enough to show the full perimeter of the image, and there's no way to
   drag/rotate like the mobile gestures"). Two causes, two fixes. The

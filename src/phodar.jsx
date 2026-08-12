@@ -530,7 +530,7 @@ const HELP_SECTIONS = [
         { t: "✎ Edit / 👁 View only — the master toggle", d: "Sits on the home screen above Import, and it governs the WHOLE app. ✎ Edit is normal Phodar. 👁 View only is REVIEW mode: walk a sighting someone shared from end to end with no way to alter it. Every editing tool disappears — step 1's media row, tap-mode selector and shape controls; step 2's search, coordinate inputs and pin-move; the sky view's ✥ Place, 🎞 Stabilize, ↶ Undo, ✕ clear, ⚓ Fix frames and 🎛 Smoothing; ➕ Add witness, 📸 New sighting and the sighting name. Everything that only READS stays live: pinch-zoom the photo, scrub and play the clip (including stabilized playback), the whole sky dome with every layer, ⊕ Trajectory / 📏 Size / ⚖ Compare as gauges, ⬇ video export, the full results panel, the report, the bundle and the share file. BRIGHTNESS / CONTRAST stays live, because it is a display aid that never touches the original pixels — a reviewer can brighten a dark clip to actually see the object. It is enforced in the DATA layer as well as by hiding buttons, so nothing else you tap anywhere can change the sighting — if something is blocked, a line at the bottom of the screen says so rather than failing silently. Anything that would be dead is HIDDEN rather than left there greyed out, and where a control is removed its value is shown as a readout instead (your position and viewing direction on step 2, the field of view and the witness statement on step 1). A 👁 VIEW ONLY badge sits in every step header and the sky-view HUD. 📥 Import works in BOTH modes — it is how you load the sighting to review — and the mode is remembered between sessions." },
         { t: "📸 New sighting", d: "Clears the current sighting and starts fresh at step 1. Hidden in 👁 View only." },
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
-        { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours)." },
+        { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
         { t: "Moving around — ‹ and 🏠", d: "‹ always steps back ONE page, so a correction is one tap away: from Results it returns to the sky view that produced the numbers, and from Report & share it returns to Results (or straight to this list, if that is where you opened the report from). The last two screens also carry a 🏠 button, which jumps all the way back to this sighting list from anywhere." },
@@ -610,6 +610,7 @@ const HELP_SECTIONS = [
     tips: [
       "Shared/messaged copies are usually stripped of EXIF. To keep it: Photos → Share → Options (top) → All Photos Data ON, then AirDrop the original.",
       "HEIC files can't expose metadata in-browser — export or share as JPEG to auto-fill GPS, time, bearing and FOV.",
+      "On a DESKTOP (mouse): drag-and-drop a photo/video anywhere on this step to load it, scroll on the photo to zoom toward the pointer (the pinch), Shift+drag to pan while zoomed, Alt+drag to roll the placed shape or a selected track point about the view axis (the two-finger twist), and ← / → to step the video one frame while nothing is focused.",
     ],
   },
   {
@@ -683,7 +684,7 @@ const HELP_SECTIONS = [
     ],
     tips: [
       "Order of preference for calibration: Auto star-align (night) or Snap to ridges (visible hills) beat eyeballing. Use the Sun/Moon discs — drawn where they really were — to sanity-check your bearing.",
-      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist), and Shift+scroll in place mode to resize the photo's field of view (the pinch). On a wide window the view zooms out farther than on a phone so a portrait photo's full perimeter fits on screen.",
+      "On a DESKTOP (mouse): drag to look around or move the photo, scroll to zoom the view, Shift+drag left/right to ROLL the photo (place and ⚓ fix modes — the two-finger twist), and Shift+scroll in place mode to resize the photo's field of view (the pinch). On a wide window the view zooms out farther than on a phone so a portrait photo's full perimeter fits on screen. Esc leaves the sky view the same way the ‹ Back / ✕ button does (the placement is committed first).",
       "See the 🛰 Sky layers section for what every header toggle (Sun, Moon, stars, satellites, Starlink, aircraft, peaks, buildings, cloud, wind) shows.",
       "Clean viewing: ⌃ next to ? tucks the sky-layer toggles away; ⌄ on the bottom row tucks the controls away. The bottom row and the video playback scrubber always stay.",
       "🎛 on the playback row opens the smoothing sliders — 🎥 steadiness (camera path) and 🛸 track smooth (object path). Non-destructive: re-applied from the raw solve. Left keeps hard corners; right smooths an airplane's jitter into its clean curve — heavier smoothing also damps real fast maneuvers in the measured rates.",
@@ -810,6 +811,13 @@ function HelpOverlay({ start, onClose }) {
     const el = document.getElementById("help-" + start);
     if (el) el.scrollIntoView({ block: "start" });
   }, [start]);
+  /* DESKTOP: Escape closes the manual. Capture phase + stopPropagation so a
+     sky-view Escape handler underneath never sees the same keypress. */
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []); // eslint-disable-line
   return (
     <div className="help-back" onClick={onClose}
       onPointerDown={(e) => e.stopPropagation()} onPointerMove={(e) => e.stopPropagation()}
@@ -1041,6 +1049,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const [selCref, setSelCref] = useState(0);         // CAM REFS: which reference feature the taps mark (index into source.camRefs)
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
+  const [dropHot, setDropHot] = useState(false);            // DESKTOP: a file is being dragged over the step
   const ptsRef = useRef(new Map());
   const pinchRef = useRef(null);
   const pendingRef = useRef(null); // undecided first touch: tap? drag? or pinch about to start?
@@ -1050,6 +1059,8 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const trkDragRef = useRef(null);   // live position of a loupe-assisted Track drag (committed on lift)
   const trkMoveRef = useRef(null);   // ADJUST mode: index (in trkSorted) of the point being dragged to a new spot
   const trkRotRef = useRef(null);    // ADJUST mode: live 3D-rotation gesture on the selected point's model ({R0,sx,sy,pid,cur})
+  const panMouseRef = useRef(null);  // DESKTOP: Shift+drag pans the zoomed photo (the two-finger drag)
+  const mouseTwistRef = useRef(null); // DESKTOP: Alt+drag rolls the shape/point about the view axis (the two-finger twist)
   const trkHistRef = useRef([]);     // Track-point undo stack (snapshots before each place/delete/clear)
 
   const natW = src.natW, natH = src.natH;
@@ -1653,6 +1664,14 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
     ptsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     setTouching(true);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { }
+    /* DESKTOP: Shift+drag pans the zoomed photo — the two-finger drag. A
+       viewing gesture like the pinch, so it sits ABOVE the view-only cut.
+       pointerType-gated: touch never lands here. */
+    if (e.pointerType === "mouse" && e.shiftKey) {
+      killPending();
+      panMouseRef.current = { sx: e.clientX, sy: e.clientY, ox: view.ox, oy: view.oy };
+      return;
+    }
     if (ptsRef.current.size >= 2) {
       /* Second finger, and a shape rotation is ALREADY underway → don't pinch:
          use this finger as an anchor and let the twist between the two fingers
@@ -1702,6 +1721,17 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
        measurements untouchable — and it stops the marks visibly jumping under
        a finger before the write lock silently refuses them. */
     if (viewOnly) return;
+    /* DESKTOP: Alt+drag rolls the fitted shape (or the selected track point's
+       model in adjust mode) about the view axis — the two-finger twist.
+       Horizontal mouse movement maps to roll; the one-finger rotate drag
+       (yaw/pitch) stays the plain drag. */
+    if (e.pointerType === "mouse" && e.altKey && src.shapeFit &&
+      (active === "shape" || (active === "trk" && trkAdjust && selIdx >= 0))) {
+      killPending();
+      if (active === "trk") { pushTrkHist(); mouseTwistRef.current = { kind: "trk", x: e.clientX, R0: ptRotOf(selIdx) || I3 }; }
+      else mouseTwistRef.current = { kind: "shape", x: e.clientX, R0: src.shapeFit.rotM || I3 };
+      return;
+    }
     if (active === "trk" && !media) return;   // trk works on a still OR a video (lay the recalled path on the photo)
     if (active === "cref" && media?.kind !== "video") return;   // camera refs are a video-only stabilization aid
     if (active === "shape" && !src.shapeFit) return; // pick a shape first — no stray marks
@@ -1735,6 +1765,18 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const onMove = (e) => {
     if (ptsRef.current.has(e.pointerId)) ptsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!scale || !wrapRef.current) return;
+    if (panMouseRef.current) {
+      const pm = panMouseRef.current;
+      setView((v) => clampView({ z: v.z, ox: pm.ox + (e.clientX - pm.sx), oy: pm.oy + (e.clientY - pm.sy) }));
+      return;
+    }
+    if (mouseTwistRef.current) {
+      const mt = mouseTwistRef.current, k = 0.5; // deg per px of horizontal travel
+      const m = mul3(rotZ3((e.clientX - mt.x) * k), mt.R0);
+      if (mt.kind === "trk") setPtRotM(m);
+      else { const nsf = { ...src.shapeFit, rotM: m }; syncShape(nsf); shapeLoupeFor(nsf); }
+      return;
+    }
     const r = wrapRef.current.getBoundingClientRect();
     if (twistRef.current && ptsRef.current.size >= 2 && src.shapeFit) {
       const tw = twistRef.current;
@@ -1863,6 +1905,8 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const onUp = (e) => {
     ptsRef.current.delete(e.pointerId);
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { }
+    panMouseRef.current = null;
+    mouseTwistRef.current = null;
     if (ptsRef.current.size < 2) pinchRef.current = null;
     if (twistRef.current && ptsRef.current.size < 2) {
       /* lifting out of a two-finger twist: hand control back to whichever
@@ -1911,10 +1955,32 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
     }
   };
 
+  /* DESKTOP pinch equivalent: scroll-wheel zooms the photo toward the cursor
+     (same math + clamps as the two-finger pinch). Native listener with
+     passive:false — browsers default wheel to passive, and without
+     preventDefault the page scrolls under the zoom. Touch path untouched. */
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || !scale) return;
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      setView((v) => {
+        const nz = clampN(v.z * (ev.deltaY > 0 ? 1 / 1.14 : 1.14), 1, 20);
+        const cx = (mx - v.ox) / v.z, cy = (my - v.oy) / v.z;
+        return clampView({ z: nz, ox: mx - cx * nz, oy: my - cy * nz });
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [scale, dispW, dispH]); // eslint-disable-line
+
   /* safety valve: app-switch or system gesture mid-touch must release the lock */
   useEffect(() => {
     const hardReset = () => {
       ptsRef.current.clear(); pinchRef.current = null; twistRef.current = null; trkDragRef.current = null; trkMoveRef.current = null; trkRotRef.current = null;
+      panMouseRef.current = null; mouseTwistRef.current = null;
       killPending(); setTouching(false); setDrag(false); setFinger(null);
     };
     window.addEventListener("blur", hardReset);
@@ -2040,6 +2106,25 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
      biggest quality lever on a real clip — the whip-pan while the phone comes
      up and the blurred tail are exactly the frames that break the tracker. */
   const trim = trimOf(src, vidDur);
+  /* DESKTOP: ← / → step one frame while a video is loaded — the keyboard
+     version of the −1 fr / +1 fr buttons. Skipped when a form control has
+     focus (the frame slider's own native arrows keep working there, and
+     typing in the statement box must never scrub the video). */
+  useEffect(() => {
+    if (!isVid || !(vidDur > 0)) return;
+    const onKey = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const ae = document.activeElement;
+      if (ae && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(ae.tagName)) return;
+      e.preventDefault();
+      const el = mediaRef.current;
+      const tv = el ? el.currentTime : vidT;
+      seek(clampN(tv + (e.key === "ArrowRight" ? 0.033 : -0.033), trim.t0, trim.t1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isVid, vidDur, trim.t0, trim.t1]); // eslint-disable-line
   const [trimOn, setTrimOn] = useState(false); // ✂ is a MODE — the bar costs vertical space
   const trimBarRef = useRef(null);
   const trimDragRef = useRef(null);            // "t0" | "t1" while a handle is down
@@ -2368,7 +2453,18 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const markText = { p1: "A1", p2: "A2", pb: "B" };
 
   return (
-    <div>
+    <div
+      /* DESKTOP: drop a photo/video anywhere on the step — same path as the
+         file picker. dragover must preventDefault or the browser navigates
+         to the file. View-only hides the media row, so drops are off too. */
+      onDragOver={(e) => { if (viewOnly) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; if (!dropHot) setDropHot(true); }}
+      onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDropHot(false); }}
+      onDrop={(e) => {
+        if (viewOnly) return;
+        e.preventDefault(); setDropHot(false);
+        const f = [...(e.dataTransfer?.files || [])].find((x) => /^(image|video)\//.test(x.type));
+        if (f) ingestFile(f);
+      }}>
       {capOpen && <SensorCapture onCapture={applyCapture} onClose={() => setCapOpen(false)} />}
       <ML>Photo / video{viewOnly ? "" : " (optional — used to measure angular size)"}</ML>
       {/* ONE ROW for every media action (field ask — vertical space on a phone
@@ -2376,8 +2472,8 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
           capture · trim. Only Replace carries a word; the rest are icons with
           titles, which is what makes them fit at 430 px. */}
       <div style={{ display: viewOnly ? "none" : "flex", gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
-        <label className="btn sm amber" style={{ display: "inline-block", padding: "6px 9px", whiteSpace: "nowrap", flex: "0 1 auto", overflow: "hidden" }}>
-          {media ? "Replace" : "Load photo or video"}
+        <label className="btn sm amber" style={{ display: "inline-block", padding: "6px 9px", whiteSpace: "nowrap", flex: "0 1 auto", overflow: "hidden", outline: dropHot ? "2px dashed var(--amber)" : "none", outlineOffset: 2 }}>
+          {dropHot ? "Drop it here" : media ? "Replace" : "Load photo or video"}
           <input type="file" accept="image/*,video/*" onChange={onFile} style={{ display: "none" }} />
         </label>
         {(isVid || src.meta?.sensor) && media && (
@@ -6957,6 +7053,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const wheelCtxRef = useRef({ placing: false });
   const mouseRollRef = useRef(null); // Shift+drag roll gesture (desktop)
   wheelCtxRef.current.placing = placing;
+  /* DESKTOP: Escape leaves the sky view through the SAME path as the visible
+     ‹ Back / ✕ Close button (committing the placement first, exactly like a
+     tap). The manual's own Escape handler runs in capture phase and stops
+     the event, so an open manual closes first. */
+  const escRef = useRef(null);
+  escRef.current = () => { if (wizard) { if (photoOn) commitPlacement(); onWizardBack && onWizardBack(); } else handleClose(); };
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); escRef.current && escRef.current(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   const aimColor = which === "B" ? "var(--teal)" : accentCol;
   const recenter = (b) => { if (placing) { setPAz(b.az); setPEl(clampN(b.alt, -20, EL_MAX)); } else { setViewAz(b.az); setViewAlt(clampN(b.alt, -10, 80)); } };
@@ -8771,6 +8879,14 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
   const slant = gDist != null ? slantOf(gDist) : null;
   const size = slant != null && isNum(objAng) ? 2 * slant * Math.tan(objAng * D2R / 2) : null;
   const alt = slant != null && el0 > 0 ? slant * Math.sin(el0 * D2R) : null;
+
+  /* DESKTOP: Escape = Cancel. Capture + stopPropagation — this modal sits on
+     top of the sky view, whose own Escape handler must not also fire. */
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []); // eslint-disable-line
 
   return (
     <div className="mappick-modal">
@@ -12764,11 +12880,35 @@ function MomentTimeCtl({ m, onChange }) {
 function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWitness, onResume, onRemove, onImport, onReport, onAddMoment, onOpenMoment, onRemoveMoment, unitsImp, onToggleUnits, appMode, onSetMode }) {
   const fileRef = useRef(null);
   const [impMsg, setImpMsg] = useState("");
+  const importShareFile = (f) => {
+    const finish = (tx, media) => {
+      const n = tx ? onImport(tx, media) : 0;
+      setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}${media && media.length ? ` + ${media.length} video file${media.length > 1 ? "s" : ""}` : ""}` : "Couldn't read that — expected a .phodar.json, a Phodar report, or a sighting .zip.");
+    };
+    f.arrayBuffer().then((buf) => {
+      const u8 = new Uint8Array(buf);
+      /* a sighting .zip (PK\x03\x04) → pull the data file out of it,
+         plus the observers' video files so the clips come back too;
+         otherwise it's a .phodar.json or a report .html — read as text */
+      if (u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04) {
+        finish(unzipEntryText(u8, "sighting.phodar.json") || unzipEntryText(u8, "report.html"), unzipBinEntries(u8, "videos/"));
+      } else finish(new TextDecoder().decode(u8));
+    }).catch(() => setImpMsg("Couldn't read that file."));
+  };
   const real = sources.filter((s) => !isEmptySource(s));
   const fix = analyze(sources);
   const dot = (on, k, title) => <span key={k} title={title} style={{ display: "inline-block", width: 7, height: 7, borderRadius: 4, background: on ? "var(--teal)" : "var(--line)", marginRight: 4 }} />;
   return (
-    <div style={{ padding: "26px 14px 40px", position: "relative" }}>
+    <div style={{ padding: "26px 14px 40px", position: "relative" }}
+      /* DESKTOP: drop a share file (.phodar.json / report .html / sighting
+         .zip) anywhere on the home screen — same path as 📥 Import. Import
+         works in BOTH modes; it is how a reviewer loads a sighting. */
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        const f = e.dataTransfer?.files?.[0];
+        if (f) importShareFile(f);
+      }}>
       <HelpButton section="start" style={{ position: "absolute", top: "calc(10px + env(safe-area-inset-top))", right: 14, zIndex: 30 }} />
 
       {/* the shim fell back to memory (private browsing / site data blocked):
@@ -12816,23 +12956,7 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
       {!viewOnly && <button className="btn amber" style={{ width: "100%", padding: 16, fontSize: 15 }} onClick={onNew}>📸 New sighting</button>}
       <button className="btn" style={{ width: "100%", padding: 12, marginTop: 8 }} onClick={() => fileRef.current?.click()}>📥 Import a shared sighting</button>
       <input ref={fileRef} type="file" accept=".json,.html,.zip,application/json,text/html,application/zip" style={{ display: "none" }}
-        onChange={(e) => {
-          const f = e.target.files?.[0]; if (!f) return;
-          const finish = (tx, media) => {
-            const n = tx ? onImport(tx, media) : 0;
-            setImpMsg(n ? `✓ imported ${n} observer${n > 1 ? "s" : ""}${media && media.length ? ` + ${media.length} video file${media.length > 1 ? "s" : ""}` : ""}` : "Couldn't read that — expected a .phodar.json, a Phodar report, or a sighting .zip.");
-          };
-          f.arrayBuffer().then((buf) => {
-            const u8 = new Uint8Array(buf);
-            /* a sighting .zip (PK\x03\x04) → pull the data file out of it,
-               plus the observers' video files so the clips come back too;
-               otherwise it's a .phodar.json or a report .html — read as text */
-            if (u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04) {
-              finish(unzipEntryText(u8, "sighting.phodar.json") || unzipEntryText(u8, "report.html"), unzipBinEntries(u8, "videos/"));
-            } else finish(new TextDecoder().decode(u8));
-          }).catch(() => setImpMsg("Couldn't read that file."));
-          e.target.value = "";
-        }} />
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) importShareFile(f); }} />
       {impMsg && <div style={{ fontSize: 12, color: impMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, textAlign: "center" }}>{impMsg}</div>}
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
