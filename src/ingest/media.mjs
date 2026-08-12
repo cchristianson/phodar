@@ -11,9 +11,10 @@
 
 import { spawn, execFile } from "node:child_process";
 
-let _ff = null; // cached: { ffmpeg, ffprobe } paths or null
+let _ff = null, _ffMissAt = 0; // cache success forever; retry a miss after 60 s
 export async function ffmpegAvailable() {
-  if (_ff !== null) return _ff;
+  if (_ff) return _ff;
+  if (_ff === false && Date.now() - _ffMissAt < 60000) return false;
   const which = (bin) => new Promise((res) => {
     /* generous timeout — a cold container's first spawn can take seconds, and
        a false negative here disables ingestion for the process lifetime */
@@ -21,7 +22,24 @@ export async function ffmpegAvailable() {
   });
   const ffmpeg = await which("ffmpeg"), ffprobe = await which("ffprobe");
   _ff = ffmpeg && ffprobe ? { ffmpeg, ffprobe } : false;
+  if (!_ff) _ffMissAt = Date.now();
   return _ff;
+}
+
+/* remux a SPAN of a remote file straight to local disk without downloading the
+   whole thing: ffmpeg's http demuxer uses range requests, and -c copy means no
+   re-encode — a 60 s slice of a 750 MB 4K clip lands as its own ~300 MB of
+   bytes fetched, not the whole file. This is how clips over the download cap
+   get ingested: the caller trims to the sighting. Keyframe-aligned (copy
+   cuts on keyframes), which is fine — the span is analysis material, not an
+   exhibit edit. */
+export async function remuxSpanFromUrl(url, outPath, t0, t1) {
+  const ff = await ffmpegAvailable();
+  if (!ff) throw new Error("ffmpeg/ffprobe not available on this server — raw-media ingestion is disabled");
+  const span = Math.max(0.5, t1 - t0);
+  const args = ["-v", "error", "-ss", String(Math.max(0, t0)), "-i", url, "-t", String(span),
+    "-c", "copy", "-movflags", "+faststart", "-y", outPath];
+  await run(ff.ffmpeg, args, { timeout: 300000 });
 }
 
 const run = (bin, args, { input, maxOut = 512 * 1024 * 1024, timeout = 300000 } = {}) =>

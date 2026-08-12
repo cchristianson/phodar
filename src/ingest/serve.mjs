@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { probeMedia, decodeFrameAt, encodeJpeg } from "./media.mjs";
+import { probeMedia, decodeFrameAt, encodeJpeg, remuxSpanFromUrl } from "./media.mjs";
 import { parseMediaMeta } from "../exif.js";
 import { snapToObject } from "../video/postrack.js";
 
@@ -44,15 +44,32 @@ const privateHost = (host) => {
     || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h.endsWith(".local") || h.endsWith(".internal");
 };
 
-export async function ingestFromUrl(url, { filename } = {}) {
+export async function ingestFromUrl(url, { filename, trim } = {}) {
   let u;
   try { u = new URL(url); } catch (e) { throw new Error("not a valid URL"); }
   if (!/^https?:$/.test(u.protocol)) throw new Error("only http(s) URLs");
   if (privateHost(u.hostname) && process.env.PHODAR_INGEST_ALLOW_LOCAL !== "1") throw new Error("refusing to fetch private-network hosts");
+  /* TRIM-AT-INGEST: with {t0,t1}, ffmpeg remux-copies just that span straight
+     off the URL (http range requests, no re-encode) — a 60 s slice of a
+     750 MB 4K clip fetches only its own bytes. This is the route for clips
+     over the download cap: trim to the sighting. Span capped at 150 s. */
+  if (trim && isNum(trim.t0) && isNum(trim.t1)) {
+    const t0 = Math.max(0, +trim.t0), t1 = +trim.t1;
+    if (t1 - t0 <= 0) throw new Error("trim t1 must be after t0");
+    if (t1 - t0 > 150) throw new Error("trimmed span is capped at 150 s — trim tighter around the sighting");
+    const mediaId = "m" + id6() + id6();
+    const dir = path.join(ROOT, "media-" + mediaId);
+    mkdirSync(dir, { recursive: true });
+    const ext0 = extOf(filename || u.pathname, "");
+    const filePath = path.join(dir, "media." + (/^(mp4|mov|m4v)$/.test(ext0) ? ext0 : "mp4"));
+    try { await remuxSpanFromUrl(url, filePath, t0, t1); }
+    catch (e) { rmSync(dir, { recursive: true, force: true }); throw new Error("span fetch failed (" + e.message.slice(0, 200) + ") — the host may not support range requests; try a directly-downloadable URL"); }
+    return finishIngest(mediaId, dir, filePath, (filename || u.pathname.split("/").pop() || "media") + ` [${t0}-${t1}s]`);
+  }
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 180000);
   let resp;
-  try { resp = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "phodar-ingest/1" } }); }
+  try { resp = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 PhodarBot/1 (+https://phodar.app)", accept: "*/*" } }); }
   finally { clearTimeout(t); }
   if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${resp.statusText}`);
   const len = +resp.headers.get("content-length") || 0;
@@ -256,7 +273,7 @@ export async function fetchReport(url) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 30000);
   let resp;
-  try { resp = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "phodar-ingest/1", accept: "text/html,application/json" } }); }
+  try { resp = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 PhodarBot/1 (+https://phodar.app)", accept: "text/html,application/json;q=0.9,*/*;q=0.8", "accept-language": "en-US,en;q=0.9" } }); }
   finally { clearTimeout(t); }
   if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
   const ctype = String(resp.headers.get("content-type") || "");

@@ -7,6 +7,22 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Phase 2 field-test fixes** (first live run against a real
+  ufosighting.report record, driven by an independent AI client):
+  ffmpeg now installs via `nixpacks.toml` (the `railway.toml` nixpacksPlan
+  request didn't take on Railway; `/api/health` now reports `ingest:
+  true/false` so a deploy can be verified remotely, and an ffmpeg probe miss
+  is retried after 60 s instead of disabling ingestion for the process
+  lifetime). **Trim-at-ingest**: `ingest_media`/`POST /api/ingest` accept
+  `trim {t0,t1}` (span ≤150 s) and remux-copy just that span straight off the
+  URL via range requests — the route for 4K phone clips (both SeaTac
+  originals were 590–750 MB, over the 300 MB download cap). The media fetcher
+  and report scraper send a browser-class user-agent carrying an honest
+  `PhodarBot/1 (+https://phodar.app)` token (the bare bot UA got 403'd);
+  when a site still blocks the scraper, the AI reads the page itself and
+  passes the media URL — that path worked in the field test. analyze_session's
+  tool description now states the minimal session shape (the tester had to
+  reverse-engineer it).
 - **Phase 2 — raw-media ingestion: hand an AI a video/photo URL (or a report
   page) and get back a reviewable phodar sighting.** The server now runs the
   real measurement pipeline on raw media: EXIF/QuickTime metadata, object

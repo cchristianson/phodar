@@ -648,8 +648,9 @@ const MCP_TOOLS = [
     title: "Ingest raw media (photo or video) by URL",
     description: "Phase-2 entry point: fetch a sighting photo/video from a URL, probe it, read its EXIF/QuickTime metadata (GPS, capture time, bearing, lens FOV), and return keyframe IMAGES so you can see the footage. Look at the keyframes, identify the anomalous object, then inspect_frame to confirm the spot and auto_measure to run the measurement pipeline. Media is held ~2 hours. Requires ffmpeg on the server.",
     inputSchema: { type: "object", properties: {
-      url: { type: "string", description: "Direct http(s) URL of the media file (≤300 MB). For a report page, call fetch_report first to find the media URL." },
+      url: { type: "string", description: "Direct http(s) URL of the media file (≤300 MB as a whole download). For a report page, call fetch_report first to find the media URL." },
       filename: { type: "string", description: "Optional filename hint (helps container detection)." },
+      trim: { type: "object", description: "For LONG/LARGE clips (a 4K phone video easily tops 500 MB): fetch only this span via range requests — {t0, t1} seconds, span ≤150 s. Trim to where the object is visible; this is the route past the size cap, and it makes every later step faster too.", properties: { t0: { type: "number" }, t1: { type: "number" } } },
     }, required: ["url"] },
   },
   {
@@ -696,7 +697,7 @@ const MCP_TOOLS = [
   {
     name: "analyze_session",
     title: "Analyze a phodar session",
-    description: "Run the full phodar analysis pipeline on a session's measurements (.phodar.json content): two-witness triangulated fix, visibility- and clock-aware trajectory stereo, dense two-video stereo, and — when a drone flight log is supplied — ground-truth calibration grades and per-witness clock checks. Returns a structured verdict plus a plain-text summary. Honest by design: incomplete witnesses and quality caveats are named, never hidden.",
+    description: "Run the full phodar analysis pipeline on a session's measurements (.phodar.json content): two-witness triangulated fix, visibility- and clock-aware trajectory stereo, dense two-video stereo, and — when a drone flight log is supplied — ground-truth calibration grades and per-witness clock checks. Returns a structured verdict plus a plain-text summary. Honest by design: incomplete witnesses and quality caveats are named, never hidden. Session shape (normally you feed an exported file, not hand-build one): {sources:[{lat, lon, alt?, whenMs?, fovH?, A:{az, el} (the committed sight-line, degrees true / above horizon), B?, track?, posePath?, objPath?}], est?}.",
     inputSchema: {
       type: "object",
       properties: {
@@ -752,7 +753,7 @@ function mcpToolCall(name, args) {
   }
   if (name === "ingest_media") {
     return (async () => {
-      const r = await ingestRef.ingestFromUrl(String(args?.url || ""), { filename: args?.filename });
+      const r = await ingestRef.ingestFromUrl(String(args?.url || ""), { filename: args?.filename, trim: args?.trim });
       const p = r.probe;
       return {
         ok: true, mediaId: r.mediaId,
@@ -863,7 +864,7 @@ async function apiIngest(req, res, u) {
       for await (const c of req) { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 1e6) return json(res, 413, { error: "JSON body too large" }); }
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch (e) { return json(res, 400, { error: "bad JSON" }); }
       try {
-        const r = await ingestRef.ingestFromUrl(String(body.url || ""), { filename: body.filename });
+        const r = await ingestRef.ingestFromUrl(String(body.url || ""), { filename: body.filename, trim: body.trim });
         return json(res, 200, { mediaId: r.mediaId, probe: r.probe, meta: r.meta, keyframeTimes: r.keyframes.map((k) => k.t) });
       } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
     }
@@ -1004,7 +1005,11 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/winds") return await apiWinds(u.searchParams, res);
     if (u.pathname === "/api/airports") return await apiAirports(u.searchParams, res);
-    if (u.pathname === "/api/health") return json(res, 200, { ok: true, cacheMB: Math.round(sliceCache.size / 1048576) });
+    if (u.pathname === "/api/health") {
+      let ingest = false;
+      try { const m = await import("../src/ingest/media.mjs"); ingest = !!(await m.ffmpegAvailable()); } catch (e) { }
+      return json(res, 200, { ok: true, ingest, cacheMB: Math.round(sliceCache.size / 1048576) });
+    }
     /* static from dist/ */
     let fp = path.normalize(path.join(DIST, decodeURIComponent(u.pathname)));
     if (!fp.startsWith(DIST)) { res.writeHead(403); return res.end(); }

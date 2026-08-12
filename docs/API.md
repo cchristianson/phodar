@@ -79,13 +79,18 @@ up-angle, witness text). Every defaulted value is listed in
 `source.ingest.guessed`; the sky placement is carried as approximate until
 refined in the app.
 
-Requires ffmpeg on the server (railway.toml installs it; without it these
-endpoints answer with a named error). Media is held ~2 hours; jobs are
+Requires ffmpeg on the server (nixpacks.toml installs it; fallback: set the
+service variable `NIXPACKS_APT_PKGS=ffmpeg`). `GET /api/health` reports
+`ingest: true/false` so you can verify a deploy. Without ffmpeg these
+endpoints answer with a named error. Media is held ~2 hours; jobs are
 in-memory on the single dyno (a redeploy forgets them — re-run).
 
 ```
-POST /api/ingest        {url, filename?} JSON — or the raw media bytes
+POST /api/ingest        {url, filename?, trim?:{t0,t1}} JSON — or raw bytes
                         → { mediaId, probe, meta, keyframeTimes }
+                        trim fetches ONLY that span off the URL (range
+                        requests, no re-encode; span ≤150 s) — the route for
+                        4K phone clips over the 300 MB download cap
 POST /api/measure       {mediaId, context, object:{t,fx,fy,wfrac?}, track?}
                         → { jobId, poll }
 GET  /api/job/<id>                 → job status (stage, %, then summary)

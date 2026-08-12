@@ -1,0 +1,11 @@
+# nixpacks reads this natively — the canonical way to add apt packages to the
+# build image. (railway.toml's [build.nixpacksPlan] carries the same request,
+# but a field deploy showed it not taking effect; this file is authoritative
+# for nixpacks itself. Belt and braces: if BOTH fail, set the service
+# variable NIXPACKS_APT_PKGS=ffmpeg on Railway.)
+#
+# ffmpeg powers phase-2 raw-media ingestion (decode/probe/keyframes/remux).
+# The server detects its absence and disables ingestion with a named error,
+# so a build without it still serves everything else.
+[phases.setup]
+aptPkgs = ["ffmpeg"]
