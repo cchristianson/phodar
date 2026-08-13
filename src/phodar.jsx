@@ -802,7 +802,7 @@ const HELP_SECTIONS = [
         { t: "☁ cloud", d: "Shades the sky region of the dome grey in proportion to the % cloud cover at the sighting time (Open-Meteo, low/mid/high) — a light haze for scattered cloud through to solid grey for overcast — plus the estimated cloud base. It represents how overcast it was (not individual clouds). A low deck also caps a below-cloud object's range & size (see the size tool)." },
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
-        { t: "🛣 roads", d: "OSM road centerlines within ~2.5 km drawn in TRUE PERSPECTIVE — each point takes its real ground elevation from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: a photo shot on or near a road aligns by laying its road onto the drawn centerline, the way a ridge photo snaps to the skyline. Major roads draw brighter than residential/service lanes; the same Camera height as buildings applies. They also appear on the position step's horizon strip." },
+        { t: "🛣 roads", d: "OSM roads within ~2.5 km drawn as TRUE-PERSPECTIVE RIBBONS — real roadway width (edge lines converge to the actual vanishing point), a dashed center line on highways, elevations from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: lay the photo's road onto the drawn ribbon the way a ridge photo snaps to the skyline. The 📷 camera height row (appears with the layer) matters here: the near road's shape depends on your eye height — standing ≈1.6 m, in a car ≈1.2 m — nudge until the ribbon sits on the pavement. Roads also appear on the position step's horizon strip." },
       ]},
     ],
     tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
@@ -4963,7 +4963,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the observer (terr.h0). GPS altitude wobbles ±5 m, so we only auto-elevate
      when the difference is clearly real (> 3 m) and let the user nudge it. */
   const autoCamH = (isNum(source?.meta?.alt) && terr?.h0 != null) ? +source.meta.alt - terr.h0 : null;
-  const camH = isNum(source?.camH) ? clampN(+source.camH, 1.6, 300)
+  /* floor 1.0 m, not eye height: a windshield shot (this app's bread and
+     butter) has the camera ≈1.2 m up, and with the road ribbons the
+     difference is visible in the near-field perspective */
+  const camH = isNum(source?.camH) ? clampN(+source.camH, 1.0, 300)
     : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
   /* 🛣 road RIBBONS — left/right edge polylines at the road's real width,
      an asphalt fill between them (per-segment quads, so the horizon and
@@ -8001,14 +8004,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             🛣 roads unavailable — {/busy|timed|502/i.test(roadsD.err) ? "Overpass was busy. Toggle 🛣 off/on to retry." : roadsD.err}
           </div>
         )}
-        {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (() => {
-          const step = isImperialUnits() ? 0.3048 : 1, stepLbl = isImperialUnits() ? "1 ft" : "1 m";
+        {((bldgOn && bldg?.buildings && bldg.buildings.shown > 0) || (roadsOn && roadsD?.polys && roadsD.shown > 0)) && (() => {
+          /* the camera-height nudge serves BOTH ground-anchored layers —
+             rooftops and road ribbons scale with the same eye. Finer step
+             (0.2 m / 1 ft) and a 1.0 m floor: a windshield shot sits ≈1.2 m,
+             visibly different from standing eye height in the near road. */
+          const step = isImperialUnits() ? 0.3048 : 0.2, stepLbl = isImperialUnits() ? "1 ft" : "0.2 m";
           return (
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 10, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 3, pointerEvents: "auto" }}>
             <span style={{ color: "rgba(255,178,74,0.9)" }}>📷 camera ≈ {fmtLenShort(camH)} up {camH > 2 ? `(≈${storeys(camH)} fl)` : ""}</span>
-            <span>{isNum(source?.camH) ? "(set by hand)" : autoCamH != null ? "(GPS alt − terrain — nudge if rooftops sit wrong)" : "(assumed eye height — no GPS altitude in photo)"}</span>
-            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH - step, 1.6, 300).toFixed(2) })}>−{stepLbl}</button>
-            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH + step, 1.6, 300).toFixed(2) })}>+{stepLbl}</button>
+            <span>{isNum(source?.camH) ? "(set by hand)" : autoCamH != null ? "(GPS alt − terrain — nudge if it sits wrong)" : "(assumed eye height — in a car try ≈1.2 m)"}</span>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH - step, 1.0, 300).toFixed(2) })}>−{stepLbl}</button>
+            <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: +clampN(camH + step, 1.0, 300).toFixed(2) })}>+{stepLbl}</button>
             {isNum(source?.camH) && autoCamH != null && <button className="btn sm" style={{ padding: "1px 8px", pointerEvents: "auto" }} onClick={() => update({ camH: null })}>auto</button>}
           </div>
           );
@@ -9408,7 +9415,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
        as a converging wedge here too */
     const drawRoads = (Ymap, alpha) => {
       if (!roadSil || !roadSil.polys) return;
-      const eyeAbs = Math.max(0, roadSil.h0) + Math.max(1.6, camH);
+      const eyeAbs = Math.max(0, roadSil.h0) + Math.max(1.0, camH); // 1.0 floor: windshield shots sit ≈1.2 m
       ctx.lineCap = "round";
       const line = (vv, colr, wpx, dash) => {
         ctx.strokeStyle = colr; ctx.lineWidth = wpx; ctx.setLineDash(dash || []);
@@ -9443,7 +9450,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
       ctx.fillStyle = sky; ctx.fillRect(0, 0, cssW, cssH);
       let credit = false;
       if (dem) {
-        const eye = Math.max(0, dem.h0) + Math.max(1.6, camH);
+        const eye = Math.max(0, dem.h0) + Math.max(1.0, camH); // 1.0 floor matches the dome's camera-height clamp
         const mosF = imgMos ? imgMos[0] : null, mosC = imgMos ? imgMos[1] : null;
         const colStep = 2, K = 0.13, R = 6371000;
         for (let px = 0; px <= cssW; px += colStep) {

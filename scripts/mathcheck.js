@@ -3450,6 +3450,16 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(spanAt(pN, 0), wantSpan0, 0.2, `roads: ribbon width at the feet = 2·atan(w/2 ÷ d) (${wantSpan0.toFixed(1)}°)`);
   ok(spanAt(pN, 0) > 8 * spanAt(pN, pN.v.length - 1), "roads: edges converge with distance (true perspective)");
 
+  // NEAR-FIELD GROUND LOCK: a DEM-grid wobble at 60 m must not float the
+  // road the observer stands on — near gz locks to the observer's ground,
+  // the real DEM takes over beyond the blend ramp
+  const noisy = (e, n) => (Math.hypot(e, n) < 100 ? 108 : 96);
+  const polysN = roadSightlines(parsed, noisy, 100, { eyeM: 1.6 });
+  const pNN = polysN.find((p) => p.major);
+  const nearV = pNN.v.find((p) => p.d > 40 && p.d < 90);
+  approx(nearV.gz, 100, 0.5, "roads: near-field DEM wobble locked to the observer's ground");
+  approx(pNN.v[pNN.v.length - 1].gz, 96, 0.1, "roads: real DEM elevation beyond the lock ramp");
+
   // a 40 m hill spanning 800–1000 m due east hides the road beyond it
   const hill = (e, n) => (e > 800 && e < 1000 && Math.abs(n) < 200 ? 140 : 100);
   const polysH = roadSightlines(parsed, hill, 100, { eyeM: 1.6 });

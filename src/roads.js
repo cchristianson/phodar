@@ -118,12 +118,22 @@ export function roadSightlines(parsed, sample, h0, opts) {
     for (var m = Math.max(60, d * 0.08); m < d * 0.93; m *= 1.3) {
       var h = sample(sa * m, ca * m);
       if (h == null) continue;
-      var elT = Math.atan2(Math.max(0, h) - eyeAbs - (m * m * (1 - K_REFR)) / (2 * RE), m) * R2D;
+      /* Ground-lock the march but only ever DOWNWARD: a near-field DEM
+         wobble above eye level would otherwise wall off everything behind
+         it (the terrain.js foreground-berm lesson) — while RAISING samples
+         to h0 would fabricate an apron that erases a genuinely visible
+         valley road seen from a ridge. min() kills berms, keeps valleys. */
+      var h0m = Math.max(0, h);
+      var hB = Math.min(h0m, gzBlend(h0m, m));
+      var elT = Math.atan2(hB - eyeAbs - (m * m * (1 - K_REFR)) / (2 * RE), m) * R2D;
       if (elT > elDeg + 0.05) return true;
     }
     return false;
   };
-  /* near-field subdivision: split long segments while either end is close */
+  /* near-field subdivision: split long segments while either end is close.
+     Perspective magnifies close range hard — the nearest vertex sets where
+     the drawn ribbon STOPS at the bottom of the frame, so the near road is
+     cut to ~6 m steps and allowed to run in to a couple of metres. */
   var densify = function (pts) {
     var out = [];
     for (var i = 0; i < pts.length; i++) {
@@ -132,12 +142,23 @@ export function roadSightlines(parsed, sample, h0, opts) {
       if (!b) break;
       var dNear = Math.min(Math.hypot(a[0], a[1]), Math.hypot(b[0], b[1]));
       var segL = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (dNear < 300 && segL > 20) {
-        var steps = Math.min(16, Math.floor(segL / 10));
+      if (dNear < 400 && segL > 12) {
+        var steps = Math.min(24, Math.floor(segL / 6));
         for (var s = 1; s < steps; s++) out.push([a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps]);
       }
     }
     return out;
+  };
+  /* NEAR-FIELD GROUND LOCK: the DEM is a ~20 m grid — at 50 m out a one-cell
+     wobble is metres of height, which visibly floats or sinks the very road
+     the observer is STANDING ON. But that road IS the observer's ground, so
+     the near field is locked to h0 and blended into the real DEM with
+     distance (full DEM beyond ~380 m, where a metre is sub-line-width). */
+  var lockA = (opts && opts.nearLockM) || 120, lockB = (opts && opts.farLockM) || 380;
+  var gzBlend = function (gz, d) {
+    var t = (d - lockA) / (lockB - lockA);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return h0 * (1 - t) + gz * t;
   };
   var sight = function (e, n, gz) {
     var d = Math.hypot(e, n);
@@ -170,9 +191,10 @@ export function roadSightlines(parsed, sample, h0, opts) {
     for (var j = 0; j < pts.length; j++) {
       var e = pts[j][0], n = pts[j][1];
       var d = Math.hypot(e, n);
-      if (d < 2.5) { flush(); continue; }            // under the camera — azimuth undefined
+      if (d < 1.5) { flush(); continue; }            // under the camera — azimuth undefined
       var gz = sample ? sample(e, n) : null;
       if (gz == null) gz = h0;
+      gz = gzBlend(gz, d);
       var azR = Math.atan2(e, n);
       var el = Math.atan2(Math.max(0, gz) - eyeAbs - (d * d * (1 - K_REFR)) / (2 * RE), d) * R2D;
       if (occluded(azR, d, el)) { flush(); continue; }

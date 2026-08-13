@@ -6,6 +6,31 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **Road ribbons: camera height factored in properly + near-field ground
+  lock** (field ask: "match true perspective even better; make sure
+  camera elevation/height off ground is factored in"). Three fixes:
+  (1) the 📷 camera-height nudge row only appeared with the buildings
+  layer — it now shows whenever roads OR buildings are on (one eye
+  height scales both), with a finer 0.2 m step and the floor lowered
+  from 1.6 m to 1.0 m, because a windshield shot sits ≈1.2 m and at
+  ribbon scale the difference is visible in the near road (the hint now
+  says so). The horizon strip's two eye clamps got the same 1.0 m floor.
+  (2) NEAR-FIELD GROUND LOCK: the DEM is a ~20 m grid, and one cell of
+  wobble at 50 m is metres of height — visibly floating or sinking the
+  very road the observer stands on. That road IS the observer's ground,
+  so near-field elevations lock to h0 and blend into the real DEM by
+  ~380 m, where a metre is sub-line-width. (3) The occlusion march sees
+  the same lock but only ever LOWERED — a noise berm above eye level
+  would otherwise wall off everything behind it (the terrain.js
+  foreground-berm lesson), while raising samples would fabricate an
+  apron that erases a genuinely visible valley road seen from a ridge
+  road; min() kills berms and keeps valleys. Near segments also densify
+  finer (~6 m inside 400 m, run-in to ~1.5 m) so the ribbon reaches the
+  bottom of the frame. All mathcheck-asserted (near wobble locked to
+  ground, real DEM beyond the ramp, berm-immune occlusion with the hill
+  case intact); browser regression passes.
+
 ### Added
 - **🛣 Roads are RIBBONS now, not threads** (field ask on the first
   render: "the road you are on should look big — accurate width, follow
