@@ -611,6 +611,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   (per.ownSep; a hover makes the joint-instant match undersell a good
   sight-line — obs 1 was 0.19° at its own time vs 1.24° joint).
 - **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
+- **🛣 Roads overlay: DONE** (`src/roads.js` + `/api/roads` Overpass proxy):
+  OSM centerlines within ~2.6 km in TRUE perspective — vertex elevations
+  from the same cached DEM tiles as the skyline, derive-time ray-march
+  occlusion (hills hide the stretches behind them), flat-ground fallback
+  flagged when the DEM is unreachable. One derivation feeds the dome
+  (🛣 toggle, camera-height-aware like buildings), the world-locked export,
+  and the position step's horizon strip (both modes). The flat-terrain
+  azimuth anchor: align a road shot by laying the photo's road on its
+  drawn centerline. Pure parse/projection mathcheck-asserted.
 - **OSM Overpass**: named peaks + towers near the observer → labeled DEM
   skyline and landmark azimuth anchors. **Forward geocoding is DONE** —
   PositionEditor's "find your spot by name" search runs the **US Census

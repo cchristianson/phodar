@@ -7,6 +7,31 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🛣 Roads overlay — OSM road centerlines in true perspective** (field
+  ask: a highway shot straight down the centerline had nothing to align
+  against; a road is the best azimuth anchor FLAT terrain has, where no
+  ridge exists to snap to). New pure module `src/roads.js` + Overpass
+  proxy `/api/roads` (mirror-raced + cached like /api/buildings):
+  centerlines within ~2.6 km are clipped, simplified and
+  nearest-first-budgeted, then each vertex takes its REAL ground
+  elevation from the same cached DEM tiles the terrain skyline uses
+  (same curvature+refraction constant, same sea-level clamp) and is
+  ray-marched against the DEM so hills genuinely hide the stretches
+  behind them (approximate: computed at derive time with the default
+  eye). Drawn in three places from one derivation: the sky-view dome
+  (new 🛣 header toggle; slate-white polylines, major roads brighter,
+  distance-faded like the ridge haze; the camera-height nudge moves
+  roads and rooftops together), the world-locked video export (same
+  layer, honoring the toggle), and the position step's horizon strip
+  (both profile and 3D-vista modes — aim the viewing-direction ray down
+  the photo's own road). DEM unreachable → flat-ground elevations at
+  the observer's height, flagged honestly in the status line. Pure
+  parse/projection/occlusion mathcheck-asserted against synthetic truth
+  (ENU conversion, flat-plane el = −atan(eye/d) with curvature, a hill
+  occluding the far stretch while the near stretch survives);
+  browser-verified end-to-end with a mocked Overpass answer (chip
+  count, status line, dome polylines). Manual updated (sky-layers 🛣
+  item + position-step ⛰ item).
 - **📲 PWA install hint on the home screen** (Apple devices only —
   Android/desktop Chrome surface their own install prompt; Apple never
   does). iPhone/iPad get the Share → Add to Home Screen steps, Mac

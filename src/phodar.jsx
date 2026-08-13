@@ -37,6 +37,7 @@ import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
+import { predictedRoadDirs, roadElOf } from "./roads.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -671,7 +672,7 @@ const HELP_SECTIONS = [
         { t: "🛰 sat / 🗺 street", d: "Toggle between satellite imagery and street map (label shows the mode you'll switch to). +/− zoom." },
       ]},
       { h: "⛰ Horizon preview (docked under the map)", items: [
-        { t: "⛰ toggle", d: "Draws the terrain skyline — plus OSM buildings where they're mapped — exactly as it would look FROM YOUR PIN, in a strip along the bottom of the map. Drag the pin until that profile matches your photo's ridgeline: it's the quickest way to home in on where a shot was actually taken. Trees are not in the elevation data, so a tree line won't appear." },
+        { t: "⛰ toggle", d: "Draws the terrain skyline — plus OSM buildings and nearby ROADS where they're mapped — exactly as it would look FROM YOUR PIN, in a strip along the bottom of the map. Drag the pin until that profile matches your photo's ridgeline (or its road lines up with the drawn centerline): it's the quickest way to home in on where a shot was actually taken. Trees are not in the elevation data, so a tree line won't appear." },
         { t: "▲ 3D / ▤ profile", d: "Switches the strip between a flat elevation profile and a 3D vista — the same terrain ray-marched into a perspective view and textured with satellite imagery once it loads. Your viewing direction and up-angle both steer it, so it previews what the sky view will show." },
         { t: "📷 hold", d: "Press and HOLD to overlay your photo (for a video, the alignment frame) across the dashed camera-frame box, so you can compare its skyline against the predicted one; release and the prediction comes back. Momentary by design — it's a check, not a mode." },
       ]},
@@ -801,6 +802,7 @@ const HELP_SECTIONS = [
         { t: "☁ cloud", d: "Shades the sky region of the dome grey in proportion to the % cloud cover at the sighting time (Open-Meteo, low/mid/high) — a light haze for scattered cloud through to solid grey for overcast — plus the estimated cloud base. It represents how overcast it was (not individual clouds). A low deck also caps a below-cloud object's range & size (see the size tool)." },
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
+        { t: "🛣 roads", d: "OSM road centerlines within ~2.5 km drawn in TRUE PERSPECTIVE — each point takes its real ground elevation from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: a photo shot on or near a road aligns by laying its road onto the drawn centerline, the way a ridge photo snaps to the skyline. Major roads draw brighter than residential/service lanes; the same Camera height as buildings applies. They also appear on the position step's horizon strip." },
       ]},
     ],
     tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
@@ -4317,6 +4319,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     return () => { dead = true; };
   }, [open, bldgOn, hasPos, LAT, LNG]);
 
+  /* 🛣 roads (opt-in) — near-field OSM centerlines in true perspective, the
+     azimuth anchor for flat terrain where no ridge exists (field ask: a
+     highway shot straight down the centerline). Vertex elevations come from
+     the same cached DEM tiles as the skyline; hills occlude approximately
+     (derive-time ray march). */
+  const [roadsOn, setRoadsOn] = useState(false);
+  const [roadsD, setRoadsD] = useState(null); // {polys, h0, shown, n, flat} | {err} | null
+  useEffect(() => {
+    if (!open || !roadsOn || !hasPos) { setRoadsD(null); return; }
+    let dead = false;
+    setRoadsD(null);
+    predictedRoadDirs(LAT, LNG)
+      .then((r) => { if (!dead) setRoadsD(r); })
+      .catch((e) => { if (!dead) setRoadsD({ err: String(e?.message || e) }); });
+    return () => { dead = true; };
+  }, [open, roadsOn, hasPos, LAT, LNG]);
+
   /* winds aloft (opt-in) — the balloon test made visual: a vertical profile of
      which way, and how fast, the wind pushes at each altitude AT THE SIGHTING
      TIME. If an object drifted with one of these, it's likely a balloon. */
@@ -4946,6 +4965,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const autoCamH = (isNum(source?.meta?.alt) && terr?.h0 != null) ? +source.meta.alt - terr.h0 : null;
   const camH = isNum(source?.camH) ? clampN(+source.camH, 1.6, 300)
     : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
+  /* 🛣 road centerlines — sight-line polylines through the same projection,
+     elevation re-derived live from the stored {az,d,gz} so the camera-height
+     nudge moves roads and rooftops together. Opacity fades with the road's
+     nearest distance (the ridge-haze rule); major roads draw brighter. */
+  const roadPaths = (roadsOn && roadsD?.polys && !cameraOn) ? (() => {
+    const eyeAbs = Math.max(0, roadsD.h0) + camH;
+    const out = [];
+    for (const poly of roadsD.polys) {
+      const pts = poly.v.map((p) => {
+        const da = ((p.az - effAz + 540) % 360) - 180;
+        return Math.abs(da) <= 130 ? project(effAz + da, roadElOf(p, eyeAbs)) : { inFront: false };
+      });
+      const d = gpath(pts);
+      if (!d) continue;
+      const t = clampN((poly.dMin - 60) / 2400, 0, 1);
+      out.push({ d, o: (poly.major ? 0.95 : 0.55) * (1 - 0.55 * t), major: poly.major });
+    }
+    return out;
+  })() : [];
   const bldgBoxes = (bldgOn && bldg?.boxes && !cameraOn) ? (() => {
     const K = 0.13, eye = camH;
     const xy = (p) => (p[0] * 100).toFixed(2) + " " + (p[1] * 100).toFixed(2);
@@ -6744,6 +6782,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const tl = P(ce.az, skylineElAt(terr.els, ce.az));
           if (tl) text("TERRAIN", tl[0], tl[1] - 6 * lw, ridgeCol(0.95), Math.max(8, lfs - 1));
         }
+        /* 🛣 road centerlines — same sight-line polylines as the dome layer */
+        if (roadsOn && roadsD?.polys) {
+          const eyeAbs = Math.max(0, roadsD.h0) + camH;
+          for (const rp of roadsD.polys) {
+            const t = clampN((rp.dMin - 60) / 2400, 0, 1);
+            poly(rp.v.map((p) => { const da = ((p.az - ce.az + 540) % 360) - 180; return Math.abs(da) <= span + 10 ? P(ce.az + da, roadElOf(p, eyeAbs)) : null; }),
+              `rgba(225,232,245,${((rp.major ? 0.95 : 0.55) * (1 - 0.55 * t)).toFixed(2)})`, (rp.major ? 1.5 : 1) * lw);
+          }
+        }
         /* named peaks that sit on the drawn silhouette (top 8 by height, like the dome) */
         if (peaksOn && peakMarks.length) {
           const inv = peakMarks.map((pk) => ({ pk, q: P(pk.az, pk.elv) })).filter((c) => c.q && c.q[0] > 0.01 * OUT_W && c.q[0] < 0.99 * OUT_W && c.q[1] > -0.02 * OUT_H && c.q[1] < 1.02 * OUT_H)
@@ -7285,6 +7332,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
+          {roadPaths.map((r, i) => <path key={"rd" + i} d={r.d} fill="none" stroke={`rgba(225,232,245,${r.o.toFixed(2)})`} strokeWidth={r.major ? "1.7" : "1.1"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
           {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
           {bldgBoxes.map((b, i) => <path key={"bx" + i} d={b.d} fill="none" stroke={b.faint ? "rgba(255,178,74,0.5)" : "rgba(255,178,74,0.95)"} strokeWidth={b.faint ? "1" : "1.4"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
@@ -7858,6 +7906,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </button>
           )}
           {hasPos && (
+            <button className="btn sm" title="Roads — OSM road centerlines within ~2.5 km drawn in true perspective (elevations from the terrain grid; hills hide them approximately). The azimuth anchor for flat terrain: line the photo's road up with its drawn centerline."
+              style={{ background: "rgba(15,23,42,.7)", color: !roadsOn ? "var(--dim)" : roadsD?.err ? "var(--amber)" : "rgba(225,232,245,0.95)" }}
+              onClick={() => setRoadsOn((v) => !v)}>
+              🛣 {roadsOn ? (roadsD?.err ? "?" : !roadsD ? <Spin /> : `${roadsD.shown} roads`) : "roads"}
+            </button>
+          )}
+          {hasPos && (
             <button className="btn sm" title="Cloud cover at the sighting time (Open-Meteo) — a grey sky shading scaled by % cover (low/mid/high) on the dome, plus the estimated cloud base. A low deck caps a below-cloud object's range & size."
               style={{ background: "rgba(15,23,42,.7)", color: !cloudOn ? "var(--dim)" : wxSky?.err ? "var(--amber)" : "#cfe0ee" }}
               onClick={() => setCloudOn((v) => !v)}>
@@ -7901,6 +7956,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               : bldg.buildings.shown === 0
                 ? `🏙 ${bldg.buildings.n} footprint${bldg.buildings.n === 1 ? "" : "s"} nearby but none in the ${fmtLenShort(12)}–${fmtLenShort(BLDG_RADIUS_M)} draw range`
                 : `🏙 ${bldg.buildings.shown} building${bldg.buildings.shown === 1 ? "" : "s"}${bldg.buildings.n > bldg.buildings.shown ? ` (nearest of ${bldg.buildings.n})` : ""} — ${bldg.buildings.known + bldg.buildings.est} extruded (real height)${bldg.buildings.assumed ? `, ${bldg.buildings.assumed} as ground footprints (OSM has no height)` : ""}`}
+          </div>
+        )}
+        {roadsOn && roadsD?.polys && (
+          <div style={{ fontSize: 10, color: roadsD.shown === 0 ? "var(--amber)" : "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {roadsD.shown === 0
+              ? `🛣 no mapped roads within ~2.5 km of ${LAT.toFixed(3)}, ${LNG.toFixed(3)} — either OSM has none here, or Overpass was busy. Toggle 🛣 off/on to retry.`
+              : `🛣 ${roadsD.shown} road${roadsD.shown === 1 ? "" : "s"}${roadsD.n > roadsD.shown ? ` (nearest of ${roadsD.n})` : ""} in true perspective${roadsD.flat ? " · terrain grid unreachable — flat-ground elevations" : ""}`}
+          </div>
+        )}
+        {roadsOn && roadsD?.err && (
+          <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            🛣 roads unavailable — {/busy|timed|502/i.test(roadsD.err) ? "Overpass was busy. Toggle 🛣 off/on to retry." : roadsD.err}
           </div>
         )}
         {bldgOn && bldg?.buildings && bldg.buildings.shown > 0 && (() => {
@@ -9220,6 +9287,22 @@ function PositionEditor({ src, update, others, viewOnly }) {
     }, 600);
     return () => { dead = true; clearTimeout(id); };
   }, [horizOn, posDone, src.lat, src.lon]); // eslint-disable-line
+  /* 🛣 roads on the strip — the same cached sight-line derivation the dome
+     uses, drawn in both modes: aiming the viewing-direction ray down the
+     photo's own road is the flat-terrain equivalent of matching a ridge.
+     Fails silently to "no roads drawn" (rural gaps and Overpass hiccups
+     look identical, and the strip is fine either way). */
+  const [roadSil, setRoadSil] = useState(null);
+  useEffect(() => {
+    if (!horizOn || !posDone) { setRoadSil(null); return; }
+    let dead = false;
+    const id = setTimeout(() => {
+      predictedRoadDirs(+src.lat, +src.lon)
+        .then((r) => { if (!dead) setRoadSil(r); })
+        .catch(() => { if (!dead) setRoadSil(null); });
+    }, 700);
+    return () => { dead = true; clearTimeout(id); };
+  }, [horizOn, posDone, src.lat, src.lon]); // eslint-disable-line
   useEffect(() => {
     const cv = horizCvRef.current;
     if (!horizOn || !cv || !horiz || !horiz.els) return;
@@ -9288,6 +9371,27 @@ function PositionEditor({ src, update, others, viewOnly }) {
       const t = clampN((dist - 50) / 600, 0, 1);
       return `rgba(${Math.round(235 - 105 * t)},${Math.round(160 - 75 * t)},${Math.round(50 - 30 * t)},${a})`;
     };
+    /* 🛣 road centerlines — the dome's derived sight-lines mapped into the
+       strip's az→x / el→y window; slate-white so they read as road markings
+       against both the vista texture and the flat profile */
+    const drawRoads = (Ymap, alpha) => {
+      if (!roadSil || !roadSil.polys) return;
+      const eyeAbs = Math.max(0, roadSil.h0) + Math.max(1.6, camH);
+      ctx.lineCap = "round";
+      for (const rp of roadSil.polys) {
+        ctx.strokeStyle = `rgba(225,232,245,${((rp.major ? 0.9 : 0.5) * alpha).toFixed(2)})`;
+        ctx.lineWidth = rp.major ? 1.6 : 1;
+        ctx.beginPath(); let pen = false;
+        for (const p of rp.v) {
+          const rel = ((p.az - b + 540) % 360) - 180;
+          if (Math.abs(rel) > span / 2 + 10) { pen = false; continue; }
+          const x = X(b + rel), y = Ymap(roadElOf(p, eyeAbs));
+          pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true;
+        }
+        ctx.stroke();
+      }
+      ctx.lineCap = "butt";
+    };
     if (horiz3d) {
       /* ---------- ▲ 3D VISTA — per-column ray march through the DEM,
          satellite-textured when the imagery mosaic has loaded. Same
@@ -9339,6 +9443,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
         ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
         ctx.fillStyle = "#243447"; ctx.fill();
       }
+      drawRoads(Y2, 1);
       /* buildings: solid distance-shaded slabs, near over far, with a roof
          catch-light so stacked boxes separate */
       for (const bg of bldgs) {
@@ -9380,6 +9485,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
     ctx.strokeStyle = "rgba(64,199,178,.95)"; ctx.lineWidth = 1.6; ctx.stroke();
     ctx.lineTo(cssW, cssH); ctx.lineTo(0, cssH); ctx.closePath();
     ctx.fillStyle = "rgba(64,199,178,.14)"; ctx.fill();
+    drawRoads(Y, 0.85);
     /* building silhouettes — the same far→near, distance-shaded boxes as the
        vista, translucent here so the terrain line stays readable through them */
     ctx.lineWidth = 1;
@@ -9403,7 +9509,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
        terrain line (and fooled the harness's pixel scan the same way) */
     ctx.fillStyle = "#8aa"; ctx.textAlign = "left";
     ctx.fillText(`peak ${pk.toFixed(1)}°`, clampN(X(pkAz) + 4, 2, cssW - 46), clampN(Y(pk) - 4, 9, cssH - 14));
-  }, [horizOn, horiz, bearing, fovH, fovV, tilt, bldgSil, camH, horiz3d, dem, imgMos, peek]); // eslint-disable-line
+  }, [horizOn, horiz, bearing, fovH, fovV, tilt, bldgSil, roadSil, camH, horiz3d, dem, imgMos, peek]); // eslint-disable-line
   /* forward geocode by place name so no one has to source coordinates
      elsewhere — Nominatim/OSM, CORS-open, no key. Pin the map afterward
      to refine to the exact standing spot. */

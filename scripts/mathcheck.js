@@ -3414,5 +3414,42 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(vids.length === 1 && vids[0].bytes.length === 300 && vids[0].bytes[299] === media[299], "zip: binary entry roundtrips under its prefix");
 }
 
+// --- 🛣 road overlay (src/roads.js) — Overpass parse → ENU polylines →
+// sight-lines with DEM elevations + approximate occlusion. Synthetic truth:
+// a straight primary road due north on a flat plane (el must match
+// -atan(eye/d) with the curvature term), plus a hill that must hide the far
+// stretch of an east-running residential road while the near stretch stays.
+{
+  const { parseOverpassRoads, roadSightlines, roadElOf } = await import("../src/roads.js");
+  const obsLat = 42, obsLon = -122;
+  const mLat = 111320, mLon = 111320 * Math.cos(42 * Math.PI / 180);
+  const wayN = { type: "way", tags: { highway: "primary", name: "Test Hwy" }, geometry: [] };
+  for (let d = 20; d <= 2000; d += 60) wayN.geometry.push({ lat: obsLat + d / mLat, lon: obsLon });
+  const wayE = { type: "way", tags: { highway: "residential" }, geometry: [] };
+  for (let d = 20; d <= 4000; d += 100) wayE.geometry.push({ lat: obsLat, lon: obsLon + d / mLon });
+  const parsed = parseOverpassRoads({ elements: [wayN, wayE, { type: "node" }] }, obsLat, obsLon, { maxM: 2600 });
+  ok(parsed.n === 2 && parsed.shown === 2, `roads: both ways parsed and shown (${parsed.shown}/${parsed.n})`);
+  ok(parsed.roads.every((r) => r.pts.every(([e, n]) => Math.hypot(e, n) <= 2600)), "roads: ways clipped to maxM");
+  const north = parsed.roads.find((r) => r.major);
+  ok(!!north && Math.abs(north.pts[0][0]) < 1 && north.pts[0][1] > 10, "roads: ENU conversion (due-north primary has e≈0, major flag set)");
+
+  const flat = () => 100; // flat plane at 100 m MSL, observer ground = 100 m
+  const polysF = roadSightlines(parsed, flat, 100, { eyeM: 1.6 });
+  const pN = polysF.find((p) => p.major);
+  ok(!!pN && pN.v.every((p) => p.az < 0.5 || p.az > 359.5), "roads: due-north road projects at az≈0");
+  const far = pN.v[pN.v.length - 1];
+  const wantEl = -Math.atan2(1.6 + (far.d * far.d * 0.87) / (2 * 6371000), far.d) * 180 / Math.PI;
+  approx(roadElOf(far, 101.6), wantEl, 0.02, "roads: flat-plane el = -atan(eye/d) with the curvature+refraction term");
+  ok(roadElOf(pN.v[0], 101.6) < roadElOf(far, 101.6), "roads: nearer pavement sits farther below the horizon");
+
+  // a 40 m hill spanning 800–1000 m due east hides the road beyond it
+  const hill = (e, n) => (e > 800 && e < 1000 && Math.abs(n) < 200 ? 140 : 100);
+  const polysH = roadSightlines(parsed, hill, 100, { eyeM: 1.6 });
+  const vtxEastFlat = polysF.filter((p) => !p.major).reduce((a, p) => a + p.v.length, 0);
+  const vtxEastHill = polysH.filter((p) => !p.major).reduce((a, p) => a + p.v.length, 0);
+  ok(vtxEastHill < vtxEastFlat, `roads: the hill occludes the far stretch (${vtxEastHill} < ${vtxEastFlat} vertices)`);
+  ok(polysH.some((p) => !p.major && p.v.length >= 2 && p.v[0].d < 700), "roads: the near stretch in front of the hill still draws");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");
