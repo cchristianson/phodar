@@ -58,6 +58,11 @@ function parseTiff(u8, base) {
         out.f35 = f35;
       }
     }
+    /* close-subject tells (authenticity): where the camera itself says its
+       subject was. 0xFFFFFFFF numerator = infinity, 0 = unknown — skip both. */
+    if (tag === 0x9206 && type === 5) { const n = u32(vo), d = u32(vo + 4); if (d && n && n !== 0xFFFFFFFF) out.subjDist = +(n / d).toFixed(2); }
+    if (tag === 0x9209) out.flash = u16(vo);
+    if (tag === 0xA40C) out.subjRange = u16(vo); // 1 macro · 2 close · 3 distant
   });
   if (gpsOff) {
     let latR, lat, lonR, lon, altR = 0, alt, dirRef, dir;

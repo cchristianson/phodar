@@ -110,6 +110,12 @@ const NAMED = [
   ["gest(", /DESKTOP/, "the desktop (mouse) gesture wording"],
   ["scanFileAuthenticity", /File authenticity/, "the authenticity checks (upload forensics + physics consistency)"],
   ["poleShadow", /⚑ Shadow check/, "the sun-shadow flagpole gadget on the sky view"],
+  ["shadowTimes", /🕐 dial/, "the sundial-inversion dial (shadow direction → implied time)"],
+  ["close-subject", /close-subject tells/, "the EXIF close-subject tells (focus distance, flash return)"],
+  ["TerrainLosCheck", /Terrain line-of-sight/, "the terrain line-of-sight validation of the fix"],
+  ["roadCrossings", /Vehicle-light/, "the vehicle-light road-crossing check"],
+  ["fetchMasts", /tower checks|mast/, "the tower/mast strobe check"],
+  ["glintDeg", /flare/, "satellite flare-geometry notes"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

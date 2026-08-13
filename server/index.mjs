@@ -357,6 +357,44 @@ async function apiAirports(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* tall lit structures (masts/towers/chimneys/lighthouses) — the strobe-light
+   candidate check. Same proxy + mirror-race + cache pattern as /api/peaks. */
+const mastsCache = new Map();
+async function apiMasts(q, res) {
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(40000, Math.max(1000, +q.get("r") || 25000));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r}`;
+  const hit = mastsCache.get(key);
+  if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
+  const la = lat.toFixed(5), lo = lon.toFixed(5);
+  const sel = `["man_made"~"^(mast|tower|communications_tower|chimney|lighthouse)$"](around:${r},${la},${lo})`;
+  const ql = `[out:json][timeout:20];(node${sel};way${sel};);out center tags qt;`;
+  const eps = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (sighting masts)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
+    .then(async (rr) => {
+      const host = ep.split("/")[2];
+      if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
+      const j = await rr.json();
+      if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
+      if (j.remark && /timed out|runtime error|memory/i.test(j.remark)) throw new Error(`${host} BUSY`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`);
+      return j;
+    });
+  try {
+    const j = await Promise.any(eps.map(attempt));
+    mastsCache.set(key, { t: Date.now(), body: j });
+    return json(res, 200, j);
+  } catch (e) {
+    const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
+    if (errs.every((m) => /EMPTY/.test(m))) { const body = { elements: [], note: "reachable; no tall structures in range" }; mastsCache.set(key, { t: Date.now(), body }); return json(res, 200, body); }
+    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
+  }
+}
 const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
   const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
@@ -1069,6 +1107,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/launches") return await apiLaunches(u.searchParams, res);
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
+    if (u.pathname === "/api/masts") return await apiMasts(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/roads") return await apiRoads(u.searchParams, res);
     if (u.pathname === "/api/winds") return await apiWinds(u.searchParams, res);

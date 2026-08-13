@@ -7,6 +7,44 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Six new validation checks** (user ask: "the easy ones" — each reuses
+  existing infrastructure, all pure-math cores mathcheck-asserted, key UI
+  paths browser-verified 13/13 + shadow/auth regressions green):
+  1. **EXIF close-subject tells.** The parser now reads `SubjectDistance`,
+     `Flash` and `SubjectDistanceRange`; the capture step's 🔬 panel warns
+     at upload when the camera itself says its subject was close — focus
+     locked metres away, a macro/close focus range, or a flash whose
+     strobe-return bits say its light bounced back (a phone flash reaches
+     a few metres). Devastating and honest against a "distant craft"
+     claim; rides authDerived into the report automatically.
+  2. **🕐 Sundial inversion.** The ⚑ shadow gadget runs backwards: a dial
+     rotates a teal ghost shadow, and phodar prints the time(s) of day
+     the sun actually casts that way at that place — compare with the
+     stated time (recovered a test capture time to <1 min; a direction
+     the sun never produces is itself a finding). Ghost length uses the
+     matched instant's real sun altitude.
+  3. **⛰ Terrain line-of-sight.** When a fix solves, each witness's ray
+     to it is marched through the DEM (same model as the skyline):
+     a ray passing below a ridge means the geometry is impossible as
+     stated — surfaced as a red warning in results and the report, with
+     a quiet all-clear line when it passes. Noise-guarded so a grazing
+     ridge is never declared a wall.
+  4. **🛣 Vehicle-light check.** For night sightings the report shows
+     where the sight-line crosses mapped roads (name, distance, the road
+     point's own elevation angle) — a car cresting a rise reads as a
+     hovering light, and now it has a name and a distance.
+  5. **📡 Tower & mast check.** New `/api/masts` Overpass proxy + pure
+     ranking: masts, towers, chimneys and lighthouses within 25 km and a
+     few degrees of the sight-line, with height, distance, and the top's
+     elevation over the terrain model — obstruction strobes are the
+     classic pulsing "hovering light". States that OSM is incomplete.
+  6. **✨ Satellite flare geometry.** Every satellite pass now carries the
+     specular-glint angle (sun reflected off an earth-facing panel toward
+     the observer) and phase angle; the dome chip hints "✨ flare?" and
+     the report's sky-object check explains when a brilliant
+     swell-and-vanish flare was geometrically possible — stated as
+     possible, never predicted (attitude unknown). Asserted offline via
+     the exact sub-satellite-point invariant (glint = phase at zenith).
 - **⚑ Shadow check v2: tilt-to-place, moonlight shadows, and a report
   compass diagram** (user asks). The flagpole now stands where the
   CENTER OF YOUR VIEW meets the ground — tilt down and it comes closer,

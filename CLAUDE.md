@@ -645,6 +645,22 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   source azimuth) + direction and length-per-height ratio. DOME-ONLY
   like the winds stack — a fictitious pole must never be burned into
   world-locked exports.
+- **Six "easy" cross-checks: DONE** (all pure cores mathcheck-asserted):
+  EXIF close-subject tells (SubjectDistance/Flash/SubjectDistanceRange in
+  exif.js → authDerived warns at upload — camera focused metres away /
+  flash return = close subject); 🕐 sundial inversion (`shadowTimes` in
+  shadow.js + a dial in the ⚑ gadget: rotate the teal ghost onto the
+  photo's shadow → implied capture time vs stated); ⛰ terrain
+  line-of-sight (`rayClearance` in terrain.js — each witness ray to the
+  fix marched through the DEM, impossible geometry warned in results +
+  report, noise-guarded max(8 m, 1.5%·d)); 🛣 vehicle-light check
+  (`roadCrossings` in roads.js — night sight-line × mapped roads in the
+  report); 📡 tower/mast strobes (`src/checks/masts.js` + `/api/masts`
+  Overpass proxy — tall lit structures ranked by Δaz with DEM-computed
+  top elevation); ✨ satellite glint (`glintDeg`/`phaseDeg` in
+  satellites.js lookFrom — earth-facing-panel specular miss angle, "flare
+  possible" never "predicted"; offline-asserted via the sub-satellite
+  invariant glint = phase at zenith).
 - **🛣 Roads overlay: DONE** (`src/roads.js` + `/api/roads` Overpass proxy):
   OSM centerlines within ~2.6 km in TRUE perspective — vertex elevations
   from the same cached DEM tiles as the skyline, derive-time ray-march

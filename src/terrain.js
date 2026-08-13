@@ -126,6 +126,28 @@ function linkRidges(cols) {
 }
 
 /* interpolate a skyline elevation at an arbitrary azimuth */
+/* Line-of-sight clearance: does a ray from this observer (compass az/el)
+   reach horizontal distance distM without terrain in the way? Same eye
+   height, sea-level clamp, foreground skip and curvature+refraction model as
+   skylineFromSampler, so the check and the drawn skyline always agree.
+   Returns null when clear, else { dBlock, belowM }: the first blocking
+   distance and how far below the terrain surface the ray passes at worst.
+   Blocking demands a real margin (max(8 m, 1.5% of d) ≈ 0.86°) so DEM noise
+   and placement slop never declare a grazing ridge a wall. */
+export function rayClearance(sampleEN, h0, azDeg, elDeg, distM) {
+  const eye = Math.max(0, h0) + EYE_M;
+  const a = azDeg * D2R, sa = Math.sin(a), ca = Math.cos(a), te = Math.tan(elDeg * D2R);
+  let first = null, worst = 0;
+  for (let d = 200; d < distM; d *= 1.04) {
+    const h = sampleEN(sa * d, ca * d);
+    if (h == null) continue;
+    const hs = h > 0 ? h : 0;
+    const m = (hs - (d * d * (1 - K_REFR)) / (2 * RE)) - (eye + d * te);
+    if (m > Math.max(8, d * 0.015)) { if (first == null) first = d; if (m > worst) worst = m; }
+  }
+  return first != null ? { dBlock: first, belowM: worst } : null;
+}
+
 export function skylineElAt(els, azDeg) {
   const x = (((azDeg % 360) + 360) % 360) / AZ_STEP;
   const i = Math.floor(x), f = x - i;

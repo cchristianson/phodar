@@ -224,6 +224,29 @@ export function authDerived(src) {
       `The position entered sits ${Math.round(dKm)} km from where the file says it was taken.`));
   }
 
+  /* close-subject tells — the camera's own record of where it focused and
+     whether its flash lit the scene. A phone flash reaches a few metres and
+     autofocus writes what it actually locked onto; a "distant craft" whose
+     file says the subject sat 1.4 m away needs explaining. */
+  const mt = src?.meta;
+  if (mt) {
+    if (isFinite(mt.subjDist) && mt.subjDist > 0) {
+      if (mt.subjDist < 30) f.push(F("subj-close", "warn", "Camera focused only metres away",
+        `EXIF subject distance ≈ ${mt.subjDist < 10 ? mt.subjDist.toFixed(1) : Math.round(mt.subjDist)} m — whatever the camera actually focused on was close. For a distant object this field reads hundreds of metres or infinity.`));
+      else f.push(F("subj-dist", "note", "Camera-reported subject distance",
+        `EXIF subject distance ≈ ${Math.round(mt.subjDist)} m.`));
+    }
+    if (mt.subjRange === 1 || mt.subjRange === 2) f.push(F("subj-range", "warn", "Camera reports a close-range subject",
+      `EXIF subject-distance-range says "${mt.subjRange === 1 ? "macro" : "close"}" — the camera judged its subject to be near the lens.`));
+    if (isFinite(mt.flash)) {
+      const fired = (mt.flash & 1) === 1, ret = ((mt.flash >> 1) & 3) === 3;
+      if (ret) f.push(F("flash-return", "warn", "Flash fired and its light came back",
+        `The flash's strobe-return bits say its light reflected off the subject — a phone flash reaches a few metres, so what it lit was close.`));
+      else if (fired) f.push(F("flash-fired", "note", "Flash fired",
+        `A flash cannot illuminate a distant object; if the object in the photo appears flash-lit, it was within a few metres of the camera.`));
+    }
+  }
+
   /* positive: astronomically / terrain verified pointing (hard to fake) */
   const m = src?.calib?.method;
   if (m === "stars") f.push(F("cal-stars", "info", "Pointing verified against the real star field",

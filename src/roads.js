@@ -205,6 +205,33 @@ export function roadSightlines(parsed, sample, h0, opts) {
   return polys;
 }
 
+/* Where does a sight-line cross the mapped roads? Each crossing carries the
+   road's name/class, its ground distance, and the ROAD POINT's own elevation
+   angle — a low night light on that bearing has a mundane candidate first: a
+   vehicle on that road (headlights cresting a rise read as a hovering or
+   moving light). Pure: walks the derived center polylines for an azimuth
+   sign change around the sight-line, interpolates the crossing, and keeps
+   the nearest crossing per road. */
+export function roadCrossings(polys, azDeg, eyeAbs) {
+  var out = [];
+  var wrap = function (x) { return ((x % 360) + 540) % 360 - 180; };
+  for (var i = 0; i < (polys || []).length; i++) {
+    var poly = polys[i], v = poly.v || [], best = null;
+    for (var q = 0; q + 1 < v.length; q++) {
+      var a = wrap(v[q].az - azDeg), b = wrap(v[q + 1].az - azDeg);
+      if ((a >= 0) === (b >= 0) || Math.abs(a) + Math.abs(b) > 30) continue; // no crossing / wrap artifact
+      var t = Math.abs(a) / (Math.abs(a) + Math.abs(b));
+      var d = v[q].d + (v[q + 1].d - v[q].d) * t;
+      var gz = v[q].gz + (v[q + 1].gz - v[q].gz) * t;
+      var el = roadElOf({ d: d, gz: gz }, eyeAbs);
+      if (!best || d < best.d) best = { d: d, el: el };
+    }
+    if (best) out.push({ name: poly.name || null, major: !!poly.major, d: best.d, el: best.el });
+  }
+  out.sort(function (x, y) { return x.d - y.d; });
+  return out;
+}
+
 /* browser fetch → derived sight-line polylines, cached one promise per
    ~110 m cell (the same granularity as predictedSkyline / building boxes).
    The DEM sampler is the same cached tile promise the skyline uses — when

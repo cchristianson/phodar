@@ -90,11 +90,35 @@ function lookFrom(rec, date, gd) {
   const gmst = sat.gstime(date);
   const ecf = sat.eciToEcf(pv.position, gmst);
   const la = sat.ecfToLookAngles(gd, ecf);
+  /* specular-flare geometry: reflect the sun off an EARTH-FACING flat panel
+     at the satellite and measure how far the reflected ray misses the
+     observer. Attitude is unknown, so a small miss means "flare POSSIBLE",
+     never predicted — but a flare-geometry pass is exactly when a dim
+     satellite turns into a brilliant seconds-long "appearing/vanishing"
+     light (the classic Iridium-flare report, now mostly Starlink panels).
+     phaseDeg (sun–sat–observer) rides along: small phase = forward scatter,
+     generally brighter. */
+  let glintDeg = null, phaseDeg = null;
+  try {
+    const sun = sunEci(date);
+    const oe = sat.ecfToEci(sat.geodeticToEcf(gd), gmst);
+    const rs = [pv.position.x, pv.position.y, pv.position.z];
+    const nrm = (v) => { const m = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / m, v[1] / m, v[2] / m]; };
+    const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const vo = nrm([oe.x - rs[0], oe.y - rs[1], oe.z - rs[2]]); // sat → observer
+    const n = nrm([-rs[0], -rs[1], -rs[2]]);                    // panel normal (nadir)
+    const inc = [-sun[0], -sun[1], -sun[2]];                    // sun → sat
+    const idn = dot3(inc, n);
+    const refl = [inc[0] - 2 * idn * n[0], inc[1] - 2 * idn * n[1], inc[2] - 2 * idn * n[2]];
+    glintDeg = +(Math.acos(Math.min(1, Math.max(-1, dot3(refl, vo)))) * R2D).toFixed(1);
+    phaseDeg = +(Math.acos(Math.min(1, Math.max(-1, dot3(sun, vo)))) * R2D).toFixed(1);
+  } catch (e) { /* transform unavailable — glint simply not offered */ }
   return {
     az: ((la.azimuth * R2D) % 360 + 360) % 360,
     el: la.elevation * R2D,
     rangeKm: la.rangeSat,
     lit: isLit(pv.position, sunEci(date)),
+    glintDeg, phaseDeg,
   };
 }
 

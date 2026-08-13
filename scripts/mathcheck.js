@@ -705,6 +705,36 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     else { fails++; console.error("  FAIL EXIF azRef:", m.azRef); }
     approx(m.fovH, 2 * Math.atan(18 / 26) * R2D, 0.2, "EXIF f35→FOV (the line that broke)");
   }
+
+  // close-subject tells: SubjectDistance + Flash + SubjectDistanceRange parse
+  // and surface as authenticity findings (the camera's own record of a near
+  // subject vs a "distant craft" claim)
+  {
+    const t2 = new Uint8Array(76);
+    const d2 = new DataView(t2.buffer);
+    const W16 = (o, v) => d2.setUint16(o, v, true), W32 = (o, v) => d2.setUint32(o, v, true);
+    t2[0] = 0x49; t2[1] = 0x49; W16(2, 42); W32(4, 8);            // II, magic, IFD0@8
+    W16(8, 1); W16(10, 0x8769); W16(12, 4); W32(14, 1); W32(18, 26); W32(22, 0); // IFD0 → Exif@26
+    W16(26, 3);                                                    // Exif IFD: 3 entries
+    W16(28, 0x9206); W16(30, 5); W32(32, 1); W32(36, 68);          // SubjectDistance → rat@68
+    W16(40, 0x9209); W16(42, 3); W32(44, 1); W16(48, 7);           // Flash 0b111: fired + return detected
+    W16(52, 0xA40C); W16(54, 3); W32(56, 1); W16(60, 2);           // SubjectDistanceRange = close
+    W32(64, 0);
+    W32(68, 14); W32(72, 10);                                      // 1.4 m
+    const jp = new Uint8Array(12 + 76);
+    jp.set([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 84, 0x45, 0x78, 0x69, 0x66, 0, 0], 0);
+    jp.set(t2, 12);
+    const m2 = parseMediaMeta(jp.buffer, false);
+    ok(m2 && Math.abs(m2.subjDist - 1.4) < 1e-9 && m2.flash === 7 && m2.subjRange === 2, "EXIF close-subject tags parse (1.4 m, flash 0b111, range=close)");
+    const { authDerived } = await import("../src/checks/authenticity.js");
+    const finds = authDerived({ meta: m2 });
+    ok(finds.some((x) => x.id === "subj-close" && x.level === "warn"), "auth: camera focused 1.4 m away → warn");
+    ok(finds.some((x) => x.id === "flash-return" && x.level === "warn"), "auth: flash return light detected → warn");
+    ok(finds.some((x) => x.id === "subj-range" && x.level === "warn"), "auth: camera-reported close range → warn");
+    ok(authDerived({ meta: { subjDist: 240 } }).some((x) => x.id === "subj-dist" && x.level === "note"), "auth: a 240 m subject distance is a note, not a warn");
+    ok(authDerived({ meta: { flash: 0x20 } }).length === 0, "auth: 'no flash function' (0x20) trips nothing");
+    ok(authDerived({ meta: { flash: 1 } }).some((x) => x.id === "flash-fired" && x.level === "note"), "auth: flash fired without return → note");
+  }
 }
 
 // --- QuickTime metadata at the END of the file. An iPhone writes `moov` last
@@ -3559,6 +3589,87 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(moonC.kind === "moon" && moonC.frac > 0.85 && !moonC.dim, "shadow: bright moon after sunset → moonlight shadow, not dim");
   const noneC = shadowCast(Date.UTC(2026, 7, 10, 9, 30), 42.3, -122.9);  // astronomical night, moon down
   ok(noneC.kind === null && noneC.sunAlt < -18, "shadow: sun and moon both down → nothing casts (any crisp shadow contradicts the time)");
+
+  // sundial inversion: recover the capture time from a shadow direction
+  const { shadowTimes } = await import("../src/shadow.js");
+  const t0 = Date.UTC(2026, 7, 10, 18, 0); // 11:00 PDT
+  const s0 = sunPos(t0, 42.3, -122.9), dir0 = (s0.az + 180) % 360;
+  const hits = shadowTimes(Date.UTC(2026, 7, 10, 20, 0), 42.3, -122.9, dir0);
+  ok(hits.length === 1, "sundial: one sun-up instant matches a morning shadow direction");
+  ok(Math.abs(hits[0].ms - t0) < 60000, `sundial: recovered the capture time to <1 min (off by ${Math.round(Math.abs(hits[0].ms - t0) / 1000)} s)`);
+  approx(hits[0].alt, s0.alt, 0.1, "sundial: matched instant carries the right sun altitude");
+  approx(hits[0].ratio, 1 / Math.tan(s0.alt * D2R), 0.02, "sundial: length ratio rides along for a second check");
+  ok(shadowTimes(Date.UTC(2026, 7, 10, 20, 0), 42.3, -122.9, 180).length === 0, "sundial: a due-south shadow at 42°N matches NO time — the sun is never in the north");
+}
+
+// --- ⛰ terrain line-of-sight (rayClearance) — impossible-geometry detector
+{
+  const { rayClearance } = await import("../src/terrain.js");
+  // a 300 m wall crossing the ray 5 km due north of a sea-level observer
+  const wall = (e, n) => (n > 4800 && n < 5200 && Math.abs(e) < 3000) ? 300 : 0;
+  const blk = rayClearance(wall, 0, 0, 0, 10000);
+  ok(blk && blk.dBlock > 4600 && blk.dBlock < 5300, "LOS: a 300 m wall at 5 km blocks a level ray to a 10 km fix");
+  ok(blk.belowM > 250 && blk.belowM < 305, `LOS: deficit ≈ the wall's height (${blk.belowM.toFixed(0)} m below the crest)`);
+  ok(rayClearance(wall, 0, 0, 0, 4000) === null, "LOS: a fix NEARER than the wall is clear — distance matters, not just the skyline");
+  ok(rayClearance(wall, 0, 0, 4, 10000) === null, "LOS: a 4° sight-line clears the wall");
+  ok(rayClearance(wall, 0, 90, 0, 10000) === null, "LOS: looking east misses the wall entirely");
+  const berm = (e, n) => (n > 4800 && n < 5200) ? 9 : 0;
+  ok(rayClearance(berm, 0, 0, 0, 10000) === null, "LOS: a 9 m rise is DEM noise, never declared a wall");
+}
+
+// --- 🛣 vehicle-light candidate (roadCrossings) — sight-line × mapped roads
+{
+  const { roadCrossings } = await import("../src/roads.js");
+  // a road running east–west, crossing due north of the observer at ~1015 m
+  const road = { name: "Table Rock Rd", major: true, v: [{ az: 350, d: 1015, gz: 0 }, { az: 10, d: 1015, gz: 0 }] };
+  const c = roadCrossings([road], 0, 1.6);
+  ok(c.length === 1 && c[0].name === "Table Rock Rd", "roads: sight-line due north crosses the east–west road once");
+  approx(c[0].d, 1015, 1, "roads: crossing distance interpolated");
+  approx(c[0].el, Math.atan2(0 - 1.6 - (1015 * 1015 * 0.87) / (2 * 6371000), 1015) * 180 / Math.PI, 0.01, "roads: crossing elevation via the shared road-el model");
+  ok(roadCrossings([road], 90, 1.6).length === 0, "roads: looking east misses it");
+  // an S-curve crossing the bearing twice keeps the NEAR crossing
+  const scurve = { v: [{ az: 355, d: 500, gz: 0 }, { az: 5, d: 500, gz: 0 }, { az: 355, d: 1500, gz: 0 }, { az: 5, d: 1500, gz: 0 }] };
+  approx(roadCrossings([scurve], 0, 1.6)[0].d, 500, 30, "roads: double crossing keeps the nearest");
+  ok(roadCrossings([{ v: [{ az: 170, d: 800, gz: 0 }, { az: 190, d: 800, gz: 0 }] }], 0, 1.6).length === 0, "roads: the ±180 wrap is not a fake crossing");
+}
+
+// --- 📡 tower/mast strobe candidates (parseMasts / mastsNear)
+{
+  const { parseMasts, mastsNear } = await import("../src/checks/masts.js");
+  const oLat = 42.3, oLon = -122.9;
+  const j = { elements: [
+    { type: "node", lat: oLat + 5000 / 111320, lon: oLon, tags: { man_made: "mast", name: "KOBI mast", height: "150 m" } },
+    { type: "way", center: { lat: oLat, lon: oLon + 9000 / (111320 * Math.cos(oLat * D2R)) }, tags: { man_made: "tower" } },
+    { type: "node", lat: oLat + 0.5, lon: oLon, tags: { man_made: "mast", height: "80" } },   // ~55 km — out of range
+    { type: "node", lat: oLat + 0.01, lon: oLon, tags: { building: "yes" } },                 // not a tall structure
+  ] };
+  const m = parseMasts(j, oLat, oLon, 25);
+  ok(m.length === 2 && m[0].name === "KOBI mast", "masts: parse keeps mast+tower, drops far + non-structures, nearest first");
+  ok(m[0].hM === 150 && m[0].hEst === false && m[1].hM === null, "masts: tagged height parsed, untagged honest null");
+  approx(m[0].az, 0, 0.2, "masts: bearing computed (due north)");
+  const near = mastsNear(m, 2, 5);
+  ok(near.length === 1 && Math.abs(near[0].dAz + 2) < 0.3, "masts: 5° gate keeps the north mast for a 002° sight-line");
+  ok(mastsNear(m, 200, 5).length === 0, "masts: opposite bearing matches nothing");
+}
+
+// --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
+//     Exact invariant: for an observer at the SUB-SATELLITE POINT the
+//     sat→observer direction IS the panel normal (nadir), and the mirror law
+//     then makes the glint angle equal the phase angle exactly.
+{
+  const satjs = await import("satellite.js");
+  const { satsAt } = await import("../src/checks/satellites.js");
+  const rec = satjs.twoline2satrec(
+    "1 25544U 98067A   24001.07953474  .00019243  00000+0  34460-3 0  9994",
+    "2 25544  51.6437 305.4740 0002481 262.2661 208.6142 15.50123256432893");
+  const ms = Date.UTC(2024, 0, 1, 12, 0, 0);
+  const pv = satjs.propagate(rec, new Date(ms));
+  const gd = satjs.eciToGeodetic(pv.position, satjs.gstime(new Date(ms)));
+  const la = gd.latitude * R2D, lo = ((gd.longitude * R2D + 540) % 360) - 180;
+  const out = satsAt([{ name: "ISS", rec }], ms, la, lo, 80);
+  ok(out.length === 1 && out[0].el > 89, "glint: observer at the sub-satellite point sees the sat at zenith");
+  ok(isFinite(out[0].glintDeg) && out[0].glintDeg >= 0 && out[0].glintDeg <= 180 && isFinite(out[0].phaseDeg), "glint: flare geometry computed through the real transforms");
+  approx(out[0].glintDeg, out[0].phaseDeg, 0.6, "glint: at zenith the nadir-mirror law makes glint = phase (exact invariant)");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

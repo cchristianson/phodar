@@ -35,10 +35,11 @@ import { aperture, relMag, colorDesc } from "./checks/photometry.js";
 import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
-import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
+import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
-import { predictedRoadDirs, roadElOf } from "./roads.js";
-import { poleShadow, poleDistView, shadowCast, POLE_H } from "./shadow.js";
+import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
+import { fetchMasts, mastsNear } from "./checks/masts.js";
+import { poleShadow, poleDistView, shadowCast, shadowTimes, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
@@ -596,7 +597,7 @@ const HELP_SECTIONS = [
         { t: "Load photo or video / Replace", d: "Pick any image or video from your device. Replace swaps the media and starts the measurement fresh." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
         { t: "ⓘ keeping the metadata", d: "Before anything is loaded, the step notes that metadata auto-fills when the file carries it; this button pops the how-to for moving a capture between devices WITHOUT stripping it — AirDrop with All Photos Data ON (iPhone), share the original via Files/Drive rather than a chat app (Android), and export HEIC as JPEG so the browser can read it. Messaging apps re-encode media and destroy the GPS/time/lens data." },
-        { t: "🔬 File authenticity", d: "Every upload is scanned on its ORIGINAL bytes and findings appear right under the media: AI-generator markers and generation-parameter blocks (Stable Diffusion, ComfyUI, Midjourney, DALL·E…) alarm in red; provenance manifests (C2PA Content Credentials) are noted; editing and re-encode fingerprints (Photoshop, Lightroom, CapCut, ffmpeg…) warn in amber; container tells (a “photo” arriving as PNG, progressive JPEG, screen-recording keys) are noted; Apple camera-original keys count as POSITIVE evidence. Once position and time are set, physics checks join in on step 2: scene brightness vs the computed sun, the stated time vs the file's own clock, the stated position vs the file's GPS — and a star- or terrain-verified placement counts for authenticity too. Everything lands in the report's Authenticity section, and any high-confidence manipulation indicator banners the top of the report in red. A clean scan proves nothing: it means the file carries no tells." },
+        { t: "🔬 File authenticity", d: "Every upload is scanned on its ORIGINAL bytes and findings appear right under the media: AI-generator markers and generation-parameter blocks (Stable Diffusion, ComfyUI, Midjourney, DALL·E…) alarm in red; provenance manifests (C2PA Content Credentials) are noted; editing and re-encode fingerprints (Photoshop, Lightroom, CapCut, ffmpeg…) warn in amber; container tells (a “photo” arriving as PNG, progressive JPEG, screen-recording keys) are noted; Apple camera-original keys count as POSITIVE evidence. The camera's own close-subject tells surface here too: an EXIF subject distance of a few metres, a macro/close focus range, or a flash whose light came BACK all say the camera photographed something near the lens — hard to square with a distant craft. Once position and time are set, physics checks join in on step 2: scene brightness vs the computed sun, the stated time vs the file's own clock, the stated position vs the file's GPS — and a star- or terrain-verified placement counts for authenticity too. Everything lands in the report's Authenticity section, and any high-confidence manipulation indicator banners the top of the report in red. A clean scan proves nothing: it means the file carries no tells." },
         { t: "💾 Save to camera roll (video)", d: "Hands the clip to your phone's share sheet — on iPhone choose “Save Video” to put it in Photos. A web app can't write to Photos directly, so this is the way out. It matters most for a clip you recorded IN Phodar: that lives only inside the app until you save it, so an unsaved one is flagged in amber. (Photos accepts .mp4/.mov and refuses .webm — an iPhone in-app recording is .mp4, so it's fine.)" },
         { t: "⟳ Re-attach the same file", d: "Loads the SAME clip again and keeps every measurement — object placement, track waypoints, alignment frame and sky placement all stay; only the solved stabilization is dropped so you can solve the fresh file. This is also how you give an IMPORTED sighting its video back: a share file carries all the measurements but never the media." },
         { t: "📷 Capture with sensors", d: "Shoot the sighting inside Phodar so the phone logs the up/down angle, roll and heading that EXIF leaves out — see “Shooting in-app” below." },
@@ -750,6 +751,7 @@ const HELP_SECTIONS = [
         { t: "⚠ Bearings don't converge", d: "Names which observer's compass looks off and by how much — usually metal near the phone (see Accuracy)." },
         { t: "⚠ GPS altitudes differ + ⛰ Set every observer's elevation from terrain", d: "Phone-altitude wobble warning, with a one-tap fix that sets every observer's elevation from DEM terrain." },
         { t: "Solution quality (table)", d: "Baseline, convergence angle, ray-miss distance (how close the sight-lines actually pass), and range/baseline ratio — the raw geometry behind the grade." },
+        { t: "⛰ Terrain line-of-sight", d: "When a fix solves, each witness's sight-line to it is marched through the elevation model. If a ray passes below a ridge on the way, the geometry is called out as impossible as stated — a position or bearing error, or an object nearer/higher than the solve says. A quiet one-line all-clear when everything checks. The same check prints in the report." },
         { t: "🎥 Track quality (excellent / good / fair / poor)", d: "Grades the TRAJECTORY's provenance, above the numbers it feeds, and stays silent when the track is clean. Three things lower it: stretches inside a hard zoom or with too few background references, where the camera's own motion can read as the object's (those are excluded from the reported peaks); a tracker-noise floor comparable to the motion being measured; and heavy CAMERA WORK — a big sweep, a deep zoom, or many frames on the frame-to-frame lock. The reasons are spelled out, and the same line appears in the report." },
         { t: "Maneuver load (g) — read it as an upper bound", d: "Acceleration is the second derivative of a track that was itself measured through the camera solve, so it magnifies error more than any other number here: residual stabilization wobble shows up as g the object never pulled. When the clip needed heavy stabilization a warning says so directly under the figure. The speed and the path SHAPE are far less sensitive — trust those first, and distrust any maneuver the angular-rate plot doesn't show as a sustained ramp rather than a spike. (With one viewpoint everything also scales with the distance you assume; the ladder below the figure shows how close the object must be for the maneuver to stay within balloon, light-aircraft or fighter limits.)" },
       ]},
@@ -778,7 +780,8 @@ const HELP_SECTIONS = [
       ]},
       { h: "Extra checks in the report", items: [
         { t: "Video analysis", d: "For a stabilized, object-tracked clip: the object's dense per-frame angular trajectory measured with NO distance assumption — total sky sweep, average & peak angular rate (°/s, a strong discriminator: satellites track at a near-constant rate, aircraft vary, a hover ≈ 0) and an angular-rate plot. Then a size/distance/speed table showing what every candidate distance implies (or the one triangulated distance if a second observer fixed it), plus its apparent-size range if you sized the object across frames (that recovers toward/away motion). Ends with a keyframe strip — sampled frames with the tracked object marked and captioned (time, az/el, angular size, rate)." },
-        { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”)." },
+        { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”). Satellites near the sight-line also get a ✨ flare note when the sun's reflection off an earth-facing panel could have reached you — a specular flare is a brilliant light that swells and vanishes in seconds (attitude is unknown, so it's stated as possible, never predicted)." },
+        { t: "Vehicle-light & tower checks", d: "Two ground-truth candidates for a low light: where the sight-line crosses a mapped road (at night a car cresting a rise reads as a hovering or slow-moving light), and any tall structure — mast, tower, chimney, lighthouse — within a few degrees of the bearing, with its height, distance and the top's elevation angle: obstruction strobes are the classic pulsing red light. Both honestly note that map data is incomplete — an empty list proves nothing." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
@@ -807,7 +810,7 @@ const HELP_SECTIONS = [
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
         { t: "🛣 roads", d: "OSM roads within ~2.5 km drawn as TRUE-PERSPECTIVE RIBBONS — real roadway width (edge lines converge to the actual vanishing point), a dashed center line on highways, elevations from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: lay the photo's road onto the drawn ribbon the way a ridge photo snaps to the skyline. The 📷 camera height row (appears with the layer) matters here: the near road's shape depends on your eye height — standing ≈1.6 m, in a car ≈1.2 m — nudge until the ribbon sits on the pavement. Roads also appear on the position step's horizon strip." },
-        { t: "⚑ Shadow check", d: "Plants a schematic 5 m flagpole where the center of your view meets the ground and draws where the sun at the sighting time would throw its shadow — a physics check against shadows visible in the photo, which no metadata stripping can fake. TILT to place it: looking down brings the pole closer, looking up pushes it out, so you can stand it right on a shadow you want to compare. Shadow DIRECTION is exact; length assumes flat ground and honours your 📷 camera height. After dark a bright moon casts too — the check switches to a faint blue moonlight shadow with the moon's % lit stated; a thin moon is honestly 'too dim', and with neither sun nor moon up ANY visible shadow contradicts the stated time. The report's Authenticity section carries the same geometry as a compass diagram. Dome-only: the pole is fictitious, so it is never burned into video exports." },
+        { t: "⚑ Shadow check", d: "Plants a schematic 5 m flagpole where the center of your view meets the ground and draws where the sun at the sighting time would throw its shadow — a physics check against shadows visible in the photo, which no metadata stripping can fake. TILT to place it: looking down brings the pole closer, looking up pushes it out, so you can stand it right on a shadow you want to compare. Shadow DIRECTION is exact; length assumes flat ground and honours your 📷 camera height. After dark a bright moon casts too — the check switches to a faint blue moonlight shadow with the moon's % lit stated; a thin moon is honestly 'too dim', and with neither sun nor moon up ANY visible shadow contradicts the stated time. The 🕐 dial runs the check BACKWARDS: rotate the teal ghost shadow until it matches a shadow in the photo, and phodar prints the time(s) of day the sun actually casts that way there — compare against the stated time (a shadow direction that matches no time is itself a finding). The report's Authenticity section carries the same geometry as a compass diagram. Dome-only: the pole is fictitious, so it is never burned into video exports." },
       ]},
     ],
     tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
@@ -3693,19 +3696,28 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
           positive camera-original evidence teal. Derived checks (sun vs scene
           brightness, time/GPS consistency) appear on the position step once
           their inputs exist; the report aggregates everything. */}
-      {(src.authFile || []).length > 0 && (
-        <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${(src.authFile || []).some((x) => x.level === "alarm") ? "var(--red)" : (src.authFile || []).some((x) => x.level === "warn") ? "var(--amber)" : "var(--line)"}`, background: (src.authFile || []).some((x) => x.level === "alarm") ? "rgba(255,92,92,.07)" : "transparent" }}>
-          <ML style={{ color: (src.authFile || []).some((x) => x.level === "alarm") ? "var(--red)" : undefined }}>🔬 File authenticity</ML>
-          {(src.authFile || []).map((x, i) => (
-            <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: i ? 4 : 0, color: x.level === "alarm" ? "var(--red)" : x.level === "warn" ? "var(--amber)" : x.level === "info" ? "var(--teal)" : "var(--dim)" }}>
-              {x.level === "alarm" ? "⛔" : x.level === "warn" ? "⚠" : x.level === "info" ? "✓" : "·"} <b>{x.label}</b> — {x.detail}
+      {(() => {
+        /* upload-time findings: file forensics + the camera's own close-subject
+           tells (focus distance, flash return) — both are facts known the
+           moment the file lands, so they belong here, not on step 2 */
+        const camTells = authDerived(src).filter((x) => x.id.startsWith("subj-") || x.id.startsWith("flash-"));
+        const finds = [...(src.authFile || []), ...camTells];
+        if (!finds.length) return null;
+        const worst = (lv) => finds.some((x) => x.level === lv);
+        return (
+          <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${worst("alarm") ? "var(--red)" : worst("warn") ? "var(--amber)" : "var(--line)"}`, background: worst("alarm") ? "rgba(255,92,92,.07)" : "transparent" }}>
+            <ML style={{ color: worst("alarm") ? "var(--red)" : undefined }}>🔬 File authenticity</ML>
+            {finds.map((x, i) => (
+              <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: i ? 4 : 0, color: x.level === "alarm" ? "var(--red)" : x.level === "warn" ? "var(--amber)" : x.level === "info" ? "var(--teal)" : "var(--dim)" }}>
+                {x.level === "alarm" ? "⛔" : x.level === "warn" ? "⚠" : x.level === "info" ? "✓" : "·"} <b>{x.label}</b> — {x.detail}
+              </div>
+            ))}
+            <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 5 }}>
+              A clean scan proves nothing — it means the file carries no tells. Findings ride the share file and the report's Authenticity section.
             </div>
-          ))}
-          <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 5 }}>
-            A clean scan proves nothing — it means the file carries no tells. Findings ride the share file and the report's Authenticity section.
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {media && (
         <div style={{ marginTop: 10 }}>
@@ -4369,6 +4381,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      (derive-time ray march). */
   const [roadsOn, setRoadsOn] = useState(false);
   const [shadowOn, setShadowOn] = useState(false); // ⚑ sun-shadow flagpole gadget
+  const [dialOn, setDialOn] = useState(false);     // 🕐 sundial inversion: match a photo shadow → implied time
+  const [dialDir, setDialDir] = useState(null);    // compass direction the ghost shadow points
   const [roadsD, setRoadsD] = useState(null); // {polys, h0, shown, n, flat} | {err} | null
   useEffect(() => {
     if (!open || !roadsOn || !hasPos) { setRoadsD(null); return; }
@@ -5123,14 +5137,24 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      export. Recomputes as you pan (the pole tracks center). */
   const shCast = useMemo(() => shadowCast(T, LAT, LNG), [T, LAT, LNG]);
   const shD = poleDistView(camH, effAlt);
+  /* 🕐 sundial inversion — rotate a teal GHOST shadow until it matches the
+     shadow in the photo; the implied capture time(s) print beside the dial
+     and get compared against the stated time. The ghost's length uses the
+     matched instant's real sun altitude, so length agrees too when the
+     match is right. */
+  const dialHits = useMemo(() => (dialOn && isNum(dialDir) ? shadowTimes(T, LAT, LNG, dialDir) : []), [dialOn, dialDir, T, LAT, LNG]);
   const shadowGad = (shadowOn && !cameraOn) ? (() => {
     const cast = (shCast.kind && !(shCast.kind === "moon" && shCast.dim)) ? shCast : null;
     const g = poleShadow({ az: effAz, camH, sunAz: cast ? cast.az : 0, sunAlt: cast ? cast.alt : -90, D: shD });
     const P = (p) => project(p.az, p.el);
     const top = P(g.top);
+    const ghost = (dialOn && isNum(dialDir))
+      ? poleShadow({ az: effAz, camH, sunAz: (dialDir + 180) % 360, sunAlt: dialHits.length ? dialHits[0].alt : 25, D: shD }).shadow
+      : null;
     return {
       pole: gpath(g.pole.map(P)),
       shadow: g.shadow ? gpath(g.shadow.map(P)) : null,
+      ghost: ghost ? gpath(ghost.map(P)) : null,
       top: (top.inFront && top.x > -0.05 && top.x < 1.05 && top.y > -0.05 && top.y < 1.05) ? top : null,
       len: g.len, clipped: g.clipped, moon: cast?.kind === "moon",
     };
@@ -7440,6 +7464,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             <g>
               {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke={shadowGad.moon ? "rgba(10,16,30,0.6)" : "rgba(8,12,22,0.78)"} strokeWidth="5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
               {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke={shadowGad.moon ? "rgba(159,220,255,0.55)" : "rgba(255,215,106,0.6)"} strokeWidth="1" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
+              {shadowGad.ghost && <path d={shadowGad.ghost} fill="none" stroke="rgba(94,234,212,0.85)" strokeWidth="2.5" strokeDasharray="7 5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
               {shadowGad.pole && <path d={shadowGad.pole} fill="none" stroke="rgba(235,240,250,0.95)" strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             </g>
           )}
@@ -7582,7 +7607,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               {/* diamond sits ON the point (and its trail); label hangs below */}
               <div style={{ width: 5, height: 5, transform: "rotate(45deg)", background: col, boxShadow: s.lit ? "0 0 5px 1px rgba(159,220,255,.5)" : "none" }} />
               <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 3, textAlign: "center", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, color: col, textShadow: "0 1px 2px rgba(0,0,0,.85)", whiteSpace: "nowrap" }}>
-                🛰 {s.name}{s.lit ? "" : " · in shadow"}<br />{Math.round(s.rangeKm)} km
+                🛰 {s.name}{s.lit ? "" : " · in shadow"}{s.lit && isNum(s.glintDeg) && s.glintDeg < 8 ? " · ✨ flare?" : ""}<br />{Math.round(s.rangeKm)} km
               </div>
             </div>
           );
@@ -8070,6 +8095,33 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 : shCast.kind === "moon"
                   ? `⚑ sun is down and only a ${Math.round(shCast.frac * 100)}%-lit moon is up — too thin to cast usable shadows; crisp shadows in the photo would contradict the stated time`
                   : `⚑ neither sun nor moon is above the horizon at the sighting time (sun ${shCast.sunAlt.toFixed(1)}°) — nothing to cast a shadow; ANY visible shadows in the photo contradict the stated time and place`}
+          </div>
+        )}
+        {shadowOn && (
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 3, flexWrap: "wrap" }}>
+            <button className="btn sm" style={{ pointerEvents: "auto", background: "rgba(15,23,42,.7)", color: dialOn ? "var(--teal)" : "var(--dim)" }}
+              onClick={() => { setDialOn((v) => !v); if (dialDir == null) setDialDir(Math.round(shCast.kind ? shCast.dir : 180)); }}>
+              🕐 {dialOn ? "hide dial" : "when was this shadow?"}
+            </button>
+            {dialOn && (
+              <input type="range" min={0} max={359} step={1} value={isNum(dialDir) ? dialDir : 180} onChange={(e) => setDialDir(+e.target.value)}
+                style={{ pointerEvents: "auto", width: 140 }} />
+            )}
+            {dialOn && (
+              <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: dialHits.length ? "var(--teal)" : "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)" }}>
+                {(() => {
+                  const d = isNum(dialDir) ? dialDir : 180;
+                  if (!dialHits.length) return `shadow toward ${compass8(d)} ${d}° — the sun never casts this way here that day`;
+                  return dialHits.map((h) => {
+                    const dh = Math.abs(h.ms - T) / 3600000;
+                    return `toward ${compass8(d)} ${d}° ⇒ ${new Date(h.ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (☀ ${h.alt.toFixed(0)}°, ${dh < 0.15 ? "matches the stated time" : `Δ${dh.toFixed(1)} h from stated`})`;
+                  }).join(" · ");
+                })()}
+              </span>
+            )}
+            {dialOn && (
+              <span style={{ fontSize: 9.5, color: "var(--dim)", textShadow: "0 1px 2px rgba(0,0,0,.7)" }}>rotate the teal ghost onto the photo's shadow</span>
+            )}
           </div>
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
@@ -9778,7 +9830,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
                 sun, the stated time vs the file's clock, position vs file GPS.
                 Positive sun-consistency shows too (evidence, not just alarms). */}
             {(() => {
-              const dfs = authDerived(src).filter((x) => x.id !== "cal-stars" && x.id !== "cal-terrain");
+              const dfs = authDerived(src).filter((x) => x.id !== "cal-stars" && x.id !== "cal-terrain" && !x.id.startsWith("subj-") && !x.id.startsWith("flash-")); // camera tells live on the capture step
               return dfs.length ? (
                 <div style={{ marginTop: 8 }}>
                   {dfs.map((x, i) => (
@@ -11115,6 +11167,46 @@ function PlotBoard({ result, traj }) {
    meaningful right after a sighting; the time-gap warning is honest
    about that.
    ============================================================ */
+/* ⛰ terrain line-of-sight — can each witness actually SEE the fix from where
+   they stand, or does the DEM put a ridge between them? Impossible geometry
+   is a finding: a wrong position/bearing, or an object nearer/higher than
+   the solve says. Uses the same march model as the drawn skyline. */
+function TerrainLosCheck({ sources, result }) {
+  const [rows, setRows] = useState(null);
+  const valid = result?.ok ? sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el)) : [];
+  const key = result?.ok ? valid.map((s) => `${s.lat},${s.lon},${s.A.az},${s.A.el}`).join("|") + Math.round(result.meanDist) : "";
+  useEffect(() => {
+    if (!result?.ok) { setRows(null); return; }
+    let dead = false;
+    Promise.all(valid.map(async (s, i) => {
+      try {
+        const { sampleEN, h0 } = await demSampler(+s.lat, +s.lon);
+        const el = +s.A.el, dist = result.perSource[i]?.dist;
+        if (!(dist > 0)) return null;
+        const blk = rayClearance(sampleEN, h0, +s.A.az, el, dist * Math.cos(el * D2R));
+        return { name: s.name || `Observer ${i + 1}`, blk };
+      } catch (e) { return null; } // DEM unreachable — the check simply doesn't run
+    })).then((r) => { if (!dead) setRows(r.filter(Boolean)); });
+    return () => { dead = true; };
+  }, [key]); // eslint-disable-line
+  if (!result?.ok || !rows || !rows.length) return null;
+  const bad = rows.filter((r) => r.blk);
+  if (!bad.length) return (
+    <div style={{ margin: "6px 12px", fontSize: 11, color: "var(--dim)" }}>
+      ⛰ Terrain line-of-sight: every observer's ray to the fix clears the elevation model.
+    </div>
+  );
+  return (
+    <div style={{ margin: "10px 12px" }}>
+      {bad.map((r, i) => (
+        <div key={i} className="warn" style={{ marginTop: i ? 6 : 0 }}>
+          ⛰ <b>{r.name}</b> — the sight-line to the fix passes ~{fmtLenShort(r.blk.belowM)} BELOW terrain at {fmtLenShort(r.blk.dBlock)}. As stated, this witness could not see an object at the solved position: a position or bearing error, or the object was nearer/higher than the solve says.
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AdsbCheck({ sources }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -11554,6 +11646,7 @@ function ResultsPanel({ sources, onLog, viewOnly }) {
         <SoloTrackSection solo={trk.solo} t={soloT} setT={setSoloT} />
       )}
 
+      <TerrainLosCheck sources={sources} result={result} />
       <AdsbCheck sources={sources} />
       {(hasLog || calOpen) ? (
         <FlightLogCheck sources={sources} fix={result.ok ? result : null} onLog={onLog} viewOnly={viewOnly} />
@@ -12171,6 +12264,21 @@ async function reportHtml(sources, est, opts = {}) {
       `<p class="cap">Top-down (satellite basemap): observers (▲), sight rays (dashed), triangulated fix (⊕)${tr.stereo?.k ? ", trajectory (blue)" : ""}.</p>` +
       `<p class="cap" style="margin-top:14px"><b>Per-observer geometry</b> — range × measured angular size gives each witness's independent size estimate.</p>${geomTbl}` +
       `<p class="cap" style="margin-top:14px"><b>Solution quality</b> — how trustworthy the geometry is.</p>${qualTbl}`;
+    /* ⛰ terrain line-of-sight: same check the results panel runs — a ridge
+       between a witness and the fix makes the stated geometry impossible.
+       DEM unreachable → the check is silently omitted, never wrong. */
+    try {
+      const vLos = sources.filter((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el));
+      const losRows = await Promise.all(vLos.map(async (s, i) => {
+        const { sampleEN, h0 } = await demSampler(+s.lat, +s.lon);
+        const dist = fix.perSource[i]?.dist;
+        if (!(dist > 0)) return null;
+        return { name: s.name || `Observer ${i + 1}`, blk: rayClearance(sampleEN, h0, +s.A.az, +s.A.el, dist * Math.cos(+s.A.el * D2R)) };
+      }));
+      const checked = losRows.filter(Boolean), badLos = checked.filter((r) => r.blk);
+      if (badLos.length) fixHtml += badLos.map((r) => `<div style="border-left:3px solid #c22;background:#fdf0f0;border-radius:0 6px 6px 0;padding:8px 12px;margin:8px 0;font-size:13px">⛰ <b>${e2(r.name)}</b> — the sight-line to the fix passes ~${fmtLenShort(r.blk.belowM)} below terrain at ${fmtLenShort(r.blk.dBlock)}. As stated, this witness could not see an object at the solved position: a position or bearing error, or the object was nearer/higher than the solve says.</div>`).join("");
+      else if (checked.length) fixHtml += `<p class="cap">⛰ Terrain line-of-sight: every observer's ray to the fix clears the digital elevation model.</p>`;
+    } catch (e) { /* offline / DEM down — omit */ }
   } else {
     fixHtml = `<p><i>Fewer than two complete observers — angular data only. Import this file into Phodar and add a second perspective to triangulate.</i></p>`;
     /* single witness: the honest deliverable is the size↔distance line —
@@ -12934,7 +13042,7 @@ ${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the
         }
         if (satDbR && sunPos(Tw, la, lo).alt < -4) {
           for (const s of satsAt(satDbR.sats, Tw, la, lo, 0)) {
-            if (s.lit) cand.push({ label: `🛰 ${s.name}`, az: s.az, alt: s.el, stale: s.epochAgeDays });
+            if (s.lit) cand.push({ label: `🛰 ${s.name}`, az: s.az, alt: s.el, stale: s.epochAgeDays, glint: s.glintDeg });
           }
         }
         for (const c of cand) {
@@ -12961,6 +13069,7 @@ ${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the
         hits.map((h) => `<tr><td>${e2(h.label)}</td><td>${e2(h.wit)}</td><td>${h.sep.toFixed(1)}°</td><td>${h.az.toFixed(1)}° / ${h.alt.toFixed(1)}°</td></tr>`).join("") +
         `</table>` + (venusHit ? `<p>⚠ <b>Venus was in frame, ${venusHit.sep.toFixed(1)}° from the marked object</b> — Venus is the single most-reported "UFO"; a stationary, slowly-setting brilliant light is its signature.</p>` : "")
         + (satHit ? `<p>🛰 <b>${e2(satHit.label.slice(2).trim())} was in frame, ${satHit.sep.toFixed(1)}° from the marked object</b> and sunlit${satStale} — a steady point gliding across the sky in minutes is a satellite's signature.</p>` : "")
+        + (satHit && isNum(satHit.glint) && satHit.glint < 8 ? `<p>✨ <b>Flare geometry:</b> the sun's reflection off an earth-facing panel on ${e2(satHit.label.slice(2).trim())} missed this observer by only ${satHit.glint.toFixed(1)}° — a specular flare (a brilliant light that swells and vanishes in seconds) was geometrically possible. Panel attitude is unknown, so treat this as "possible", not predicted.</p>` : "")
         : `<p class="cap">No bright planet, star, satellite, Sun or Moon fell within the photo frame at the sighting time.</p>`);
     }
   }
@@ -13131,6 +13240,58 @@ ${windPhotoBlock}
       } catch (e) { /* overpass busy / offline — omit */ }
     }
   }
+  /* 🛣 vehicle-light check — where each witness's sight-line crosses a mapped
+     road. Offered only for night sightings whose sight-line passes within a
+     few degrees of the road point itself: a car cresting a rise on that road
+     is the mundane explanation to rule out first. */
+  let vehicleHtml = "";
+  try {
+    const rows = [];
+    for (const s of origAct) {
+      if (!(isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el) && isNum(s.whenMs))) continue;
+      if (sunPos(+s.whenMs, +s.lat, +s.lon).alt >= 0) continue; // headlights only confuse after dark
+      const rd = await predictedRoadDirs(+s.lat, +s.lon);
+      if (!rd?.polys) continue;
+      const eyeAbs = Math.max(0, rd.h0) + (isNum(s.camH) ? Math.max(1, +s.camH) : 1.6);
+      const near = roadCrossings(rd.polys, +s.A.az, eyeAbs).filter((c) => Math.abs(c.el - +s.A.el) < 4);
+      if (near.length) {
+        const c = near[0];
+        rows.push(`<tr><td>${e2(s.name || "Observer")}</td><td>${c.name ? e2(c.name) : c.major ? "major road" : "road"}</td><td>${fmtLenShort(c.d)} out</td><td>${c.el.toFixed(1)}° (sight-line ${(+s.A.el).toFixed(1)}°)</td></tr>`);
+      }
+    }
+    if (rows.length) vehicleHtml = `<h2>Vehicle-light check</h2>
+<p class="lead"><b>The sight-line crosses a mapped road within a few degrees.</b> At night a vehicle there — headlights cresting a rise, a car on a distant grade — reads as a hovering or slowly moving light. Worth ruling out before anything exotic.</p>
+<table><tr><th>Observer</th><th>Road</th><th>Crossing</th><th>Road elevation</th></tr>${rows.join("")}</table>
+<p class="cap">Road geometry from OpenStreetMap over the terrain model; the road point's elevation angle is computed the same way the sky view draws its road ribbons.</p>`;
+  } catch (e) { /* offline / Overpass busy — omit */ }
+  /* 📡 tower & mast check — tall lit structures within a few degrees of the
+     sight-line. An obstruction strobe is the classic "hovering pulsing
+     light"; if OSM knows a mast on that bearing, name it. */
+  let mastsHtml = "";
+  try {
+    const rows = [];
+    for (const s of origAct) {
+      if (!(isNum(s.lat) && isNum(s.lon) && isNum(s.A?.az) && isNum(s.A?.el))) continue;
+      const masts = await fetchMasts(+s.lat, +s.lon);
+      const near = mastsNear(masts, +s.A.az, 5);
+      if (!near.length) continue;
+      let sam = null; try { sam = await demSampler(+s.lat, +s.lon); } catch (e) { }
+      for (const m of near.slice(0, 3)) {
+        let elTop = null;
+        if (sam) {
+          const e = (m.lon - +s.lon) * sam.mLon, n = (m.lat - +s.lat) * sam.mLat;
+          const gz = sam.sampleEN(e, n), d = m.distKm * 1000;
+          if (gz != null) elTop = Math.atan2(Math.max(0, gz) + (m.hM ?? 40) - (Math.max(0, sam.h0) + 1.6) - (d * d * 0.87) / (2 * 6371000), d) * R2D;
+        }
+        if (elTop != null && Math.abs(elTop - +s.A.el) > 6) continue; // vertically nowhere near the line of sight
+        rows.push(`<tr><td>${e2(s.name || "Observer")}</td><td>${m.name ? e2(m.name) : e2(String(m.kind).replace(/_/g, " "))}</td><td>${m.hM != null ? Math.round(m.hM) + " m" + (m.hEst ? " (est)" : "") : "untagged (assumed 40 m)"}</td><td>${m.distKm.toFixed(1)} km</td><td>Δaz ${m.dAz.toFixed(1)}°${elTop != null ? ` · top at ${elTop.toFixed(1)}° (sight-line ${(+s.A.el).toFixed(1)}°)` : ""}</td></tr>`);
+      }
+    }
+    if (rows.length) mastsHtml = `<h2>Tower &amp; mast check</h2>
+<p class="lead"><b>A tall structure stands within a few degrees of the sight-line.</b> Obstruction strobes on masts and towers — red at night, white by day — read as steady or pulsing hovering lights, a common sighting explanation. Check whether the object's bearing sits on one of these.</p>
+<table><tr><th>Observer</th><th>Structure</th><th>Height</th><th>Distance</th><th>Geometry</th></tr>${rows.join("")}</table>
+<p class="cap">Masts, towers, chimneys and lighthouses from OpenStreetMap within 25 km; the top's elevation angle is computed over the terrain model. Not every structure is lit, and OSM is not complete — an empty list proves nothing.</p>`;
+  } catch (e) { /* Overpass busy / offline — omit */ }
   /* 🔬 AUTHENTICITY — aggregate every source's file-forensic + derived
      findings; any ALARM puts a loud banner at the very top of the report. */
   const authPer = origAct.map((s, i) => ({ name: s.name || `Observer ${i + 1}`, finds: authFindings(s) }));
@@ -13222,6 +13383,8 @@ ${collapsible(alignHtml, true)}
 ${collapsible(flightHtml, true)}
 ${collapsible(adsbHtml, false)}
 ${collapsible(airportsHtml, false)}
+${collapsible(vehicleHtml, false)}
+${collapsible(mastsHtml, false)}
 ${collapsible(photomHtml, false)}
 ${collapsible(condHtml, false)}
 ${collapsible(skyHtml, false)}

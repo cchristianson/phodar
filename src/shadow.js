@@ -33,6 +33,32 @@ export function poleDistView(camH, viewEl) {
    and dark skies, and a shadow the light couldn't cast is never drawn); else
    nothing — and then ANY crisp shadow in the photo contradicts the stated
    time and place. ratio = shadow length per unit of object height. */
+/* Sundial inversion: at WHAT TIME (±12 h around `aroundMs`) would the sun
+   throw a shadow toward compass direction `dir` at this place? Scans sun-up
+   instants at 2-min steps for a zero crossing of the azimuth error and
+   refines it linearly — the sun's azimuth sweep is smooth, so this lands
+   within seconds. Usually one match; none when no sun-up azimuth fits (e.g.
+   a due-south shadow in the northern mid-latitudes — the sun is never in the
+   north there). The wrap guard rejects the fake ±180° crossing. Each hit
+   carries the sun's altitude and the shadow's length-per-height ratio, so a
+   matched time can be sanity-checked against the shadow's length too. */
+export function shadowTimes(aroundMs, lat, lon, dir) {
+  const out = [];
+  let prev = null, prevT = null;
+  for (let t = aroundMs - 43200000; t <= aroundMs + 43200000; t += 120000) {
+    const s = sunPos(t, lat, lon);
+    const e = s.alt > 0.05 ? ((s.az + 180 - dir + 540) % 360) - 180 : null;
+    if (e == null) { prev = null; prevT = null; continue; }
+    if (prev != null && (e >= 0) !== (prev >= 0) && Math.abs(e) + Math.abs(prev) < 90) {
+      const tt = prevT + (t - prevT) * (Math.abs(prev) / (Math.abs(prev) + Math.abs(e)));
+      const ss = sunPos(tt, lat, lon);
+      out.push({ ms: Math.round(tt), alt: +ss.alt.toFixed(2), ratio: 1 / Math.tan(ss.alt * D2R) });
+    }
+    prev = e; prevT = t;
+  }
+  return out;
+}
+
 export function shadowCast(ms, lat, lon) {
   const sun = sunPos(ms, lat, lon);
   if (sun.alt > 0.05) return { kind: "sun", az: sun.az, alt: sun.alt, dir: (sun.az + 180) % 360, ratio: 1 / Math.tan(sun.alt * D2R), sunAlt: sun.alt };
