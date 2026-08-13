@@ -102,6 +102,12 @@ const NAMED = [
   ["softMin", /cloud/, "tracking a cloud-only sky"],
   ["goReport", /‹ always steps back/, "the ‹ / 🏠 navigation on the last two steps"],
   ["fetchAircraftAt", /sky-track/i, "aircraft sky-tracks drawn on the dome"],
+  ["predictedRoadDirs", /🛣 roads/, "the roads overlay (true-perspective ribbons)"],
+  ["copyAiPrompt", /Bring your own AI/, "the bring-your-own-AI card + copyable prompt"],
+  ["APPLE_INSTALL", /Install Phodar as an app/, "the PWA install hint"],
+  ["importFromLink", /Fill from a report link/, "the report-link import"],
+  ["metaHint", /keeping the metadata/, "the keep-the-metadata how-to on the capture step"],
+  ["gest(", /DESKTOP/, "the desktop (mouse) gesture wording"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

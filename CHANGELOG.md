@@ -7,6 +7,19 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Help-menu audit: coverage verified complete, six new drift guards
+  added** (user ask). A browser sweep enumerated all 126 interactive
+  controls across every screen (home, capture step empty/photo/video,
+  position, sky view + place mode, results, report) and matched each
+  against the manual — zero gaps at both lenient and strict word-match
+  thresholds (the only unmatched string is the home tagline, which is a
+  subtitle, not a control). What was missing was future-proofing:
+  recently shipped features were documented but UNGUARDED, so their
+  manual entries could be deleted without anything failing. helpcheck's
+  NAMED list gains six: the roads overlay, the bring-your-own-AI card,
+  the PWA install hint, the report-link import, the keep-the-metadata
+  how-to, and the desktop gesture wording (27 named features guarded,
+  up from 21).
 - **Report audit: every recent feature now discloses itself in the final
   report** (user ask: make sure new functionality is accounted for).
   Verified already present: track-quality grading with the
