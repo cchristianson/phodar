@@ -108,6 +108,7 @@ const NAMED = [
   ["importFromLink", /Fill from a report link/, "the report-link import"],
   ["metaHint", /keeping the metadata/, "the keep-the-metadata how-to on the capture step"],
   ["gest(", /DESKTOP/, "the desktop (mouse) gesture wording"],
+  ["scanFileAuthenticity", /File authenticity/, "the authenticity checks (upload forensics + physics consistency)"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

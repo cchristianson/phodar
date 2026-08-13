@@ -6,6 +6,41 @@ Notable changes to Phodar. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Authenticity checks: upload forensics, physics consistency, and a
+  report section with a loud manipulation banner** (user ask; signals
+  fire the moment their inputs exist rather than all at the end).
+  `src/checks/authenticity.js` (pure, mathcheck-asserted) scans the
+  ORIGINAL uploaded bytes — before any canvas normalization — for
+  editing-software fingerprints: AI-generator metadata (Stable
+  Diffusion / ComfyUI / Midjourney / DALL·E / Firefly and friends,
+  including the `Steps/Sampler` parameter block PNG generators embed),
+  C2PA content credentials (a `trainedAlgorithmicMedia` assertion is an
+  alarm; ordinary provenance is a note), Photoshop/GIMP/editor traces,
+  PNG text chunks, JPEG structure notes (Ducky/Save-for-Web,
+  progressive re-encode, APP14), and for video the Lavf/ffmpeg
+  re-encode and ReplayKit screen-recording marks. Findings are ranked
+  alarm → warn → note → info and shown in a 🔬 File authenticity panel
+  on the capture step AT UPLOAD (red border when an alarm fires).
+  Derived checks join as their inputs arrive: once position + time
+  exist, the position step compares the photo's measured brightness
+  against the computed sun elevation (a bright scene at astronomical
+  night, or a black frame at midday, is a physics inconsistency no
+  metadata stripping can hide) and flags file-time-vs-stated-time and
+  EXIF-GPS-vs-pin mismatches; a star or terrain calibration registers
+  as positive evidence the sky matches the claimed time and place. The
+  report gains an "Authenticity checks" section listing every finding
+  per observer plus what was NOT tested (pixel-level splice forensics,
+  AI-detector models, reverse-image search), and any alarm puts a
+  ⛔ MANIPULATION INDICATORS DETECTED banner above every other section —
+  the report then explicitly describes the FILE, not necessarily a real
+  event. Honest epistemics both ways: a clean scan proves nothing (any
+  fingerprint can be stripped), so absence of findings is never sold as
+  authenticity. 17 mathcheck assertions on the pure module + a
+  10-assertion end-to-end browser run (AI-marked PNG alarms at upload,
+  night-brightness check fires on step 2, banner sits above every
+  report section, plain camera JPEG trips nothing).
+
 ### Fixed
 - **Help-menu audit: coverage verified complete, six new drift guards
   added** (user ask). A browser sweep enumerated all 126 interactive

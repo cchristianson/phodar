@@ -610,7 +610,26 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   calibrationSummary also grades each witness at its OWN photo time
   (per.ownSep; a hover makes the joint-instant match undersell a good
   sight-line — obs 1 was 0.19° at its own time vs 1.24° joint).
-- **Esri World Imagery / OSM tiles**: satellite basemap for the Leaflet pin.
+- **Authenticity checks: DONE** (`src/checks/authenticity.js`, pure +
+  mathcheck-asserted): signals fire WHEN their inputs exist, not at the end.
+  `scanFileAuthenticity` runs on the ORIGINAL upload bytes (head 512 KB +
+  tail 192 KB) before canvas normalization strips metadata — AI-generator
+  marks (incl. the PNG `Steps/Sampler` parameter block), C2PA
+  (`trainedAlgorithmicMedia` = alarm, plain provenance = note),
+  editor traces, PNG text chunks, JPEG structure, video Lavf/ReplayKit —
+  shown in the capture step's 🔬 panel at upload (`source.authFile`).
+  `authDerived` re-evaluates pure consistency checks as data arrives:
+  sun elevation vs measured scene brightness (`source.authLum`, a 48×32
+  luminance sample taken in the normalize pass), file time vs stated
+  time (>3 h), EXIF GPS vs pin (>10 km), star/terrain calibration as
+  positive evidence — surfaced on the position step under the datetime
+  input. The report gets an "Authenticity checks" section (per-observer
+  findings + explicit not-tested list) and ANY alarm puts a red
+  ⛔ MANIPULATION INDICATORS DETECTED banner above every section. Levels
+  alarm/warn/note/info; honest both ways — a clean scan proves nothing,
+  and the UI says so. Deliberately metadata+physics only: pixel-level
+  splice forensics / AI-detector models / reverse-image search are named
+  as not tested rather than half-implemented.
 - **🛣 Roads overlay: DONE** (`src/roads.js` + `/api/roads` Overpass proxy):
   OSM centerlines within ~2.6 km in TRUE perspective — vertex elevations
   from the same cached DEM tiles as the skyline, derive-time ray-march

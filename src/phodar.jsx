@@ -38,6 +38,7 @@ import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf } from "./roads.js";
+import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
 import { DEEP_STARS } from "./math/starcatDeep.js";
@@ -594,6 +595,7 @@ const HELP_SECTIONS = [
         { t: "Load photo or video / Replace", d: "Pick any image or video from your device. Replace swaps the media and starts the measurement fresh." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
         { t: "ⓘ keeping the metadata", d: "Before anything is loaded, the step notes that metadata auto-fills when the file carries it; this button pops the how-to for moving a capture between devices WITHOUT stripping it — AirDrop with All Photos Data ON (iPhone), share the original via Files/Drive rather than a chat app (Android), and export HEIC as JPEG so the browser can read it. Messaging apps re-encode media and destroy the GPS/time/lens data." },
+        { t: "🔬 File authenticity", d: "Every upload is scanned on its ORIGINAL bytes and findings appear right under the media: AI-generator markers and generation-parameter blocks (Stable Diffusion, ComfyUI, Midjourney, DALL·E…) alarm in red; provenance manifests (C2PA Content Credentials) are noted; editing and re-encode fingerprints (Photoshop, Lightroom, CapCut, ffmpeg…) warn in amber; container tells (a “photo” arriving as PNG, progressive JPEG, screen-recording keys) are noted; Apple camera-original keys count as POSITIVE evidence. Once position and time are set, physics checks join in on step 2: scene brightness vs the computed sun, the stated time vs the file's own clock, the stated position vs the file's GPS — and a star- or terrain-verified placement counts for authenticity too. Everything lands in the report's Authenticity section, and any high-confidence manipulation indicator banners the top of the report in red. A clean scan proves nothing: it means the file carries no tells." },
         { t: "💾 Save to camera roll (video)", d: "Hands the clip to your phone's share sheet — on iPhone choose “Save Video” to put it in Photos. A web app can't write to Photos directly, so this is the way out. It matters most for a clip you recorded IN Phodar: that lives only inside the app until you save it, so an unsaved one is flagged in amber. (Photos accepts .mp4/.mov and refuses .webm — an iPhone in-app recording is .mp4, so it's fine.)" },
         { t: "⟳ Re-attach the same file", d: "Loads the SAME clip again and keeps every measurement — object placement, track waypoints, alignment frame and sky placement all stay; only the solved stabilization is dropped so you can solve the fresh file. This is also how you give an IMPORTED sighting its video back: a share file carries all the measurements but never the media." },
         { t: "📷 Capture with sensors", d: "Shoot the sighting inside Phodar so the phone logs the up/down angle, roll and heading that EXIF leaves out — see “Shooting in-app” below." },
@@ -768,6 +770,7 @@ const HELP_SECTIONS = [
     groups: [
       { h: "What you can export", items: [
         { t: "Report (.html)", d: "A single self-contained page: the fix, quality, photo exhibits with detail crops, top-down + trajectory charts, and the sky-object / wind / aircraft checks." },
+        { t: "Authenticity checks (in the report)", d: "A per-observer section combining the upload-time file forensics with the physics-consistency checks, stating plainly what was and was NOT tested. Any high-confidence manipulation indicator (AI-generation markers, generation metadata) also puts a loud red ⛔ banner at the very top of the report, ahead of every measurement." },
         { t: "💾 Share file (.phodar.json)", d: "Just the data — the importable file another observer loads to add their perspective, or that you keep as a backup." },
         { t: "Bundle (.zip)", d: "Report + data + full-resolution photos + videos (the original clip, and the world-locked stabilized render if you exported one) in one download, re-importable into Phodar. In the installed (home-screen) app there is no browser download manager, so saving is a deliberate two-step: the bundle packs, then the 💾 Save bundle button appears — tap it and choose “Save to Files” (or AirDrop / share it)." },
         { t: "👁 View report / 📤 Share/Download page", d: "View opens the finished report in a new tab; Share/Download hands the self-contained .html to your phone's share sheet (or downloads it) so you can message it, mail it or file it. It needs no internet to open — every chart, photo and datum is embedded in the page." },
@@ -1337,6 +1340,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
     update({
       mediaUrl: url, mediaKind: kind, mediaNorm: false, mediaLost: null,
       natW: null, natH: null, meta: null, capture: null,
+      authFile: null, authLum: null, // stale authenticity findings never describe a new file
       ...(keepWork
         ? { posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null }
         : { A: { ...src.A, p1: null, p2: null }, B: { ...src.B, pb: null }, track: [], trim: null }),
@@ -1357,6 +1361,10 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
       const m = parseMediaMeta(buf, kind === "video");
       const patch = {};
       if (sensorPath) patch.sensorPath = sensorPath;
+      /* AUTHENTICITY SCAN — on the ORIGINAL bytes, before our own normalize
+         re-encode ever touches them. Findings surface immediately below the
+         media and ride the source into the share file and report. */
+      try { patch.authFile = scanFileAuthenticity(new Uint8Array(buf), kind); } catch (e) { }
       let meta;
       if (!m) {
         /* valid pixels but no GPS/time/bearing: HEIC can't expose it in-browser,
@@ -1613,7 +1621,20 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
           cv.getContext("2d").drawImage(el, 0, 0, W, Hh); // modern browsers draw the ORIENTED image
           const durl = cv.toDataURL("image/jpeg", 0.98);
           const pf = autoPortraitFov(W, Hh);
-          update(pf ? { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh, fovH: pf } : { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh });
+          /* scene-luminance sample for the sun-consistency authenticity check
+             — one 48×32 downsample of pixels we already have in hand */
+          let authLum = null;
+          try {
+            const lc = document.createElement("canvas"); lc.width = 48; lc.height = 32;
+            const lctx = lc.getContext("2d", { willReadFrequently: true });
+            lctx.drawImage(cv, 0, 0, 48, 32);
+            const d = lctx.getImageData(0, 0, 48, 32).data;
+            const ls = [];
+            for (let i = 0; i < d.length; i += 4) ls.push(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+            ls.sort((a, b) => a - b);
+            authLum = { mean: +(ls.reduce((a, b) => a + b, 0) / ls.length).toFixed(1), p90: +ls[Math.floor(ls.length * 0.9)].toFixed(1) };
+          } catch (e) { }
+          update(pf ? { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh, fovH: pf, authLum } : { mediaUrl: durl, mediaNorm: true, natW: W, natH: Hh, authLum });
           warnPut(mediaPut(src.id, { kind: "image", data: durl })); // survives reload via IndexedDB — warn if refused
           setLoading(false); setLoadErr("");
           measureWrap();
@@ -3660,6 +3681,26 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
             The image loaded fine, but its metadata was stripped before it reached here — the tell-tale of a re-encoded copy (sent through Messages/WhatsApp/email, or shared with the Share Sheet's <b>“All Photos Data”</b> turned off). Nothing was lost in transit here; the geodata simply isn’t in the file.
             <div style={{ marginTop: 5 }}>To keep it next time: in Photos, tap <b>Share → Options (top) → All Photos Data ON</b>, Location ON, then AirDrop the original — and don’t route it through a messaging app.</div>
             <div style={{ marginTop: 5, color: "var(--teal)" }}>You can still measure this photo — just set the location by name or pin, the date/time, and the FOV on the steps that follow.</div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔬 AUTHENTICITY — upload-time file forensics surface HERE, the moment
+          they're known: AI-generator markers and manifests alarm in red,
+          editing/re-encode fingerprints in amber, container tells dim, and
+          positive camera-original evidence teal. Derived checks (sun vs scene
+          brightness, time/GPS consistency) appear on the position step once
+          their inputs exist; the report aggregates everything. */}
+      {(src.authFile || []).length > 0 && (
+        <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${(src.authFile || []).some((x) => x.level === "alarm") ? "var(--red)" : (src.authFile || []).some((x) => x.level === "warn") ? "var(--amber)" : "var(--line)"}`, background: (src.authFile || []).some((x) => x.level === "alarm") ? "rgba(255,92,92,.07)" : "transparent" }}>
+          <ML style={{ color: (src.authFile || []).some((x) => x.level === "alarm") ? "var(--red)" : undefined }}>🔬 File authenticity</ML>
+          {(src.authFile || []).map((x, i) => (
+            <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: i ? 4 : 0, color: x.level === "alarm" ? "var(--red)" : x.level === "warn" ? "var(--amber)" : x.level === "info" ? "var(--teal)" : "var(--dim)" }}>
+              {x.level === "alarm" ? "⛔" : x.level === "warn" ? "⚠" : x.level === "info" ? "✓" : "·"} <b>{x.label}</b> — {x.detail}
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 5 }}>
+            A clean scan proves nothing — it means the file carries no tells. Findings ride the share file and the report's Authenticity section.
           </div>
         </div>
       )}
@@ -9679,6 +9720,22 @@ function PositionEditor({ src, update, others, viewOnly }) {
               <input type="datetime-local" value={toLocalInput(new Date(isNum(src.whenMs) ? +src.whenMs : Date.now()))}
                 onChange={(e) => { const t = new Date(e.target.value).getTime(); if (!isNaN(t)) update({ whenMs: t }); }} />
             </div>
+            {/* 🔬 derived authenticity signals — these come alive HERE, the
+                moment position + time exist: scene brightness vs the computed
+                sun, the stated time vs the file's clock, position vs file GPS.
+                Positive sun-consistency shows too (evidence, not just alarms). */}
+            {(() => {
+              const dfs = authDerived(src).filter((x) => x.id !== "cal-stars" && x.id !== "cal-terrain");
+              return dfs.length ? (
+                <div style={{ marginTop: 8 }}>
+                  {dfs.map((x, i) => (
+                    <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, marginTop: i ? 4 : 0, color: x.level === "alarm" ? "var(--red)" : x.level === "warn" ? "var(--amber)" : x.level === "info" ? "var(--teal)" : "var(--dim)" }}>
+                      {x.level === "alarm" ? "⛔" : x.level === "warn" ? "⚠" : x.level === "info" ? "✓" : "·"} <b>{x.label}</b> — {x.detail}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
             </div>
             {posDone && (
               <div style={{ marginTop: 8 }}>
@@ -13021,6 +13078,20 @@ ${windPhotoBlock}
       } catch (e) { /* overpass busy / offline — omit */ }
     }
   }
+  /* 🔬 AUTHENTICITY — aggregate every source's file-forensic + derived
+     findings; any ALARM puts a loud banner at the very top of the report. */
+  const authPer = origAct.map((s, i) => ({ name: s.name || `Observer ${i + 1}`, finds: authFindings(s) }));
+  const authSum = authSummary(authPer.flatMap((a) => a.finds));
+  const authIcon = (lv) => (lv === "alarm" ? "⛔" : lv === "warn" ? "⚠" : lv === "info" ? "✓" : "·");
+  const authCol = (lv) => (lv === "alarm" ? "#c22" : lv === "warn" ? "#a06010" : lv === "info" ? "#0d7d6c" : "#666");
+  const authBanner = authSum.alarms.length
+    ? `<div style="border:2px solid #c22;background:#fdf0f0;border-radius:8px;padding:10px 14px;margin:12px 0"><b style="color:#c22">⛔ MANIPULATION INDICATORS DETECTED</b><div style="font-size:13px;margin-top:4px;line-height:1.5">${authSum.alarms.map((a) => e2(a.label)).join(" · ")}. High-confidence indicators of AI generation or manipulation are present in the submitted media — treat every measurement in this report as describing the FILE, not necessarily a real event. Details in the Authenticity section.</div></div>`
+    : "";
+  const authHtml = `<h2>Authenticity checks</h2>
+<p class="cap">File forensics run on the original bytes at upload (AI-generator markers, provenance manifests, editing-software fingerprints, container tells) plus physics consistency (computed sun vs scene brightness, stated time and position vs the file's own record, star/terrain-verified pointing). A clean scan proves nothing — it means the file carries no tells. Not tested: pixel-level splice forensics, AI-detector models, reverse-image search.</p>
+${authPer.map((a) => `<div style="margin:0 0 10px"><b>${e2(a.name)}</b>${a.finds.length
+    ? a.finds.map((x) => `<div style="font-size:13px;margin-top:3px;line-height:1.5;color:${authCol(x.level)}">${authIcon(x.level)} <b>${e2(x.label)}</b> — ${e2(x.detail)}</div>`).join("")
+    : `<div class="cap" style="margin-top:3px">No findings — no manipulation tells detected, and no positive provenance either.</div>`}</div>`).join("")}`;
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${est?.name ? `${e2(est.name)} — PHODAR report` : "PHODAR sighting report"}</title><style>
 html,body{max-width:100%;overflow-x:hidden}
@@ -13043,6 +13114,7 @@ details.sec>*:last-child{margin-bottom:14px}
 </style></head><body>
 <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:2px"><img src="data:image/svg+xml,${encodeURIComponent(phodarLogoRaw)}" alt="PHODAR" style="height:48px;width:auto;border-radius:8px;display:block"/><span style="font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#555">SIGHTING REPORT</span>${est?.name ? `<span style="font:700 17px Georgia,'Times New Roman',serif;color:#1c1c1c">${e2(est.name)}</span>` : ""}</div>
 <div class="cap">Generated ${new Date().toLocaleString()} · photogrammetric detection &amp; ranging · phodar v1</div>
+${authBanner}
 <h2>Observers (${packed.length})</h2>
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
 <h2>Result</h2>${fixHtml}
@@ -13054,6 +13126,7 @@ ${(() => {
   const rs = [...new Set(origAct.filter((s) => s.report && s.report.url).map((s) => String(s.report.url)))];
   return rs.length ? `<p class="cap">🔗 Sighting details were imported from the public report at ${rs.map((u) => `<a href="${e2(u)}" rel="noopener">${e2(u)}</a>`).join(" · ")} — position, time and statement as stated there, reviewed and refined in Phodar.</p>` : "";
 })()}
+${authHtml}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(vstereoHtml, true)}
@@ -13971,7 +14044,7 @@ export default function App() {
      fovH is deliberately NOT here — it is a measurement input (the portrait
      default-guess that used to ride along with natW/natH is suppressed in
      review mode instead). */
-  const DISPLAY_KEYS = ["imgAdj", "natW", "natH", "mediaNorm", "mediaUrl", "mediaKind", "mediaLost"];
+  const DISPLAY_KEYS = ["imgAdj", "natW", "natH", "mediaNorm", "mediaUrl", "mediaKind", "mediaLost", "authFile", "authLum"];
   const displayOnly = (patch) => patch && Object.keys(patch).every((k) => DISPLAY_KEYS.includes(k));
   const wLock = (patch) => {
     if (!viewOnly) return false;

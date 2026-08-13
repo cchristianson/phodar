@@ -3469,5 +3469,53 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(polysH.some((p) => !p.major && p.v.length >= 2 && p.v[0].d < 700), "roads: the near stretch in front of the hill still draws");
 }
 
+// --- 🔬 authenticity checks (src/checks/authenticity.js) — synthetic files
+// carrying real-world fingerprints must trip the right level; a clean buffer
+// must trip nothing (a false AI alarm is worse than a miss).
+{
+  const { scanFileAuthenticity, pngTextChunks, jpegMarkers, authDerived, authSummary } = await import("../src/checks/authenticity.js");
+  const enc = (s) => new TextEncoder().encode(s);
+
+  ok(scanFileAuthenticity(enc("....Steps: 20, Sampler: Euler a, CFG scale: 7...."), "image").some((x) => x.id === "ai-params" && x.level === "alarm"), "auth: SD parameter block → alarm");
+  ok(scanFileAuthenticity(enc("xmp:CreatorTool=Midjourney v6"), "image").some((x) => x.level === "alarm" && /Midjourney/.test(x.label)), "auth: Midjourney marker → alarm");
+
+  const pngChunk = (type, body) => {
+    const b = enc(body), out = new Uint8Array(12 + b.length);
+    out[0] = (b.length >>> 24) & 255; out[1] = (b.length >>> 16) & 255; out[2] = (b.length >>> 8) & 255; out[3] = b.length & 255;
+    out.set(enc(type), 4); out.set(b, 8);
+    return out; // crc bytes left zero — the walker doesn't verify them
+  };
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ...pngChunk("tEXt", "parameters masterpiece, Steps: 30"), ...pngChunk("IEND", "")]);
+  const pf2 = scanFileAuthenticity(png, "image");
+  ok(pngTextChunks(png).some((c) => c.key === "parameters"), "auth: PNG tEXt chunk parsed");
+  ok(pf2.some((x) => x.id === "png-genmeta" && x.level === "alarm"), "auth: PNG parameters chunk → alarm");
+  ok(pf2.some((x) => x.id === "png" && x.level === "note"), "auth: PNG container noted (cameras write JPEG/HEIC)");
+
+  const jpg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xEC, 0x00, 0x07, ...enc("Ducky"), 0xFF, 0xC2, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xD9]);
+  const jm = jpegMarkers(jpg);
+  ok(jm && jm.ducky && jm.progressive, "auth: JPEG marker walk finds Ducky + progressive SOF2");
+  const jf = scanFileAuthenticity(jpg, "image");
+  ok(jf.some((x) => x.id === "ducky" && x.level === "warn") && jf.some((x) => x.id === "progressive"), "auth: Save-for-Web warn + progressive note");
+
+  ok(scanFileAuthenticity(enc("<x:xmp> Adobe Photoshop 25.0 </x:xmp>"), "image").some((x) => x.id === "edited" && x.level === "warn"), "auth: Photoshop fingerprint → warn");
+  ok(scanFileAuthenticity(enc("....Lavf60.3.100...."), "video").some((x) => x.id === "ffmpeg" && x.level === "warn"), "auth: ffmpeg (Lavf) container → re-encode warn");
+  ok(scanFileAuthenticity(enc("com.apple.quicktime.model=iPhone 14"), "video").some((x) => x.id === "apple-orig" && x.level === "info"), "auth: Apple camera-original keys → positive info");
+  ok(scanFileAuthenticity(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), "image").length === 0, "auth: a clean buffer trips nothing");
+
+  // derived physics: the sun cannot be argued with
+  const base = { lat: "42.3", lon: "-122.9", authLum: { mean: 150, p90: 220 } };
+  const night = Date.UTC(2026, 7, 10, 9, 30);  // ≈ 02:30 local — astronomical night
+  const day = Date.UTC(2026, 7, 10, 20, 0);    // ≈ 13:00 local — high sun
+  ok(authDerived({ ...base, whenMs: night }).some((x) => x.id === "sun-night" && x.level === "warn"), "auth: bright scene at astronomical night → warn");
+  ok(authDerived({ ...base, whenMs: day }).some((x) => x.id === "sun-ok" && x.level === "info"), "auth: daylight brightness consistent → positive");
+  ok(authDerived({ ...base, whenMs: day, meta: { timeMs: day - 26 * 3600000 } }).some((x) => x.id === "time-mismatch"), "auth: stated time 26 h from file clock → note");
+  ok(authDerived({ ...base, whenMs: day, meta: { lat: 43.5, lon: -122.9 } }).some((x) => x.id === "gps-mismatch"), "auth: stated position ~130 km from file GPS → note");
+  ok(authDerived({ ...base, whenMs: day, calib: { method: "stars", rms: 0.1 } }).some((x) => x.id === "cal-stars" && x.level === "info"), "auth: star-verified pointing → positive");
+
+  const sum = authSummary(pf2);
+  ok(sum.worst === "alarm" && sum.alarms.length === 1, "auth: summary surfaces the alarm for the report banner");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");
