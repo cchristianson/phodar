@@ -586,6 +586,21 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   off the sight-line meant zero tracks before Moment A is set, so the look
   direction is the fallback reference; live mode accumulates its own trail
   from the 20 s polls. Satellites should emit the same trail shape.
+- **Moon terminator forensic: DONE** (`src/checks/moonlimb.js`, pure +
+  18 mathcheck assertions; report Authenticity finding): the lit limb
+  must point at the sun. Predicted direction = limbTargetPoint stepped
+  toward the sun and projected through the photo's REAL pose (dirToPixK
+  — roll/lens included, no hand conventions); measured =
+  `measureLimbDir`: the lit region's MINOR principal axis (phase shapes
+  are mirror-symmetric about the limb axis; the axis-aligned-bbox and
+  centroid-offset approaches both failed at non-cardinal angles —
+  measured), signed by the width taper (terminator end wide, limb end
+  tapers). <2° on synthetic crescent/half/gibbous; full moon → strength
+  0 → silent. limbVerdict has a gray zone (30–55°) and gates
+  (frac 0.10–0.92, strength ≥0.12, moon-sized blob) — never guesses.
+  Match = info, mismatch = warn (banner-free) with "re-check stated
+  time/placement first" triage. E2e both ways on ephemeris-true
+  synthetic moon photos.
 - **Aurora / contrail / lantern context: DONE** (`src/checks/aurora.js`
   + `/api/kp` GFZ proxy (no CORS upstream); `contrailVerdict`/
   `fetchFlightRH` in weather.js (Open-Meteo forecast API only — ERA5

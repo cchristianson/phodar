@@ -7,6 +7,29 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🌙 Moon terminator forensic — the composite-killer** (last item on
+  the list). When the moon is IN a photo, its lit limb must point at the
+  sun: pure celestial mechanics that a pasted-in moon routinely gets
+  wrong and no metadata stripping can repair. `src/checks/moonlimb.js`
+  (pure, 18 mathcheck assertions): the predicted limb direction is a sky
+  point stepped from the moon toward the sun and projected through the
+  photo's REAL pose (roll and lens distortion included — no hand-derived
+  angle conventions to get wrong); the measured direction is the lit
+  region's MINOR principal axis (every phase shape is mirror-symmetric
+  about the limb axis), signed by the width taper (the terminator end is
+  wide, the limb end tapers like a rim) — center-error-free by
+  construction, recovering the limb direction to <2° on synthetic
+  crescent, half AND gibbous discs. Verdicts have an inconclusive gray
+  zone and hard gates: full/new moons, weak asymmetry, or a
+  non-moon-sized blob yield NO verdict — this forensic never guesses.
+  Agreement lands as positive evidence in the Authenticity section
+  ("its lit limb points within N° of where the sun requires"); a big
+  mismatch warns with the honest triage order ("a wrong stated
+  time/place or a mis-set placement also shifts it; re-check those
+  first"). End-to-end proven both ways on synthetic zoomed moon photos
+  built from the real ephemeris: the correctly-lit disc attests, the
+  140°-rotated composite warns and auto-opens the section (5-assertion
+  browser e2e).
 - **Aurora, contrail and sky-lantern context checks** (the small trio
   from the list). ✨ AURORA: for night sightings at auroral-capable
   latitudes the report pulls the GFZ Kp geomagnetic index for the

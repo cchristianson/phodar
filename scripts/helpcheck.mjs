@@ -122,6 +122,7 @@ const NAMED = [
   ["auroraVerdict", /Aurora & lantern context/, "the aurora (Kp) context check"],
   ["lanternContext", /lantern/, "the sky-lantern date context"],
   ["contrailVerdict", /contrail/, "the flight-level humidity contrail check"],
+  ["measureLimbDir", /Moon terminator forensic/, "the moon lit-limb orientation forensic"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

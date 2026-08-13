@@ -3770,6 +3770,64 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(contrailVerdict(null) === null, "contrails: no data → no verdict");
 }
 
+// --- 🌙 moon terminator forensic — limb geometry + disc measurement
+{
+  const { limbTargetPoint, measureLimbAngle, limbVerdict } = await import("../src/checks/moonlimb.js");
+  // sun directly above the moon → bearing 0 (toward zenith); to the right → 90
+  approx(limbTargetPoint(180, 30, 180, 50).paDeg, 0, 0.5, "moonlimb: sun above ⇒ limb bearing toward zenith");
+  approx(limbTargetPoint(180, 30, 182, 30).paDeg, 90, 1, "moonlimb: nearby sun at higher azimuth ⇒ limb bearing ~90°");
+  const tp = limbTargetPoint(180, 30, 180, 50);
+  ok(tp.alt > 30 && Math.abs(tp.az - 180) < 0.01, "moonlimb: stepped sky point moves toward the sun");
+  // synthetic half-lit disc, lit side toward 30° (image convention, y down)
+  const W = 100, H = 100, g = new Float32Array(W * H).fill(5);
+  const th = 30 * D2R, ux = Math.cos(th), uy = Math.sin(th);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const dx = x - 50, dy = y - 50;
+    if (dx * dx + dy * dy <= 900) g[y * W + x] = (dx * ux + dy * uy) > 0 ? 220 : 25;
+  }
+  const m = measureLimbAngle(g, W, H, 50, 50, 30);
+  ok(m && Math.abs(((m.angle - 30 + 540) % 360) - 180) < 175 && Math.abs(((m.angle - 30 + 540) % 360) - 180) >= 0, "moonlimb: measurement returns an angle");
+  approx(((m.angle - 30 + 540) % 360) - 180, 0, 4, "moonlimb: half-lit disc recovers the lit direction to a few degrees");
+  ok(m.strength > 0.1, `moonlimb: half-disc asymmetry is strong (${m.strength.toFixed(2)})`);
+  // a uniformly-lit (full-moon-like) disc must NOT testify
+  const gf = new Float32Array(W * H).fill(5);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const dx = x - 50, dy = y - 50; if (dx * dx + dy * dy <= 900) gf[y * W + x] = 220; }
+  const mf = measureLimbAngle(gf, W, H, 50, 50, 30);
+  ok(mf.strength < 0.03 && limbVerdict(mf.angle, 10, mf.strength, 0.5) === null, "moonlimb: uniform disc → too weak, no verdict");
+  ok(limbVerdict(35, 30, 0.2, 0.5).verdict === "match", "moonlimb: 5° agreement → positive match");
+  ok(limbVerdict(210, 30, 0.2, 0.5).verdict === "mismatch", "moonlimb: lit side pointing away → mismatch warn");
+  ok(limbVerdict(75, 30, 0.2, 0.5) === null, "moonlimb: 45° gray zone → silent, never a guess");
+  ok(limbVerdict(210, 30, 0.2, 0.97) === null, "moonlimb: near-full moon → no verdict (no terminator to read)");
+  ok(limbVerdict(355, 5, 0.2, 0.5).verdict === "match", "moonlimb: wrap-around 10° agreement still matches");
+  // disc locating: the half-disc's bbox center lands near the true center,
+  // span reads the true diameter; an empty sky refuses to answer
+  const { discCenter } = await import("../src/checks/moonlimb.js");
+  const dc = discCenter(g, W, H);
+  ok(dc && Math.hypot(dc.cx - 50, dc.cy - 50) < 0.55 * 30 && Math.abs(dc.spanPx - 60) < 8, `moonlimb: disc located (center off by ${Math.hypot(dc.cx - 50, dc.cy - 50).toFixed(0)}px, span ${dc.spanPx})`);
+  ok(discCenter(new Float32Array(W * H).fill(6), W, H) === null, "moonlimb: blank sky → no disc, no verdict");
+  // center-error-free measurement: the limb axis is the lit region's MINOR
+  // principal axis (mirror symmetry), signed by the width taper — no disc
+  // center needed. Half, crescent AND gibbous must all recover ~30°.
+  const { measureLimbDir } = await import("../src/checks/moonlimb.js");
+  const err = (m) => Math.abs(((m.angle - 30 + 540) % 360) - 180);
+  const md = measureLimbDir(g, W, H);
+  ok(md && err(md) < 2 && md.strength > 0.2, `moonlimb: half-disc limb axis to <2° (Δ${err(md).toFixed(1)}°, strength ${md.strength.toFixed(2)})`);
+  const mkPhase = (cut) => {
+    const gg = new Float32Array(W * H).fill(5);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const dx = x - 50, dy = y - 50;
+      if (dx * dx + dy * dy <= 900 && (dx * ux + dy * uy) > cut) gg[y * W + x] = 220;
+    }
+    return gg;
+  };
+  const mc = measureLimbDir(mkPhase(12), W, H);
+  ok(mc && err(mc) < 2, `moonlimb: crescent limb axis to <2° (Δ${err(mc).toFixed(1)}°)`);
+  const mg = measureLimbDir(mkPhase(-18), W, H);
+  ok(mg && err(mg) < 2 && mg.strength > 0.12, `moonlimb: gibbous limb axis to <2° (Δ${err(mg).toFixed(1)}°)`);
+  const mfull = measureLimbDir(gf, W, H);
+  ok(!mfull || mfull.strength < 0.12, "moonlimb: full disc → strength below the verdict gate (no false testimony)");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law

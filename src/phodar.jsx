@@ -42,6 +42,7 @@ import { fetchMasts, mastsNear } from "./checks/masts.js";
 import { parseSites, launchStateAt, rankSondes, fetchSondeSites, fetchSondes } from "./checks/sondes.js";
 import { fetchAirspace, rayIntoZone, suaActiveAt } from "./checks/airspace.js";
 import { geomagLat, auroraVerdict, fetchKpAt } from "./checks/aurora.js";
+import { limbTargetPoint, measureLimbDir, limbVerdict } from "./checks/moonlimb.js";
 import { lanternContext } from "./checks/lanterns.js";
 import { poleShadow, poleDistView, shadowCast, shadowTimes, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
@@ -790,6 +791,7 @@ const HELP_SECTIONS = [
         { t: "Weather-balloon check (radiosonde)", d: "The #1 mundane explanation gets real data, not inference. Layer one: the worldwide launch-site catalog — was a scheduled synoptic balloon (00Z/12Z at most stations, launched ~1 h before) actually AIRBORNE at the stated time, and was it ascending or descending, at what altitude? Layer two: radiosondes actually RECEIVED by the volunteer SondeHub network near the sighting, ranked against every sight-line like aircraft — range, altitude, predicted angular size from the envelope's altitude-grown diameter, and a 🎯 trajectory match when your tracked video path follows the real balloon's flight. Honest both ways: no received telemetry rules out received sondes, not balloons." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart. The conditions table also carries flight-level humidity when available (~3 months back): moist upper air means spreading persistent contrails were expected that day, and DRY upper air is the useful negative — a long-lasting white trail was probably not a contrail." },
+        { t: "Moon terminator forensic", d: "When the moon is IN the photo its lit limb must point at the sun — pure celestial mechanics, and the classic composite-killer: a pasted-in moon routinely has its phase rotated wrong for the claimed time, place and framing. The report measures the lit limb's direction from the pixels (the phase shape's own symmetry axis — works on crescents, halves and gibbous moons) and compares it against where the computed sun demands, through the photo's real projection. Agreement is positive evidence; a big mismatch warns (re-check the stated time and the placement first). Full and new moons have no terminator to read, so the check honestly stays silent." },
         { t: "Aurora & lantern context", d: "Two calendar/space-weather context lines. For night sightings at auroral latitudes the report pulls the geomagnetic Kp index for the sighting time (full history) and says whether the auroral oval reached the observer — a shifting glow or curtains during a storm is a classic report. And a night sighting on July 4, New Year's Eve or Lunar New Year gets the sky-lantern note: a drifting orange point that flickers and fades, riding the surface wind." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
         { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
@@ -13482,6 +13484,50 @@ ${candHtml}`;
   /* 🔬 AUTHENTICITY — aggregate every source's file-forensic + derived
      findings; any ALARM puts a loud banner at the very top of the report. */
   const authPer = origAct.map((s, i) => ({ name: s.name || `Observer ${i + 1}`, finds: authFindings(s) }));
+  /* 🌙 moon terminator forensic — when the moon is IN a photo, its lit limb
+     must point at the sun; a pasted-in moon routinely has the phase rotated
+     wrong and no metadata stripping repairs it. The predicted limb direction
+     goes through the photo's REAL projection (roll + lens k included); the
+     measured one is the lit region's minor principal axis, signed by the
+     width taper — center-error-free, and silent (never guessing) on
+     full/new moons, weak asymmetry, or the gray zone. */
+  try {
+    for (let i = 0; i < origAct.length; i++) {
+      const s = origAct[i];
+      if (!s.mediaUrl || s.mediaKind === "video" || !isNum(s.whenMs) || !isNum(s.lat) || !isNum(s.lon) || !isNum(s.fovH) || !s.natW) continue;
+      const mn = moonPos(+s.whenMs, +s.lat, +s.lon), frac = moonFrac(+s.whenMs);
+      if (mn.alt < 2 || frac < 0.10 || frac > 0.92) continue;
+      if (!objInFrame(s, mn.az, mn.alt)) continue;
+      const sn = sunPos(+s.whenMs, +s.lat, +s.lon);
+      const ma = s.mediaAim || {};
+      const caz = isNum(ma.az) ? +ma.az : +s.A?.az, cel = isNum(ma.el) ? +ma.el : +s.A?.el;
+      if (!isNum(caz) || !isNum(cel)) continue;
+      const roll = isNum(ma.roll) ? +ma.roll : 0, lk = isNum(ma.dist) ? +ma.dist : 0;
+      const p0 = dirToPixK(dirFromAzEl(mn.az, mn.alt), s.natW, s.natH, caz, cel, roll, +s.fovH, lk);
+      const tpt = limbTargetPoint(mn.az, mn.alt, sn.az, sn.alt);
+      const p1 = dirToPixK(dirFromAzEl(tpt.az, tpt.alt), s.natW, s.natH, caz, cel, roll, +s.fovH, lk);
+      if (!p0 || !p1) continue;
+      const predicted = ((Math.atan2(p1.py - p0.py, p1.px - p0.px) * R2D) + 360) % 360;
+      const rPx = Math.max(6, 0.26 * (s.natW / +s.fovH)); // the moon's ~0.52° disc in this lens
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = s.mediaUrl; });
+      const R = Math.ceil(Math.max(rPx * 2.4, (2.0 * s.natW) / +s.fovH / 2)); // cover ~1° of placement slop
+      const cw = R * 2 + 1;
+      const cv = document.createElement("canvas"); cv.width = cw; cv.height = cw;
+      const c2 = cv.getContext("2d", { willReadFrequently: true });
+      c2.drawImage(img, Math.round(p0.px) - R, Math.round(p0.py) - R, cw, cw, 0, 0, cw, cw);
+      const idd = c2.getImageData(0, 0, cw, cw).data;
+      const gray = new Float32Array(cw * cw);
+      for (let q = 0; q < cw * cw; q++) gray[q] = 0.299 * idd[q * 4] + 0.587 * idd[q * 4 + 1] + 0.114 * idd[q * 4 + 2];
+      const meas = measureLimbDir(gray, cw, cw);
+      if (!meas || meas.spanPx < rPx * 1.0 || meas.spanPx > rPx * 3.4) continue; // blob isn't moon-sized — say nothing
+      const v = limbVerdict(meas.angle, predicted, meas.strength, frac);
+      if (!v) continue;
+      authPer[i].finds.push(v.verdict === "match"
+        ? { id: "moon-limb-ok", level: "info", label: "Moon terminator agrees with the computed sun", detail: `The moon is in this photo and its lit limb points within ${Math.round(v.offDeg)}° of the direction the sun requires for the stated time, place and framing — a physical consistency a composited moon rarely gets right.` }
+        : { id: "moon-limb", level: "warn", label: "Moon lit-limb mismatch", detail: `The moon in this photo has its lit side pointing ~${Math.round(v.offDeg)}° away from where the sun requires at the stated time, place and framing. Phases cannot rotate — a pasted-in or heavily edited moon is the usual cause (a wrong stated time/place or a mis-set placement also shifts it; re-check those first).` });
+    }
+  } catch (e) { /* decode/measure failed — the forensic stays silent */ }
   const authSum = authSummary(authPer.flatMap((a) => a.finds));
   const authIcon = (lv) => (lv === "alarm" ? "⛔" : lv === "warn" ? "⚠" : lv === "info" ? "✓" : "·");
   const authCol = (lv) => (lv === "alarm" ? "#c22" : lv === "warn" ? "#a06010" : lv === "info" ? "#0d7d6c" : "#666");
