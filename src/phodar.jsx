@@ -4965,22 +4965,34 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const autoCamH = (isNum(source?.meta?.alt) && terr?.h0 != null) ? +source.meta.alt - terr.h0 : null;
   const camH = isNum(source?.camH) ? clampN(+source.camH, 1.6, 300)
     : (autoCamH != null && autoCamH > 3 ? clampN(autoCamH, 1.6, 300) : 1.6);
-  /* 🛣 road centerlines — sight-line polylines through the same projection,
-     elevation re-derived live from the stored {az,d,gz} so the camera-height
-     nudge moves roads and rooftops together. Opacity fades with the road's
-     nearest distance (the ridge-haze rule); major roads draw brighter. */
+  /* 🛣 road RIBBONS — left/right edge polylines at the road's real width,
+     an asphalt fill between them (per-segment quads, so the horizon and
+     behind-camera cuts never break the polygon), and a dashed center line
+     on major roads. Elevation re-derived live from the stored {az,d,gz} so
+     the camera-height nudge moves roads and rooftops together; opacity
+     fades with the road's nearest distance (the ridge-haze rule). */
   const roadPaths = (roadsOn && roadsD?.polys && !cameraOn) ? (() => {
     const eyeAbs = Math.max(0, roadsD.h0) + camH;
+    const proj = (p) => {
+      const da = ((p.az - effAz + 540) % 360) - 180;
+      return Math.abs(da) <= 130 ? project(effAz + da, roadElOf(p, eyeAbs)) : { inFront: false };
+    };
+    const okPt = (q) => q.inFront && q.x > -0.6 && q.x < 1.6 && q.y > -0.6 && q.y < 1.6;
     const out = [];
     for (const poly of roadsD.polys) {
-      const pts = poly.v.map((p) => {
-        const da = ((p.az - effAz + 540) % 360) - 180;
-        return Math.abs(da) <= 130 ? project(effAz + da, roadElOf(p, eyeAbs)) : { inFront: false };
-      });
-      const d = gpath(pts);
-      if (!d) continue;
+      const Lp = poly.L.map(proj), Rp = poly.R.map(proj);
+      const eL = gpath(Lp), eR = gpath(Rp);
+      if (!eL && !eR) continue;
+      let fill = "";
+      for (let q = 0; q < Lp.length - 1; q++) {
+        const a = Lp[q], b2 = Lp[q + 1], c2 = Rp[q + 1], d2 = Rp[q];
+        if (okPt(a) && okPt(b2) && okPt(c2) && okPt(d2)) {
+          fill += `M ${(a.x * 100).toFixed(2)} ${(a.y * 100).toFixed(2)} L ${(b2.x * 100).toFixed(2)} ${(b2.y * 100).toFixed(2)} L ${(c2.x * 100).toFixed(2)} ${(c2.y * 100).toFixed(2)} L ${(d2.x * 100).toFixed(2)} ${(d2.y * 100).toFixed(2)} Z `;
+        }
+      }
+      const center = poly.major ? gpath(poly.v.map(proj)) : null;
       const t = clampN((poly.dMin - 60) / 2400, 0, 1);
-      out.push({ d, o: (poly.major ? 0.95 : 0.55) * (1 - 0.55 * t), major: poly.major });
+      out.push({ eL, eR, fill, center, o: (poly.major ? 0.95 : 0.55) * (1 - 0.55 * t), major: poly.major });
     }
     return out;
   })() : [];
@@ -6782,13 +6794,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const tl = P(ce.az, skylineElAt(terr.els, ce.az));
           if (tl) text("TERRAIN", tl[0], tl[1] - 6 * lw, ridgeCol(0.95), Math.max(8, lfs - 1));
         }
-        /* 🛣 road centerlines — same sight-line polylines as the dome layer */
+        /* 🛣 road ribbons — same edges/fill/center as the dome layer */
         if (roadsOn && roadsD?.polys) {
           const eyeAbs = Math.max(0, roadsD.h0) + camH;
+          const okQ = (q) => q && q[0] > -OUT_W && q[0] < 2 * OUT_W && q[1] > -OUT_H && q[1] < 2 * OUT_H;
           for (const rp of roadsD.polys) {
             const t = clampN((rp.dMin - 60) / 2400, 0, 1);
-            poly(rp.v.map((p) => { const da = ((p.az - ce.az + 540) % 360) - 180; return Math.abs(da) <= span + 10 ? P(ce.az + da, roadElOf(p, eyeAbs)) : null; }),
-              `rgba(225,232,245,${((rp.major ? 0.95 : 0.55) * (1 - 0.55 * t)).toFixed(2)})`, (rp.major ? 1.5 : 1) * lw);
+            const o = (rp.major ? 0.95 : 0.55) * (1 - 0.55 * t);
+            const pj = (p) => { const da = ((p.az - ce.az + 540) % 360) - 180; return Math.abs(da) <= span + 10 ? P(ce.az + da, roadElOf(p, eyeAbs)) : null; };
+            const Lp = rp.L.map(pj), Rp = rp.R.map(pj);
+            ctx.fillStyle = `rgba(24,30,46,${(0.34 * o).toFixed(2)})`;
+            for (let qq = 0; qq < Lp.length - 1; qq++) {
+              const a2 = Lp[qq], b2 = Lp[qq + 1], c2 = Rp[qq + 1], d2 = Rp[qq];
+              if (okQ(a2) && okQ(b2) && okQ(c2) && okQ(d2)) {
+                ctx.beginPath(); ctx.moveTo(a2[0], a2[1]); ctx.lineTo(b2[0], b2[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d2[0], d2[1]); ctx.closePath(); ctx.fill();
+              }
+            }
+            poly(Lp, `rgba(225,232,245,${o.toFixed(2)})`, (rp.major ? 1.4 : 1) * lw);
+            poly(Rp, `rgba(225,232,245,${o.toFixed(2)})`, (rp.major ? 1.4 : 1) * lw);
+            if (rp.major) poly(rp.v.map(pj), `rgba(255,205,110,${(0.85 * o).toFixed(2)})`, lw, [8 * lw, 7 * lw]);
           }
         }
         /* named peaks that sit on the drawn silhouette (top 8 by height, like the dome) */
@@ -7332,7 +7356,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {altLines.map((d, i) => d ? <path key={"al" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {azLines.map((d, i) => d ? <path key={"az" + i} d={d} fill="none" stroke={gridColor} strokeWidth="1" vectorEffect="non-scaling-stroke" /> : null)}
           {horizonPath && <path d={horizonPath} fill="none" stroke={cameraOn ? "rgba(255,255,255,0.8)" : (isNight ? "rgba(170,190,230,0.6)" : "rgba(255,255,255,0.75)")} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />}
-          {roadPaths.map((r, i) => <path key={"rd" + i} d={r.d} fill="none" stroke={`rgba(225,232,245,${r.o.toFixed(2)})`} strokeWidth={r.major ? "1.7" : "1.1"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+          {roadPaths.map((r, i) => (
+            <g key={"rd" + i}>
+              {r.fill && <path d={r.fill} fill={`rgba(24,30,46,${(0.34 * r.o).toFixed(2)})`} stroke="none" />}
+              {r.eL && <path d={r.eL} fill="none" stroke={`rgba(225,232,245,${r.o.toFixed(2)})`} strokeWidth={r.major ? "1.5" : "1"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+              {r.eR && <path d={r.eR} fill="none" stroke={`rgba(225,232,245,${r.o.toFixed(2)})`} strokeWidth={r.major ? "1.5" : "1"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+              {r.center && <path d={r.center} fill="none" stroke={`rgba(255,205,110,${(0.85 * r.o).toFixed(2)})`} strokeWidth="1.1" strokeDasharray="8 7" vectorEffect="non-scaling-stroke" />}
+            </g>
+          ))}
           {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
           {bldgBoxes.map((b, i) => <path key={"bx" + i} d={b.d} fill="none" stroke={b.faint ? "rgba(255,178,74,0.5)" : "rgba(255,178,74,0.95)"} strokeWidth={b.faint ? "1" : "1.4"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
@@ -9371,24 +9402,30 @@ function PositionEditor({ src, update, others, viewOnly }) {
       const t = clampN((dist - 50) / 600, 0, 1);
       return `rgba(${Math.round(235 - 105 * t)},${Math.round(160 - 75 * t)},${Math.round(50 - 30 * t)},${a})`;
     };
-    /* 🛣 road centerlines — the dome's derived sight-lines mapped into the
-       strip's az→x / el→y window; slate-white so they read as road markings
-       against both the vista texture and the flat profile */
+    /* 🛣 road ribbons — the dome's derived edges mapped into the strip's
+       az→x / el→y window: both edge lines (slate-white, like fog lines)
+       plus the dashed center on major roads, so the road you stand on reads
+       as a converging wedge here too */
     const drawRoads = (Ymap, alpha) => {
       if (!roadSil || !roadSil.polys) return;
       const eyeAbs = Math.max(0, roadSil.h0) + Math.max(1.6, camH);
       ctx.lineCap = "round";
-      for (const rp of roadSil.polys) {
-        ctx.strokeStyle = `rgba(225,232,245,${((rp.major ? 0.9 : 0.5) * alpha).toFixed(2)})`;
-        ctx.lineWidth = rp.major ? 1.6 : 1;
+      const line = (vv, colr, wpx, dash) => {
+        ctx.strokeStyle = colr; ctx.lineWidth = wpx; ctx.setLineDash(dash || []);
         ctx.beginPath(); let pen = false;
-        for (const p of rp.v) {
+        for (const p of vv) {
           const rel = ((p.az - b + 540) % 360) - 180;
           if (Math.abs(rel) > span / 2 + 10) { pen = false; continue; }
           const x = X(b + rel), y = Ymap(roadElOf(p, eyeAbs));
           pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true;
         }
-        ctx.stroke();
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      for (const rp of roadSil.polys) {
+        const col = `rgba(225,232,245,${((rp.major ? 0.9 : 0.5) * alpha).toFixed(2)})`;
+        line(rp.L, col, rp.major ? 1.3 : 1);
+        line(rp.R, col, rp.major ? 1.3 : 1);
+        if (rp.major) line(rp.v, `rgba(255,205,110,${(0.8 * alpha).toFixed(2)})`, 1, [6, 5]);
       }
       ctx.lineCap = "butt";
     };

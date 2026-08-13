@@ -26,6 +26,25 @@ export const ROADS_ATTRIB = "Roads: OpenStreetMap contributors (ODbL)";
 const MAJOR = /^(motorway|trunk|primary|secondary)/;
 const K_REFR = 0.13; // curvature+refraction, same constant as skylineFromSampler
 
+/* real roadway width in metres — an explicit OSM width tag wins, then
+   lanes × 3.4 m + shoulders, then a per-class default. This is what turns
+   the centerline into a RIBBON whose edges converge like the road in the
+   photo (field ask: "the road you are on should look big"). */
+export function roadWidthM(tags) {
+  var w = tags && tags.width != null ? parseFloat(String(tags.width).replace(/[^0-9.]/g, "")) : NaN;
+  if (isFinite(w) && w > 1 && w < 60) return w;
+  var lanes = tags && tags.lanes != null ? parseFloat(String(tags.lanes)) : NaN;
+  if (isFinite(lanes) && lanes >= 1 && lanes <= 12) return lanes * 3.4 + 1.2;
+  var h = String((tags && tags.highway) || "");
+  if (/^motorway/.test(h)) return 19;
+  if (/^trunk/.test(h)) return 12;
+  if (/^primary/.test(h)) return 10;
+  if (/^secondary/.test(h)) return 9;
+  if (/^tertiary/.test(h)) return 8;
+  if (/^(service|track)/.test(h)) return 4;
+  return 7; // residential / unclassified / living_street
+}
+
 /* Overpass `out geom` JSON → road polylines in the observer's ENU frame:
      { roads: [{ pts: [[e,n],…] metres, major, name }], n, shown, vtx }
    Ways are CLIPPED to maxM (a way running out of range splits into the
@@ -44,9 +63,10 @@ export function parseOverpassRoads(json, obsLat, obsLon, opts) {
     if (!Array.isArray(geom) || geom.length < 2) continue;
     n++;
     var major = MAJOR.test(String(el.tags.highway));
+    var w = roadWidthM(el.tags);
     var run = [], last = null, dMin = Infinity;
     var flush = function () {
-      if (run.length >= 2) all.push({ pts: run, major: major, name: el.tags.name || null, dMin: dMin });
+      if (run.length >= 2) all.push({ pts: run, major: major, w: w, name: el.tags.name || null, dMin: dMin });
       run = []; last = null; dMin = Infinity;
     };
     for (var g = 0; g < geom.length; g++) {
@@ -79,11 +99,16 @@ export function roadElOf(p, eyeAbs) {
   return Math.atan2(Math.max(0, p.gz) - eyeAbs - (p.d * p.d * (1 - K_REFR)) / (2 * RE), p.d) * R2D;
 }
 
-/* ENU polylines → sight-line polylines: each vertex gains {az, d, gz}, and
-   with a DEM sampler present, vertices whose ray is blocked by nearer
-   terrain are dropped (splitting the polyline there — an occluded stretch
-   emits nothing, so hills genuinely hide roads). sample(e,n)→m or null;
-   h0 = observer ground elevation (m). */
+/* ENU polylines → sight-line RIBBONS. Each road becomes a center polyline
+   plus LEFT/RIGHT edge polylines offset half the real roadway width
+   perpendicular to the local direction — that is what makes the road you
+   stand on fill the frame and converge to its true vanishing point instead
+   of reading as a thin thread. Every vertex gains {az, d, gz}; segments
+   near the camera are DENSIFIED (perspective magnifies close range — a
+   40 m Overpass segment is a visible chord at 30 m out), and with a DEM
+   sampler present, vertices whose ray is blocked by nearer terrain are
+   dropped (splitting the ribbon there — hills genuinely hide roads).
+   sample(e,n)→m or null; h0 = observer ground elevation (m). */
 export function roadSightlines(parsed, sample, h0, opts) {
   var eyeM = (opts && opts.eyeM) || 1.6;
   var eyeAbs = Math.max(0, h0) + eyeM;
@@ -98,21 +123,60 @@ export function roadSightlines(parsed, sample, h0, opts) {
     }
     return false;
   };
+  /* near-field subdivision: split long segments while either end is close */
+  var densify = function (pts) {
+    var out = [];
+    for (var i = 0; i < pts.length; i++) {
+      out.push(pts[i]);
+      var a = pts[i], b = pts[i + 1];
+      if (!b) break;
+      var dNear = Math.min(Math.hypot(a[0], a[1]), Math.hypot(b[0], b[1]));
+      var segL = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (dNear < 300 && segL > 20) {
+        var steps = Math.min(16, Math.floor(segL / 10));
+        for (var s = 1; s < steps; s++) out.push([a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps]);
+      }
+    }
+    return out;
+  };
+  var sight = function (e, n, gz) {
+    var d = Math.hypot(e, n);
+    var azR = Math.atan2(e, n);
+    return { az: ((azR * R2D) + 360) % 360, d: d, gz: gz };
+  };
   var polys = [];
   var roads = (parsed && parsed.roads) || [];
   for (var i = 0; i < roads.length; i++) {
-    var rd = roads[i], v = [];
-    var flush = function () { if (v.length >= 2) polys.push({ v: v, major: rd.major, name: rd.name, dMin: rd.dMin }); v = []; };
-    for (var j = 0; j < rd.pts.length; j++) {
-      var e = rd.pts[j][0], n = rd.pts[j][1];
+    var rd = roads[i], run = [];
+    var wHalf = ((rd.w || 7) / 2);
+    var flush = function () {
+      if (run.length < 2) { run = []; return; }
+      /* per-vertex left normal = average of adjacent segment directions */
+      var L = [], R = [], C = [];
+      for (var q = 0; q < run.length; q++) {
+        var p = run[q];
+        var pa = run[Math.max(0, q - 1)], pb = run[Math.min(run.length - 1, q + 1)];
+        var dx = pb.e - pa.e, dy = pb.n - pa.n;
+        var len = Math.hypot(dx, dy) || 1;
+        var nx = -dy / len, ny = dx / len;
+        C.push(sight(p.e, p.n, p.gz));
+        L.push(sight(p.e + nx * wHalf, p.n + ny * wHalf, p.gz));
+        R.push(sight(p.e - nx * wHalf, p.n - ny * wHalf, p.gz));
+      }
+      polys.push({ v: C, L: L, R: R, w: rd.w || 7, major: rd.major, name: rd.name, dMin: rd.dMin });
+      run = [];
+    };
+    var pts = densify(rd.pts);
+    for (var j = 0; j < pts.length; j++) {
+      var e = pts[j][0], n = pts[j][1];
       var d = Math.hypot(e, n);
-      if (d < 3) { flush(); continue; }              // under the camera — azimuth undefined
+      if (d < 2.5) { flush(); continue; }            // under the camera — azimuth undefined
       var gz = sample ? sample(e, n) : null;
       if (gz == null) gz = h0;
       var azR = Math.atan2(e, n);
       var el = Math.atan2(Math.max(0, gz) - eyeAbs - (d * d * (1 - K_REFR)) / (2 * RE), d) * R2D;
       if (occluded(azR, d, el)) { flush(); continue; }
-      v.push({ az: ((azR * R2D) + 360) % 360, d: d, gz: gz });
+      run.push({ e: e, n: n, gz: gz });
     }
     flush();
   }

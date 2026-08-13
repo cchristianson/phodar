@@ -3442,6 +3442,14 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(roadElOf(far, 101.6), wantEl, 0.02, "roads: flat-plane el = -atan(eye/d) with the curvature+refraction term");
   ok(roadElOf(pN.v[0], 101.6) < roadElOf(far, 101.6), "roads: nearer pavement sits farther below the horizon");
 
+  // RIBBON: edges at the road's real half-width, converging with distance —
+  // the road you stand on must be a wide wedge at the feet, a thread far out
+  ok(Array.isArray(pN.L) && Array.isArray(pN.R) && pN.L.length === pN.v.length, "roads: ribbon carries L/R edge polylines");
+  const spanAt = (poly, idx) => Math.abs(((poly.R[idx].az - poly.L[idx].az + 540) % 360) - 180);
+  const wantSpan0 = 2 * Math.atan2(pN.w / 2, pN.v[0].d) * 180 / Math.PI; // primary default width 10 m
+  approx(spanAt(pN, 0), wantSpan0, 0.2, `roads: ribbon width at the feet = 2·atan(w/2 ÷ d) (${wantSpan0.toFixed(1)}°)`);
+  ok(spanAt(pN, 0) > 8 * spanAt(pN, pN.v.length - 1), "roads: edges converge with distance (true perspective)");
+
   // a 40 m hill spanning 800–1000 m due east hides the road beyond it
   const hill = (e, n) => (e > 800 && e < 1000 && Math.abs(n) < 200 ? 140 : 100);
   const polysH = roadSightlines(parsed, hill, 100, { eyeM: 1.6 });

@@ -7,6 +7,23 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🛣 Roads are RIBBONS now, not threads** (field ask on the first
+  render: "the road you are on should look big — accurate width, follow
+  terrain, match reality"). Each road carries its real roadway width
+  (explicit OSM `width` tag → `lanes` × 3.4 m + shoulders → per-class
+  default, 19 m motorway down to 4 m service lane) and renders as left/
+  right EDGE lines offset perpendicular to the centerline — so the
+  highway you stand on fills the frame and converges to its true
+  vanishing point exactly like the photo — plus a subtle asphalt fill
+  (per-segment quads, immune to horizon/behind-camera cuts) and a
+  dashed amber CENTER line on major roads, the way a real highway reads.
+  Near-field segments are densified (~10 m steps inside 300 m) because
+  perspective magnifies close range — a 40 m Overpass chord is visibly
+  angular at 30 m out. Same treatment in all three renderers (dome,
+  world-locked export, horizon strip). Mathcheck-asserted: ribbon width
+  at the feet = 2·atan(w/2 ÷ d) (28.1° for a 10 m primary at 20 m),
+  edges converge >8× from near to far. Browser-verified: edge pair +
+  fill quads + dashed center all present on the mocked highway.
 - **🛣 Roads overlay — OSM road centerlines in true perspective** (field
   ask: a highway shot straight down the centerline had nothing to align
   against; a road is the best azimuth anchor FLAT terrain has, where no
