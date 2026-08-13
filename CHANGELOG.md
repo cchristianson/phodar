@@ -7,6 +7,33 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Report audit: every recent feature now discloses itself in the final
+  report** (user ask: make sure new functionality is accounted for).
+  Verified already present: track-quality grading with the
+  camera-workload caveat, geometric clock-sync shifts, visibility
+  seconds used vs ignored, the analysed trim span, flight-log
+  calibration honesty, and the calibration method. Four gaps found and
+  fixed: (1) **⚓ manual pose anchors** were invisible — a
+  human-corrected camera path is different evidence, so the video
+  section now states how many frames were re-anchored and that
+  corrections blend between anchors; (2) **sensor-fused camera paths**
+  were invisible — the report now says when frames were carried by the
+  phone's motion sensors, and when the whole path is sensor-built
+  (visual solve couldn't follow); (3) **report-link provenance** — a
+  sighting filled from a public report page now cites that page's URL
+  beside the witness accounts; (4) the **video-analysis section
+  vanished entirely for a video whose clip is gone** (evicted media, or
+  any imported share — share files never carry the video) even though
+  every measurement was present: the gate keyed on an attached
+  mediaUrl, and the boot deliberately drops mediaKind for lost media.
+  It now keys on mediaKind OR mediaLost === "video", renders the full
+  kinematics/rate-plot/distance-ladder from the measurements, skips
+  only the keyframe strip, and says plainly that the clip isn't
+  attached. Also: **track quality "excellent" is now stated instead of
+  silent** — a reviewer should never infer quality from a line's
+  absence. Browser-verified (7 assertions on a seeded sighting
+  exercising all of it) plus the 45-assertion export round-trip
+  regression.
 - **Export audit: two losses found and fixed, everything else verified
   intact** (user ask: make sure the exported file captures all useful
   data). The share pipeline is structurally sound — `packSources` strips

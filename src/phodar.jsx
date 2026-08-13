@@ -12500,7 +12500,16 @@ ${momStrip}`;
      scientific-analysis surface for footage. --- */
   let videoHtml = "";
   {
-    const vids = origAct.filter((s) => s.mediaKind === "video" && s.mediaUrl && Array.isArray(s.objPath) && s.objPath.length >= 3 && Array.isArray(s.posePath) && s.posePath.length >= 2 && s.natW && s.natH);
+    /* the section renders from the MEASUREMENTS (objPath/posePath), which a
+       share file always carries — mediaUrl is only needed to bake the
+       keyframe strip, so a sighting whose clip was evicted (or an imported
+       share, which never carries the video) keeps its kinematics, rate plot
+       and distance ladder and just loses the pictures (export-audit find:
+       the old gate silently dropped the WHOLE section). mediaLost === "video"
+       is how the boot marks a video whose clip is gone (mediaKind is dropped
+       so attach-gates read "no media", which is the truth — but the
+       measurements still describe a video and the report must say so). */
+    const vids = origAct.filter((s) => (s.mediaKind === "video" || s.mediaLost === "video") && Array.isArray(s.objPath) && s.objPath.length >= 3 && Array.isArray(s.posePath) && s.posePath.length >= 2 && s.natW && s.natH);
     if (vids.length && typeof document !== "undefined") {
       const spd = (mps) => isImperialUnits() ? `${Math.round(mps * 2.23694)} mph` : `${mps < 1 ? mps.toFixed(1) : Math.round(mps)} m/s`;
       /* bake keyframes: seek an offscreen video to each time, draw to a capped
@@ -12621,7 +12630,7 @@ ${spans ? `<text x="${W - Rm}" y="${H - B - 5}" font-size="9" fill="#b06a10" tex
         const t0 = span[0].t, t1 = span[span.length - 1].t;
         const nKF = clampN(Math.round((t1 - t0) / 1.2) + 2, 4, 8);
         const kfTimes = Array.from({ length: nKF }, (_, i) => +(t0 + (t1 - t0) * i / (nKF - 1)).toFixed(3));
-        const kf = await bakeKeyframes(s, vk, kfTimes);
+        const kf = s.mediaUrl ? await bakeKeyframes(s, vk, kfTimes) : [];
         const kfCards = kf.filter(Boolean).map((f) => {
           const col = s.shapeFit ? `hsl(${s.shapeFit.hue ?? 36},85%,45%)` : "#e23";
           const markSvg = f.mark ? `<svg viewBox="0 0 ${f.w} ${f.h}" style="position:absolute;left:0;top:0;width:100%;height:100%"><circle cx="${f.mark.x.toFixed(1)}" cy="${f.mark.y.toFixed(1)}" r="${Math.max(8, f.w / 34).toFixed(1)}" fill="none" stroke="${col}" stroke-width="${Math.max(1.5, f.w / 320).toFixed(2)}"/><line x1="${f.mark.x.toFixed(1)}" y1="${(f.mark.y - f.w / 22).toFixed(1)}" x2="${f.mark.x.toFixed(1)}" y2="${(f.mark.y + f.w / 22).toFixed(1)}" stroke="${col}" stroke-width="${Math.max(0.8, f.w / 500).toFixed(2)}"/><line x1="${(f.mark.x - f.w / 22).toFixed(1)}" y1="${f.mark.y.toFixed(1)}" x2="${(f.mark.x + f.w / 22).toFixed(1)}" y2="${f.mark.y.toFixed(1)}" stroke="${col}" stroke-width="${Math.max(0.8, f.w / 500).toFixed(2)}"/></svg>` : "";
@@ -12633,14 +12642,34 @@ ${spans ? `<text x="${W - Rm}" y="${H - B - 5}" font-size="9" fill="#b06a10" tex
           ? `Its apparent width ranged ${vk.angMin.toFixed(2)}°–${vk.angMax.toFixed(2)}°${vk.rangeRatio && Math.abs(vk.rangeRatio - 1) > 0.05 ? ` — a <b>${vk.rangeRatio.toFixed(2)}× range change</b> (it moved ${vk.rangeRatio > 1 ? "closer then" : ""} ${vk.angMax > vk.angMin ? "nearer" : "farther"} over the clip)` : " (near-constant — little toward/away motion)"}.`
           : `Angular size was not marked frame-to-frame, so only transverse (across-sky) motion is measured — mark the object's width on a few frames (measure step) to recover toward/away motion.`;
         blocks.push(`${vids.length > 1 ? `<h3>${e2(s.name || "Observer " + (vi + 1))}</h3>` : ""}
-${(() => { const tq = trackQuality(s); return tq && tq.grade !== "excellent" ? `<p class="cap">\uD83C\uDFA5 Track quality <b>${tq.grade}</b>: ${tq.reasons.join("; ")}.</p>` : ""; })()}
+${(() => {
+  /* ALWAYS state the grade \u2014 a reviewer should never have to infer quality
+     from a line's absence (export-audit find: "excellent" was silent) */
+  const tq = trackQuality(s);
+  if (!tq) return "";
+  return tq.grade !== "excellent"
+    ? `<p class="cap">\uD83C\uDFA5 Track quality <b>${tq.grade}</b>: ${tq.reasons.join("; ")}.</p>`
+    : `<p class="cap">\uD83C\uDFA5 Track quality <b>excellent</b> \u2014 the camera solve and object track are well-anchored throughout; no masked stretches.</p>`;
+})()}
 <p class="lead"><b>Measured angular motion:</b> the object swept <b>${vk.sweep.toFixed(1)}°</b> of sky over <b>${vk.dur.toFixed(1)} s</b> (${vk.n} tracked frames), averaging <b>${vk.avgOmega.toFixed(2)}°/s</b> and peaking at <b>${vk.peakOmega.toFixed(2)}°/s</b>.${isNum(vk.peakOmegaAll) && vk.peakOmegaAll > vk.peakOmega * 1.25 && (vk.zoomSpans || []).length ? ` <span class="cap">An apparent ${vk.peakOmegaAll.toFixed(1)}°/s excursion coincides with a hard zoom (${vk.zoomSpans.map((sp) => `${sp.t0.toFixed(1)}–${sp.t1.toFixed(1)} s`).join(", ")}) where the camera solve had too few background anchors to separate camera motion from object motion — likely the camera re-centering during the zoom, so it is excluded from the peak.</span>` : ""}${isNum(vk.noiseOmega) && vk.noiseOmega > 0.1 ? ` <span class="cap">Rate variations below ≈${vk.noiseOmega < 0.95 ? vk.noiseOmega.toFixed(2) : vk.noiseOmega.toFixed(1)}°/s are within tracker noise.</span>` : ""} ${angLine}${held ? ` <span class="cap">(${held} frame${held > 1 ? "s" : ""} held on the guide, not pixel-locked.)</span>` : ""}</p>
 ${rateSvg}
 ${isNum(s.trim?.t0) && isNum(s.trim?.t1) ? `<p class="cap" style="margin-top:6px">Analysed span: <b>${(+s.trim.t0).toFixed(2)}–${(+s.trim.t1).toFixed(2)} s</b> of the clip — the witness trimmed the ends, so the figures above describe that span only. The original recording is unaltered.</p>` : ""}
+${Array.isArray(s.poseFixes) && s.poseFixes.length ? `<p class="cap">⚓ ${s.poseFixes.length} frame${s.poseFixes.length > 1 ? "s of the camera path were" : " of the camera path was"} manually re-anchored onto the true horizon/terrain after the automatic solve (corrections blend smoothly between anchors; the object track moves with them). Human-corrected stretches are only as good as the anchor placement.</p>` : ""}
+${(() => {
+  /* sensor-fusion provenance: a camera path carried (or wholly rebuilt) from
+     the phone's motion sensors is different evidence than a visual solve —
+     say so. posePath entries carry src: v(visual)/s(sensor-carried)/b(blend);
+     mode "sensor" = the whole path came from the motion log. */
+  if (s.sensorSync && s.sensorSync.mode === "sensor") return `<p class="cap">🧭 The camera path comes from the phone's own motion sensors (recorded with motion data; the visual solve could not follow this clip). Motion is sensor-measured; absolute pointing is anchored to the sky placement.</p>`;
+  const pp = Array.isArray(s.posePath) ? s.posePath : [];
+  const sen = pp.filter((q) => q.src === "s" || q.src === "b").length;
+  return sen ? `<p class="cap">🧭 ${sen} frame${sen > 1 ? "s" : ""} of the camera path ${sen > 1 ? "were" : "was"} carried by the phone's motion sensors where the visual solve was weak (sensors own motion, vision owns absolute pointing).</p>` : "";
+})()}
 <p class="cap" style="margin-top:8px">Angular position &amp; rate are measured directly from the world-locked track — no distance needed. Linear size and speed below follow only once a distance is assumed${fixDist ? " (here fixed by triangulation)" : ""}:</p>
 <table><tr><th>Assumed distance</th><th>True size</th><th>Avg speed</th><th>Peak speed</th><th>Path length</th></tr>${distRows}</table>
 ${fixDist ? "" : `<p class="cap">Single viewpoint — distance is unknown, so the row you believe fixes everything else.${(isNum(s.assumedD) && +s.assumedD > 0) ? ` <b>The highlighted row is the witness's own distance estimate</b> (set with 📏 in the sky view).` : ""} A second observer's video triangulates the true distance and collapses this to one row.</p>`}
-${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tracked object marked (${s.shapeFit ? "shape colour" : "red"} reticle) at sampled moments:</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">${kfCards}</div>` : ""}`);
+${kfCards ? `<p class="cap" style="margin-top:10px"><b>Keyframes</b> — the tracked object marked (${s.shapeFit ? "shape colour" : "red"} reticle) at sampled moments:</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">${kfCards}</div>` : ""}
+${!s.mediaUrl ? `<p class="cap">The clip itself isn't attached here (share files carry the measurements, never the video) — the figures come from the recorded world-locked track. Re-attach the original clip in Phodar to add keyframe exhibits.</p>` : ""}`);
       }
       if (blocks.length) videoHtml = `<h2>Video analysis</h2>${blocks.join('<hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>')}`;
     }
@@ -13018,6 +13047,13 @@ details.sec>*:last-child{margin-bottom:14px}
 <table><tr><th>Name</th><th>Position</th><th>Time</th><th>Bearing az/el</th><th>FOV</th><th>Traj pts</th></tr>${obsRows}</table>
 <h2>Result</h2>${fixHtml}
 ${(() => { const ws = origAct.filter((s) => s.statement && String(s.statement).trim()); return ws.length ? `<h2>Witness accounts</h2>` + ws.map((s, i) => `<div style="margin:0 0 12px"><b>${e2(s.name || "Observer " + (i + 1))}</b>${s.whenMs ? ` <span class="cap">· ${new Date(+s.whenMs).toLocaleString()}</span>` : ""}<blockquote class="stmt">${e2(String(s.statement).trim())}</blockquote></div>`).join("") : ""; })()}
+${(() => {
+  /* provenance for sightings pre-filled from a public report page (the 🔗
+     link import): cite the source so the position/time/statement can be
+     checked against what the page actually states */
+  const rs = [...new Set(origAct.filter((s) => s.report && s.report.url).map((s) => String(s.report.url)))];
+  return rs.length ? `<p class="cap">🔗 Sighting details were imported from the public report at ${rs.map((u) => `<a href="${e2(u)}" rel="noopener">${e2(u)}</a>`).join(" · ")} — position, time and statement as stated there, reviewed and refined in Phodar.</p>` : "";
+})()}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(vstereoHtml, true)}
