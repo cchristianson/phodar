@@ -3543,6 +3543,22 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(poleDist(100), 300, 1e-9, "shadow: pole distance scales with camera height");
   approx(poleShadow({ az: 45, camH: 100, sunAz: 180, sunAlt: 45 }).base.el, Math.atan2(-100, 300) * R2D, 1e-9, "shadow: rooftop base stays in a drawable band");
   ok(POLE_H === 5, "shadow: pole height is the documented 5 m");
+
+  // gaze-following standoff: the pole stands where the view-center ray meets the ground
+  const { poleDistView, shadowCast } = await import("../src/shadow.js");
+  approx(poleDistView(1.6, -Math.atan2(1.6, 25) * R2D), 25, 1e-6, "shadow: looking at the 25 m ground point puts the pole there");
+  approx(poleDistView(1.6, -45), 6, 1e-9, "shadow: steep look-down floors at 6 m, never underfoot");
+  approx(poleDistView(1.6, 10), 300, 1e-9, "shadow: looking up parks the pole at the far cap");
+  approx(poleDistView(100, -18.435), 300, 0.1, "shadow: rooftop gaze-to-ground matches the geometry");
+
+  // light-source arbitration: sun, else moon (with % lit honesty), else nothing
+  const dayC = shadowCast(Date.UTC(2026, 7, 10, 20, 0), 42.3, -122.9);   // high sun
+  ok(dayC.kind === "sun" && Math.abs(dayC.ratio - 1 / Math.tan(dayC.alt * D2R)) < 1e-9, "shadow: daytime → sun casts, ratio = 1/tan(alt)");
+  approx(dayC.dir, (dayC.az + 180) % 360, 1e-9, "shadow: cast direction opposite the source");
+  const moonC = shadowCast(Date.UTC(2026, 7, 1, 6, 45), 42.3, -122.9);   // sun down, 93%-lit moon at 21°
+  ok(moonC.kind === "moon" && moonC.frac > 0.85 && !moonC.dim, "shadow: bright moon after sunset → moonlight shadow, not dim");
+  const noneC = shadowCast(Date.UTC(2026, 7, 10, 9, 30), 42.3, -122.9);  // astronomical night, moon down
+  ok(noneC.kind === null && noneC.sunAlt < -18, "shadow: sun and moon both down → nothing casts (any crisp shadow contradicts the time)");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

@@ -7,6 +7,27 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **⚑ Shadow check v2: tilt-to-place, moonlight shadows, and a report
+  compass diagram** (user asks). The flagpole now stands where the
+  CENTER OF YOUR VIEW meets the ground — tilt down and it comes closer,
+  tilt up and it moves out (6 m floor, 300 m cap), so standing it right
+  on a shadow you want to compare is a tilt, not a setting; the status
+  line shows the live standoff. After dark the check switches to the
+  MOON when it's up: a bright moon draws a faint blue moonlight shadow
+  with its % lit stated ("93%-lit moon ⇒ faint shadow toward NW, needs
+  dark skies"), a thin moon (<30% lit) is honestly "too dim to cast
+  usable shadows", and with neither sun nor moon up the line says ANY
+  visible shadow in the photo contradicts the stated time and place —
+  a shadow the light couldn't cast is never drawn. The REPORT's
+  Authenticity section gains a "Shadow geometry" block per observer: a
+  self-contained compass-rose SVG (arrow = shadow direction, ☀/🌙 glyph
+  at the source azimuth) plus the exact direction and the
+  length-per-object-height ratio — checkable against the photo,
+  unfakeable by stripping metadata. 8 new mathcheck assertions
+  (gaze-to-ground standoff mapping, sun/moon/none arbitration against
+  real ephemeris, ratio and direction math) + a 15-assertion browser
+  e2e across day, bright-moon and dark-night cases including the
+  report block.
 - **⚑ Shadow check — a sun-shadow flagpole gadget on the sky view** (user
   ask). A new header toggle plants a schematic 5 m flagpole on level
   ground at the center of your view (it follows as you pan, and sits

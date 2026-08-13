@@ -38,7 +38,7 @@ import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf } from "./roads.js";
-import { poleShadow, poleDist, POLE_H } from "./shadow.js";
+import { poleShadow, poleDistView, shadowCast, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
@@ -807,7 +807,7 @@ const HELP_SECTIONS = [
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
         { t: "🛣 roads", d: "OSM roads within ~2.5 km drawn as TRUE-PERSPECTIVE RIBBONS — real roadway width (edge lines converge to the actual vanishing point), a dashed center line on highways, elevations from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: lay the photo's road onto the drawn ribbon the way a ridge photo snaps to the skyline. The 📷 camera height row (appears with the layer) matters here: the near road's shape depends on your eye height — standing ≈1.6 m, in a car ≈1.2 m — nudge until the ribbon sits on the pavement. Roads also appear on the position step's horizon strip." },
-        { t: "⚑ Shadow check", d: "Plants a schematic 5 m flagpole on level ground at the center of your view (it follows as you pan) and draws where the sun at the sighting time would throw its shadow — a physics check against shadows visible in the photo, which no metadata stripping can fake. Shadow DIRECTION is exact; length assumes flat ground and honours your 📷 camera height. When the sun is below the horizon at the stated time it says so — visible shadows in the photo would then contradict the claimed time. Dome-only: the pole is fictitious, so it is never burned into video exports." },
+        { t: "⚑ Shadow check", d: "Plants a schematic 5 m flagpole where the center of your view meets the ground and draws where the sun at the sighting time would throw its shadow — a physics check against shadows visible in the photo, which no metadata stripping can fake. TILT to place it: looking down brings the pole closer, looking up pushes it out, so you can stand it right on a shadow you want to compare. Shadow DIRECTION is exact; length assumes flat ground and honours your 📷 camera height. After dark a bright moon casts too — the check switches to a faint blue moonlight shadow with the moon's % lit stated; a thin moon is honestly 'too dim', and with neither sun nor moon up ANY visible shadow contradicts the stated time. The report's Authenticity section carries the same geometry as a compass diagram. Dome-only: the pole is fictitious, so it is never burned into video exports." },
       ]},
     ],
     tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
@@ -5113,20 +5113,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const p = project(bldgPeak.az, bldgPeak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
   })() : null;
-  /* ⚑ sun-shadow gadget — a schematic flagpole at the view-center azimuth on
-     level ground, plus where the sighting-time sun throws its shadow. Physics
-     cross-check against shadows visible in the photo. Dome-only, like the
-     winds stack — the pole is fictitious, so it is never burned into a
-     world-locked export. Recomputes as you pan (the pole tracks center). */
+  /* ⚑ sun/moon-shadow gadget — a schematic flagpole planted where the
+     view-center ray meets the ground (tilt down = closer, up = further; that
+     IS the placement control), plus where the sighting-time light throws its
+     shadow: the sun, else a bright-enough moon (shadowCast — a thin moon is
+     honestly "too dim" rather than a fabricated shadow). Physics cross-check
+     against shadows visible in the photo. Dome-only, like the winds stack —
+     the pole is fictitious, so it is never burned into a world-locked
+     export. Recomputes as you pan (the pole tracks center). */
+  const shCast = useMemo(() => shadowCast(T, LAT, LNG), [T, LAT, LNG]);
+  const shD = poleDistView(camH, effAlt);
   const shadowGad = (shadowOn && !cameraOn) ? (() => {
-    const g = poleShadow({ az: effAz, camH, sunAz: sun.az, sunAlt: sun.alt });
+    const cast = (shCast.kind && !(shCast.kind === "moon" && shCast.dim)) ? shCast : null;
+    const g = poleShadow({ az: effAz, camH, sunAz: cast ? cast.az : 0, sunAlt: cast ? cast.alt : -90, D: shD });
     const P = (p) => project(p.az, p.el);
     const top = P(g.top);
     return {
       pole: gpath(g.pole.map(P)),
       shadow: g.shadow ? gpath(g.shadow.map(P)) : null,
       top: (top.inFront && top.x > -0.05 && top.x < 1.05 && top.y > -0.05 && top.y < 1.05) ? top : null,
-      len: g.len, clipped: g.clipped,
+      len: g.len, clipped: g.clipped, moon: cast?.kind === "moon",
     };
   })() : null;
   /* peaks projected into THIS view — the header count reflects what actually
@@ -7432,8 +7438,8 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {bldgBoxes.map((b, i) => <path key={"bx" + i} d={b.d} fill="none" stroke={b.faint ? "rgba(255,178,74,0.5)" : "rgba(255,178,74,0.95)"} strokeWidth={b.faint ? "1" : "1.4"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
           {shadowGad && (
             <g>
-              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke="rgba(8,12,22,0.78)" strokeWidth="5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
-              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke="rgba(255,215,106,0.6)" strokeWidth="1" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
+              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke={shadowGad.moon ? "rgba(10,16,30,0.6)" : "rgba(8,12,22,0.78)"} strokeWidth="5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke={shadowGad.moon ? "rgba(159,220,255,0.55)" : "rgba(255,215,106,0.6)"} strokeWidth="1" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
               {shadowGad.pole && <path d={shadowGad.pole} fill="none" stroke="rgba(235,240,250,0.95)" strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             </g>
           )}
@@ -8031,10 +8037,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
             </button>
           )}
           {hasPos && (
-            <button className="btn sm" title="Shadow check — plants a schematic 5 m flagpole on level ground at the center of your view and draws where the sun at the sighting time would throw its shadow. Compare against shadows visible in the photo: direction is exact; length assumes flat ground."
-              style={{ background: "rgba(15,23,42,.7)", color: !shadowOn ? "var(--dim)" : sun.alt > 0.05 ? "#ffd76a" : "var(--amber)" }}
+            <button className="btn sm" title="Shadow check — plants a schematic 5 m flagpole where the center of your view meets the ground (tilt down to bring it closer, up to push it out) and draws where the sun — or after dark, a bright moon — would throw its shadow at the sighting time. Compare against shadows visible in the photo: direction is exact; length assumes flat ground."
+              style={{ background: "rgba(15,23,42,.7)", color: !shadowOn ? "var(--dim)" : shCast.kind === "sun" ? "#ffd76a" : shCast.kind === "moon" && !shCast.dim ? "#9fdcff" : "var(--amber)" }}
               onClick={() => setShadowOn((v) => !v)}>
-              ⚑ {shadowOn ? (sun.alt > 0.05 ? "shadow" : "no sun") : "shadow"}
+              ⚑ {shadowOn ? (shCast.kind === "sun" ? "shadow" : shCast.kind === "moon" ? (shCast.dim ? "dim moon" : "moon shadow") : "no sun") : "shadow"}
             </button>
           )}
         </div>
@@ -8056,10 +8062,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           </div>
         )}
         {shadowOn && (
-          <div style={{ fontSize: 10, color: sun.alt > 0.05 ? "#ffd76a" : "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
-            {sun.alt > 0.05
-              ? `⚑ ${fmtLenShort(POLE_H)} pole ${fmtLenShort(poleDist(camH))} out — sun az ${sun.az.toFixed(0)}° alt ${sun.alt.toFixed(1)}° ⇒ ${fmtLenShort(POLE_H / Math.tan(sun.alt * D2R))} shadow toward ${compass8((sun.az + 180) % 360)} · direction exact, length assumes level ground`
-              : `⚑ sun below the horizon at the sighting time (alt ${sun.alt.toFixed(1)}°) — no shadow to cast; visible shadows in the photo would contradict the stated time`}
+          <div style={{ fontSize: 10, color: shCast.kind === "sun" ? "#ffd76a" : shCast.kind === "moon" && !shCast.dim ? "#9fdcff" : "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {shCast.kind === "sun"
+              ? `⚑ ${fmtLenShort(POLE_H)} pole ${fmtLenShort(shD)} out (tilt to move it) — sun az ${shCast.az.toFixed(0)}° alt ${shCast.alt.toFixed(1)}° ⇒ ${fmtLenShort(POLE_H * shCast.ratio)} shadow toward ${compass8(shCast.dir)} · direction exact, length assumes level ground`
+              : shCast.kind === "moon" && !shCast.dim
+                ? `⚑ sun is down; ${Math.round(shCast.frac * 100)}%-lit moon az ${shCast.az.toFixed(0)}° alt ${shCast.alt.toFixed(1)}° ⇒ a faint moonlight shadow toward ${compass8(shCast.dir)} (${fmtLenShort(POLE_H * shCast.ratio)} for the ${fmtLenShort(POLE_H)} pole, ${fmtLenShort(shD)} out — tilt to move it) · needs dark skies; direction exact`
+                : shCast.kind === "moon"
+                  ? `⚑ sun is down and only a ${Math.round(shCast.frac * 100)}%-lit moon is up — too thin to cast usable shadows; crisp shadows in the photo would contradict the stated time`
+                  : `⚑ neither sun nor moon is above the horizon at the sighting time (sun ${shCast.sunAlt.toFixed(1)}°) — nothing to cast a shadow; ANY visible shadows in the photo contradict the stated time and place`}
           </div>
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (
@@ -13130,11 +13140,44 @@ ${windPhotoBlock}
   const authBanner = authSum.alarms.length
     ? `<div style="border:2px solid #c22;background:#fdf0f0;border-radius:8px;padding:10px 14px;margin:12px 0"><b style="color:#c22">⛔ MANIPULATION INDICATORS DETECTED</b><div style="font-size:13px;margin-top:4px;line-height:1.5">${authSum.alarms.map((a) => e2(a.label)).join(" · ")}. High-confidence indicators of AI generation or manipulation are present in the submitted media — treat every measurement in this report as describing the FILE, not necessarily a real event. Details in the Authenticity section.</div></div>`
     : "";
+  /* ⚑ shadow geometry — where shadows MUST fall at each observer's stated
+     time & place (sun, else a bright moon, else nothing — and then any crisp
+     shadow contradicts the claim). Compass rose SVG: arrow = shadow, glyph =
+     the light source. Self-contained like every other report graphic. */
+  const shadowRose = (c) => {
+    const cx = 64, cy = 60, r = 44, f = (n) => n.toFixed(1);
+    const dv = (az) => [Math.sin(az * D2R), -Math.cos(az * D2R)];
+    const [ux, uy] = dv(c.dir), tip = [cx + (r - 8) * ux, cy + (r - 8) * uy];
+    const [a1x, a1y] = dv(c.dir + 150), [a2x, a2y] = dv(c.dir - 150);
+    const [gx, gy] = [cx + (r + 10) * dv(c.az)[0], cy + (r + 10) * dv(c.az)[1]];
+    const col = c.kind === "moon" ? "#5b7fa6" : "#8a5a10";
+    return `<svg width="128" height="132" viewBox="0 0 128 132" style="flex:0 0 auto">
+<circle cx="${cx}" cy="${cy}" r="${r}" fill="#fafafa" stroke="#bbb"/>
+${[["N", 0], ["E", 90], ["S", 180], ["W", 270]].map(([L, az]) => { const [x, y] = [cx + (r - 8) * dv(az)[0], cy + (r - 8) * dv(az)[1]]; return `<text x="${f(x)}" y="${f(y + 3.5)}" text-anchor="middle" font-size="10" font-family="ui-monospace,monospace" fill="#bbb">${L}</text>`; }).join("")}
+<line x1="${cx}" y1="${cy}" x2="${f(tip[0])}" y2="${f(tip[1])}" stroke="${col}" stroke-width="3"/>
+<line x1="${f(tip[0])}" y1="${f(tip[1])}" x2="${f(tip[0] + 8 * a1x)}" y2="${f(tip[1] + 8 * a1y)}" stroke="${col}" stroke-width="3"/>
+<line x1="${f(tip[0])}" y1="${f(tip[1])}" x2="${f(tip[0] + 8 * a2x)}" y2="${f(tip[1] + 8 * a2y)}" stroke="${col}" stroke-width="3"/>
+<text x="${f(gx)}" y="${f(gy + 4)}" text-anchor="middle" font-size="12">${c.kind === "moon" ? "🌙" : "☀"}</text>
+<text x="${cx}" y="128" text-anchor="middle" font-size="9" font-family="ui-monospace,monospace" fill="#888">shadow direction</text>
+</svg>`;
+  };
+  const shadowGeoHtml = origAct.map((s, i) => {
+    if (!(isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs))) return "";
+    const c = shadowCast(+s.whenMs, +s.lat, +s.lon);
+    const who = origAct.length > 1 ? `<b>${e2(s.name || "Observer " + (i + 1))}</b> — ` : "";
+    let txt, svg = "";
+    if (c.kind === "sun") { txt = `${who}☀ Sun az ${c.az.toFixed(0)}° · alt ${c.alt.toFixed(1)}° ⇒ shadows fall toward <b>${compass8(c.dir)} (${c.dir.toFixed(0)}°)</b>, length ≈ <b>${c.ratio.toFixed(2)}×</b> object height. Direction is exact for the stated time and place; length assumes level ground.`; svg = shadowRose(c); }
+    else if (c.kind === "moon" && !c.dim) { txt = `${who}🌙 Sun below the horizon; a ${Math.round(c.frac * 100)}%-lit moon at az ${c.az.toFixed(0)}° · alt ${c.alt.toFixed(1)}° could cast <b>faint</b> shadows toward <b>${compass8(c.dir)} (${c.dir.toFixed(0)}°)</b>, ≈ ${c.ratio.toFixed(2)}× object height (dark skies required). Direction is exact; length assumes level ground.`; svg = shadowRose(c); }
+    else if (c.kind === "moon") { txt = `${who}🌙 Sun below the horizon and only a ${Math.round(c.frac * 100)}%-lit moon up — too dim for usable shadows. Crisp shadows in the photo would contradict the stated time and place.`; }
+    else { txt = `${who}⚠ Neither sun nor moon above the horizon at the stated time (sun ${c.sunAlt.toFixed(0)}°) — nothing to cast a shadow: <b>any visible shadow in the photo contradicts the stated time and place</b>.`; }
+    return `<div style="display:flex;gap:12px;align-items:center;margin:8px 0;flex-wrap:wrap">${svg}<div style="font-size:13px;line-height:1.55;flex:1;min-width:220px">${txt}</div></div>`;
+  }).filter(Boolean).join("");
   const authHtml = `<h2>Authenticity checks</h2>
 <p class="cap">File forensics run on the original bytes at upload (AI-generator markers, provenance manifests, editing-software fingerprints, container tells) plus physics consistency (computed sun vs scene brightness, stated time and position vs the file's own record, star/terrain-verified pointing). A clean scan proves nothing — it means the file carries no tells. Not tested: pixel-level splice forensics, AI-detector models, reverse-image search.</p>
 ${authPer.map((a) => `<div style="margin:0 0 10px"><b>${e2(a.name)}</b>${a.finds.length
     ? a.finds.map((x) => `<div style="font-size:13px;margin-top:3px;line-height:1.5;color:${authCol(x.level)}">${authIcon(x.level)} <b>${e2(x.label)}</b> — ${e2(x.detail)}</div>`).join("")
-    : `<div class="cap" style="margin-top:3px">No findings — no manipulation tells detected, and no positive provenance either.</div>`}</div>`).join("")}`;
+    : `<div class="cap" style="margin-top:3px">No findings — no manipulation tells detected, and no positive provenance either.</div>`}</div>`).join("")}
+${shadowGeoHtml ? `<div style="margin-top:10px"><b style="font-size:13px">Shadow geometry</b><div class="cap">Where shadows must fall at the stated time and place — computed from the sun and moon, checkable against the photo, unfakeable by stripping metadata. The in-app ⚑ Shadow check draws this live on the sky view.</div>${shadowGeoHtml}</div>` : ""}`;
   const data = JSON.stringify({ phodar: 1, created: new Date().toISOString(), sources: packed, est }, null, 1).replace(/<\//g, "<\\/");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${est?.name ? `${e2(est.name)} — PHODAR report` : "PHODAR sighting report"}</title><style>
 html,body{max-width:100%;overflow-x:hidden}
