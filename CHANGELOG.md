@@ -7,6 +7,19 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **📲 PWA install hint on the home screen** (Apple devices only —
+  Android/desktop Chrome surface their own install prompt; Apple never
+  does). iPhone/iPad get the Share → Add to Home Screen steps, Mac
+  Safari gets File → Add to Dock. The load-bearing reason is stated
+  honestly: Safari can erase a website's saved data after ~7 days of
+  disuse (the "my videos disappeared" field failure) and an INSTALLED
+  app is exempt — plus full screen without browser bars fighting the
+  marking gestures, and 📷 Capture with sensors in a clean camera view.
+  Hidden when already running installed (display-mode standalone /
+  navigator.standalone) and dismissable with ✕ (persisted). The
+  manifest + icons already shipped, so installs were always possible —
+  just never suggested. Manual entry added; browser-verified across
+  iOS/Mac/non-Apple UAs including dismissal persistence.
 - **Step 1 is now "THE CAPTURE"** (it takes photo or video), and the empty
   step got useful instead of noisy (field asks): before anything is
   loaded, a note says GPS/time/bearing/lens metadata auto-fill when the

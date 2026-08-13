@@ -526,6 +526,23 @@ const ML = ({ children, style }) => <div className="microlabel" style={style}>{c
 const FINE_PTR = typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 const gest = (touch, mouse) => (FINE_PTR ? mouse : touch);
 
+/* 📲 PWA install hint (Apple only — Android/desktop Chrome surface their own
+   install prompt; Apple platforms never do). "ios" covers iPhone + iPad
+   (iPadOS reports Macintosh with touch points), "mac" is desktop Safari
+   (Add to Dock, Sonoma+). The WHY that matters for phodar: Safari can purge
+   a site's stored data after ~7 days of disuse — an INSTALLED app is exempt,
+   which is the structural fix for the "videos gone" eviction field failure —
+   plus full-screen without Safari's bars fighting the marking gestures. */
+const APPLE_INSTALL = (() => {
+  if (typeof navigator === "undefined") return null;
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh|MacIntel/.test(ua) && (navigator.maxTouchPoints || 0) > 1)) return "ios";
+  if (/Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|CriOS|Edg|OPR|Firefox/.test(ua)) return "mac";
+  return null;
+})();
+const IS_INSTALLED = typeof window !== "undefined" &&
+  ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true);
+
 /* 🔗 report-link import — PARKED until ufosighting.report allowlists the
    fetcher: Cloudflare bot protection 403s every non-browser client (the
    site's robots.txt actually ALLOWS crawlers — the block is Cloudflare
@@ -553,6 +570,7 @@ const HELP_SECTIONS = [
         { t: "Sighting name", d: "Optional name for the whole sighting (home screen, above the observer list). It becomes the report's title and the filename of every export — report, share file, and bundle — so saved files stay tellable apart." },
         { t: "📥 Import a shared sighting", d: "Load a .phodar.json, a Phodar report .html, or a sighting .zip — merges its observers in (this is how a second witness's data joins yours). On a desktop you can also drag-and-drop the file anywhere on this screen." },
         ...(ENABLE_REPORT_LINK ? [{ t: "🔗 Fill from a report link", d: "Paste a sighting-report page URL (ufosighting.report) — or drag the link onto this screen on a desktop — and Phodar extracts what the page states: position, date/time and the witness statement, pre-filled into a new observer for your review. The location is often the town rather than the exact spot, so check the pin on step 2. The photo/video is deliberately NOT downloaded for you — step 1 links back to the report page; save the media there yourself and load it with the picker." }] : []),
+        { t: "📲 Install Phodar as an app", d: "On iPhone/iPad: Share → Add to Home Screen. On a Mac (Safari): File → Add to Dock. Why bother: Safari can erase a website's saved data after about a week of disuse — your sightings and videos with it — but an installed app is exempt, so your work is protected. You also get full screen with no browser bars interfering with the marking gestures, and 📷 Capture with sensors in a clean camera view. The home-screen hint offers this once on Apple devices; dismiss it with ✕ and install any time later." },
         { t: "🤖 Bring your own AI", d: "Phodar's measurement engine is also an MCP server, so an AI assistant you already use (Claude, ChatGPT, or anything that speaks MCP) can run a full analysis for you — you hand it the sighting video and context, it returns a bundle you import here to review AND refine: every measurement stays fully editable (re-mark the object, snap the placement to stars or terrain, fix frames, re-run the solve). 📋 Copy the AI prompt gives you a ready-to-paste prompt with the whole workflow; add your API key first and the prompt copies complete (keys are free, handed out personally). The sky placement is approximate until refined here." },
         { t: "➕ Add a witness / perspective", d: "Add another observer to the SAME sighting — the second viewpoint that makes triangulation possible." },
         { t: "📄 Report", d: "Open the report & share screen." },
@@ -12983,6 +13001,8 @@ function WizHome({ sources, est, viewOnly, onSetViewOnly, onName, onNew, onAddWi
      The key rides localStorage (phodar: prefix, like uiHue) so the prompt
      copies complete; without one the placeholder stays in. */
   const [aiOpen, setAiOpen] = useState(false);
+  const [pwaHintHidden, setPwaHintHidden] = useState(() => { try { return localStorage.getItem("phodar:pwahint") === "1"; } catch (e) { return false; } });
+  const dismissPwaHint = () => { setPwaHintHidden(true); try { localStorage.setItem("phodar:pwahint", "1"); } catch (e) { } };
   const [aiKey, setAiKey] = useState(() => { try { return localStorage.getItem("phodar:apikey") || ""; } catch (e) { return ""; } });
   const [aiCopied, setAiCopied] = useState(false);
   const setAiKeySave = (v) => { setAiKey(v); try { localStorage.setItem("phodar:apikey", v); } catch (e) { } };
@@ -13142,6 +13162,23 @@ Here is the sighting:`;
           </button>
         </div>
       </div>
+      {/* 📲 PWA install hint — Apple browser only, hidden once installed or
+          dismissed. The storage-eviction exemption is the load-bearing reason:
+          iOS purges a SITE's data after ~7 days of disuse (the "my videos
+          disappeared" field failure); an installed app is exempt. */}
+      {APPLE_INSTALL && !IS_INSTALLED && !pwaHintHidden && (
+        <div className="card" style={{ margin: "14px 0 0", position: "relative", borderColor: "var(--teal)" }}>
+          <button className="btn sm ghost" style={{ position: "absolute", top: 6, right: 6, padding: "4px 8px" }} onClick={dismissPwaHint} title="Dismiss — you can always install later">✕</button>
+          <ML style={{ color: "var(--teal)" }}>📲 Install Phodar as an app</ML>
+          <div style={{ fontSize: 12, color: "var(--dim)", lineHeight: 1.55 }}>
+            {APPLE_INSTALL === "ios" ? (
+              <>Tap <b style={{ color: "var(--ink)" }}>Share</b> (the square with the ↑), then <b style={{ color: "var(--ink)" }}>Add to Home Screen</b>. Worth doing: Safari can erase a website's saved data after about a week of disuse — your sightings and their videos with it — but an <b style={{ color: "var(--ink)" }}>installed app is exempt</b>, so your work sticks around. You also get full screen with no browser bars fighting the marking gestures, 📷 Capture with sensors in a clean camera view, and your own icon to launch from.</>
+            ) : (
+              <>In Safari: <b style={{ color: "var(--ink)" }}>File → Add to Dock</b>. Phodar gets its own window, its own icon, and its saved data is protected from Safari's periodic website-data cleanup — so your sightings stick around.</>
+            )}
+          </div>
+        </div>
+      )}
       {/* MASTER edit/view switch — on the sighting list, because that is where
           a review begins: set the mode, then import the file you were sent. */}
       <div style={{ marginTop: 22 }}><ModeToggle viewOnly={viewOnly} onChange={onSetViewOnly} /></div>
