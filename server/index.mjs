@@ -357,6 +357,34 @@ async function apiAirports(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* FAA special-use airspace (MOAs/Restricted/etc.) near a point — ArcGIS
+   FeatureServer, keyless (probed 2026-08). Geometry included so the client
+   can do point-in-polygon + sight-line entry; precision trimmed to keep the
+   payload sane. US-only data; cached a day (SUA boundaries barely move). */
+const airspaceCache = new Map();
+async function apiAirspace(q, res) {
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180);
+  const km = Math.min(300, Math.max(20, +q.get("km") || 120));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)},${km}`;
+  const hit = airspaceCache.get(key);
+  if (hit && Date.now() - hit.t < 24 * 3600000) return json(res, 200, hit.body);
+  try {
+    const u = "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Special_Use_Airspace/FeatureServer/0/query" +
+      `?where=1%3D1&outFields=NAME,TYPE_CODE,LOWER_VAL,LOWER_UOM,UPPER_VAL,UPPER_UOM,TIMESOFUSE,CITY` +
+      `&geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326&distance=${km * 1000}&units=esriSRUnit_Meter` +
+      `&returnGeometry=true&geometryPrecision=3&outSR=4326&f=json`;
+    const r = await fetch(u, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(25000) });
+    if (!r.ok) throw new Error(`FAA ArcGIS HTTP ${r.status}`);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "ArcGIS error");
+    const body = { features: j.features || [] };
+    airspaceCache.set(key, { t: Date.now(), body });
+    return json(res, 200, body);
+  } catch (e) {
+    return json(res, 502, { error: `FAA airspace unavailable (${e.message || e})` });
+  }
+}
 /* ─── radiosonde (weather-balloon) check — SondeHub proxy ─────────────
    /sites is a small global catalog (launch positions + schedules), cached a
    week and filtered to the observer's neighbourhood. Telemetry has NO
@@ -1189,6 +1217,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/masts") return await apiMasts(u.searchParams, res);
     if (u.pathname === "/api/sondesites") return await apiSondeSites(u.searchParams, res);
+    if (u.pathname === "/api/airspace") return await apiAirspace(u.searchParams, res);
     if (u.pathname === "/api/sondes") return await apiSondes(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/roads") return await apiRoads(u.searchParams, res);

@@ -586,6 +586,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   off the sight-line meant zero tracks before Moment A is set, so the look
   direction is the fallback reference; live mode accumulates its own trail
   from the 20 s polls. Satellites should emit the same trail shape.
+- **Military airspace check: DONE** (`src/checks/airspace.js` +
+  `/api/airspace` FAA-ArcGIS proxy + report section, US only): SUA
+  polygons (MOA/R/P/A/W) vs the observer — inside test (ray-cast
+  point-in-polygon), edge-true nearest distance, `rayIntoZone` sampled
+  march ("sight-line enters it 20–58 km out"), floor/ceiling parse
+  (SFC→0, FL→×100 ft), `suaActiveAt` light schedule read (unparseable →
+  null, never a guess; NOTAM caveat stated). Key honesty note: military
+  aircraft in these blocks often fly without ADS-B — exactly when the
+  aircraft check goes blind. Probed live 2026-08 (Dolphin N/S MOAs).
 - **Radiosonde check: DONE** (`src/checks/sondes.js` + `/api/sondesites`
   + `/api/sondes` SondeHub proxies + report "Weather-balloon check"):
   two layers — the launch-site catalog (900 stations, schedules, ascent

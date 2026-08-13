@@ -7,6 +7,24 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🪖 Military airspace check — FAA special-use airspace vs the observer
+  and the sight-line** (next on the list). A new report section answers
+  whether the observer stood inside — or was looking into — a Military
+  Operations Area, Restricted, Prohibited, Alert or Warning area (FAA
+  AIS ArcGIS open data via a cached `/api/airspace` proxy; US airspace
+  only, stated). Pure geometry in `src/checks/airspace.js`:
+  ray-cast point-in-polygon, floor/ceiling parsing (SFC → 0, FL → ×100
+  ft), a sampled march along the sight-line azimuth that reports where
+  the ray enters and leaves each zone ("sight-line enters it 20–58 km
+  out"), edge-true nearest distance, and a deliberately light schedule
+  read that flags when the sighting falls inside a zone's published
+  window — returning honest "unknown" for anything it can't parse,
+  since schedules change by NOTAM. Assessment weights the military
+  explanation heavily when inside or looking into a zone, and the
+  caption notes the sharp edge: military aircraft in these blocks often
+  fly WITHOUT ADS-B — exactly when the aircraft check goes blind.
+  Probed live (the Rogue Valley's real Dolphin North/South MOAs return
+  correctly). 11 mathcheck assertions + 7-assertion browser e2e.
 - **🎈 Weather-balloon check (radiosonde) — real data for the #1 mundane
   explanation** (next item on the user's go-ahead list). Two independent
   layers in a new report section. LAUNCH SCHEDULE: the worldwide SondeHub

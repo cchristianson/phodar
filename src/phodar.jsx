@@ -40,6 +40,7 @@ import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
 import { parseSites, launchStateAt, rankSondes, fetchSondeSites, fetchSondes } from "./checks/sondes.js";
+import { fetchAirspace, rayIntoZone, suaActiveAt } from "./checks/airspace.js";
 import { poleShadow, poleDistView, shadowCast, shadowTimes, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
@@ -783,6 +784,7 @@ const HELP_SECTIONS = [
         { t: "Video analysis", d: "For a stabilized, object-tracked clip: the object's dense per-frame angular trajectory measured with NO distance assumption — total sky sweep, average & peak angular rate (°/s, a strong discriminator: satellites track at a near-constant rate, aircraft vary, a hover ≈ 0) and an angular-rate plot. Then a size/distance/speed table showing what every candidate distance implies (or the one triangulated distance if a second observer fixed it), plus its apparent-size range if you sized the object across frames (that recovers toward/away motion). Ends with a keyframe strip — sampled frames with the tracked object marked and captioned (time, az/el, angular size, rate)." },
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”). Satellites near the sight-line also get a ✨ flare note when the sun's reflection off an earth-facing panel could have reached you — a specular flare is a brilliant light that swells and vanishes in seconds (attitude is unknown, so it's stated as possible, never predicted)." },
         { t: "Vehicle-light & tower checks", d: "Two ground-truth candidates for a low light: where the sight-line crosses a mapped road (at night a car cresting a rise reads as a hovering or slow-moving light), and any tall structure — mast, tower, chimney, lighthouse — within a few degrees of the bearing, with its height, distance and the top's elevation angle: obstruction strobes are the classic pulsing red light. Both honestly note that map data is incomplete — an empty list proves nothing." },
+        { t: "Military airspace check", d: "Was the observer inside — or looking into — a Military Operations Area, Restricted or Alert area? FAA special-use airspace polygons (US only) with each zone's altitudes and published activity times: fast jets, flares, refueling tracks and formation lights concentrate in these blocks, and military aircraft there often fly WITHOUT ADS-B, which is exactly when the aircraft check goes blind. The check states when the sighting falls inside a zone's published window (schedules change by NOTAM, so it's indicative)." },
         { t: "Weather-balloon check (radiosonde)", d: "The #1 mundane explanation gets real data, not inference. Layer one: the worldwide launch-site catalog — was a scheduled synoptic balloon (00Z/12Z at most stations, launched ~1 h before) actually AIRBORNE at the stated time, and was it ascending or descending, at what altitude? Layer two: radiosondes actually RECEIVED by the volunteer SondeHub network near the sighting, ranked against every sight-line like aircraft — range, altitude, predicted angular size from the envelope's altitude-grown diameter, and a 🎯 trajectory match when your tracked video path follows the real balloon's flight. Honest both ways: no received telemetry rules out received sondes, not balloons." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
@@ -13357,6 +13359,36 @@ ${windPhotoBlock}
 <table><tr><th>Observer</th><th>Structure</th><th>Height</th><th>Distance</th><th>Geometry</th></tr>${rows.join("")}</table>
 <p class="cap">Masts, towers, chimneys and lighthouses from OpenStreetMap within 25 km; the top's elevation angle is computed over the terrain model. Not every structure is lit, and OSM is not complete — an empty list proves nothing.</p>`;
   } catch (e) { /* Overpass busy / offline — omit */ }
+  /* 🪖 military / special-use airspace — is the observer inside (or looking
+     into) a MOA, Restricted or Alert area? Fast jets, flares, refueling
+     tracks and formation lights concentrate there; a sighting pointing into
+     an active MOA weighs the military explanation heavily. US-only data. */
+  let suaHtml = "";
+  try {
+    const w0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon));
+    if (w0 && +w0.lat > 17 && +w0.lat < 72 && +w0.lon > -170 && +w0.lon < -60) { // FAA data covers US airspace
+      const zones = await fetchAirspace(+w0.lat, +w0.lon, 120);
+      if (zones.length) {
+        const localHHMM = isNum(w0.whenMs) ? (() => { const d = new Date(+w0.whenMs); return d.getHours() * 100 + d.getMinutes(); })() : null;
+        const rows = zones.slice(0, 5).map((z) => {
+          const ray = (isNum(w0.A?.az) && !z.inside) ? rayIntoZone(z.rings, +w0.lat, +w0.lon, +w0.A.az) : null;
+          const act = suaActiveAt(z.times, localHHMM);
+          const rel = z.inside ? "<b>observer INSIDE the zone</b>"
+            : ray ? `sight-line enters it ${ray.enterKm}–${ray.exitKm} km out`
+              : `${z.distKm.toFixed(0)} km ${compass8(z.az)}`;
+          return `<tr><td>${e2(z.name)}<br><span class="cap">${e2(z.typeLong)}</span></td><td>${z.floorFt != null ? Math.round(z.floorFt).toLocaleString() + " ft" : "?"} – ${z.ceilFt != null ? Math.round(z.ceilFt).toLocaleString() + " ft" : "?"}</td><td>${rel}</td><td>${z.times ? e2(z.times) : "—"}${act === true ? ' · <b>sighting inside the published window</b>' : act === false ? " · sighting outside the published window" : ""}</td></tr>`;
+        }).join("");
+        const hot = zones.find((z) => z.inside || (isNum(w0.A?.az) && rayIntoZone(z.rings, +w0.lat, +w0.lon, +w0.A.az)));
+        const lead = hot
+          ? `<b>Assessment — military activity context: high.</b> ${hot.inside ? `The observer stood inside ${e2(hot.name)}` : `The sight-line points into ${e2(hot.name)}`} (${e2(hot.typeLong)}). Fast jets, flares, refueling tracks and formation lights concentrate in these blocks — weigh the military explanation heavily${suaActiveAt(hot.times, localHHMM) === true ? ", and the sighting falls inside the published activity window" : ""}.`
+          : `<b>Assessment — military activity context: moderate.</b> Special-use airspace exists within ${Math.round(zones[0].distKm)} km but the sight-line does not point into it.`;
+        suaHtml = `<h2>Military airspace check</h2>
+<p class="lead">${lead}</p>
+<table><tr><th>Zone</th><th>Altitudes</th><th>Geometry</th><th>Published times</th></tr>${rows}</table>
+<p class="cap">FAA special-use airspace (US only). Published schedules change by NOTAM — treat the window as indicative. Military aircraft in these blocks often fly without ADS-B, which is exactly when the aircraft check above goes blind.</p>`;
+      }
+    }
+  } catch (e) { /* FAA source down / non-US — omit */ }
   /* 🎈 weather-balloon check (radiosondes) — two layers: the launch-site
      schedule (was a scheduled synoptic balloon plausibly AIRBORNE, and in
      which phase of its flight), and actual RECEIVED sonde tracks near the
@@ -13496,6 +13528,7 @@ ${collapsible(airportsHtml, false)}
 ${collapsible(vehicleHtml, false)}
 ${collapsible(mastsHtml, false)}
 ${collapsible(sondeHtml, false)}
+${collapsible(suaHtml, false)}
 ${collapsible(photomHtml, false)}
 ${collapsible(condHtml, false)}
 ${collapsible(skyHtml, false)}

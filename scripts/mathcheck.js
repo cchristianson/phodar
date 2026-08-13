@@ -3721,6 +3721,28 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(rankSondes([{ lat: "42.3", lon: "-122.9", A: { az: (g.az + 120) % 360, el: g.el } }], [sd], 0)[0].sepMax > 90, "sondes: a sonde far off the bearing scores far off");
 }
 
+// --- 🪖 special-use airspace (MOA) geometry — pure, synthetic square zone
+{
+  const { parseAltFt, pointInRings, rayIntoZone, parseSua, suaActiveAt } = await import("../src/checks/airspace.js");
+  approx(parseAltFt("SFC"), 0, 1e-9, "sua: SFC floor = 0 ft");
+  approx(parseAltFt("180", "FL"), 18000, 1e-9, "sua: FL180 ceiling = 18,000 ft");
+  approx(parseAltFt("11000", "FT"), 11000, 1e-9, "sua: plain feet pass through");
+  // square MOA spanning 20–60 km north of the observer, ±30 km east–west
+  const mLat = 111.32, mLon = 111.32 * Math.cos(42.3 * D2R);
+  const ring = [[-122.9 - 30 / mLon, 42.3 + 20 / mLat], [-122.9 + 30 / mLon, 42.3 + 20 / mLat],
+    [-122.9 + 30 / mLon, 42.3 + 60 / mLat], [-122.9 - 30 / mLon, 42.3 + 60 / mLat], [-122.9 - 30 / mLon, 42.3 + 20 / mLat]];
+  ok(!pointInRings(42.3, -122.9, [ring]), "sua: observer south of the zone is outside");
+  ok(pointInRings(42.3 + 40 / mLat, -122.9, [ring]), "sua: a point mid-zone is inside");
+  const hitN = rayIntoZone([ring], 42.3, -122.9, 0);
+  ok(hitN && Math.abs(hitN.enterKm - 20) <= 2 && Math.abs(hitN.exitKm - 60) <= 2, `sua: looking north ENTERS the MOA at ~20 km, leaves ~60 km (${hitN.enterKm}–${hitN.exitKm})`);
+  ok(rayIntoZone([ring], 42.3, -122.9, 90) === null, "sua: looking east misses the zone");
+  const zones = parseSua({ features: [{ attributes: { NAME: "DOLPHIN NORTH MOA", TYPE_CODE: "MOA", LOWER_VAL: "11000", LOWER_UOM: "FT", UPPER_VAL: "180", UPPER_UOM: "FL", TIMESOFUSE: "0800 - 1600, DAILY" }, geometry: { rings: [ring] } }] }, 42.3, -122.9);
+  ok(zones.length === 1 && !zones[0].inside && Math.abs(zones[0].distKm - 20) < 2 && zones[0].floorFt === 11000 && zones[0].ceilFt === 18000, "sua: parse carries altitudes + nearest distance");
+  ok(parseSua({ features: [{ attributes: { NAME: "X", TYPE_CODE: "MOA" }, geometry: { rings: [ring] } }] }, 42.3 + 40 / mLat, -122.9)[0].inside, "sua: observer inside flags inside");
+  ok(suaActiveAt("0800 - 1600, DAILY", 1230) === true && suaActiveAt("0800 - 1600, DAILY", 2200) === false, "sua: simple schedule window read (12:30 in, 22:00 out)");
+  ok(suaActiveAt("BY NOTAM", 1200) === null, "sua: unreadable schedule → honest unknown, never a guess");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law
