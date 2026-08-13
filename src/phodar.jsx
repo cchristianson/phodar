@@ -13373,7 +13373,7 @@ ${(() => {
   const rs = [...new Set(origAct.filter((s) => s.report && s.report.url).map((s) => String(s.report.url)))];
   return rs.length ? `<p class="cap">🔗 Sighting details were imported from the public report at ${rs.map((u) => `<a href="${e2(u)}" rel="noopener">${e2(u)}</a>`).join(" · ")} — position, time and statement as stated there, reviewed and refined in Phodar.</p>` : "";
 })()}
-${authHtml}
+${collapsible(authHtml, authSum.worst === "alarm" || authSum.worst === "warn")}
 ${dimsHtml}
 ${kin ? `<h2>Trajectory kinematics (stereo)</h2>${kin}` : soloKin}
 ${collapsible(vstereoHtml, true)}
