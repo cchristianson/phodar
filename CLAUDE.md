@@ -689,6 +689,17 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   and the UI says so. Deliberately metadata+physics only: pixel-level
   splice forensics / AI-detector models / reverse-image search are named
   as not tested rather than half-implemented.
+- **C2PA cryptographic verification: DONE** (`src/checks/c2paverify.js` +
+  the `c2pa` npm dependency — the ONE approved heavy dep, and it stays
+  cheap: the ~6 MB WASM + SDK are dynamic-imported ONLY when the upload
+  byte-scan finds a manifest marker, so ordinary files never fetch a
+  byte; verified in e2e both ways). `interpretC2pa` is pure +
+  mathcheck-asserted: signature-valid camera capture → info ("pixels
+  unmodified since signing"), validationStatus failures → tamper ALARM,
+  verified trainedAlgorithmicMedia → AI alarm, disclosed editor chain →
+  warn. Any SDK/read failure returns null and the byte-scan's presence
+  note stands — verification never guesses. Wired in ingestFile: the
+  verified findings REPLACE the presence note via a follow-up update.
 - **⚑ Shadow check: DONE (v2)** (`src/shadow.js`, pure + mathcheck-asserted):
   a sky-view header toggle plants a schematic 5 m flagpole where the
   VIEW-CENTER RAY MEETS THE GROUND (`poleDistView`: tilt down = closer,

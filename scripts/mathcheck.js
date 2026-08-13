@@ -3828,6 +3828,34 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(!mfull || mfull.strength < 0.12, "moonlimb: full disc → strength below the verdict gate (no false testimony)");
 }
 
+// --- 🔏 C2PA verification interpreter (pure — the SDK never enters it)
+{
+  const { interpretC2pa } = await import("../src/checks/c2paverify.js");
+  const cam = {
+    activeManifest: {
+      claimGenerator: "Leica FOTOS", claimGeneratorInfo: [{ name: "Leica M11-P" }],
+      signatureInfo: { issuer: "Leica Camera AG", time: "2026-08-01T12:00:00Z" },
+      ingredients: [], assertions: [],
+    },
+    validationStatus: [],
+  };
+  const vc = interpretC2pa(cam);
+  ok(vc.length === 1 && vc[0].id === "c2pa-valid" && vc[0].level === "info" && /Leica Camera AG/.test(vc[0].detail), "c2pa: valid camera signature → positive info naming the issuer");
+  const tampered = interpretC2pa({ ...cam, validationStatus: [{ code: "assertion.dataHash.mismatch" }] });
+  ok(tampered.length === 1 && tampered[0].id === "c2pa-invalid" && tampered[0].level === "alarm" && /dataHash\.mismatch/.test(tampered[0].detail), "c2pa: hash mismatch → tamper ALARM with the failing code");
+  const ai = interpretC2pa({
+    activeManifest: { claimGeneratorInfo: [{ name: "Adobe Firefly" }], signatureInfo: { issuer: "Adobe Inc." }, ingredients: [], assertions: [{ label: "c2pa.actions", data: { actions: [{ action: "c2pa.created", digitalSourceType: "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia" }] } }] },
+    validationStatus: [],
+  });
+  ok(ai.length === 1 && ai[0].id === "c2pa-ai" && ai[0].level === "alarm" && /Firefly/.test(ai[0].detail), "c2pa: verified trained-algorithmic-media assertion → AI alarm naming the generator");
+  const edited = interpretC2pa({
+    activeManifest: { claimGenerator: "Adobe Photoshop 25.0 (Windows)", claimGeneratorInfo: [], signatureInfo: { issuer: "Adobe Inc." }, ingredients: [{}, {}], assertions: [] },
+    validationStatus: [],
+  });
+  ok(edited.some((x) => x.id === "c2pa-valid" && /2 ingredients/.test(x.detail)) && edited.some((x) => x.id === "c2pa-edited" && x.level === "warn"), "c2pa: valid Photoshop chain → verified info + disclosed-editor warn");
+  ok(interpretC2pa(null).length === 0 && interpretC2pa({ validationStatus: [] }).length === 0, "c2pa: no manifest → no findings, never a guess");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law

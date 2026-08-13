@@ -145,7 +145,7 @@ export function scanFileAuthenticity(u8, kind) {
     if (/trainedAlgorithmicMedia|compositeWithTrainedAlgorithmicMedia/i.test(hay)) {
       f.push(F("c2pa-ai", "alarm", "Provenance manifest declares AI-generated content", "The file carries a C2PA (Content Credentials) manifest whose assertions mark the content as produced by a trained algorithmic model."));
     } else {
-      f.push(F("c2pa", "note", "Provenance manifest present (C2PA)", "The file carries a Content Credentials manifest. Phodar does not verify the signature — inspect it at contentcredentials.org/verify for the signer and edit history."));
+      f.push(F("c2pa", "note", "Provenance manifest present (C2PA)", "The file carries a Content Credentials manifest. Cryptographic verification runs automatically — if this note doesn't upgrade to a verified result, the manifest couldn't be read (inspect it at contentcredentials.org/verify)."));
     }
   }
 

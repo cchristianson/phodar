@@ -7,6 +7,26 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🔏 C2PA cryptographic verification** (user-approved dependency —
+  Adobe's open-source c2pa-js SDK). The byte-scan's "a Content
+  Credentials manifest exists" note now upgrades to a checked verdict:
+  the SDK validates the X.509 signature chain and recomputes the signed
+  content hashes against the exact pixels in hand. A valid camera
+  signature becomes strong positive evidence ("Signed by Leica Camera AG
+  … pixels unmodified since signing"); a manifest that FAILS
+  verification is a tamper ALARM (the pixels were altered after
+  signing — hard cryptographic evidence); a validly-signed
+  trained-algorithmic-media assertion is a conclusive AI alarm (the
+  generator itself attesting the image is synthetic); a verified edit
+  chain naming an editor warns with the disclosure. LAZY by design: the
+  ~6 MB WASM + SDK load only when the upload scan actually finds a
+  manifest marker — ordinary files never fetch a byte (proven in e2e:
+  a plain JPEG triggers zero SDK requests, a marked file loads the
+  chunks, and a bogus manifest degrades gracefully to the presence note
+  with no errors). Interpretation is a pure function with 5 mathcheck
+  assertion groups (valid capture / tamper / AI / edit-chain / no
+  manifest); absence of credentials still proves nothing and the UI
+  still says so.
 - **🌙 Moon terminator forensic — the composite-killer** (last item on
   the list). When the moon is IN a photo, its lit limb must point at the
   sun: pure celestial mechanics that a pasted-in moon routinely gets
