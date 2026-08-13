@@ -38,6 +38,7 @@ import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, TERRAIN_ATTRIB } from "./terrain.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf } from "./roads.js";
+import { poleShadow, poleDist, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
 import { detectStars, autoStarAlign, blindStarAlign, gridStarAlign } from "./checks/platesolve.js";
@@ -806,6 +807,7 @@ const HELP_SECTIONS = [
         { t: "🎈 wind", d: "Winds-aloft drift arrows layered by height across the dome, coloured by speed — see whether the object could be a balloon riding the wind at its altitude." },
         { t: "🏙 buildings", d: "OSM building footprints as wireframe boxes — for aligning a town/skyline photo. Uses your Camera height off the ground; nudge with ± if rooftops sit wrong." },
         { t: "🛣 roads", d: "OSM roads within ~2.5 km drawn as TRUE-PERSPECTIVE RIBBONS — real roadway width (edge lines converge to the actual vanishing point), a dashed center line on highways, elevations from the terrain grid, and hills hide the stretches behind them (approximately). The azimuth anchor for FLAT terrain: lay the photo's road onto the drawn ribbon the way a ridge photo snaps to the skyline. The 📷 camera height row (appears with the layer) matters here: the near road's shape depends on your eye height — standing ≈1.6 m, in a car ≈1.2 m — nudge until the ribbon sits on the pavement. Roads also appear on the position step's horizon strip." },
+        { t: "⚑ Shadow check", d: "Plants a schematic 5 m flagpole on level ground at the center of your view (it follows as you pan) and draws where the sun at the sighting time would throw its shadow — a physics check against shadows visible in the photo, which no metadata stripping can fake. Shadow DIRECTION is exact; length assumes flat ground and honours your 📷 camera height. When the sun is below the horizon at the stated time it says so — visible shadows in the photo would then contradict the claimed time. Dome-only: the pole is fictitious, so it is never burned into video exports." },
       ]},
     ],
     tips: ["A staleness/provenance line appears when data is old (e.g. archived traffic vs live, or aging satellite elements) — Phodar tells you when to treat a layer as approximate."],
@@ -4366,6 +4368,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      the same cached DEM tiles as the skyline; hills occlude approximately
      (derive-time ray march). */
   const [roadsOn, setRoadsOn] = useState(false);
+  const [shadowOn, setShadowOn] = useState(false); // ⚑ sun-shadow flagpole gadget
   const [roadsD, setRoadsD] = useState(null); // {polys, h0, shown, n, flat} | {err} | null
   useEffect(() => {
     if (!open || !roadsOn || !hasPos) { setRoadsD(null); return; }
@@ -5109,6 +5112,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const bldgLbl = bldgPeak ? (() => {
     const p = project(bldgPeak.az, bldgPeak.el);
     return p.inFront && p.y > 0.04 && p.y < 0.96 ? p : null;
+  })() : null;
+  /* ⚑ sun-shadow gadget — a schematic flagpole at the view-center azimuth on
+     level ground, plus where the sighting-time sun throws its shadow. Physics
+     cross-check against shadows visible in the photo. Dome-only, like the
+     winds stack — the pole is fictitious, so it is never burned into a
+     world-locked export. Recomputes as you pan (the pole tracks center). */
+  const shadowGad = (shadowOn && !cameraOn) ? (() => {
+    const g = poleShadow({ az: effAz, camH, sunAz: sun.az, sunAlt: sun.alt });
+    const P = (p) => project(p.az, p.el);
+    const top = P(g.top);
+    return {
+      pole: gpath(g.pole.map(P)),
+      shadow: g.shadow ? gpath(g.shadow.map(P)) : null,
+      top: (top.inFront && top.x > -0.05 && top.x < 1.05 && top.y > -0.05 && top.y < 1.05) ? top : null,
+      len: g.len, clipped: g.clipped,
+    };
   })() : null;
   /* peaks projected into THIS view — the header count reflects what actually
      renders (peaks span all 360°, only those you're facing are on screen).
@@ -7411,9 +7430,19 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           {ridgePaths.map((r, i) => <path key={"rg" + i} d={r.d} fill="none" stroke={ridgeCol(r.o)} strokeWidth="1.15" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />)}
           {terrainPath && <path d={terrainPath} fill="none" stroke={ridgeCol(0.9)} strokeWidth="1.6" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
           {bldgBoxes.map((b, i) => <path key={"bx" + i} d={b.d} fill="none" stroke={b.faint ? "rgba(255,178,74,0.5)" : "rgba(255,178,74,0.95)"} strokeWidth={b.faint ? "1" : "1.4"} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+          {shadowGad && (
+            <g>
+              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke="rgba(8,12,22,0.78)" strokeWidth="5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+              {shadowGad.shadow && <path d={shadowGad.shadow} fill="none" stroke="rgba(255,215,106,0.6)" strokeWidth="1" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
+              {shadowGad.pole && <path d={shadowGad.pole} fill="none" stroke="rgba(235,240,250,0.95)" strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+            </g>
+          )}
         </svg>
         {terrainLbl && (
           <div style={{ position: "absolute", left: (terrainLbl.x * 100) + "%", top: (terrainLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: ridgeCol(0.95), textShadow: "0 1px 2px rgba(0,0,0,.8)", pointerEvents: "none" }}>TERRAIN</div>
+        )}
+        {shadowGad?.top && (
+          <div style={{ position: "absolute", left: (shadowGad.top.x * 100) + "%", top: (shadowGad.top.y * 100) + "%", transform: "translate(-1px,-100%)", fontSize: 14, lineHeight: 1, color: accentCol, textShadow: "0 1px 2px rgba(0,0,0,.85)", pointerEvents: "none" }}>⚑</div>
         )}
         {bldgLbl && (
           <div style={{ position: "absolute", left: (bldgLbl.x * 100) + "%", top: (bldgLbl.y * 100) + "%", transform: "translate(-50%,-130%)", fontSize: 8.5, fontFamily: "var(--mono)", fontWeight: 700, letterSpacing: ".14em", color: "rgba(255,178,74,0.98)", textShadow: "0 1px 2px rgba(0,0,0,.85)", pointerEvents: "none" }}>BUILDINGS</div>
@@ -8001,6 +8030,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               🎈 {windOn ? (windProf?.err ? "?" : !windProf?.levels ? <Spin /> : "wind") : "wind"}
             </button>
           )}
+          {hasPos && (
+            <button className="btn sm" title="Shadow check — plants a schematic 5 m flagpole on level ground at the center of your view and draws where the sun at the sighting time would throw its shadow. Compare against shadows visible in the photo: direction is exact; length assumes flat ground."
+              style={{ background: "rgba(15,23,42,.7)", color: !shadowOn ? "var(--dim)" : sun.alt > 0.05 ? "#ffd76a" : "var(--amber)" }}
+              onClick={() => setShadowOn((v) => !v)}>
+              ⚑ {shadowOn ? (sun.alt > 0.05 ? "shadow" : "no sun") : "shadow"}
+            </button>
+          )}
         </div>
         {satView.length > 0 && satStaleDays > 5 && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
@@ -8017,6 +8053,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         {peaksOn && peaks?.err && (
           <div style={{ fontSize: 10, color: "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
             ⛰ peaks unavailable — {/busy|timed|502/i.test(peaks.err) ? "Overpass was busy. Toggle ⛰ off/on to retry." : peaks.err}
+          </div>
+        )}
+        {shadowOn && (
+          <div style={{ fontSize: 10, color: sun.alt > 0.05 ? "#ffd76a" : "var(--amber)", textShadow: "0 1px 2px rgba(0,0,0,.7)", marginTop: 4 }}>
+            {sun.alt > 0.05
+              ? `⚑ ${fmtLenShort(POLE_H)} pole ${fmtLenShort(poleDist(camH))} out — sun az ${sun.az.toFixed(0)}° alt ${sun.alt.toFixed(1)}° ⇒ ${fmtLenShort(POLE_H / Math.tan(sun.alt * D2R))} shadow toward ${compass8((sun.az + 180) % 360)} · direction exact, length assumes level ground`
+              : `⚑ sun below the horizon at the sighting time (alt ${sun.alt.toFixed(1)}°) — no shadow to cast; visible shadows in the photo would contradict the stated time`}
           </div>
         )}
         {peaksOn && Array.isArray(peaks) && peaks.length === 0 && (

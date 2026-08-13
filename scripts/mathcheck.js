@@ -3517,5 +3517,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(sum.worst === "alarm" && sum.alarms.length === 1, "auth: summary surfaces the alarm for the report banner");
 }
 
+// --- ⚑ sun-shadow gadget (src/shadow.js) — exact geometry on flat ground
+{
+  const { poleShadow, poleDist, POLE_H } = await import("../src/shadow.js");
+  // pole due east of the eye, sun due south at 45°: shadow falls due north, length = H
+  const g = poleShadow({ az: 90, camH: 1.6, sunAz: 180, sunAlt: 45, D: 25, H: 5 });
+  ok(g.pole.every((p) => Math.abs(p.az - 90) < 1e-9), "shadow: a vertical pole holds one azimuth top to bottom");
+  approx(g.base.el, Math.atan2(-1.6, 25) * R2D, 1e-9, "shadow: base sits on the ground plane");
+  approx(g.top.el, Math.atan2(5 - 1.6, 25) * R2D, 1e-9, "shadow: top at pole height above it");
+  approx(g.len, 5, 1e-9, "shadow: 45° sun ⇒ shadow length = pole height");
+  approx(g.dir, 0, 1e-9, "shadow: falls due north, away from a south sun");
+  const tip = g.shadow[g.shadow.length - 1]; // ground point 25 m E + 5 m N of the eye
+  approx(tip.az, Math.atan2(25, 5) * R2D, 1e-6, "shadow: tip azimuth from exact ground position");
+  approx(tip.el, Math.atan2(-1.6, Math.hypot(25, 5)) * R2D, 1e-6, "shadow: tip elevation on the ground plane");
+  ok(g.shadow.every((p) => p.el < 0) && !g.clipped, "shadow: whole shadow lies below the horizon, uncapped");
+  // low sun stretches it; a grazing sun is capped for drawing but reported true
+  const lo = poleShadow({ az: 0, camH: 1.6, sunAz: 270, sunAlt: 10, D: 25, H: 5 });
+  approx(lo.len, 5 / Math.tan(10 * D2R), 1e-9, "shadow: 10° sun ⇒ H/tan(alt)");
+  approx(lo.dir, 90, 1e-9, "shadow: west sun throws east");
+  const gz = poleShadow({ az: 0, camH: 1.6, sunAz: 180, sunAlt: 0.08, D: 25, H: 5 });
+  ok(gz.clipped && gz.len > 2500, "shadow: grazing sun capped for drawing, true length reported");
+  // sun down ⇒ no shadow, pole still drawn; rooftop camera keeps the base in view
+  const dn = poleShadow({ az: 0, camH: 1.6, sunAz: 0, sunAlt: -3 });
+  ok(dn.shadow === null && dn.pole.length === 9, "shadow: sun below horizon ⇒ pole only, no fabricated shadow");
+  approx(poleDist(100), 300, 1e-9, "shadow: pole distance scales with camera height");
+  approx(poleShadow({ az: 45, camH: 100, sunAz: 180, sunAlt: 45 }).base.el, Math.atan2(-100, 300) * R2D, 1e-9, "shadow: rooftop base stays in a drawable band");
+  ok(POLE_H === 5, "shadow: pole height is the documented 5 m");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");

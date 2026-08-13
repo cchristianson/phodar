@@ -7,6 +7,26 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **⚑ Shadow check — a sun-shadow flagpole gadget on the sky view** (user
+  ask). A new header toggle plants a schematic 5 m flagpole on level
+  ground at the center of your view (it follows as you pan, and sits
+  under the photo in place mode) and draws where the sun at the sighting
+  time would throw its shadow — dark band on the ground, dashed
+  centerline, ⚑ marker at the pole top. It is a physics cross-check
+  against shadows visible in the photo: metadata can be stripped, but
+  shadow direction at a stated time and place cannot be faked. The
+  status line states the sun's az/alt, the shadow's length and compass
+  direction, and the honest caveat (direction exact; length assumes
+  flat ground). Honours the 📷 camera height (the pole moves out to
+  stay in view from rooftops), and when the sun is below the horizon it
+  says so — visible shadows would then contradict the claimed time —
+  drawing the pole but never a fabricated shadow. Pure geometry in
+  `src/shadow.js` (15 mathcheck assertions: vertical-pole azimuth
+  invariance, H/tan(alt) length, away-from-sun bearing, exact tip
+  position, grazing-sun cap honesty, no-shadow-at-night). Dome-only by
+  design — the pole is fictitious, so it is never burned into
+  world-locked video exports (same rule as the winds stack). Verified
+  in-browser day and night (12 assertions).
 - **Authenticity checks: upload forensics, physics consistency, and a
   report section with a loud manipulation banner** (user ask; signals
   fire the moment their inputs exist rather than all at the end).

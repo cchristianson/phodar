@@ -109,6 +109,7 @@ const NAMED = [
   ["metaHint", /keeping the metadata/, "the keep-the-metadata how-to on the capture step"],
   ["gest(", /DESKTOP/, "the desktop (mouse) gesture wording"],
   ["scanFileAuthenticity", /File authenticity/, "the authenticity checks (upload forensics + physics consistency)"],
+  ["poleShadow", /⚑ Shadow check/, "the sun-shadow flagpole gadget on the sky view"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

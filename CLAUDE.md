@@ -630,6 +630,16 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   and the UI says so. Deliberately metadata+physics only: pixel-level
   splice forensics / AI-detector models / reverse-image search are named
   as not tested rather than half-implemented.
+- **⚑ Shadow check: DONE** (`src/shadow.js`, pure + mathcheck-asserted):
+  a sky-view header toggle plants a schematic 5 m flagpole on level
+  ground at the view-center azimuth (follows the pan; sits under the
+  photo in place mode) and draws the sighting-time sun's shadow —
+  direction exact, length assumes flat ground (stated in the status
+  line), camH-aware (`poleDist` scales the standoff so a rooftop camera
+  keeps the base in view). Sun below horizon ⇒ pole only, no fabricated
+  shadow, and the line says visible shadows would contradict the stated
+  time. DOME-ONLY like the winds stack — a fictitious pole must never be
+  burned into world-locked exports.
 - **🛣 Roads overlay: DONE** (`src/roads.js` + `/api/roads` Overpass proxy):
   OSM centerlines within ~2.6 km in TRUE perspective — vertex elevations
   from the same cached DEM tiles as the skyline, derive-time ray-march
