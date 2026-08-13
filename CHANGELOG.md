@@ -7,6 +7,31 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Export audit: two losses found and fixed, everything else verified
+  intact** (user ask: make sure the exported file captures all useful
+  data). The share pipeline is structurally sound — `packSources` strips
+  a NAMED list (media handles + working state) and passes everything
+  else through, so new fields flow into exports automatically. The
+  audit seeded a source carrying every field any feature writes,
+  exported through the real UI, and diffed both the share file and a
+  re-import into a fresh profile (45 assertions). Found: (1)
+  `track[].wpx` — a PIXEL width — was not rescaled when a big photo is
+  packed down to its 1600 px working copy, so an imported still drew
+  its sized track ghosts 1/k too large; it now rescales with every
+  other pixel-space field (`ang`, being angular, correctly never did).
+  (2) `mediaKind` was stripped, so a JSON-only import of a video
+  sighting forgot it ever was one; the one-string kind now survives
+  pack AND import (media itself stays stripped, as designed).
+  Also documented in-code that `packMoment` drops a moment's stray
+  `track` deliberately (a moment's trajectory contribution is its
+  placed A direction; a duplicate track would double-count). Verified
+  unchanged through the full round-trip: marks, shape fit (rescaled
+  consistently), solved camera/object paths + raws, pose anchors,
+  sensor log + sync, camera refs, EXIF meta, brightness/contrast, trim,
+  align frame, camera height, ADS-B snapshot, flight log, report-link
+  provenance, statement, position/time, and the est block; report.html
+  embeds the same packed JSON, so the report import path inherits all
+  of it.
 - **Road ribbons: camera height factored in properly + near-field ground
   lock** (field ask: "match true perspective even better; make sure
   camera elevation/height off ground is factored in"). Three fixes:

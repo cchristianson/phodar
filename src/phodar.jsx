@@ -11544,7 +11544,12 @@ const isEmptySource = (s) =>
    the trajectory math never touches these (it uses az/el + pixel-ratio-invariant
    angular size). Returns a lean plain object safe to embed/share. */
 async function packMoment(m) {
+  /* `track` is dropped DELIBERATELY: a moment's trajectory contribution is
+     its placed A direction at its own time (sourceTrack) — the observer's
+     track lives on the primary source, and any stray taps left on a moment
+     would double-count. mediaKind is kept (see packSources). */
   const { mediaUrl, mediaKind, mediaNorm, track, ...r } = m;
+  if (mediaKind) r.mediaKind = mediaKind;
   if (mediaUrl && mediaKind === "image" && r.natW) {
     try {
       const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = mediaUrl; });
@@ -11574,6 +11579,10 @@ async function packSources(sources) {
        state, and a full duplicate of both paths. It has no meaning to a
        recipient and would roughly double the video payload of every share. */
     const { mediaUrl, mediaKind, mediaNorm, mediaLost, open, preStab, ...r } = s;
+    /* keep WHAT the media was (one string): a JSON-only import of a video
+       sighting should still know it was a video — the re-attach flow and the
+       view-only readouts key off it. The media itself stays stripped. */
+    if (mediaKind) r.mediaKind = mediaKind;
     /* moments carry their own (heavy) photos — keep the measurements (whenMs +
        A.az/el + marks + natW/H/fovH) so an imported sighting still reconstructs
        the multi-photo trajectory via sourceTrack, and bundle a modest thumbnail
@@ -11626,7 +11635,11 @@ async function packSources(sources) {
         r.natW = cv.width; r.natH = cv.height;
         r.A = { ...r.A, p1: sp(r.A?.p1), p2: sp(r.A?.p2) };
         r.B = { ...r.B, pb: sp(r.B?.pb) };
-        r.track = (r.track || []).map((p) => (p.x != null ? { ...p, x: p.x * k, y: p.y * k } : p));
+        /* wpx is a PIXEL width at the keyframe's own frame — it must rescale
+           with the image like every other pixel-space field, or an imported
+           still draws its sized ghosts 1/k too big (found by the export
+           audit's round-trip diff; `ang`, being angular, never rescales) */
+        r.track = (r.track || []).map((p) => (p.x != null ? { ...p, x: p.x * k, y: p.y * k, ...(isNum(p.wpx) ? { wpx: +(p.wpx * k).toFixed(1) } : {}) } : p));
         if (r.shapeFit) r.shapeFit = { ...r.shapeFit, cx: r.shapeFit.cx * k, cy: r.shapeFit.cy * k, sizeNat: r.shapeFit.sizeNat * k };
         r.mediaJpeg = cv.toDataURL("image/jpeg", 0.8);
       } catch (e) { /* export without the image */ }
@@ -14002,7 +14015,9 @@ export default function App() {
           id: "s" + Math.random().toString(36).slice(2, 9),
           open: false,
           mediaUrl: mediaJpeg || null,
-          mediaKind: mediaJpeg ? "image" : null,
+          /* no media in the file: keep what the share SAYS it was (a video
+             sighting should still read as one), just with nothing attached */
+          mediaKind: mediaJpeg ? "image" : (rest.mediaKind || null),
           mediaNorm: !!mediaJpeg,
         };
       });
