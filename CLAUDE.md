@@ -319,10 +319,24 @@ photo was adjusted.
    "✈ N @ sighting" chip, teal provenance line) with live fallback (amber
    warning); fresh → live with 20 s refresh. Dev: vite proxies `/api`→8787;
    run `node server/index.mjs` beside `npm run dev`.
-   **Remaining**: adsbdb.com hex→route enrichment, track-time matching
-   (compare aircraft position history against the witness track, not just
-   Moment A). The user is wizard-first: the Lab stays but new check UI
-   belongs in the sky view + report, not Lab-only panels.
+   **TRACK-TIME MATCHING: DONE** — `trackMatch`/`trailStateAt`/
+   `trackAbsSamples` (adsb.js, pure, mathcheck-asserted vs synthetic
+   truth): each archived aircraft's trail (±4 min from /api/hist, dt
+   anchored at the request instant) is interpolated to every timed
+   witness sample (dense objPath preferred, q<0.3 dropped, thinned ≤120;
+   else trackDirections — both on the wall clock via whenMs + ct, the
+   analyzeTracks anchoring) and scored by mean/max angular separation
+   with overlap accounting; never extrapolates beyond the recorded
+   trail, <3 overlapping samples → null, worst witness governs.
+   Trajectory-vs-trajectory at the right times beats any single-instant
+   ranking: e2e-proven with two aircraft IDENTICAL at Moment A — the
+   true path scored mean 0.0° and 🎯, the 30 s time-shifted decoy 21°
+   and ✗. Surfaced in AdsbCheck (per-candidate badge + re-rank by
+   trajectory + a conclusive 🎯 assessment line) and the report's
+   aircraft section (trajectory-match paragraph). **Remaining**: none of
+   note (adsbdb route enrichment is done). The user is wizard-first: the
+   Lab stays but new check UI belongs in the sky view + report, not
+   Lab-only panels.
 4. **Terrain skyline calibration — v1 DONE** (`src/terrain.js` + SkyAimer):
    Terrarium tiles (CORS-open, probed) → z13 3×3 + z11 5×5 heightfields →
    `skylineFromSampler` ray-march (az 0→360° @0.4°, log distances to 35 km,

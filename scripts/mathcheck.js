@@ -3652,6 +3652,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(mastsNear(m, 200, 5).length === 0, "masts: opposite bearing matches nothing");
 }
 
+// --- ✈ ADS-B track-time matching — trajectory vs trajectory, synthetic truth
+{
+  const { trailStateAt, trackMatch, trackAbsSamples, acAzElRange } = await import("../src/checks/adsb.js");
+  const obs = { lat: 42.3, lon: -122.9, alt: 0 };
+  const mLat = 111320, mLon = 111320 * Math.cos(42.3 * D2R);
+  // truth: an aircraft 5 km east, flying due north at 100 m/s, 3000 m AMSL
+  const acAt = (t) => ({ lat: 42.3 + (100 * t - 2000) / mLat, lon: -122.9 + 5000 / mLon, altM: 3000 });
+  const t0Ms = Date.UTC(2026, 7, 10, 20, 0);
+  const trail = [];
+  for (let t = -120; t <= 120; t += 10) { const p = acAt(t); trail.push([t, p.lat, p.lon, p.altM]); }
+  // witness samples generated from the SAME truth through the same geometry
+  const samples = [];
+  for (let t = -30; t <= 30; t += 5) { const g = acAzElRange(obs, acAt(t)); samples.push({ ms: t0Ms + t * 1000, az: g.az, el: g.el }); }
+  const st = trailStateAt(trail, 5);
+  approx(st.lat, acAt(5).lat, 1e-9, "trackmatch: trail interpolation exact between samples");
+  ok(trailStateAt(trail, 500) === null, "trackmatch: never extrapolates beyond the recorded trail");
+  const m = trackMatch(obs, trail, t0Ms, samples);
+  ok(m && m.n === 13 && m.overlapS === 60, "trackmatch: all samples land inside the trail window");
+  ok(m.meanSep < 0.01 && m.maxSep < 0.01, `trackmatch: the true aircraft scores ≈0° (mean ${m.meanSep.toFixed(4)}°)`);
+  // a 30 s clock-shifted decoy (same path, wrong time) must score badly
+  const shifted = trail.map(([t, la, lo, al]) => [t + 30, la, lo, al]);
+  const md = trackMatch(obs, shifted, t0Ms, samples);
+  ok(md && md.meanSep > 15, `trackmatch: a 30 s time-shifted decoy diverges hard (mean ${md.meanSep.toFixed(1)}°)`);
+  // a parallel path 2 km further east also diverges — position discriminates too
+  const east = trail.map(([t, la, lo, al]) => [t, la, lo + 2000 / mLon, al]);
+  const me = trackMatch(obs, east, t0Ms, samples);
+  ok(me && me.meanSep > 5, `trackmatch: a parallel offset path diverges (mean ${me.meanSep.toFixed(1)}°)`);
+  ok(trackMatch(obs, trail, t0Ms, samples.slice(0, 2)) === null, "trackmatch: <3 overlapping samples → honest null, no verdict");
+  // absolute-clock sampling: objPath thinned + q-gated, anchored at whenMs + t
+  const src = { whenMs: t0Ms - 10000, objPath: [
+    { t: 10, az: 100, el: 20, q: 0.9 }, { t: 11, az: 101, el: 20.5, q: 0.9 },
+    { t: 12, az: 102, el: 21, q: 0.1 }, { t: 13, az: 103, el: 21.5, q: 0.8 },
+  ] };
+  const abs = trackAbsSamples(src);
+  ok(abs.length === 3 && abs[0].ms === t0Ms && abs[0].az === 100, "trackmatch: objPath samples on the wall clock, low-q predictions dropped");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law

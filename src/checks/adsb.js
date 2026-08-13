@@ -22,6 +22,7 @@
 
 import { D2R, R2D, RE, sub, mag, dot, unit, enuFromGeo, dirFromAzEl, dirToAzEl } from "../math/geodesy.js";
 import { isNum } from "../math/format.js";
+import { trackDirections } from "../math/kinematics.js";
 
 const FT = 0.3048, KT = 0.514444, NM_M = 1852;
 
@@ -123,6 +124,69 @@ export function rankCandidates(sources, aircraft) {
   }
   out.sort((a, b) => a.sepMax - b.sepMax);
   return out;
+}
+
+/* ─── TRACK-TIME MATCH ──────────────────────────────────────────────
+   The strongest aircraft test there is: not "was something near the
+   sight-line at Moment A" but "does this aircraft's whole archived path
+   sweep the same az/el path at the same times as the witness's track".
+   A single-instant separation can be coincidence; a trajectory that stays
+   on the witness's measured path for tens of seconds essentially IS the
+   explanation — and a divergent one genuinely rules that aircraft out.
+
+   trail: [[dtSec, lat, lon, altM], ...] from /api/hist, dt relative to the
+   request instant (t0Ms). samples: [{ms, az, el}] — the witness's timed
+   sight-lines on the wall clock. */
+
+/* linear interpolation along the trail; null outside its time span (never
+   extrapolate a position nobody recorded) */
+export function trailStateAt(trail, dt) {
+  if (!Array.isArray(trail) || trail.length < 2) return null;
+  if (dt < trail[0][0] || dt > trail[trail.length - 1][0]) return null;
+  let i = 1;
+  while (i < trail.length - 1 && trail[i][0] < dt) i++;
+  const a = trail[i - 1], b = trail[i];
+  const u = b[0] === a[0] ? 0 : (dt - a[0]) / (b[0] - a[0]);
+  return { lat: a[1] + (b[1] - a[1]) * u, lon: a[2] + (b[2] - a[2]) * u, altM: (a[3] ?? 0) + ((b[3] ?? 0) - (a[3] ?? 0)) * u };
+}
+
+/* a witness's timed sight-lines on the wall clock — the same whenMs + video-t
+   anchoring analyzeTracks uses. Prefers the dense objPath (stabilized clip:
+   world az/el per frame, q<0.3 predictions dropped, thinned to ≤120 samples);
+   falls back to the marked track via trackDirections. */
+export function trackAbsSamples(s) {
+  if (!isNum(s?.whenMs)) return [];
+  if (Array.isArray(s.objPath) && s.objPath.length >= 3) {
+    const good = s.objPath.filter((p) => isNum(p.t) && isNum(p.az) && isNum(p.el) && !(p.q < 0.3));
+    const step = Math.max(1, Math.ceil(good.length / 120));
+    return good.filter((_, i) => i % step === 0).map((p) => ({ ms: +s.whenMs + p.t * 1000, az: +p.az, el: +p.el }));
+  }
+  const dirs = trackDirections(s);
+  if (!dirs) return [];
+  return dirs.filter((d) => isNum(d.ct)).map((d) => ({ ms: +s.whenMs + d.ct * 1000, az: d.az, el: d.el }));
+}
+
+export function trackMatch(obs, trail, t0Ms, samples, minN = 3) {
+  const seps = [];
+  let tMin = Infinity, tMax = -Infinity;
+  for (const p of samples || []) {
+    const st = trailStateAt(trail, (p.ms - t0Ms) / 1000);
+    if (!st) continue;
+    const g = acAzElRange(obs, st);
+    const sep = Math.acos(Math.min(1, Math.max(-1, dot(dirFromAzEl(+p.az, +p.el), g.d)))) * R2D;
+    seps.push(sep);
+    if (p.ms < tMin) tMin = p.ms;
+    if (p.ms > tMax) tMax = p.ms;
+  }
+  if (seps.length < minN) return null;
+  const sorted = seps.slice().sort((a, b) => a - b);
+  return {
+    n: seps.length,
+    overlapS: (tMax - tMin) / 1000,
+    meanSep: seps.reduce((a, b) => a + b, 0) / seps.length,
+    medSep: sorted[seps.length >> 1],
+    maxSep: sorted[sorted.length - 1],
+  };
 }
 
 /* normalize one ADSBx-v2 record; both APIs share this shape */

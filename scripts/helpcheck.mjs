@@ -116,6 +116,7 @@ const NAMED = [
   ["roadCrossings", /Vehicle-light/, "the vehicle-light road-crossing check"],
   ["fetchMasts", /tower checks|mast/, "the tower/mast strobe check"],
   ["glintDeg", /flare/, "satellite flare-geometry notes"],
+  ["trackMatch", /AT THE SAME TIMES/, "the ADS-B trajectory (track-time) match"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

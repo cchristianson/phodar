@@ -7,6 +7,25 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **✈ ADS-B track-time matching — trajectory against trajectory, not one
+  instant** (roadmap item, user go-ahead). With a timed witness track (a
+  tracked video's dense path, or timed waypoints) and archived traffic,
+  each aircraft's whole ±4-min flight path is interpolated to every
+  witness sample AT THE SAME WALL-CLOCK TIMES and scored by angular
+  separation (worst witness governs; never extrapolates beyond the
+  recorded trail; fewer than 3 overlapping samples → no verdict).
+  A single-instant separation can be coincidence — a whole path matching
+  at the right times essentially IS the aircraft, and a divergent one
+  genuinely rules that aircraft out. The results panel badges each
+  candidate (🎯 tracks the witness path / ◎ roughly parallels / ✗ path
+  diverges), re-ranks by trajectory when it ran, and adds a conclusive
+  assessment line on a real match; the report's aircraft section prints
+  the same verdict. Proven end-to-end with two mocked aircraft placed
+  IDENTICALLY at Moment A: the one whose archive trail flew the
+  witness's path scored mean 0.0° and 🎯, the 30-second time-shifted
+  decoy scored 21° and ✗ — a discrimination no instant ranking can make.
+  8 mathcheck assertions against synthetic exact truth + 5-assertion
+  browser e2e.
 - **Six new validation checks** (user ask: "the easy ones" — each reuses
   existing infrastructure, all pure-math cores mathcheck-asserted, key UI
   paths browser-verified 13/13 + shadow/auth regressions green):

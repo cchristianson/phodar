@@ -24,7 +24,7 @@ import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from 
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
 import { sunPos, moonPos, moonFrac, raDecToAzEl, starAzEl } from "./math/astro.js";
-import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange } from "./checks/adsb.js";
+import { fetchAircraft, fetchAircraftAt, fetchAcInfo, rankCandidates, radiusNmForSources, acAzElRange, trackMatch, trackAbsSamples } from "./checks/adsb.js";
 import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibration, witnessClockCheck, witnessStatedMs, DRONE_PRESETS } from "./checks/flightlog.js";
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
@@ -757,7 +757,7 @@ const HELP_SECTIONS = [
       ]},
       { h: "Cross-checks & plots", items: [
         { t: "Top-down plot", d: "A satellite-imagery map showing the observers, their sight-line rays, the fix, and any trajectory. When a triangulated trajectory exists, a ▶ + scrubber under the map plays the object's movement in real time — a marker rides the path with a growing progress trail, and the readout shows elapsed time, clock time, altitude and speed at that instant." },
-        { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off. In the sky view the same traffic is drawn on the dome as ✈ chips at their true bearing and up-angle, rotated to their heading, each trailing a faint dashed SKY-TRACK of where it flew in the minutes around the sighting — so you can see whether a candidate's path matches what you watched, not just its position at one instant. A sighting more than ~15 minutes old is answered from the historical archive at the sighting time (teal provenance line); a fresh one polls live traffic every 20 s." },
+        { t: "✈ Aircraft check (ADS-B)", d: "🛰 Check … aircraft ranks nearby transponder-equipped aircraft by how close they sit to every witness's sight-line — a real match must satisfy all witnesses. Tags: ◉ ON the sight-line, ◎ near, …° off. In the sky view the same traffic is drawn on the dome as ✈ chips at their true bearing and up-angle, rotated to their heading, each trailing a faint dashed SKY-TRACK of where it flew in the minutes around the sighting — so you can see whether a candidate's path matches what you watched, not just its position at one instant. A sighting more than ~15 minutes old is answered from the historical archive at the sighting time (teal provenance line); a fresh one polls live traffic every 20 s. With a TIMED WITNESS TRACK (tracked video or timed waypoints) and archived data, the check goes a level deeper: each aircraft's whole archived flight path is compared against the witness's whole tracked path AT THE SAME TIMES — 🎯 means an aircraft actually flew the path you recorded (about as conclusive as the aircraft explanation gets), ✗ means no archived aircraft did, which genuinely rules the transponder fleet out rather than just one instant of it. The same trajectory verdict prints in the report." },
         { t: "🛩 Drone flight-log check (calibration)", d: "A ground-truth test harness, deliberately tucked behind the small 🛩 calibration link at the foot of the results step (it grades the app, not the sighting). Flew your own drone as the “sighting”? 🛩 Load flight log reads the craft's own record (Airdata CSV export, decoded DJI Fly CSV, or the video's .SRT captions — DJI Fly's raw .txt is encrypted, so export via Airdata/PhantomHelp) and grades every result against its GPS truth: direction off the sight-line, fix-vs-log position error, triangulated size vs the real span, altitude and speed. Pick the drone preset (DJI Mavic Mini, Neo, or a custom span). Clocks are handled honestly: the whole log is scanned for the instant that best fits the sight-lines, and the offset from the stated sighting time is reported. Logs that only record height above takeoff ask for the takeoff elevation (or assume the observer's, and say so). It also runs a per-witness ⏱ clock check — one sight-line swept against the whole flight is the sharpest clock reference there is, and a capture time that's seconds or minutes wrong gets named with the offset." },
       ]},
     ],
@@ -11227,7 +11227,27 @@ function AdsbCheck({ sources }) {
       }
       if (!got) got = await fetchAircraft(+valid[0].lat, +valid[0].lon, nm);
       const cands = rankCandidates(valid, got.ac) || [];
-      setData({ cands, source: got.source, nm, fetchedAt: Date.now(), total: got.ac.length, hist: !!got.hist });
+      /* TRACK-TIME MATCH: with archived trails AND a timed witness track,
+         compare trajectory to trajectory — the whole path at the right
+         times, not one instant. Worst witness governs (a real aircraft must
+         track EVERY witness's path). */
+      let anyTm = false;
+      if (got.hist) {
+        const trkWit = valid.map((s) => ({ s, samples: trackAbsSamples(s) })).filter((w) => w.samples.length >= 3);
+        if (trkWit.length) {
+          for (const c of cands) {
+            const ac = got.ac.find((a) => a.hex === c.hex);
+            if (!ac?.trail) continue;
+            const per = trkWit.map((w) => trackMatch(w.s, ac.trail, whenMs, w.samples)).filter(Boolean);
+            if (per.length) {
+              c.tm = { worstMean: Math.max(...per.map((r) => r.meanSep)), overlapS: Math.max(...per.map((r) => r.overlapS)), n: per.reduce((a, r) => a + r.n, 0) };
+              anyTm = true;
+            }
+          }
+          if (anyTm) cands.sort((a, b) => (a.tm ? a.tm.worstMean : a.sepMax + 999) - (b.tm ? b.tm.worstMean : b.sepMax + 999));
+        }
+      }
+      setData({ cands, source: got.source, nm, fetchedAt: Date.now(), total: got.ac.length, hist: !!got.hist, tmRan: anyTm });
     } catch (e) {
       setErr(`Couldn't reach an ADS-B source (${e.message || e}). Check the connection and try again.`);
     }
@@ -11273,6 +11293,19 @@ function AdsbCheck({ sources }) {
               ADS-B traffic, not aircraft.</b>
             </div>
           )}
+          {data.tmRan && (() => {
+            const best = data.cands.find((c) => c.tm);
+            if (!best) return null;
+            return best.tm.worstMean < 2 && best.tm.overlapS >= 15 ? (
+              <div className="ok" style={{ marginTop: 8 }}>
+                🎯 <b>{best.flight || best.reg || best.hex} follows the witness's tracked path</b> — mean Δ{best.tm.worstMean.toFixed(1)}° across {best.tm.n} timed samples over {Math.round(best.tm.overlapS)} s. A trajectory-level match at the right times is about as conclusive as an aircraft explanation gets.
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
+                ✈ Trajectory comparison ran against the witness track: the best archived path stayed a mean {best.tm.worstMean.toFixed(1)}° from the tracked object — {best.tm.worstMean < 5 ? "loosely similar; judge the per-sample geometry below" : "no archived aircraft flew the witness's path at those times"}.
+              </div>
+            );
+          })()}
           {data.cands.slice(0, 8).map((c) => {
             const on = c.sepMax < 2.5, near = c.sepMax < 8;
             return (
@@ -11285,6 +11318,11 @@ function AdsbCheck({ sources }) {
                     {on ? "◉ ON the sight-line" : near ? "◎ near" : `${c.sepMax.toFixed(1)}° off`}
                   </span>
                 </div>
+                {c.tm && (
+                  <div style={{ marginTop: 2, color: c.tm.worstMean < 2 ? "var(--teal)" : c.tm.worstMean < 5 ? "var(--amber)" : "var(--dim)" }}>
+                    {c.tm.worstMean < 2 ? "🎯 tracks the witness path" : c.tm.worstMean < 5 ? "◎ roughly parallels the path" : "✗ path diverges"} · mean Δ{c.tm.worstMean.toFixed(1)}° · {c.tm.n} samples / {Math.round(c.tm.overlapS)} s
+                  </div>
+                )}
                 {c.per.map((p, i) => {
                   const m = measAng(valid[i]);
                   return (
@@ -12443,6 +12481,30 @@ ${witnessMark}
         return `<tr><td>${e2(c.flight || c.reg || c.hex)}${c.t ? ` · ${e2(c.t)}` : ""}</td><td>${c.span != null ? fmtLenShort(c.span) : "—"}</td><td>${c.sepMax.toFixed(1)}°</td><td>${p.az.toFixed(0)}° / ${p.el.toFixed(0)}°</td><td>${fmtLenShort(p.rangeM)}</td><td>${p.predAng != null ? p.predAng.toFixed(2) + "°" : "—"}${measA != null ? ` vs ${measA.toFixed(2)}°` : ""}</td><td>${c.altM != null ? Math.round(c.altM * 3.28084).toLocaleString() + " ft" : "—"}${c.gs != null ? ` · ${fmtSpeedShort(c.gs)}` : ""}</td></tr>`;
       }).join("");
       const best = framed[0];
+      /* TRACK-TIME MATCH: archived trails vs the witness's timed track —
+         trajectory against trajectory at the right times, not one instant.
+         Trail dt is anchored at the archive request time, which the dome
+         fetch set to the sighting whenMs. */
+      let tmHtml = "";
+      if (snap.hist && when != null) {
+        const trkWit = origAct.filter((s) => isNum(s.lat) && isNum(s.lon)).map((s) => ({ s, samples: trackAbsSamples(s) })).filter((w) => w.samples.length >= 3);
+        if (trkWit.length) {
+          let bestTm = null;
+          for (const c of cands) {
+            const ac = snap.ac.find((a) => a.hex === c.hex);
+            if (!ac?.trail) continue;
+            const per = trkWit.map((w) => trackMatch(w.s, ac.trail, +when, w.samples)).filter(Boolean);
+            if (!per.length) continue;
+            const worstMean = Math.max(...per.map((r) => r.meanSep));
+            if (!bestTm || worstMean < bestTm.worstMean) bestTm = { c, worstMean, n: per.reduce((a, r) => a + r.n, 0), overlapS: Math.max(...per.map((r) => r.overlapS)) };
+          }
+          if (bestTm) {
+            tmHtml = bestTm.worstMean < 2 && bestTm.overlapS >= 15
+              ? `<p>🎯 <b>Trajectory match: ${e2(bestTm.c.flight || bestTm.c.reg || bestTm.c.hex)} flew the witness's tracked path</b> — mean separation ${bestTm.worstMean.toFixed(1)}° across ${bestTm.n} timed samples over ${Math.round(bestTm.overlapS)} s. A whole path matching at the right times is about as conclusive as an aircraft explanation gets.</p>`
+              : `<p class="cap">Trajectory comparison ran against the witness's timed track: the best archived aircraft path stayed a mean ${bestTm.worstMean.toFixed(1)}° from the tracked object — ${bestTm.worstMean < 5 ? "loosely similar; judge the table above" : "no archived aircraft flew the witness's path at those times"}.</p>`;
+          }
+        }
+      }
       /* route enrichment for the best in-frame match only (one adsbdb call) —
          turns a hex/callsign into "SFO → SEA, B738" */
       let routeTxt = "";
@@ -12484,6 +12546,7 @@ ${witnessMark}
 <p class="lead">${acAssess}</p>
 <p class="cap">Transponder aircraft that fell <b>inside the photo frame</b>. Source: ${e2(snap.src)} · ${gapTxt || `captured ${new Date(snap.fetchedAt).toLocaleString()}`}</p>
 ${framed.length ? `<table><tr><th>Flight</th><th>Span</th><th>Off sight-line (worst witness)</th><th>Seen at az/el</th><th>Range</th><th>Would appear vs measured</th><th>Alt · speed</th></tr>${rows}</table>` : ""}
+${tmHtml}
 <p>${verdict}${routeTxt}</p>`;
     }
   }
