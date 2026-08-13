@@ -7,6 +7,30 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **🎈 Weather-balloon check (radiosonde) — real data for the #1 mundane
+  explanation** (next item on the user's go-ahead list). Two independent
+  layers in a new report section. LAUNCH SCHEDULE: the worldwide SondeHub
+  launch-site catalog (~900 stations with positions, synoptic launch
+  times, measured ascent rates and burst altitudes; `/api/sondesites`
+  proxy, week-cached) answers for ANY sighting age whether a scheduled
+  balloon was actually AIRBORNE at the stated time — and where in its
+  flight: "airborne — ascending, ≈ 9.4 km up (launched 4:00 PM)".
+  RECEIVED TRACKS: actual radiosonde telemetry near the observer
+  (`/api/sondes` proxy — live near-point query for fresh sightings, the
+  global telemetry archive distance-filtered server-side for older ones)
+  ranked against every sight-line exactly like aircraft: range, altitude,
+  predicted angular size from the envelope's altitude-grown diameter
+  (~1.5 m at release → ~7.5 m at burst), and the full 🎯 trajectory
+  match when the witness has a timed track — reusing the same pure
+  track-time geometry the aircraft check ships. Field-validated against
+  the real network: the actual Aug 11 Medford 00Z sonde comes back as a
+  full ascending track from the launch point 9 km from the user's test
+  area. Honest both ways: no received telemetry "rules out received
+  sondes, not balloons" (volunteer receiver coverage), and the schedule
+  layer still answers when no receiver heard anything. 10 mathcheck
+  assertions (site parsing, launch-window physics incl. descent phase,
+  candidate ranking) + 6-assertion browser e2e with a synthetic balloon
+  flight driven through the real report.
 - **✈ ADS-B track-time matching — trajectory against trajectory, not one
   instant** (roadmap item, user go-ahead). With a timed witness track (a
   tracked video's dense path, or timed waypoints) and archived traffic,

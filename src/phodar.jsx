@@ -39,6 +39,7 @@ import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline,
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
+import { parseSites, launchStateAt, rankSondes, fetchSondeSites, fetchSondes } from "./checks/sondes.js";
 import { poleShadow, poleDistView, shadowCast, shadowTimes, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
@@ -782,6 +783,7 @@ const HELP_SECTIONS = [
         { t: "Video analysis", d: "For a stabilized, object-tracked clip: the object's dense per-frame angular trajectory measured with NO distance assumption — total sky sweep, average & peak angular rate (°/s, a strong discriminator: satellites track at a near-constant rate, aircraft vary, a hover ≈ 0) and an angular-rate plot. Then a size/distance/speed table showing what every candidate distance implies (or the one triangulated distance if a second observer fixed it), plus its apparent-size range if you sized the object across frames (that recovers toward/away motion). Ends with a keyframe strip — sampled frames with the tracked object marked and captioned (time, az/el, angular size, rate)." },
         { t: "Sky-object check", d: "Flags the Sun, Moon, planets or bright stars within a few degrees of any sight-line — with a Venus warning (the most-reported “UFO”). Satellites near the sight-line also get a ✨ flare note when the sun's reflection off an earth-facing panel could have reached you — a specular flare is a brilliant light that swells and vanishes in seconds (attitude is unknown, so it's stated as possible, never predicted)." },
         { t: "Vehicle-light & tower checks", d: "Two ground-truth candidates for a low light: where the sight-line crosses a mapped road (at night a car cresting a rise reads as a hovering or slow-moving light), and any tall structure — mast, tower, chimney, lighthouse — within a few degrees of the bearing, with its height, distance and the top's elevation angle: obstruction strobes are the classic pulsing red light. Both honestly note that map data is incomplete — an empty list proves nothing." },
+        { t: "Weather-balloon check (radiosonde)", d: "The #1 mundane explanation gets real data, not inference. Layer one: the worldwide launch-site catalog — was a scheduled synoptic balloon (00Z/12Z at most stations, launched ~1 h before) actually AIRBORNE at the stated time, and was it ascending or descending, at what altitude? Layer two: radiosondes actually RECEIVED by the volunteer SondeHub network near the sighting, ranked against every sight-line like aircraft — range, altitude, predicted angular size from the envelope's altitude-grown diameter, and a 🎯 trajectory match when your tracked video path follows the real balloon's flight. Honest both ways: no received telemetry rules out received sondes, not balloons." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
         { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
@@ -13355,6 +13357,51 @@ ${windPhotoBlock}
 <table><tr><th>Observer</th><th>Structure</th><th>Height</th><th>Distance</th><th>Geometry</th></tr>${rows.join("")}</table>
 <p class="cap">Masts, towers, chimneys and lighthouses from OpenStreetMap within 25 km; the top's elevation angle is computed over the terrain model. Not every structure is lit, and OSM is not complete — an empty list proves nothing.</p>`;
   } catch (e) { /* Overpass busy / offline — omit */ }
+  /* 🎈 weather-balloon check (radiosondes) — two layers: the launch-site
+     schedule (was a scheduled synoptic balloon plausibly AIRBORNE, and in
+     which phase of its flight), and actual RECEIVED sonde tracks near the
+     sighting ranked against the sight-lines like aircraft, including the
+     trajectory match when the witness has a timed track. */
+  let sondeHtml = "";
+  try {
+    const w0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs));
+    if (w0) {
+      const when = +w0.whenMs;
+      let siteRows = "", anyAir = false;
+      try {
+        const raw = await fetchSondeSites(+w0.lat, +w0.lon);
+        for (const st of parseSites(raw, +w0.lat, +w0.lon, 250).slice(0, 3)) {
+          const ls = launchStateAt(st, when);
+          if (ls) anyAir = true;
+          siteRows += `<tr><td>${e2(st.name)}</td><td>${st.distKm.toFixed(0)} km ${compass8(st.az)}</td><td>${st.times.map((t) => `${String(t.h).padStart(2, "0")}:${String(t.min).padStart(2, "0")}Z`).join(" · ") || "—"}</td><td>${ls ? `<b>airborne</b> — ${ls.phase === "asc" ? "ascending" : "descending"}, ≈ ${fmtLenShort(ls.altM)} up (launched ${new Date(ls.launchMs).toLocaleTimeString()})` : "nothing scheduled aloft"}</td></tr>`;
+        }
+      } catch (e) { /* sites unavailable — the tracks layer may still answer */ }
+      let candHtml = "";
+      try {
+        const got = await fetchSondes(+w0.lat, +w0.lon, when, 250);
+        const cands = rankSondes(origAct, got.sondes || [], when);
+        if (cands.length) {
+          const rows = cands.slice(0, 5).map((c) => `<tr><td>${e2(c.serial)}${c.type ? ` · ${e2(c.type)}` : ""}</td><td>${fmtLenShort(c.rangeM)}</td><td>${fmtLenShort(c.altM)}</td><td>${c.sepMax.toFixed(1)}°</td><td>${c.predAng != null ? c.predAng.toFixed(3) + "°" : "—"}</td><td>${c.tm ? (c.tm.worstMean < 2 ? `🎯 tracks the witness path (Δ${c.tm.worstMean.toFixed(1)}° over ${Math.round(c.tm.overlapS)} s)` : `Δ${c.tm.worstMean.toFixed(1)}° over ${Math.round(c.tm.overlapS)} s`) : "—"}</td></tr>`).join("");
+          const b = cands[0];
+          const verdict = (b.tm && b.tm.worstMean < 2 && b.tm.overlapS >= 15)
+            ? `<b>Assessment — weather balloon: very likely.</b> Radiosonde ${e2(b.serial)} was RECEIVED flying the witness's tracked path (mean Δ${b.tm.worstMean.toFixed(1)}°).`
+            : b.sepMax < 2.5
+              ? `<b>Assessment — weather balloon: likely.</b> A received radiosonde sat ${b.sepMax.toFixed(1)}° from the sight-line at the sighting time.`
+              : b.sepMax < 8
+                ? `<b>Assessment — weather balloon: possible.</b> The nearest received radiosonde was ${b.sepMax.toFixed(1)}° off the sight-line.`
+                : `<b>Assessment — weather balloon: unlikely on received data.</b> The nearest received radiosonde was ${b.sepMax.toFixed(1)}° from the sight-line.`;
+          candHtml = `<p class="lead">${verdict}</p>
+<table><tr><th>Sonde</th><th>Range</th><th>Altitude</th><th>Off sight-line</th><th>Would appear</th><th>Trajectory</th></tr>${rows}</table>
+<p class="cap">Received radiosonde telemetry (${e2(got.src)}) within 250 km. "Would appear" uses the envelope's altitude-grown diameter (~1.5 m at release → ~7.5 m at burst).</p>`;
+        } else {
+          candHtml = `<p class="cap">No radiosonde telemetry was received near the sighting${anyAir ? " — the scheduled balloon above may simply have had no volunteer receiver in range" : ""}. Absence of received telemetry rules out received sondes, not balloons.</p>`;
+        }
+      } catch (e) { candHtml = `<p class="cap">Sonde telemetry unavailable (${e2(String(e.message || e))}) — the schedule table above still applies.</p>`; }
+      if (siteRows || candHtml) sondeHtml = `<h2>Weather-balloon check (radiosonde)</h2>
+${siteRows ? `<p class="cap">Scheduled synoptic launch sites near the observer (SondeHub catalog). A balloon rises ~5 m/s for ~2 h to ~30+ km, then falls under parachute — "airborne" means the schedule put one up at the stated time.</p><table><tr><th>Launch site</th><th>Distance</th><th>Launches (UTC)</th><th>At the sighting time</th></tr>${siteRows}</table>` : ""}
+${candHtml}`;
+    }
+  } catch (e) { /* offline — omit */ }
   /* 🔬 AUTHENTICITY — aggregate every source's file-forensic + derived
      findings; any ALARM puts a loud banner at the very top of the report. */
   const authPer = origAct.map((s, i) => ({ name: s.name || `Observer ${i + 1}`, finds: authFindings(s) }));
@@ -13448,6 +13495,7 @@ ${collapsible(adsbHtml, false)}
 ${collapsible(airportsHtml, false)}
 ${collapsible(vehicleHtml, false)}
 ${collapsible(mastsHtml, false)}
+${collapsible(sondeHtml, false)}
 ${collapsible(photomHtml, false)}
 ${collapsible(condHtml, false)}
 ${collapsible(skyHtml, false)}

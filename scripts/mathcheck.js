@@ -3689,6 +3689,38 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(abs.length === 3 && abs[0].ms === t0Ms && abs[0].az === 100, "trackmatch: objPath samples on the wall clock, low-q predictions dropped");
 }
 
+// --- 🎈 radiosonde (weather-balloon) check — sites, launch windows, ranking
+{
+  const { parseSites, launchStateAt, balloonDiaM, rankSondes } = await import("../src/checks/sondes.js");
+  const { acAzElRange } = await import("../src/checks/adsb.js");
+  const sitesJson = {
+    "72597": { station_name: "Medford (US)", position: [-122.8822, 42.3769], alt: 405, times: ["0:00:00", "0:12:00"], burst_altitude: 34000, ascent_rate: 5 },
+    far: { station_name: "Far away", position: [-100, 30], alt: 0, times: ["0:12:00"] },
+  };
+  const sites = parseSites(sitesJson, 42.3, -122.9, 250);
+  ok(sites.length === 1 && sites[0].name === "Medford (US)" && sites[0].distKm < 12, "sondes: site catalog filtered + ranged (Medford 9 km)");
+  ok(sites[0].times.length === 2 && sites[0].times[1].h === 12, "sondes: launch schedule parsed (00Z & 12Z)");
+  const site = sites[0];
+  // 23:30Z: the 00Z balloon launched at 23:00Z is 30 min up → ~9.4 km ascending
+  const D = Date.UTC(2026, 7, 11);
+  const up = launchStateAt(site, D + (23 * 60 + 30) * 60000);
+  ok(up && up.phase === "asc" && Math.abs(up.altM - (405 + 1800 * 5)) < 1, `sondes: 30 min after launch ⇒ ascending at ${Math.round(up.altM)} m`);
+  ok(launchStateAt(site, D + 3 * 3600000 + 3600000) === null, "sondes: hours past the flight ⇒ honestly nothing airborne");
+  const ascS = (34000 - 405) / 5;
+  const dn = launchStateAt(site, D + 23 * 3600000 + (ascS + 1200) * 1000);
+  ok(dn && dn.phase === "desc" && dn.altM < 34000 && dn.altM > 5000, "sondes: after burst ⇒ descending phase with falling altitude");
+  approx(balloonDiaM(0), 1.5, 1e-9, "sondes: envelope ~1.5 m at release");
+  approx(balloonDiaM(34000, 34000), 7.5, 1e-9, "sondes: envelope ~7.5 m at burst");
+  // ranking: a sonde 5 km east at 3 km altitude, witness aimed straight at it
+  const mLat = 111320, mLon = 111320 * Math.cos(42.3 * D2R);
+  const sd = { serial: "Y123", type: "RS41", track: [[-60, 42.3 - 300 / mLat, -122.9 + 5000 / mLon, 2900], [60, 42.3 + 300 / mLat, -122.9 + 5000 / mLon, 3100]] };
+  const g = acAzElRange({ lat: 42.3, lon: -122.9, alt: 0 }, { lat: 42.3, lon: -122.9 + 5000 / mLon, altM: 3000 });
+  const cands = rankSondes([{ name: "W", lat: "42.3", lon: "-122.9", alt: 0, A: { az: g.az, el: g.el } }], [sd], Date.UTC(2026, 7, 11, 23, 30));
+  ok(cands.length === 1 && cands[0].sepMax < 0.2, `sondes: on-sight-line sonde ranks at ≈0° (${cands[0].sepMax.toFixed(2)}°)`);
+  ok(cands[0].predAng > 0.015 && cands[0].predAng < 0.04, `sondes: predicted angular size from the altitude-grown envelope (${cands[0].predAng.toFixed(3)}°)`);
+  ok(rankSondes([{ lat: "42.3", lon: "-122.9", A: { az: (g.az + 120) % 360, el: g.el } }], [sd], 0)[0].sepMax > 90, "sondes: a sonde far off the bearing scores far off");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law

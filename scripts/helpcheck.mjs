@@ -117,6 +117,7 @@ const NAMED = [
   ["fetchMasts", /tower checks|mast/, "the tower/mast strobe check"],
   ["glintDeg", /flare/, "satellite flare-geometry notes"],
   ["trackMatch", /AT THE SAME TIMES/, "the ADS-B trajectory (track-time) match"],
+  ["rankSondes", /Weather-balloon check \(radiosonde\)/, "the radiosonde launch-schedule + received-track check"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

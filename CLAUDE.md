@@ -586,6 +586,18 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   off the sight-line meant zero tracks before Moment A is set, so the look
   direction is the fallback reference; live mode accumulates its own trail
   from the 20 s polls. Satellites should emit the same trail shape.
+- **Radiosonde check: DONE** (`src/checks/sondes.js` + `/api/sondesites`
+  + `/api/sondes` SondeHub proxies + report "Weather-balloon check"):
+  two layers — the launch-site catalog (900 stations, schedules, ascent
+  rates, burst altitudes; `launchStateAt` computes airborne/phase/altitude
+  for any sighting age) and RECEIVED sonde tracks (live near-point for
+  fresh sightings, global telemetry archive distance-filtered server-side
+  for older; no spatial filter upstream, ~0.5 MB/window, hence the proxy).
+  `rankSondes` reuses the aircraft geometry (`acAzElRange`/`trailStateAt`/
+  `trackMatch`) including the 🎯 trajectory match. Probed 2026-08:
+  api.v2.sondehub.org is keyless + CORS-open; validated against the real
+  Aug 11 Medford 00Z flight. Honesty: absence of telemetry rules out
+  received sondes, not balloons. All mathcheck-asserted.
 - **Open-Meteo winds: DONE** (src/checks/winds.js + report "Wind check"):
   pressure-level wind at the fix altitude, forecast API ≤~3 months back,
   ERA5 archive beyond; balloonVerdict compares heading + speed ratio.

@@ -357,6 +357,86 @@ async function apiAirports(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* ─── radiosonde (weather-balloon) check — SondeHub proxy ─────────────
+   /sites is a small global catalog (launch positions + schedules), cached a
+   week and filtered to the observer's neighbourhood. Telemetry has NO
+   spatial filter upstream (global ~0.5 MB per window), so the proxy pulls
+   the window around the sighting, keeps only sondes that came within range,
+   and returns compact aircraft-style tracks [[dtSec, lat, lon, altM], ...]
+   with dt relative to the sighting instant. Fresh sightings use the live
+   near-point endpoint instead. Probed 2026-08: both endpoints keyless. */
+const sondeKm = (la1, lo1, la2, lo2) => {
+  const p = Math.PI / 180, dphi = (la2 - la1) * p, dl = (lo2 - lo1) * p;
+  const a = Math.sin(dphi / 2) ** 2 + Math.cos(la1 * p) * Math.cos(la2 * p) * Math.sin(dl / 2) ** 2;
+  return 12742 * Math.asin(Math.min(1, Math.sqrt(a)));
+};
+let sondeSitesCache = null; // { t, body }
+async function apiSondeSites(q, res) {
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180);
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  try {
+    if (!sondeSitesCache || Date.now() - sondeSitesCache.t > 7 * 86400000) {
+      const r = await fetch("https://api.v2.sondehub.org/sites", { headers: { accept: "application/json" }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error(`sondehub sites HTTP ${r.status}`);
+      sondeSitesCache = { t: Date.now(), body: await r.json() };
+    }
+    const near = {};
+    for (const [k, s] of Object.entries(sondeSitesCache.body || {})) {
+      const lo = s?.position?.[0], la = s?.position?.[1];
+      if (typeof la !== "number" || typeof lo !== "number") continue;
+      if (sondeKm(lat, lon, la, lo) <= 400) near[k] = s;
+    }
+    return json(res, 200, { sites: near });
+  } catch (e) {
+    return json(res, 502, { error: `sondehub sites unavailable (${e.message || e})` });
+  }
+}
+const sondesCache = new Map(); // key → { t, body }
+async function apiSondes(q, res) {
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180);
+  const t = +q.get("t"), km = Math.min(400, Math.max(20, +q.get("km") || 250));
+  if (!isFinite(lat) || !isFinite(lon) || !isFinite(t)) return json(res, 400, { error: "lat/lon/t required" });
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)},${Math.round(t / 600000)},${km}`;
+  const hit = sondesCache.get(key);
+  if (hit && Date.now() - hit.t < 30 * 60000) return json(res, 200, hit.body);
+  try {
+    let body;
+    if (Math.abs(Date.now() - t) < 30 * 60000) {
+      const r = await fetch(`https://api.v2.sondehub.org/sondes?lat=${lat}&lon=${lon}&distance=${km * 1000}&last=10800`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error(`sondehub live HTTP ${r.status}`);
+      const j = await r.json();
+      const sondes = Object.values(j || {}).map((f) => ({
+        serial: f.serial, type: f.type || f.subtype || null,
+        track: [[+(((Date.parse(f.datetime) || Date.now()) - t) / 1000).toFixed(0), +(+f.lat).toFixed(5), +(+f.lon).toFixed(5), Math.round(+f.alt || 0)]],
+      })).filter((s) => s.serial && isFinite(s.track[0][1]));
+      body = { sondes, src: "sondehub live", hist: false };
+    } else {
+      const end = new Date(t + 45 * 60000).toISOString();
+      const r = await fetch(`https://api.v2.sondehub.org/sondes/telemetry?duration=3h&datetime=${encodeURIComponent(end)}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(40000) });
+      if (!r.ok) throw new Error(`sondehub telemetry HTTP ${r.status}`);
+      const j = await r.json();
+      const sondes = [];
+      for (const [serial, frames] of Object.entries(j || {})) {
+        const pts = Object.values(frames || {})
+          .filter((f) => typeof f.lat === "number" && typeof f.lon === "number")
+          .map((f) => ({ ms: Date.parse(f.datetime), lat: f.lat, lon: f.lon, alt: +f.alt || 0, type: f.type || f.subtype }))
+          .filter((p) => isFinite(p.ms))
+          .sort((a, b) => a.ms - b.ms);
+        if (pts.length < 2) continue;
+        if (!pts.some((p) => sondeKm(lat, lon, p.lat, p.lon) <= km)) continue;
+        sondes.push({
+          serial, type: pts[0].type || null,
+          track: pts.map((p) => [+(((p.ms - t) / 1000)).toFixed(0), +p.lat.toFixed(5), +p.lon.toFixed(5), Math.round(p.alt)]),
+        });
+      }
+      body = { sondes, src: "sondehub archive", hist: true };
+    }
+    sondesCache.set(key, { t: Date.now(), body });
+    return json(res, 200, body);
+  } catch (e) {
+    return json(res, 502, { error: `sondehub unavailable (${e.message || e})` });
+  }
+}
 /* tall lit structures (masts/towers/chimneys/lighthouses) — the strobe-light
    candidate check. Same proxy + mirror-race + cache pattern as /api/peaks. */
 const mastsCache = new Map();
@@ -1108,6 +1188,8 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/masts") return await apiMasts(u.searchParams, res);
+    if (u.pathname === "/api/sondesites") return await apiSondeSites(u.searchParams, res);
+    if (u.pathname === "/api/sondes") return await apiSondes(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/roads") return await apiRoads(u.searchParams, res);
     if (u.pathname === "/api/winds") return await apiWinds(u.searchParams, res);
