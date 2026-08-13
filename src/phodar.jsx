@@ -568,12 +568,13 @@ const HELP_SECTIONS = [
     ],
   },
   {
-    id: "photo", icon: "📸", title: "Step 1 — The photo",
+    id: "photo", icon: "📸", title: "Step 1 — The capture",
     intro: "Load the sighting media and tell Phodar how big the object appeared by fitting a 3D wireframe shape over it. The projected silhouette of that shape becomes the measured angular size — the seed for real size once distance is known. The original pixels are never altered; brightness/contrast here is display-only.",
     groups: [
       { h: "Load the media (the top row)", items: [
         { t: "Load photo or video / Replace", d: "Pick any image or video from your device. Replace swaps the media and starts the measurement fresh." },
         { t: "📎 Auto-filled from the file ✓", d: "When EXIF is present, Phodar reads GPS, time, camera bearing, FOV and model and pre-fills later steps — every field stays editable." },
+        { t: "ⓘ keeping the metadata", d: "Before anything is loaded, the step notes that metadata auto-fills when the file carries it; this button pops the how-to for moving a capture between devices WITHOUT stripping it — AirDrop with All Photos Data ON (iPhone), share the original via Files/Drive rather than a chat app (Android), and export HEIC as JPEG so the browser can read it. Messaging apps re-encode media and destroy the GPS/time/lens data." },
         { t: "💾 Save to camera roll (video)", d: "Hands the clip to your phone's share sheet — on iPhone choose “Save Video” to put it in Photos. A web app can't write to Photos directly, so this is the way out. It matters most for a clip you recorded IN Phodar: that lives only inside the app until you save it, so an unsaved one is flagged in amber. (Photos accepts .mp4/.mov and refuses .webm — an iPhone in-app recording is .mp4, so it's fine.)" },
         { t: "⟳ Re-attach the same file", d: "Loads the SAME clip again and keeps every measurement — object placement, track waypoints, alignment frame and sky placement all stay; only the solved stabilization is dropped so you can solve the fresh file. This is also how you give an IMPORTED sighting its video back: a share file carries all the measurements but never the media." },
         { t: "📷 Capture with sensors", d: "Shoot the sighting inside Phodar so the phone logs the up/down angle, roll and heading that EXIF leaves out — see “Shooting in-app” below." },
@@ -1073,6 +1074,7 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
   const [view, setView] = useState({ z: 1, ox: 0, oy: 0 }); // pinch-zoom/pan of the marking canvas
   const [finger, setFinger] = useState(null);               // last pointer pos (wrapper-relative) for the loupe
   const [dropHot, setDropHot] = useState(false);            // DESKTOP: a file is being dragged over the step
+  const [metaHint, setMetaHint] = useState(false);          // ⓘ how-to-keep-the-metadata instructions, toggled inline
   const ptsRef = useRef(new Map());
   const pinchRef = useRef(null);
   const pendingRef = useRef(null); // undecided first touch: tap? drag? or pinch about to start?
@@ -2598,6 +2600,26 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
           This observer's {src.mediaLost === "video" ? "video" : "photo"} is no longer in this device's storage — the system reclaimed the space (large files go first). Your points, marks and placements are all still here: tap <b>Load photo or video</b> and pick the <b>same file</b> to re-attach it and keep every measurement{src.mediaLost === "video" ? " (then re-run 🎞 Stabilize)" : ""}.
         </div>
       )}
+      {/* BEFORE anything is loaded: say that metadata auto-fills (it's the
+          single biggest quality lever and the reason to upload an ORIGINAL),
+          with an inline ⓘ explaining how to move a file between devices
+          without stripping it. After upload the 📎 Auto-filled panel takes
+          over the same job with the actual values. */}
+      {!media && !loading && !viewOnly && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--dim)", lineHeight: 1.55 }}>
+          GPS position, time, camera bearing and lens FOV are read from the file automatically when it carries them — use the <b style={{ color: "var(--ink)" }}>original</b> file, not a re-send.{" "}
+          <button className="btn sm ghost" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => setMetaHint((v) => !v)}>ⓘ keeping the metadata</button>
+          {metaHint && (
+            <div style={{ marginTop: 6, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 10, background: "rgba(255,255,255,.02)", color: "var(--dim)" }}>
+              Messaging apps (iMessage, WhatsApp, Discord…) re-encode media and strip the GPS/time/lens data. To move a file between devices with everything intact:
+              <div style={{ marginTop: 5 }}>• <b style={{ color: "var(--ink)" }}>iPhone/iPad</b>: in Photos tap <b style={{ color: "var(--ink)" }}>Share → Options (top of the sheet) → All Photos Data ON</b> (Location ON), then AirDrop — or save to Files/iCloud Drive and open it from there.</div>
+              <div style={{ marginTop: 4 }}>• <b style={{ color: "var(--ink)" }}>Android</b>: share the original file through Files/Drive rather than a chat app.</div>
+              <div style={{ marginTop: 4 }}>• <b style={{ color: "var(--ink)" }}>HEIC photos</b> can't expose metadata in a browser — export/share as JPEG ("Most Compatible") first.</div>
+              <div style={{ marginTop: 4 }}>Phodar will tell you after loading whether the metadata made it — and everything can still be entered by hand if it didn't.</div>
+            </div>
+          )}
+        </div>
+      )}
       {/* sighting filled from a report LINK: the metadata came over, the media
           deliberately did not (another site's video is not ours to
           hot-download, and browser CORS blocks it anyway) — point straight at
@@ -3542,7 +3564,14 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
         </>
       )}
 
-      {viewOnly ? (
+      {/* FOV + angular size are properties OF the capture — before anything
+          is loaded they're noise on an empty step (field ask), so they render
+          only once media exists. The skip-media path sets position/direction
+          by hand on later steps and never needs a camera FOV here. One
+          exception: a view-only sighting whose media was never re-attached
+          (mediaKind survives autosave) keeps its FOV readout — that number
+          came from the original file and the reviewer should see it. */}
+      {!media && !(viewOnly && src.mediaKind) ? null : viewOnly ? (
         isNum(src.fovH) ? (
           <div style={{ marginTop: 10, fontSize: 12, color: "var(--dim)", fontFamily: "var(--mono)" }}>
             FOV {(+src.fovH).toFixed(1)}°{isNum(src.meta?.fovH) ? " — from the lens metadata ✓" : ""}
@@ -3615,13 +3644,15 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
         </div>
       )}
 
-      <div style={{ marginTop: 10 }}>
-        <ML>Measured angular size</ML>
-        <div className="readout amber" style={{ fontSize: 18 }}>
-          {ang != null ? `${ang.toFixed(3)}°` : "— fit a shape above —"}
-          {ang != null && <span style={{ fontSize: 12, color: "var(--dim)" }}>  ({(ang / 0.52).toFixed(1)}× full-moon width)</span>}
+      {media && (
+        <div style={{ marginTop: 10 }}>
+          <ML>Measured angular size</ML>
+          <div className="readout amber" style={{ fontSize: 18 }}>
+            {ang != null ? `${ang.toFixed(3)}°` : "— fit a shape above —"}
+            {ang != null && <span style={{ fontSize: 12, color: "var(--dim)" }}>  ({(ang / 0.52).toFixed(1)}× full-moon width)</span>}
+          </div>
         </div>
-      </div>
+      )}
 
       {viewOnly ? (src.statement ? (
         <div style={{ marginTop: 14 }}>
@@ -13827,7 +13858,7 @@ export default function App() {
     } else if (ui.view !== "home" && wsrc) {
       if (ui.view === "s1") {
         page = (
-          <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE PHOTO"} help="photo" viewOnly={viewOnly} onBack={() => goView("home")} onNext={() => goView("s2")}
+          <WizStep n={1} title={appMode === "aerial" ? "THE AERIAL FRAME" : "THE CAPTURE"} help="photo" viewOnly={viewOnly} onBack={() => goView("home")} onNext={() => goView("s2")}
             nextLabel={appMode === "aerial" ? "Next · platform & geolocate →" : (wsrc.mediaUrl ? "Next · where were you? →" : "Skip media — enter data by hand →")}>
             <MediaMeasure wizard viewOnly={viewOnly} src={wsrc} update={(p) => updateSource(wsrc.id, p)} />
           </WizStep>

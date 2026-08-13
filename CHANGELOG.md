@@ -7,6 +7,20 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Step 1 is now "THE CAPTURE"** (it takes photo or video), and the empty
+  step got useful instead of noisy (field asks): before anything is
+  loaded, a note says GPS/time/bearing/lens metadata auto-fill when the
+  file carries them — use the original, not a re-send — with an
+  "ⓘ keeping the metadata" popover explaining how to move a capture
+  between devices without stripping it (AirDrop with All Photos Data ON,
+  Files/Drive instead of chat apps on Android, HEIC → JPEG). The camera
+  FOV fields and the measured-angular-size readout are hidden until
+  media is loaded — they're properties of the capture, and the
+  skip-media path never needs them here. One exception kept: a
+  view-only sighting whose media was never re-attached still shows its
+  FOV readout (that number came from the original file). Manual updated
+  (section renamed "Step 1 — The capture", ⓘ documented); browser-
+  verified before/after upload.
 - **"🤖 Bring your own AI" card on the home screen** (user ask: a section
   that explains the API with a full prompt to copy into your AI of
   choice). Collapsible card at the bottom of the sighting list: explains
