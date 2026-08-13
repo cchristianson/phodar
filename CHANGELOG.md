@@ -7,6 +7,26 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Aurora, contrail and sky-lantern context checks** (the small trio
+  from the list). ✨ AURORA: for night sightings at auroral-capable
+  latitudes the report pulls the GFZ Kp geomagnetic index for the
+  sighting instant (full history, CC-BY, via a new `/api/kp` proxy —
+  GFZ sends no CORS) and compares it against the observer's GEOMAGNETIC
+  latitude (centered-dipole transform in `src/checks/aurora.js`):
+  "Aurora possible on the poleward horizon — Kp 6.3 puts the oval's
+  edge near geomagnetic 54°" through to overhead-oval for real storms.
+  ✈ CONTRAILS: the conditions table gains flight-level humidity
+  (Open-Meteo 250/300 hPa, reaches ~3 months back) with the useful
+  reading being the NEGATIVE — "dry aloft: a long-lasting white trail
+  that day was probably NOT a contrail" — alongside the
+  persistent-contrails-expected positive. 🏮 LANTERNS: a pure calendar
+  check (no network) flags night sightings on July 4, New Year's Eve
+  and Lunar New Year (embedded 2015–2035 dates): sky lanterns are
+  drifting orange points that flicker and fade, riding the surface
+  wind — the note points at the wind check for the comparison.
+  17 mathcheck assertions (dipole latitudes vs known cities, verdict
+  bands, Kp binning, date windows incl. small-hours spillover, RH
+  bands) + 5-assertion browser e2e on a mocked Kp-6.3 July 4 night.
 - **🪖 Military airspace check — FAA special-use airspace vs the observer
   and the sight-line** (next on the list). A new report section answers
   whether the observer stood inside — or was looking into — a Military

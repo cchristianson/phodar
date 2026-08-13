@@ -29,7 +29,7 @@ import { parseFlightLog, thinLog, syncLogTime, calibrationSummary, gradeCalibrat
 import { declination } from "./math/geomag.js";
 import { loadSats, loadSatGroup, satsAt, satTrail } from "./checks/satellites.js";
 import { fetchWindProfile, balloonVerdict } from "./checks/winds.js";
-import { fetchWeatherAt, cloudRangeBound } from "./checks/weather.js";
+import { fetchWeatherAt, cloudRangeBound, contrailVerdict, fetchFlightRH } from "./checks/weather.js";
 import { activeShowers } from "./checks/meteorshowers.js";
 import { aperture, relMag, colorDesc } from "./checks/photometry.js";
 import { fetchAirports } from "./checks/airports.js";
@@ -41,6 +41,8 @@ import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
 import { parseSites, launchStateAt, rankSondes, fetchSondeSites, fetchSondes } from "./checks/sondes.js";
 import { fetchAirspace, rayIntoZone, suaActiveAt } from "./checks/airspace.js";
+import { geomagLat, auroraVerdict, fetchKpAt } from "./checks/aurora.js";
+import { lanternContext } from "./checks/lanterns.js";
 import { poleShadow, poleDistView, shadowCast, shadowTimes, POLE_H } from "./shadow.js";
 import { scanFileAuthenticity, authDerived, authFindings, authSummary } from "./checks/authenticity.js";
 import { fetchPeaks } from "./checks/peaks.js";
@@ -787,7 +789,8 @@ const HELP_SECTIONS = [
         { t: "Military airspace check", d: "Was the observer inside — or looking into — a Military Operations Area, Restricted or Alert area? FAA special-use airspace polygons (US only) with each zone's altitudes and published activity times: fast jets, flares, refueling tracks and formation lights concentrate in these blocks, and military aircraft there often fly WITHOUT ADS-B, which is exactly when the aircraft check goes blind. The check states when the sighting falls inside a zone's published window (schedules change by NOTAM, so it's indicative)." },
         { t: "Weather-balloon check (radiosonde)", d: "The #1 mundane explanation gets real data, not inference. Layer one: the worldwide launch-site catalog — was a scheduled synoptic balloon (00Z/12Z at most stations, launched ~1 h before) actually AIRBORNE at the stated time, and was it ascending or descending, at what altitude? Layer two: radiosondes actually RECEIVED by the volunteer SondeHub network near the sighting, ranked against every sight-line like aircraft — range, altitude, predicted angular size from the envelope's altitude-grown diameter, and a 🎯 trajectory match when your tracked video path follows the real balloon's flight. Honest both ways: no received telemetry rules out received sondes, not balloons." },
         { t: "Wind check", d: "Compares the object's motion to winds aloft at its altitude — the balloon test: a free balloon rides the wind at its height. Includes a wind-rose (each altitude's drift arrow, length = speed, with the object's own motion overlaid) and the drift arrow drawn on each photo, so you can see whether the object's apparent motion matches any layer." },
-        { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart." },
+        { t: "Weather & cloud base", d: "Cloud cover, visibility and an estimated cloud base at the sighting time. If the object was below the deck, that caps its range and size for a single witness — drawn right on the size↔distance chart. The conditions table also carries flight-level humidity when available (~3 months back): moist upper air means spreading persistent contrails were expected that day, and DRY upper air is the useful negative — a long-lasting white trail was probably not a contrail." },
+        { t: "Aurora & lantern context", d: "Two calendar/space-weather context lines. For night sightings at auroral latitudes the report pulls the geomagnetic Kp index for the sighting time (full history) and says whether the auroral oval reached the observer — a shifting glow or curtains during a storm is a classic report. And a night sighting on July 4, New Year's Eve or Lunar New Year gets the sky-lantern note: a drifting orange point that flickers and fades, riding the surface wind." },
         { t: "Object photometry", d: "Colour and brightness measured from the photo's pixels, plus a rough apparent magnitude when a catalogued star shares the frame (a red/green pair reads as aircraft nav lights)." },
         { t: "Meteor-shower & fireball checks", d: "Annual showers active that night (radiant position vs your sight-line) and bright bolides logged by NASA CNEOS near the time." },
         { t: "Aircraft, airfields & routes", d: "ADS-B traffic ranked against the sight-lines, the best match's origin→destination, and nearby airfields whose approach corridors concentrate low, slow traffic." },
@@ -13076,12 +13079,42 @@ ${plot ? `<div style="margin-top:10px">${plot}</div><p class="cap">Top-down: the
         : (wx && wx.cloud != null && wx.cloud < 25)
           ? `<b>Assessment — conditions:</b> mostly clear skies — no cloud ceiling to bound the object's range.`
           : `<b>Assessment — conditions:</b> Sun/Moon geometry below is exact; use it to sanity-check the reported time and rule the Sun/Moon in or out as the light source.`;
+      /* ✨ aurora context — only when it could matter: night + a geomagnetic
+         latitude the oval can plausibly reach. GFZ Kp covers all of history. */
+      let auroraRow = "", auroraNote = "";
+      if (sun.alt < -6) {
+        const gm = geomagLat(la, lo);
+        if (Math.abs(gm) >= 40) {
+          try {
+            const kp = await fetchKpAt(Tw);
+            const v = auroraVerdict(kp, gm);
+            if (v) {
+              auroraRow = row("Geomagnetic activity", `Kp ${v.kp.toFixed(1)} · observer at geomagnetic latitude ${v.gmLat.toFixed(0)}°`);
+              if (v.level === "overhead") auroraNote = `<p>✨ <b>Aurora likely overhead:</b> at Kp ${v.kp.toFixed(1)} the auroral oval reaches geomagnetic latitude ~${v.overhead.toFixed(0)}° — this observer sat inside it. Shifting red/green glows and curtains are expected, and are among the most-reported "strange lights".</p>`;
+              else if (v.level === "horizon") auroraNote = `<p>✨ <b>Aurora possible on the poleward horizon:</b> Kp ${v.kp.toFixed(1)} puts the oval's edge near geomagnetic ${v.overhead.toFixed(0)}° — from here a low glow toward the ${gm >= 0 ? "north" : "south"} was plausible at the sighting time.</p>`;
+            }
+          } catch (e) { /* GFZ down — omit */ }
+        }
+      }
+      /* ✈ contrail-capable sky — the useful reading is the NEGATIVE: dry
+         upper air means a long-lasting trail was probably not a contrail.
+         Flight-level RH only reaches ~3 months back (stated by omission). */
+      let contrailRow = "";
+      try {
+        const v = contrailVerdict(await fetchFlightRH(la, lo, Tw));
+        if (v) contrailRow = row("Flight-level humidity", v.level === "likely"
+          ? `RH ≈ ${Math.round(v.rhMax)}% at 250–300 hPa — <b>persistent contrails likely</b>; expect spreading white trails behind jets that day`
+          : v.level === "shortlived"
+            ? `RH ≈ ${Math.round(v.rhMax)}% at 250–300 hPa — short-lived contrails only; trails dissipate in seconds-to-minutes`
+            : `RH ≈ ${Math.round(v.rhMax)}% at 250–300 hPa — <b>dry aloft: persistent contrails unlikely</b>; a long-lasting white trail that day was probably NOT a contrail`);
+      } catch (e) { /* omit */ }
       condHtml = `<h2>Sighting conditions</h2><p class="lead">${condAssess}</p><table>` +
         row("Local sky", `${tw} — Sun ${Math.abs(sun.alt).toFixed(1)}° ${sun.alt >= 0 ? "above" : "below"} the horizon at az ${Math.round(sun.az)}° ${compass8(sun.az)}`) +
         row("Moon", `${ill}% illuminated · ${moon.alt > 0 ? `${moon.alt.toFixed(0)}° up at az ${Math.round(moon.az)}° ${compass8(moon.az)}` : "below the horizon"}`) +
         (dec != null ? row("Magnetic declination", `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}° (WMM2025 — added to any magnetic compass bearing to get true)`) : "") +
         wxRows +
-        `</table>` +
+        auroraRow + contrailRow +
+        `</table>` + auroraNote +
         `<p class="cap">At the sighting location &amp; time (${new Date(Tw).toLocaleString()}); the Sun/Moon and declination are effectively identical for co-located observers. Sun/Moon geometry is exact — use it to sanity-check the reported time, and to rule the Sun/Moon in or out as glare or the light source.${wx ? ` Weather from ${wx.src}; cloud base is an estimate.` : ""}</p>`;
     }
   }
@@ -13434,6 +13467,18 @@ ${siteRows ? `<p class="cap">Scheduled synoptic launch sites near the observer (
 ${candHtml}`;
     }
   } catch (e) { /* offline — omit */ }
+  /* 🏮 sky-lantern date context — pure calendar, no network, so it appends
+     even when the sonde APIs are unreachable. Night sightings only. */
+  {
+    const w0 = origAct.find((s) => isNum(s.lat) && isNum(s.lon) && isNum(s.whenMs));
+    if (w0 && sunPos(+w0.whenMs, +w0.lat, +w0.lon).alt < -3) {
+      const lc = lanternContext(+w0.whenMs);
+      if (lc) {
+        const p = `<p>🏮 <b>Sky-lantern &amp; firework context:</b> the sighting falls on ${e2(lc.event)}${lc.offsetDays ? ` (${Math.abs(lc.offsetDays)} day${Math.abs(lc.offsetDays) > 1 ? "s" : ""} ${lc.offsetDays > 0 ? "after" : "before"})` : ""} — sky lanterns and fireworks peak on these nights. A lantern is a drifting orange point that flickers and fades as it burns out, riding the low-level wind (compare the wind check's surface layers).</p>`;
+        sondeHtml = sondeHtml ? sondeHtml + p : `<h2>Weather-balloon check (radiosonde)</h2>${p}`;
+      }
+    }
+  }
   /* 🔬 AUTHENTICITY — aggregate every source's file-forensic + derived
      findings; any ALARM puts a loud banner at the very top of the report. */
   const authPer = origAct.map((s, i) => ({ name: s.name || `Observer ${i + 1}`, finds: authFindings(s) }));

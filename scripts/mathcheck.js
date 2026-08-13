@@ -3743,6 +3743,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(suaActiveAt("BY NOTAM", 1200) === null, "sua: unreadable schedule → honest unknown, never a guess");
 }
 
+// --- ✨ aurora / 🏮 lanterns / ✈ contrails — the small-context trio
+{
+  const { geomagLat, auroraVerdict, kpAt } = await import("../src/checks/aurora.js");
+  const gmMed = geomagLat(42.3, -122.9), gmFai = geomagLat(64.8, -147.7);
+  ok(gmMed > 46 && gmMed < 51, `aurora: Medford geomagnetic latitude ≈ 48° (${gmMed.toFixed(1)})`);
+  ok(gmFai > 62 && gmFai < 68, `aurora: Fairbanks geomagnetic latitude ≈ 65° (${gmFai.toFixed(1)})`);
+  ok(auroraVerdict(2, gmMed).level === "unlikely", "aurora: quiet Kp 2 at 48° gm — unlikely");
+  ok(auroraVerdict(9, gmMed).level !== "unlikely", "aurora: a Kp 9 superstorm makes aurora visible from Medford");
+  ok(auroraVerdict(9, 55).level === "overhead", "aurora: Kp 9 puts the oval overhead at geomagnetic 55°");
+  ok(auroraVerdict(6.3, gmMed).level === "horizon", "aurora: Kp 6+ puts a glow on Medford's north horizon");
+  ok(auroraVerdict(3, gmFai).level === "overhead", "aurora: Fairbanks sits in the oval at modest Kp");
+  const kj = { Kp: [2.0, 5.3, 1.0], datetime: ["2026-08-09T00:00:00Z", "2026-08-09T03:00:00Z", "2026-08-09T06:00:00Z"] };
+  approx(kpAt(kj, Date.UTC(2026, 7, 9, 4, 30)), 5.3, 1e-9, "aurora: 04:30 falls in the 03–06 UTC Kp bin");
+  ok(kpAt(kj, Date.UTC(2026, 7, 20)) === null, "aurora: far outside the window → honest null");
+
+  const { lanternContext } = await import("../src/checks/lanterns.js");
+  ok(/July 4/.test(lanternContext(new Date(2026, 6, 4, 22).getTime())?.event || ""), "lanterns: July 4 night flagged");
+  ok(/July 4/.test(lanternContext(new Date(2026, 6, 5, 1).getTime())?.event || ""), "lanterns: small hours of July 5 still count");
+  ok(lanternContext(new Date(2026, 6, 12).getTime()) === null, "lanterns: an ordinary July night is not flagged");
+  ok(/New Year/.test(lanternContext(new Date(2025, 11, 31, 23).getTime())?.event || ""), "lanterns: New Year's Eve flagged");
+  ok(/Lunar New Year/.test(lanternContext(new Date(2026, 1, 17, 20).getTime())?.event || ""), "lanterns: Lunar New Year 2026 (Feb 17) flagged");
+
+  const { contrailVerdict } = await import("../src/checks/weather.js");
+  ok(contrailVerdict(78).level === "likely" && contrailVerdict(50).level === "shortlived" && contrailVerdict(15).level === "dry", "contrails: RH bands → likely / short-lived / dry");
+  ok(contrailVerdict(null) === null, "contrails: no data → no verdict");
+}
+
 // --- ✨ satellite glint geometry — offline, via a fixed historical ISS TLE.
 //     Exact invariant: for an observer at the SUB-SATELLITE POINT the
 //     sat→observer direction IS the panel normal (nadir), and the mirror law

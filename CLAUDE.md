@@ -586,6 +586,15 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   off the sight-line meant zero tracks before Moment A is set, so the look
   direction is the fallback reference; live mode accumulates its own trail
   from the 20 s polls. Satellites should emit the same trail shape.
+- **Aurora / contrail / lantern context: DONE** (`src/checks/aurora.js`
+  + `/api/kp` GFZ proxy (no CORS upstream); `contrailVerdict`/
+  `fetchFlightRH` in weather.js (Open-Meteo forecast API only — ERA5
+  archive lacks pressure-level RH, probed — so ~92 days back, older
+  honestly omitted); `src/checks/lanterns.js` pure calendar with
+  embedded LNY 2015–2035). Aurora = Kp vs centered-dipole geomagnetic
+  latitude, oval edge ≈ 67 − 2·Kp (documented approximation). The
+  contrail check's value is the NEGATIVE: dry aloft ⇒ a persistent
+  trail was probably not a contrail. All mathcheck-asserted.
 - **Military airspace check: DONE** (`src/checks/airspace.js` +
   `/api/airspace` FAA-ArcGIS proxy + report section, US only): SUA
   polygons (MOA/R/P/A/W) vs the observer — inside test (ray-cast

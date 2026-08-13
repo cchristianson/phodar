@@ -119,6 +119,9 @@ const NAMED = [
   ["trackMatch", /AT THE SAME TIMES/, "the ADS-B trajectory (track-time) match"],
   ["rankSondes", /Weather-balloon check \(radiosonde\)/, "the radiosonde launch-schedule + received-track check"],
   ["fetchAirspace", /Military airspace check/, "the FAA special-use-airspace (MOA) check"],
+  ["auroraVerdict", /Aurora & lantern context/, "the aurora (Kp) context check"],
+  ["lanternContext", /lantern/, "the sky-lantern date context"],
+  ["contrailVerdict", /contrail/, "the flight-level humidity contrail check"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {

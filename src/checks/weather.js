@@ -43,6 +43,43 @@ export function cloudRangeBound(baseAGL, elDeg, angSizeDeg) {
   return { maxRange, maxSize };
 }
 
+/* Contrail-capable sky: humidity at flight levels (250/300 hPa). Persistent
+   contrails need moist upper air — so a DRY reading is the useful negative:
+   a long-lasting white trail that day was probably NOT a contrail. Thresholds
+   are the standard rough bands (RH_water at cruise): ≥65% persistent likely,
+   40–65% short-lived trails, <40% dry. Pure — asserted in mathcheck. */
+export function contrailVerdict(rhMax) {
+  if (rhMax == null || !isFinite(rhMax)) return null;
+  if (rhMax >= 65) return { level: "likely", rhMax };
+  if (rhMax >= 40) return { level: "shortlived", rhMax };
+  return { level: "dry", rhMax };
+}
+
+/* Flight-level RH near ms — Open-Meteo's FORECAST api carries the pressure-
+   level humidity (the ERA5 archive endpoint does not, probed 2026-08), and
+   reaches ~92 days back; older sightings honestly return null. Browser-direct
+   (Open-Meteo is CORS-open, same as the winds fetch fallback). */
+export async function fetchFlightRH(lat, lon, ms) {
+  const ageD = (Date.now() - ms) / 86400000;
+  if (ageD < -2 || ageD > 90) return null;
+  const past = Math.max(0, Math.min(92, Math.ceil(ageD) + 1));
+  const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}&hourly=relative_humidity_250hPa,relative_humidity_300hPa&past_days=${past}&forecast_days=1&timezone=UTC`;
+  const r = await fetch(u, { signal: AbortSignal.timeout(20000) });
+  if (!r.ok) return null;
+  const j = await r.json().catch(() => null);
+  const H = j?.hourly;
+  if (!H || !Array.isArray(H.time)) return null;
+  let bi = -1, bd = Infinity;
+  for (let i = 0; i < H.time.length; i++) {
+    const d = Math.abs(Date.parse(H.time[i] + "Z") - ms);
+    if (d < bd) { bd = d; bi = i; }
+  }
+  if (bi < 0 || bd > 2 * 3600000) return null;
+  const a = H.relative_humidity_250hPa?.[bi], b = H.relative_humidity_300hPa?.[bi];
+  const vals = [a, b].filter((v) => v != null && isFinite(v));
+  return vals.length ? Math.max(...vals) : null;
+}
+
 /* Fetch the weather snapshot at (lat, lon, ms). Returns null-ish fields when a
    variable is missing; throws on transport/no-data so the caller can omit the
    section rather than guess. */

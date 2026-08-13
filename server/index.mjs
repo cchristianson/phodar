@@ -357,6 +357,27 @@ async function apiAirports(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* GFZ Kp geomagnetic index around a time — full history, CC-BY, but no CORS
+   header, hence the proxy. Tiny payload; cached an hour. */
+const kpCache = new Map();
+async function apiKp(q, res) {
+  const t = +q.get("t");
+  if (!isFinite(t)) return json(res, 400, { error: "t required" });
+  const key = Math.round(t / 3600000);
+  const hit = kpCache.get(key);
+  if (hit && Date.now() - hit.t < 3600000) return json(res, 200, hit.body);
+  try {
+    const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const r = await fetch(`https://kp.gfz.de/app/json/?start=${iso(t - 6 * 3600000)}&end=${iso(t + 6 * 3600000)}&index=Kp`,
+      { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`GFZ HTTP ${r.status}`);
+    const body = await r.json();
+    kpCache.set(key, { t: Date.now(), body });
+    return json(res, 200, body);
+  } catch (e) {
+    return json(res, 502, { error: `Kp unavailable (${e.message || e})` });
+  }
+}
 /* FAA special-use airspace (MOAs/Restricted/etc.) near a point — ArcGIS
    FeatureServer, keyless (probed 2026-08). Geometry included so the client
    can do point-in-polygon + sight-line entry; precision trimmed to keep the
@@ -1218,6 +1239,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/masts") return await apiMasts(u.searchParams, res);
     if (u.pathname === "/api/sondesites") return await apiSondeSites(u.searchParams, res);
     if (u.pathname === "/api/airspace") return await apiAirspace(u.searchParams, res);
+    if (u.pathname === "/api/kp") return await apiKp(u.searchParams, res);
     if (u.pathname === "/api/sondes") return await apiSondes(u.searchParams, res);
     if (u.pathname === "/api/buildings") return await apiBuildings(u.searchParams, res);
     if (u.pathname === "/api/roads") return await apiRoads(u.searchParams, res);
