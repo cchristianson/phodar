@@ -531,6 +531,11 @@ const LANDMARK_KINDS = {
   water_tower: `["man_made"="water_tower"]`,
   mast: `["man_made"~"^(mast|communications_tower)$"]`,
   tower: `["man_made"="tower"]`,
+  chimney: `["man_made"="chimney"]`,
+  lighthouse: `["man_made"="lighthouse"]`,
+  power_tower: `["power"="tower"]`,
+  wind_turbine: `["power"="generator"]["generator:source"="wind"]`,
+  peak: `["natural"="peak"]`,
 };
 const landmarksCache = new Map();
 async function apiLandmarks(q, res) {

@@ -36,7 +36,7 @@ import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
-import { farSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, SWEEP_FOVS } from "./geoloc.js";
+import { farSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, SWEEP_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -675,7 +675,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
-        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, or type something as vague as “lower Himalaya India” into the 🔎 place search — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin a 💧 water tank or 📡 mast the photo shows — candidates that also place that structure in the right direction get a 📍 badge, and one good pin sharpens the search a lot. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, or type something as vague as “lower Himalaya India” into the 🔎 place search — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9339,8 +9339,13 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
    rooftop, adopt.
    ============================================================ */
 const FS_PIN_KINDS = [
-  { k: "water", glyph: "💧", label: "water tank" },
-  { k: "mast", glyph: "📡", label: "mast / tower" },
+  { k: "water", glyph: "💧", label: "water tank", osm: ["water_tower"] },
+  { k: "mast", glyph: "📡", label: "mast / tower", osm: ["mast", "tower"] },
+  { k: "pylon", glyph: "⚡", label: "power pylon", osm: ["power_tower"] },
+  { k: "chimney", glyph: "🏭", label: "chimney / stack", osm: ["chimney"] },
+  { k: "wind", glyph: "🌬", label: "wind turbine", osm: ["wind_turbine"] },
+  { k: "lighthouse", glyph: "🗼", label: "lighthouse", osm: ["lighthouse"] },
+  { k: "peak", glyph: "🏔", label: "named peak", osm: ["peak"] },
 ];
 function FindSpot({ src, onAdopt, onSave, onClose }) {
   const boxRef = useRef(null);
@@ -9486,15 +9491,23 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       const frameSets = usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, fovs) }));
       setProg("terrain…");
       const region = await loadRegion(c.lat, c.lng, radKm);
-      /* landmark twins only when something is pinned — no pins, no query */
+      /* landmark twins only when something is pinned — no pins, no query.
+         Only the PINNED kinds are fetched, and twins are kept nearest-first
+         (a dense pylon grid would otherwise eat the whole cap). */
       let twins = [];
       if (pins.length) {
         setProg("landmarks…");
-        try { twins = (await fetchLandmarks(c.lat, c.lng, radKm, ["water_tower", "mast", "tower"])).slice(0, 40); } catch (e) { }
+        const osmKinds = [...new Set(pins.flatMap((p) => FS_PIN_KINDS.find((k) => k.k === p.kind)?.osm || []))];
+        try { twins = await fetchLandmarks(c.lat, c.lng, radKm, osmKinds); } catch (e) { }
+        const mLonC = 111.32 * Math.max(0.2, Math.cos(c.lat * D2R));
+        twins.sort((a, b) => Math.hypot((a.lat - c.lat) * 111.32, (a.lon - c.lng) * mLonC) - Math.hypot((b.lat - c.lat) * 111.32, (b.lon - c.lng) * mLonC));
+        twins = twins.slice(0, 80);
       }
       const stepKm = radKm <= 5 ? 1 : radKm <= 9 ? 2 : 3;
       const cands = gridCandidates(c.lat, c.lng, radKm, stepKm).map((x) => ({ ...x, grid: true }));
-      for (const tw of twins) for (const rc of ringCandidates(tw.lat, tw.lon, 300, 8)) cands.push({ ...rc, twin: tw });
+      /* candidates anchored NEAR structures the camera could have stood by —
+         peaks excluded (you pin a peak from afar, you don't stand on it) */
+      for (const tw of twins.filter((t) => t.kind !== "peak").slice(0, 40)) for (const rc of ringCandidates(tw.lat, tw.lon, 300, 8)) cands.push({ ...rc, twin: tw });
       const out = [];
       for (let i = 0; i < cands.length; i++) {
         if (cancelRef.current) throw new Error("cancelled");
@@ -9507,17 +9520,25 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
         if ((i & 3) === 3) { setProg(`${i + 1}/${cands.length}`); await new Promise((r) => setTimeout(r, 0)); }
       }
       if (!out.length) throw new Error("terrain unreachable for this area");
-      /* pin consistency: for twin-anchored candidates, where the pinned frame
-         says the structure is vs where the twin actually is from there */
-      for (const o of out) {
-        if (!o.twin) continue;
-        const pi = pins.find((p) => p.kind === o.twin.kind || (p.kind === "mast" && o.twin.kind === "tower"));
-        if (!pi) continue;
-        const fsIdx = frameSets.findIndex((x) => x.f.i === pi.fi);
-        if (fsIdx < 0) continue;
-        const fa = o.frameAz[fsIdx];
-        const off = pinAzOffsetDeg(pi.x, frameSets[fsIdx].f.W, frameSets[fsIdx].sets[fa.fovIdx].fov);
-        o.pinDev = +pinDeviation(o, o.twin, fa.az, off).toFixed(0);
+      /* pin consistency for EVERY candidate: each pin's observed azimuth
+         (its frame's solved pointing + pixel offset) vs the best matching
+         twin within that kind's plausible range — worst pin governs, an
+         unmapped structure is skipped, and the range gate keeps a town
+         full of mapped towers from letting every cell "pass" (geoloc.js
+         pinsDeviation, mathcheck-asserted) */
+      if (twins.length && pins.length) {
+        for (const o of out) {
+          const pinObs = [];
+          for (const pi of pins) {
+            const fsIdx = frameSets.findIndex((x) => x.f.i === pi.fi);
+            if (fsIdx < 0) continue;
+            const fa = o.frameAz[fsIdx];
+            const off = pinAzOffsetDeg(pi.x, frameSets[fsIdx].f.W, frameSets[fsIdx].sets[fa.fovIdx].fov);
+            pinObs.push({ kind: pi.kind, azDeg: (fa.az + off + 360) % 360 });
+          }
+          const d = pinsDeviation({ lat: o.lat, lon: o.lon }, pinObs, twins);
+          if (d != null) o.pinDev = +d.toFixed(0);
+        }
       }
       /* verdict from the uniform grid only (twin rings oversample their
          neighborhoods and would fake a sharp spread) */
@@ -9554,7 +9575,9 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
     setPending({ x: Math.round(x), y: Math.round(y) });
   };
   const addPin = (kind) => {
-    setPins((p) => [...p.filter((q) => q.fi !== frame.i), { fi: frame.i, x: pending.x, y: pending.y, kind }]);
+    /* pins ACCUMULATE — two structures in one frame constrain the position
+       far harder than one (their angular separation is pose-free) */
+    setPins((p) => [...p, { fi: frame.i, x: pending.x, y: pending.y, kind }]);
     setPending(null);
   };
 
@@ -9608,7 +9631,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
               </div>
             ) : (
               <div style={{ fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
-                Tap a man-made structure the photo shows — a water tank or a mast — and the search will check candidate positions against the same structures on the map. Tap a placed pin to remove it.
+                Tap a structure the photo shows — water tank, mast, pylon, chimney, wind turbine, lighthouse, or a named peak — and the search will check candidate positions against the same structures on the map. Mark as many as you can see (two in one frame pin the geometry much harder than one); tap a placed pin to remove it.
               </div>
             )}
           </div>
@@ -9639,7 +9662,12 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                   <div key={i} onClick={() => f.pts && setPinView(i)}
                     style={{ position: "relative", flex: "0 0 auto", width: 54, height: 74, borderRadius: 6, overflow: "hidden", border: `1.5px solid ${f.pts ? (pins.some((p) => p.fi === f.i) ? "var(--amber)" : "var(--teal)") : "var(--line)"}`, opacity: f.pts ? 1 : 0.35, cursor: f.pts ? "pointer" : "default" }}>
                     <img src={f.url} alt="" className="fs-thumb" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                    {pins.some((p) => p.fi === f.i) && <div style={{ position: "absolute", right: 2, top: 0, fontSize: 12 }}>{FS_PIN_KINDS.find((k) => k.k === pins.find((p) => p.fi === f.i).kind)?.glyph}</div>}
+                    {pins.some((p) => p.fi === f.i) && (
+                      <div style={{ position: "absolute", right: 2, top: 0, fontSize: 12 }}>
+                        {pins.filter((p) => p.fi === f.i).slice(0, 2).map((p) => FS_PIN_KINDS.find((k) => k.k === p.kind)?.glyph).join("")}
+                        {pins.filter((p) => p.fi === f.i).length > 2 ? "+" : ""}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

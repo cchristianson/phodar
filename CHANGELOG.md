@@ -48,6 +48,21 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Changed
+- **Find my spot: seven pin kinds, multiple pins.** The structure pins
+  grew from water tank + mast to ⚡ power pylon, 🏭 chimney, 🌬 wind
+  turbine, 🗼 lighthouse and 🏔 named peak (each mapped to its OSM
+  selector in `/api/landmarks`, only the pinned kinds are queried, and
+  twins are kept nearest-first so a dense pylon grid can't eat the
+  cap). Pins now ACCUMULATE — any number per frame, across frames —
+  because two structures in one frame constrain the position far harder
+  than one. The consistency test moved into a pure, mathcheck-asserted
+  core (`pinsDeviation`): every candidate is scored against ALL pins,
+  worst pin governs, each kind carries a plausible camera-to-structure
+  range gate (1.5 km for a water tank, 40 km for a peak pinned off the
+  skyline) — without which a town with 31 mapped towers would let every
+  cell "pass" by accident — and a pinned structure that isn't on the
+  map is skipped, never held against a spot. Peaks never spawn
+  ring candidates (you pin a peak from afar, you don't stand on it).
 - **Position-step name search survives caption-grade queries.**
   Nominatim is exact-name matching with zero fuzz — measured: "lower
   himalayan range" hits the real mountain range, "lower himalaya range"

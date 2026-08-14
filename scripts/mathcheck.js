@@ -3972,6 +3972,29 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(rd, 300, 1, "geoloc: ring radius 300 m");
   const dev = GL.pinDeviation({ lat: 30, lon: 78 }, { lat: 30 + 300 / mLat, lon: 78 }, 350, 10);
   approx(dev, 0, 0.01, "geoloc: pin due north + frame az 350 + pixel offset +10° → deviation 0");
+
+  /* multi-pin joint consistency (pinsDeviation): worst pin governs,
+     range gate excludes far twins, unmapped kinds are skipped */
+  const cand = { lat: 30, lon: 78 };
+  const at = (dNm, dEm) => ({ lat: 30 + dNm / mLat, lon: 78 + dEm / mLonS });
+  const twinsAll = [
+    { ...at(400, 0), kind: "water" },        // due north, in range (1.5 km)
+    { ...at(0, 900), kind: "mast" },          // due east, in range (3 km)
+    { ...at(40000, 0), kind: "peak" },        // 40 km north — in PEAK range
+    { ...at(9000, 0), kind: "water" },        // 9 km — OUTSIDE water range
+  ];
+  approx(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "mast", azDeg: 95 }], twinsAll), 5, 0.1,
+    "geoloc: multi-pin — worst pin governs (water 0°, mast 5° off → 5)");
+  ok(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 180 }], [twinsAll[3]]) === null,
+    "geoloc: the only matching twin beyond the kind's range → null, not a fake pass");
+  ok(GL.pinsDeviation(cand, [{ kind: "chimney", azDeg: 45 }], twinsAll) === null,
+    "geoloc: unmapped structure kind → null (absence of map data is not evidence)");
+  approx(GL.pinsDeviation(cand, [{ kind: "peak", azDeg: 3 }], twinsAll), 3, 0.1,
+    "geoloc: a peak 40 km out is testable — its range gate is the wide one");
+  approx(GL.pinsDeviation(cand, [{ kind: "mast", azDeg: 90 }], [{ ...at(0, 900), kind: "tower" }]), 0, 0.1,
+    "geoloc: a mast pin matches an OSM tower twin");
+  ok(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "chimney", azDeg: 200 }], twinsAll) === 0 + GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }], twinsAll),
+    "geoloc: an untestable pin does not disturb the testable ones");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

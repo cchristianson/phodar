@@ -216,6 +216,41 @@ export function pinDeviation(cand, twin, frameAzDeg, pinOffDeg) {
   return angDiff(bearingDeg(cand.lat, cand.lon, twin.lat, twin.lon), (frameAzDeg + pinOffDeg + 360) % 360);
 }
 
+/* How far away a pinned structure of each kind can plausibly BE from the
+   camera and still be prominent enough to pin. This range gate is what
+   keeps the consistency test meaningful: without it, any candidate in a
+   town with 31 mapped water towers finds SOME tower within a lax angular
+   gate and every cell "passes". A peak is the exception — pinned off the
+   skyline, tens of km out, where bearings move slowly but honestly. */
+export const PIN_RANGE_KM = { water: 1.5, mast: 3, chimney: 3, pylon: 1.5, wind: 3, lighthouse: 5, peak: 40 };
+const kindMatch = (p, t) => p === t || (p === "mast" && t === "tower");
+
+/* joint consistency of ALL pins at one candidate: each pin's observed
+   azimuth (frame pointing + pixel offset) vs the best matching twin
+   within that kind's range. Worst pin governs (a spot must explain
+   every structure, same as worst-witness-governs). A pin whose kind has
+   no twin in range is SKIPPED — an unmapped mast is absence of map
+   data, not evidence against the spot. Returns null when nothing was
+   testable. */
+export function pinsDeviation(cand, pinObs, twins) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  let worst = null;
+  for (const po of pinObs) {
+    const rangeKm = PIN_RANGE_KM[po.kind] ?? 2;
+    let best = null;
+    for (const tw of twins) {
+      if (!kindMatch(po.kind, tw.kind)) continue;
+      const dKm = Math.hypot((tw.lat - cand.lat) * 111.32, (tw.lon - cand.lon) * mLon);
+      if (dKm > rangeKm || dKm < 0.02) continue;
+      const dev = angDiff(bearingDeg(cand.lat, cand.lon, tw.lat, tw.lon), po.azDeg);
+      if (best == null || dev < best) best = dev;
+    }
+    if (best == null) continue;
+    if (worst == null || best > worst) worst = best;
+  }
+  return worst;
+}
+
 /* ---------- honesty gate ----------
    From the field rounds: a NON-decisive sweep runs best/median ≈ 0.87–0.9;
    a synthetic true-position recovery runs well under 0.6. The gap is wide,
@@ -274,8 +309,13 @@ export async function fetchLandmarks(lat, lon, radKm, kinds) {
     if (!isFinite(la) || !isFinite(lo)) continue;
     const t = e.tags || {};
     const kind = t.man_made === "water_tower" ? "water"
-      : (t.man_made === "mast" || t.man_made === "communications_tower" || (t.man_made === "tower" && /comm/.test(t["tower:type"] || ""))) ? "mast"
-        : t.man_made === "tower" ? "tower" : null;
+      : (t.man_made === "mast" || t.man_made === "communications_tower") ? "mast"
+        : t.man_made === "chimney" ? "chimney"
+          : t.man_made === "lighthouse" ? "lighthouse"
+            : t.power === "tower" ? "pylon"
+              : (t.power === "generator" && t["generator:source"] === "wind") ? "wind"
+                : t.natural === "peak" ? "peak"
+                  : t.man_made === "tower" ? "tower" : null;
     if (!kind) continue;
     out.push({ lat: la, lon: lo, kind, name: t.name || "", height: t.height ? parseFloat(t.height) : null });
   }
