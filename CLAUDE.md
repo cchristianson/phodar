@@ -774,8 +774,20 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   candidates; loadGrid/gridSample were exported for exactly this).
   (4) e2e note: sandbox/test Chromium has no H.264 — transcode test
   clips to VP8 webm first (`DEMUXER_ERROR_NO_SUPPORTED_STREAMS` is the
-  tell). Still open: peak pins (natural=peak twins), near-ridge depth
-  layer as a second matching signal, power-line pins.
+  tell). Since v1: SEVEN pin kinds (＋pylon/chimney/wind/lighthouse/
+  peak), pins ACCUMULATE (multi-pin resection; `pinsDeviation` — worst
+  pin governs, per-kind camera-to-structure RANGE GATES without which a
+  town of mapped towers passes every cell, unmapped pins skipped, peaks
+  never spawn rings); SETTING filters (stood in/out of a town, looking
+  at a town/open — OSM place nodes with per-type built-up radii,
+  `settingOk`/`lookOk`, the stood-in place excluded from the look test
+  so "in city aimed out" works, no place data ⇒ never filter); and a
+  STABILIZED-PAN LOCK (`lockedFrameSet`: a posePath's relative az/el/fov
+  bakes all frames into ONE rigid sample set over a single global
+  rotation — measured on the synthetic world it sharpened best/median
+  from 0.478 to 0.055, ~9×; the practical loop is stabilize in the sky
+  view, then come back). Still open: near-ridge depth layer as a second
+  matching signal, power-LINE (way) pins.
 Design principle: each check outputs the same shape — a candidate with
 predicted az/el/angular-size/motion and an angular separation from the
 witness sight-line — so the report can rank ALL mundane explanations in one

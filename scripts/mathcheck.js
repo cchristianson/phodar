@@ -3995,6 +3995,51 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     "geoloc: a mast pin matches an OSM tower twin");
   ok(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "chimney", azDeg: 200 }], twinsAll) === 0 + GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }], twinsAll),
     "geoloc: an untestable pin does not disturb the testable ones");
+
+  /* setting-context filters */
+  const places = [
+    { ...at(0, 0), kind: "place", ptype: "town" },        // town centred on the candidate (radius 2.5 km)
+    { ...at(9000, 0), kind: "place", ptype: "village" },  // village 9 km north (radius 1.2 km)
+  ];
+  ok(GL.settingOk(cand, places, "town") && !GL.settingOk(cand, places, "out"),
+    "geoloc: inside a town radius → passes 'in a town', fails 'outside'");
+  const wild = { ...at(0, 30000) };                        // 30 km east of everything
+  ok(!GL.settingOk(wild, places, "town") && GL.settingOk(wild, places, "out"),
+    "geoloc: far from every place → passes 'outside', fails 'in a town'");
+  ok(GL.settingOk(cand, [], "town") && GL.settingOk(cand, [], "out"),
+    "geoloc: no place data → never filter on a guess");
+  /* looking north from inside the town: the DISTINCT village sits in the
+     cone; the town you stand in must not count */
+  ok(GL.lookOk(cand, 0, places, "town") && !GL.lookOk(cand, 0, places, "open"),
+    "geoloc: distinct village in the view cone → 'looking at a town'");
+  ok(!GL.lookOk(cand, 180, places, "town") && GL.lookOk(cand, 180, places, "open"),
+    "geoloc: facing away → 'open country', even while standing IN a town");
+
+  /* stabilized-pan lock: merge the same three frames with their KNOWN
+     relative pointing (one frame deliberately pitched differently) and the
+     sweep must still recover the true cell + the global rotation */
+  const perFrame = [10, 40, 70].map((azF, fi) => {
+    const elF = fi === 1 ? 14 : 10; // exercise the relative-el bake
+    const fpts = [];
+    for (let i = 0; i < 44; i++) {
+      const az = azF - 13 + (26 * i) / 43;
+      const g = dirFromAzEl(az, elT(az));
+      const p = dirToPixK(g, FW, FH, azF, elF, 0, TRUE_FOV, 0);
+      if (p) fpts.push({ x: Math.round(p.px), y: Math.round(p.py) });
+    }
+    return { pts: fpts, W: FW, H: FH, fov: TRUE_FOV, relAz: azF - 10, relEl: elF - 10 };
+  });
+  const lockedSet = GL.lockedFrameSet(perFrame);
+  ok(lockedSet && lockedSet.ss.length > 100, "geoloc: locked pan merges all frames' samples");
+  const scoredL = cands.map((c) => {
+    const s = sampAt(c.lat, c.lon);
+    return { ...c, ...GL.scoreCandidate([{ sets: [lockedSet] }], s.sampleEN, s.h0, { winDeg: 2 }) };
+  }).sort((a, b) => a.score - b.score);
+  const wDistL = Math.hypot((scoredL[0].lat - truth.lat) * mLat, (scoredL[0].lon - truth.lon) * mLonS);
+  ok(wDistL < 1, `geoloc: locked-pan sweep recovers the true cell (${wDistL.toFixed(0)} m off)`);
+  ok(GL.angDiff(scoredL[0].az, 10) < 3, `geoloc: locked-pan global rotation recovered (az ${scoredL[0].az.toFixed(0)} vs 10)`);
+  ok(GL.sweepVerdict(scoredL.map((s) => s.score)).ratio <= verdict.ratio + 0.05,
+    `geoloc: locking the pan does not blur the spread (${GL.sweepVerdict(scoredL.map((s) => s.score)).ratio} vs free ${verdict.ratio})`);
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

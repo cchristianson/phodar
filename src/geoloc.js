@@ -251,6 +251,66 @@ export function pinsDeviation(cand, pinObs, twins) {
   return worst;
 }
 
+/* ---------- setting-context filters ----------
+   The witness usually KNOWS the setting — "I was in town", "the view is
+   open country" — and that context kills whole swaths of candidates
+   before any skyline math runs. Places are OSM place nodes; each type
+   carries a built-up radius since the node marks the CENTER. */
+export const PLACE_RADIUS_KM = { city: 6, town: 2.5, village: 1.2, hamlet: 0.6 };
+export function nearestPlaceEdge(cand, places) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  let best = null;
+  for (const p of places) {
+    const dKm = Math.hypot((p.lat - cand.lat) * 111.32, (p.lon - cand.lon) * mLon);
+    const edgeKm = dKm - (PLACE_RADIUS_KM[p.ptype] ?? 1);
+    if (!best || edgeKm < best.edgeKm) best = { edgeKm, dKm, place: p };
+  }
+  return best;
+}
+/* stood: "town" = inside (or right at) a built-up radius; "out" = clearly
+   beyond every one; unset = no filter */
+export function settingOk(cand, places, stood) {
+  if (!stood) return true;
+  if (!places.length) return true; // no place data → never filter on a guess
+  const np = nearestPlaceEdge(cand, places);
+  if (stood === "town") return !!np && np.edgeKm <= 0.3;
+  if (stood === "out") return !np || np.edgeKm >= 1;
+  return true;
+}
+/* look: does the solved pointing cross ANOTHER town (not the one you may
+   be standing in)? "town" = a distinct place sits in the view cone;
+   "open" = none does. The stood-in place is excluded so "in city aimed
+   out of city" works. */
+export function lookOk(cand, azDeg, places, look) {
+  if (!look || !places.length) return true;
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  const hit = places.some((p) => {
+    const rad = PLACE_RADIUS_KM[p.ptype] ?? 1;
+    const dKm = Math.hypot((p.lat - cand.lat) * 111.32, (p.lon - cand.lon) * mLon);
+    if (dKm <= rad || dKm > rad + 8) return false; // standing inside it, or too far to matter
+    return angDiff(bearingDeg(cand.lat, cand.lon, p.lat, p.lon), azDeg) < 25;
+  });
+  return look === "town" ? hit : !hit;
+}
+
+/* ---------- stabilized-pan lock ----------
+   A solved posePath knows each frame's pointing RELATIVE to the others
+   (and its FOV, even mid-zoom). Baking those relative az/el offsets into
+   the samples merges the whole pan into ONE rigid set scored over a
+   single global rotation — the per-frame ±window freedom (and the FOV
+   sweep) collapse away, which is a far tighter joint constraint. */
+export function lockedFrameSet(perFrame) {
+  const ss = [];
+  for (const f of perFrame) {
+    const sets = skySampleSets(f.pts, f.W, f.H, [f.fov]);
+    for (const s of sets[0].ss) ss.push({ az: s.az + f.relAz, el: s.el + f.relEl, thx: s.thx });
+  }
+  if (ss.length < 20) return null;
+  const mean = ss.reduce((a, s) => a + s.el, 0) / ss.length;
+  const std = Math.sqrt(ss.reduce((a, s) => a + (s.el - mean) ** 2, 0) / ss.length);
+  return { fov: perFrame[0].fov, ss, std: Math.max(0.15, std) };
+}
+
 /* ---------- honesty gate ----------
    From the field rounds: a NON-decisive sweep runs best/median ≈ 0.87–0.9;
    a synthetic true-position recovery runs well under 0.6. The gap is wide,
@@ -315,9 +375,10 @@ export async function fetchLandmarks(lat, lon, radKm, kinds) {
             : t.power === "tower" ? "pylon"
               : (t.power === "generator" && t["generator:source"] === "wind") ? "wind"
                 : t.natural === "peak" ? "peak"
-                  : t.man_made === "tower" ? "tower" : null;
+                  : /^(city|town|village|hamlet)$/.test(t.place || "") ? "place"
+                    : t.man_made === "tower" ? "tower" : null;
     if (!kind) continue;
-    out.push({ lat: la, lon: lo, kind, name: t.name || "", height: t.height ? parseFloat(t.height) : null });
+    out.push({ lat: la, lon: lo, kind, ptype: t.place || null, name: t.name || "", height: t.height ? parseFloat(t.height) : null });
   }
   return out;
 }

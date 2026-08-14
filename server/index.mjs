@@ -536,6 +536,7 @@ const LANDMARK_KINDS = {
   power_tower: `["power"="tower"]`,
   wind_turbine: `["power"="generator"]["generator:source"="wind"]`,
   peak: `["natural"="peak"]`,
+  place: `["place"~"^(city|town|village|hamlet)$"]`,
 };
 const landmarksCache = new Map();
 async function apiLandmarks(q, res) {

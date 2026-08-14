@@ -48,6 +48,23 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Changed
+- **Find my spot: setting context + stabilized-pan lock + pin
+  housekeeping.** Two new chip rows tell the search what the witness
+  already knows: where you STOOD (🏘 in a town / 🌾 outside one) and
+  what the view crosses (🏙 a town / 🌲 open country) — matched against
+  OSM place nodes with per-type built-up radii (city 6 km … hamlet
+  0.6 km), the stood-in place excluded from the look test so "in city
+  aimed out of city" works, and no place data means no filtering on a
+  guess. Position filters run BEFORE scoring (they also save compute);
+  view filters after (they need the solved pointing); the results state
+  how many candidates the settings ruled out. If the clip was
+  🎞 stabilized first, the search now locks every frame's direction and
+  zoom together via the posePath — the whole pan scores as one rigid
+  sample set over a single global rotation, which on the synthetic
+  ground-truth world sharpened the best/median spread from 0.478 to
+  0.055 (~9×). Mistaken pins are now easy to remove: tap the pin on the
+  frame (bigger hit target) or its ✕ chip in the new pin list under the
+  frame strip.
 - **Find my spot: seven pin kinds, multiple pins.** The structure pins
   grew from water tank + mast to ⚡ power pylon, 🏭 chimney, 🌬 wind
   turbine, 🗼 lighthouse and 🏔 named peak (each mapped to its OSM
