@@ -542,21 +542,29 @@ const landmarksCache = new Map();
 async function apiLandmarks(q, res) {
   const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(30000, Math.max(1000, +q.get("r") || 15000));
   if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
-  const kinds = String(q.get("kinds") || "water_tower,mast,tower").split(",").map((s) => s.trim()).filter((k) => LANDMARK_KINDS[k]);
-  if (!kinds.length) return json(res, 400, { error: "no valid kinds" });
-  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r},${kinds.join("+")}`;
+  const rawKinds = String(q.get("kinds") || "water_tower,mast,tower").split(",").map((s) => s.trim());
+  /* "urban" = built-up land-use polygons, fetched as BOUNDING BOXES in a
+     second query (Overpass allows one geometry mode per out; the setting
+     filter needs extents, not centers — a place node can sit 1 km from
+     the pixel you stand on, which is how "in a town" once passed a bare
+     field). */
+  const wantUrban = rawKinds.includes("urban");
+  const kinds = rawKinds.filter((k) => LANDMARK_KINDS[k]);
+  if (!kinds.length && !wantUrban) return json(res, 400, { error: "no valid kinds" });
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r},${kinds.join("+")}${wantUrban ? "+urban" : ""}`;
   const hit = landmarksCache.get(key);
   if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
   const la = lat.toFixed(5), lo = lon.toFixed(5);
   const parts = kinds.map((k) => `node${LANDMARK_KINDS[k]}(around:${r},${la},${lo});way${LANDMARK_KINDS[k]}(around:${r},${la},${lo});`).join("");
   const ql = `[out:json][timeout:20];(${parts});out center tags qt 600;`;
+  const qlUrban = `[out:json][timeout:20];way["landuse"~"^(residential|retail|commercial|industrial)$"](around:${r},${la},${lo});out bb qt 700;`;
   const eps = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
   ];
-  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (landmark twins)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
+  const attempt = (ep, query) => fetch(`${ep}?data=${encodeURIComponent(query)}`, { headers: { "user-agent": "phodar/1 (landmark twins)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
     .then(async (rr) => {
       const host = ep.split("/")[2];
       if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
@@ -566,14 +574,25 @@ async function apiLandmarks(q, res) {
       if (j.elements.length === 0) throw new Error(`${host} EMPTY`);
       return j;
     });
+  const race = async (query) => {
+    try { return await Promise.any(eps.map((ep) => attempt(ep, query))); }
+    catch (e) {
+      const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
+      if (errs.every((m) => /EMPTY/.test(m))) return { elements: [] };
+      throw new Error(errs.join("; "));
+    }
+  };
   try {
-    const j = await Promise.any(eps.map(attempt));
-    landmarksCache.set(key, { t: Date.now(), body: j });
-    return json(res, 200, j);
+    const [jMain, jUrban] = await Promise.all([
+      kinds.length ? race(ql) : Promise.resolve({ elements: [] }),
+      wantUrban ? race(qlUrban) : Promise.resolve({ elements: [] }),
+    ]);
+    const body = { elements: [...jMain.elements, ...jUrban.elements] };
+    if (!body.elements.length) body.note = "reachable; no matching features in range";
+    landmarksCache.set(key, { t: Date.now(), body });
+    return json(res, 200, body);
   } catch (e) {
-    const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
-    if (errs.every((m) => /EMPTY/.test(m))) { const body = { elements: [], note: "reachable; no matching structures in range" }; landmarksCache.set(key, { t: Date.now(), body }); return json(res, 200, body); }
-    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
+    return json(res, 502, { error: `overpass busy (${e.message})` });
   }
 }
 const peaksCache = new Map(); // key → { t, body }

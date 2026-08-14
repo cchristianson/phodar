@@ -36,7 +36,7 @@ import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
-import { farSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, SWEEP_FOVS } from "./geoloc.js";
+import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, SWEEP_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -9421,8 +9421,10 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
           cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
           const cx = cv.getContext("2d", { willReadFrequently: true });
           cx.drawImage(drawable, 0, 0, cv.width, cv.height);
-          const pts = farSkyline(cx.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height);
-          return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts };
+          const imd = cx.getImageData(0, 0, cv.width, cv.height).data;
+          const pts = farSkyline(imd, cv.width, cv.height);
+          const near = pts ? nearSkyline(imd, cv.width, cv.height, pts) : null;
+          return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts, near };
         };
         const out = [];
         if (src.mediaKind === "video") {
@@ -9505,31 +9507,41 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
           for (const p of per) {
             p.relAz = ((p.qq.az - q0.az + 540) % 360) - 180;
             p.relEl = p.qq.el - q0.el;
-            lockedInfo.set(p.f.i, { relAz: p.relAz, fov: p.fov, W: p.W });
+            lockedInfo.set(p.f.i, { relAz: p.relAz, relEl: p.relEl, fov: p.fov, W: p.W });
           }
           locked = lockedFrameSet(per);
         }
       }
       /* unlocked: a known lens fixes the FOV; unknown (and any video —
-         witnesses zoom) sweeps the candidate FOVs per frame */
+         witnesses zoom) sweeps the candidate FOVs per frame. The second
+         ridge layer, where detected, rides along as nearSets. */
       const fovs = src.mediaKind !== "video" && isNum(src.meta?.fovH) ? [+src.meta.fovH] : SWEEP_FOVS;
+      let lockedNear = null;
+      if (locked) {
+        const perNear = usable.filter((f) => f.near).map((f) => {
+          const info = lockedInfo.get(f.i);
+          return info ? { pts: f.near, W: f.W, H: f.H, fov: info.fov, relAz: info.relAz, relEl: info.relEl } : null;
+        }).filter(Boolean);
+        if (perNear.length) lockedNear = lockedFrameSet(perNear);
+      }
       const frameSets = locked
-        ? [{ f: usable[0], sets: [locked] }]
-        : usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, fovs) }));
+        ? [{ f: usable[0], sets: [locked], nearSets: lockedNear ? [lockedNear] : undefined }]
+        : usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, fovs), nearSets: f.near ? skySampleSets(f.near, f.W, f.H, fovs) : undefined }));
       setProg("terrain…");
       const region = await loadRegion(c.lat, c.lng, radKm);
       /* landmark twins only for the PINNED kinds (nearest-first — a dense
          pylon grid would otherwise eat the cap), plus OSM place nodes
          whenever a setting filter is on */
-      let twins = [], places = [];
+      let twins = [], places = [], urbans = [];
       if (pins.length || stood || look) {
         setProg("landmarks…");
         const osmKinds = [...new Set(pins.flatMap((p) => FS_PIN_KINDS.find((k) => k.k === p.kind)?.osm || []))];
-        if (stood || look) osmKinds.push("place");
+        if (stood || look) osmKinds.push("place", "urban");
         try {
           const all = await fetchLandmarks(c.lat, c.lng, radKm, osmKinds);
           places = all.filter((t) => t.kind === "place");
-          twins = all.filter((t) => t.kind !== "place");
+          urbans = all.filter((t) => t.kind === "urban");
+          twins = all.filter((t) => t.kind !== "place" && t.kind !== "urban");
         } catch (e) { }
         const mLonC = 111.32 * Math.max(0.2, Math.cos(c.lat * D2R));
         twins.sort((a, b) => Math.hypot((a.lat - c.lat) * 111.32, (a.lon - c.lng) * mLonC) - Math.hypot((b.lat - c.lat) * 111.32, (b.lon - c.lng) * mLonC));
@@ -9542,8 +9554,9 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       for (const tw of twins.filter((t) => t.kind !== "peak").slice(0, 40)) for (const rc of ringCandidates(tw.lat, tw.lon, 300, 8)) cands.push({ ...rc, twin: tw });
       /* setting filter, position half: "I stood in a town" / "outside" kills
          candidates before any skyline math runs (also saves the compute) */
+      const setCtx = { urbans, places };
       const preN = cands.length;
-      if (stood && places.length) cands = cands.filter((cd) => settingOk(cd, places, stood));
+      if (stood) cands = cands.filter((cd) => settingOk(cd, setCtx, stood));
       if (!cands.length) throw new Error(`no candidate in this area matches "${stood === "town" ? "stood in a town" : "stood outside town"}" — widen the area or clear the setting`);
       let out = [];
       for (let i = 0; i < cands.length; i++) {
@@ -9560,7 +9573,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       if (!out.length) throw new Error("terrain unreachable for this area");
       /* setting filter, view half: needs the solved pointing, so it runs
          after scoring — "looking at a town" / "open country" */
-      if (look && places.length) out = out.filter((o) => lookOk(o, o.az, places, look));
+      if (look) out = out.filter((o) => lookOk(o, o.az, setCtx, look));
       if (!out.length) throw new Error(`every candidate failed "${look === "town" ? "looking at a town" : "looking at open country"}" — widen the area or clear the setting`);
       /* pin consistency for EVERY candidate: each pin's observed azimuth
          (its frame's solved pointing + pixel offset) vs the best matching
@@ -9592,7 +9605,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       }
       /* verdict from the uniform grid only (twin rings oversample their
          neighborhoods and would fake a sharp spread) */
-      const v = { ...sweepVerdict(out.filter((o) => o.grid).map((o) => o.score)), dropped: (preN - cands.length) + (scoredN - out.length), locked: locked ? usable.length : 0 };
+      const v = { ...sweepVerdict(out.filter((o) => o.grid).map((o) => o.score)), dropped: (preN - cands.length) + (scoredN - out.length), locked: locked ? usable.length : 0, layers2: out.some((o) => o.nearScore != null) };
       /* rank: pin-consistent candidates first, then score; thin to 500 m */
       out.sort((a, b) => {
         const pa = a.pinDev != null && a.pinDev <= 25, pb = b.pinDev != null && b.pinDev <= 25;
@@ -9766,6 +9779,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                     : "Terrain alone can't decide inside this area (many spots fit the ridge shape similarly) — treat these as ranked suggestions and verify against the imagery."}
                   {results.some((r) => r.pinDev != null && r.pinDev <= 25) && " Candidates marked 📍 also place your pinned structure in the right direction."}
                   {verdict.locked ? ` 🎞 ${verdict.locked} frames searched as one stabilized pan.` : ""}
+                  {verdict.layers2 ? " ⛰ Two ridge layers matched — the near ridge's depth against the far wall is scored too." : ""}
                   {verdict.dropped ? ` ${verdict.dropped} candidates ruled out by your setting choices.` : ""}
                 </div>
                 {results.map((r, i) => (

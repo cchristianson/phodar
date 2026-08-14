@@ -4001,19 +4001,36 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     { ...at(0, 0), kind: "place", ptype: "town" },        // town centred on the candidate (radius 2.5 km)
     { ...at(9000, 0), kind: "place", ptype: "village" },  // village 9 km north (radius 1.2 km)
   ];
-  ok(GL.settingOk(cand, places, "town") && !GL.settingOk(cand, places, "out"),
+  ok(GL.settingOk(cand, { places }, "town") && !GL.settingOk(cand, { places }, "out"),
     "geoloc: inside a town radius → passes 'in a town', fails 'outside'");
   const wild = { ...at(0, 30000) };                        // 30 km east of everything
-  ok(!GL.settingOk(wild, places, "town") && GL.settingOk(wild, places, "out"),
+  ok(!GL.settingOk(wild, { places }, "town") && GL.settingOk(wild, { places }, "out"),
     "geoloc: far from every place → passes 'outside', fails 'in a town'");
-  ok(GL.settingOk(cand, [], "town") && GL.settingOk(cand, [], "out"),
+  ok(GL.settingOk(cand, {}, "town") && GL.settingOk(cand, {}, "out"),
     "geoloc: no place data → never filter on a guess");
   /* looking north from inside the town: the DISTINCT village sits in the
      cone; the town you stand in must not count */
-  ok(GL.lookOk(cand, 0, places, "town") && !GL.lookOk(cand, 0, places, "open"),
+  ok(GL.lookOk(cand, 0, { places }, "town") && !GL.lookOk(cand, 0, { places }, "open"),
     "geoloc: distinct village in the view cone → 'looking at a town'");
-  ok(!GL.lookOk(cand, 180, places, "town") && GL.lookOk(cand, 180, places, "open"),
+  ok(!GL.lookOk(cand, 180, { places }, "town") && GL.lookOk(cand, 180, { places }, "open"),
     "geoloc: facing away → 'open country', even while standing IN a town");
+
+  /* built-up LAND-USE boxes are the primary signal when mapped — this is
+     the field-report case: a bare field 1 km from a village place node
+     passed "in a town" under the node-radius rule */
+  const urbans = [
+    { kind: "urban", bbox: [30 - 500 / mLat, 30 + 500 / mLat, 78 - 500 / mLonS, 78 + 500 / mLonS] },
+    { kind: "urban", bbox: [30 + 3000 / mLat, 30 + 4000 / mLat, 78 - 500 / mLonS, 78 + 500 / mLonS] },
+  ];
+  ok(GL.settingOk(cand, { urbans, places }, "town") && !GL.settingOk(cand, { urbans, places }, "out"),
+    "geoloc: standing ON built-up land-use → 'in a town'");
+  const field = at(1500, 0);
+  ok(!GL.settingOk(field, { urbans, places }, "town") && GL.settingOk(field, { urbans, places }, "out"),
+    "geoloc: a bare field 1 km off built-up land is NOT 'in a town' (the field-report bug)");
+  ok(GL.lookOk(cand, 0, { urbans }, "town") && !GL.lookOk(cand, 0, { urbans }, "open"),
+    "geoloc: view ray north enters the other built-up patch → 'looking at a town'");
+  ok(!GL.lookOk(cand, 180, { urbans }, "town") && GL.lookOk(cand, 180, { urbans }, "open"),
+    "geoloc: view south is open — the patch you stand in never counts");
 
   /* stabilized-pan lock: merge the same three frames with their KNOWN
      relative pointing (one frame deliberately pitched differently) and the
@@ -4040,6 +4057,80 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(GL.angDiff(scoredL[0].az, 10) < 3, `geoloc: locked-pan global rotation recovered (az ${scoredL[0].az.toFixed(0)} vs 10)`);
   ok(GL.sweepVerdict(scoredL.map((s) => s.score)).ratio <= verdict.ratio + 0.05,
     `geoloc: locking the pan does not blur the spread (${GL.sweepVerdict(scoredL.map((s) => s.score)).ratio} vs free ${verdict.ratio})`);
+
+  /* near-ridge detector: sky / hazy wall / dark near ridge in one column */
+  const mk3 = () => {
+    const W3 = 288, H3 = 220, d3 = new Uint8ClampedArray(W3 * H3 * 4);
+    const ybF = (x) => Math.round(50 + 12 * Math.sin(x / 40));
+    const ybN = (x) => Math.round(130 + 10 * Math.cos(x / 30));
+    for (let y = 0; y < H3; y++)
+      for (let x = 0; x < W3; x++) {
+        const i = (y * W3 + x) * 4;
+        let r, g, b;
+        if (y < ybF(x)) { r = g = b = 205; }
+        else if (y < ybN(x)) { r = 100; g = 110; b = 150; }
+        else { r = 30; g = 60; b = 30; }
+        d3[i] = r; d3[i + 1] = g; d3[i + 2] = b; d3[i + 3] = 255;
+      }
+    return { d3, W3, H3, ybF, ybN };
+  };
+  const m3 = mk3();
+  const farP = GL.farSkyline(m3.d3, m3.W3, m3.H3);
+  const nearP = GL.nearSkyline(m3.d3, m3.W3, m3.H3, farP);
+  ok(nearP && nearP.length >= 30, "geoloc: second ridge layer detected below the far wall");
+  const nErr = Math.max(...nearP.map((p) => Math.abs(p.y - m3.ybN(p.x))));
+  ok(nErr <= 4, `geoloc: near boundary to ≤4 px (got ${nErr.toFixed(1)})`);
+
+  /* DEPTH: a pan has no parallax, but the near crest's placement against
+     the far wall changes fast with position. World: a big wall 28 km
+     north + a small near ridge 3 km north. Displacing the candidate
+     ALONG the view axis barely moves the wall — the near layer is what
+     separates it. */
+  const world2 = (e, n) => {
+    let z = 100;
+    z = Math.max(z, 100 + 4000 * Math.exp(-(((n - 28000) / 3000) ** 2)) * Math.exp(-((e / 20000) ** 2)));
+    const dc = Math.hypot(e, n - 3000);
+    if (dc < 1000) z = Math.max(z, 100 + 120 * (1 - dc / 1000));
+    return z;
+  };
+  const samp2 = (dNm, dEm) => ({ sampleEN: (e, n) => world2(dEm + e, dNm + n), h0: world2(dEm, dNm) });
+  const tru2 = samp2(0, 0);
+  const sk2 = skylineFromSampler(tru2.sampleEN, tru2.h0);
+  const el2 = (a) => skylineElAt(sk2.els, a);
+  const prof2 = GL.ridgeProfileOf(sk2);
+  ok([...prof2].some(isFinite), "geoloc: DEM interior-crest profile has the near ridge");
+  const mkPts = (elFn, filt) => {
+    const fpts = [];
+    for (let i = 0; i < 60; i++) {
+      const az = -18 + (36 * i) / 59;
+      const v = elFn(az);
+      if (!isFinite(v) || (filt && !filt(az))) continue;
+      const g = dirFromAzEl(az, v);
+      const p = dirToPixK(g, FW, FH, 0, 10, 0, 40, 0);
+      if (p && p.py > 0 && p.py < FH) fpts.push({ x: Math.round(p.px), y: Math.round(p.py) });
+    }
+    return fpts;
+  };
+  const farPts2 = mkPts(el2);
+  const nearPts2 = mkPts((a) => GL.ridgeProfAt(prof2, a));
+  ok(farPts2.length > 30 && nearPts2.length >= 12, `geoloc: synthetic two-layer frame built (${farPts2.length} far, ${nearPts2.length} near)`);
+  const mkFS = (withNear) => [{
+    sets: GL.skySampleSets(farPts2, FW, FH, [40]),
+    nearSets: withNear ? GL.skySampleSets(nearPts2, FW, FH, [40]) : undefined,
+  }];
+  const D2 = [[0, 0], [2000, 0], [-2000, 0], [0, 2000], [0, -2000]];
+  const farOnly = D2.map(([dn, de]) => { const s = samp2(dn, de); return GL.scoreCandidate(mkFS(false), s.sampleEN, s.h0).score; });
+  const withNear = D2.map(([dn, de]) => { const s = samp2(dn, de); return GL.scoreCandidate(mkFS(true), s.sampleEN, s.h0).score; });
+  ok(withNear[0] === Math.min(...withNear), "geoloc: with the depth layer the true position wins");
+  const sepFar = Math.min(...farOnly.slice(1)) / Math.max(farOnly[0], 1e-6);
+  const sepNear = Math.min(...withNear.slice(1)) / Math.max(withNear[0], 1e-6);
+  /* far-only, a displaced spot actually BEATS the truth on this smooth
+     wall (sep < 1); jointly the truth wins every displacement and the
+     worst offender scores ~10× — assert the winner plus a real margin */
+  ok(sepNear > Math.max(1.25, sepFar + 0.3),
+    `geoloc: depth layer separates displaced candidates (${sepFar.toFixed(2)} → ${sepNear.toFixed(2)}×)`);
+  ok(Math.max(...withNear.slice(1)) / withNear[0] > 4,
+    `geoloc: a grossly displaced candidate is punished hard (${(Math.max(...withNear.slice(1)) / withNear[0]).toFixed(1)}×)`);
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

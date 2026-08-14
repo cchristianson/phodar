@@ -48,6 +48,27 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Changed
+- **Find my spot: setting filters on real land-use + the near-ridge
+  depth layer.** Field report: "in a town" passed a spot with zero
+  buildings — a place NODE marks a town's *center*, and its type radius
+  covered a bare field 1 km out. The filters now run on OSM built-up
+  LAND-USE polygons (residential/retail/commercial/industrial, fetched
+  as bounding boxes in a second Overpass query): "in a town" means
+  standing on mapped built-up land, "outside" means clearly off it, and
+  the view test ray-marches into other built-up patches (still
+  excluding the one you stand in). Place nodes remain the fallback
+  where land-use isn't mapped; no data still never filters. And a new
+  SECOND matching signal: the detected ridge line below the far wall
+  (the darker, nearer crest) is scored against the DEM's interior
+  visible crests — a pan has no parallax, but where the near crest sits
+  against the far wall changes fast with position. Scored JOINTLY with
+  the far skyline at every candidate pointing (evaluating it only at
+  the far layer's chosen azimuth let a wrong azimuth win first and then
+  punished the truth — measured, fixed): on a synthetic wall+near-ridge
+  world where far-only actually prefers a displaced spot (sep 0.81),
+  the joint score picks the truth with margin (1.37×) and punishes a
+  2 km displacement ~9.5×. Results say "⛰ Two ridge layers matched"
+  when the depth term is active.
 - **Find my spot: setting context + stabilized-pan lock + pin
   housekeeping.** Two new chip rows tell the search what the witness
   already knows: where you STOOD (🏘 in a town / 🌾 outside one) and

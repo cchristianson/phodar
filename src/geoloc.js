@@ -78,6 +78,63 @@ export function farSkyline(px, W, H, opts = {}) {
   return keep.length >= 20 ? keep : null;
 }
 
+/* ---------- near-ridge depth layer ----------
+   A pan from one spot has NO parallax (pure rotation), but ridge
+   LAYERING encodes depth anyway: where the nearer, darker crest sits
+   against the far wall changes fast with observer position, while the
+   far wall barely moves. This detects the SECOND boundary below the far
+   skyline — the next crest line, markedly darker than the haze-lit wall
+   behind it — for scoring against the DEM's interior visible crests. */
+export function nearSkyline(px, W, H, farPts, opts = {}) {
+  const d = px.data ? px.data : px;
+  const BAND = Math.max(5, Math.round(H * 0.03));
+  const drop = opts.drop ?? 28;   // how much darker the next layer must be than the wall
+  const out = [];
+  for (const fp of farPts) {
+    const x = fp.x;
+    const lum = (y) => { const i = (y * W + x) * 4; return 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; };
+    /* the wall's own brightness, sampled just below the far boundary */
+    let wall = 0, n = 0;
+    for (let y = fp.y + 4; y < Math.min(H, fp.y + 16); y++) { wall += lum(y); n++; }
+    if (!n) continue;
+    wall /= n;
+    let found = -1;
+    for (let y = fp.y + 10; y < H * 0.97; y++) {
+      if (lum(y) >= wall - drop) continue;
+      let below = 0, tot = 0;
+      for (let k = 1; k <= BAND && y + k < H; k++) { tot++; if (lum(y + k) < wall - drop) below++; }
+      if (tot && below / tot >= 0.85) { found = y; break; }
+    }
+    if (found > 0) out.push({ x, y: found });
+  }
+  if (out.length < 16) return null;
+  const keep = out.filter((p, i) => {
+    const win = out.slice(Math.max(0, i - 3), i + 4).map((q) => q.y).sort((a, b) => a - b);
+    const med = win[Math.floor(win.length / 2)];
+    return Math.abs(p.y - med) < Math.max(6, 0.06 * H);
+  });
+  return keep.length >= 16 ? keep : null;
+}
+
+/* candidate-side twin of the second layer: the highest INTERIOR visible
+   crest per 1° azimuth bin, from skylineFromSampler's ridges (which
+   already encode occlusion — a hidden crest emits nothing). NaN = no
+   interior crest at that azimuth. */
+export function ridgeProfileOf(sk) {
+  const prof = new Float32Array(360).fill(NaN);
+  for (const rg of sk.ridges || []) {
+    for (const [az, el] of rg.pts) {
+      const b = ((Math.round(az) % 360) + 360) % 360;
+      if (!(prof[b] >= el)) prof[b] = el;
+    }
+  }
+  return prof;
+}
+export function ridgeProfAt(prof, azDeg) {
+  const b = ((Math.round(azDeg) % 360) + 360) % 360;
+  return prof[b];
+}
+
 /* skyline pixels → az/el samples under a nominal pose, one set per
    candidate FOV, each with its elevation spread (the normalizer that
    stops a narrow FOV from "winning" by having nothing to explain) */
@@ -164,13 +221,97 @@ export function coherentWindow(curves, winDeg = WIN_DEG, keepFrac = 0.75) {
   return { score: best.score, az, frameAz };
 }
 
-/* score one candidate position: DEM skyline there vs every frame */
+/* the fitted pitch intercept + roll slope at one shift (same model rmsAt
+   minimizes — needed so the near layer can be scored under the FAR
+   layer's pose, with no free parameters left to absorb the depth signal) */
+function fitParams(ss, elAt, dAz) {
+  let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const s of ss) {
+    const r = elAt(s.az + dAz) - s.el;
+    sw++; sx += s.thx; sy += r; sxx += s.thx * s.thx; sxy += s.thx * r;
+  }
+  const den = sw * sxx - sx * sx;
+  const b = Math.abs(den) > 1e-9 ? (sw * sxy - sx * sy) / den : 0;
+  return { a: (sy - b * sx) / sw, b };
+}
+
+/* joint far+near curve: at every pointing bin the far layer fits
+   pitch/roll, then the near layer's residual vs the interior crests is
+   scored UNDER that fixed pose (no free parameters left, so the depth
+   signal fully counts) and folded into the bin. This matters because a
+   smooth far wall leaves the pointing ambiguous — evaluating the near
+   layer only at the far layer's chosen azimuth let the WRONG azimuth
+   win first and then punished the truth for it (measured). A candidate
+   must find one pointing that explains BOTH layers at once. */
+function azCurveJoint(sets, nearSets, elAt, prof, stepDeg = AZ_STEP, nearW = 0.7) {
+  const NB = Math.round(360 / stepDeg);
+  const c = new Float32Array(NB).fill(1e9);
+  const fi = new Uint8Array(NB);
+  for (let vi = 0; vi < sets.length; vi++) {
+    const v = sets[vi], nv = nearSets[vi];
+    for (let b = 0; b < NB; b++) {
+      const dAz = b * stepDeg - 180;
+      const fit = fitParams(v.ss, elAt, dAz);
+      let s2 = 0;
+      for (const s of v.ss) {
+        const e = (elAt(s.az + dAz) - s.el) - (fit.a + fit.b * s.thx);
+        s2 += e * e;
+      }
+      let nr = Math.sqrt(s2 / v.ss.length);
+      if (nv) {
+        let n2 = 0, q2 = 0;
+        for (const s of nv.ss) {
+          const val = ridgeProfAt(prof, s.az + dAz);
+          if (!isFinite(val)) continue;
+          const e = (val - s.el) - (fit.a + fit.b * s.thx);
+          q2 += e * e; n2++;
+        }
+        /* too few overlapping crest bins → the DEM says there's nothing
+           NEAR at this pointing while the photo clearly shows a second
+           layer: that mismatch is itself evidence against the pointing */
+        nr += nearW * (n2 >= 12 ? Math.sqrt(q2 / n2) : 3);
+      }
+      nr /= v.std;
+      if (nr < c[b]) { c[b] = nr; fi[b] = vi; }
+    }
+  }
+  return { c, fi, stepDeg };
+}
+
+/* score one candidate position: DEM skyline there vs every frame.
+   Frames may carry `nearSets` (the detected SECOND ridge layer, scored
+   jointly against the DEM's interior visible crests — the depth signal
+   a pan cannot get from parallax). */
 export function scoreCandidate(frameSets, sampleEN, h0, opts = {}) {
   const sk = skylineFromSampler(sampleEN, h0);
   const elAt = (a) => skylineElAt(sk.els, a);
-  const curves = frameSets.map((f) => azCurve(f.sets, elAt, opts.stepDeg ?? AZ_STEP));
+  const anyNear = frameSets.some((f) => f.nearSets);
+  const prof = anyNear ? ridgeProfileOf(sk) : null;
+  const step = opts.stepDeg ?? AZ_STEP;
+  const curves = frameSets.map((f) => f.nearSets && prof
+    ? azCurveJoint(f.sets, f.nearSets, elAt, prof, step, opts.nearW ?? 0.7)
+    : azCurve(f.sets, elAt, step));
   const w = coherentWindow(curves, opts.winDeg ?? WIN_DEG, opts.keepFrac ?? 0.75);
-  return w && { ...w, h0 };
+  if (!w) return null;
+  /* report how well the near layer agreed at the solved pointing */
+  let nearSum = 0, nearN = 0;
+  for (let i = 0; i < frameSets.length; i++) {
+    const f = frameSets[i];
+    if (!f.nearSets || !prof) continue;
+    const fa = w.frameAz[i];
+    const far = f.sets[fa.fovIdx], near = f.nearSets[fa.fovIdx];
+    if (!far || !near) continue;
+    const fit = fitParams(far.ss, elAt, fa.az);
+    let s2 = 0, n2 = 0;
+    for (const s of near.ss) {
+      const v = ridgeProfAt(prof, s.az + fa.az);
+      if (!isFinite(v)) continue;
+      const e = (v - s.el) - (fit.a + fit.b * s.thx);
+      s2 += e * e; n2++;
+    }
+    if (n2 >= 12) { nearSum += Math.sqrt(s2 / n2) / far.std; nearN++; }
+  }
+  return { ...w, nearScore: nearN ? +(nearSum / nearN).toFixed(3) : null, h0 };
 }
 
 /* ---------- candidate generation ---------- */
@@ -267,22 +408,66 @@ export function nearestPlaceEdge(cand, places) {
   }
   return best;
 }
-/* stood: "town" = inside (or right at) a built-up radius; "out" = clearly
-   beyond every one; unset = no filter */
-export function settingOk(cand, places, stood) {
+/* built-up LAND-USE bounding boxes are the primary signal — a place node
+   marks a town's center, and its type radius passed a bare field 1 km
+   out as "in a town" (field report). bbox: [s, n, w, e] degrees. */
+export function urbanDistKm(cand, urbans) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  let best = null;
+  for (const u of urbans) {
+    const [s, n, w, e] = u.bbox;
+    const dLat = cand.lat < s ? s - cand.lat : cand.lat > n ? cand.lat - n : 0;
+    const dLon = cand.lon < w ? w - cand.lon : cand.lon > e ? cand.lon - e : 0;
+    const d = Math.hypot(dLat * 111.32, dLon * mLon);
+    if (best == null || d < best) best = d;
+  }
+  return best; // 0 = inside one; null = no data
+}
+/* does the view ray enter a built-up box (other than one you stand in)
+   within maxKm? Slab test in local km coordinates. */
+export function rayHitsUrban(cand, azDeg, urbans, maxKm = 8) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  const dx = Math.sin((azDeg * Math.PI) / 180), dy = Math.cos((azDeg * Math.PI) / 180);
+  for (const u of urbans) {
+    const [s, n, w, e] = u.bbox;
+    const x0 = (w - cand.lon) * mLon, x1 = (e - cand.lon) * mLon;
+    const y0 = (s - cand.lat) * 111.32, y1 = (n - cand.lat) * 111.32;
+    if (x0 <= 0 && x1 >= 0 && y0 <= 0 && y1 >= 0) continue; // standing in it
+    let tmin = -1e9, tmax = 1e9;
+    if (Math.abs(dx) < 1e-9) { if (x0 > 0 || x1 < 0) continue; }
+    else { const a = x0 / dx, b = x1 / dx; tmin = Math.max(tmin, Math.min(a, b)); tmax = Math.min(tmax, Math.max(a, b)); }
+    if (Math.abs(dy) < 1e-9) { if (y0 > 0 || y1 < 0) continue; }
+    else { const a = y0 / dy, b = y1 / dy; tmin = Math.max(tmin, Math.min(a, b)); tmax = Math.min(tmax, Math.max(a, b)); }
+    if (tmax >= Math.max(tmin, 0) && Math.max(tmin, 0) <= maxKm) return true;
+  }
+  return false;
+}
+/* stood: "town" = on built-up land; "out" = clearly off it. Land-use
+   boxes when mapped, place-node radii as fallback, no data → no filter. */
+export function settingOk(cand, ctx, stood) {
   if (!stood) return true;
-  if (!places.length) return true; // no place data → never filter on a guess
+  const urbans = ctx.urbans || [], places = ctx.places || [];
+  if (urbans.length) {
+    const d = urbanDistKm(cand, urbans);
+    return stood === "town" ? d <= 0.25 : d >= 0.5;
+  }
+  if (!places.length) return true; // no data → never filter on a guess
   const np = nearestPlaceEdge(cand, places);
   if (stood === "town") return !!np && np.edgeKm <= 0.3;
   if (stood === "out") return !np || np.edgeKm >= 1;
   return true;
 }
-/* look: does the solved pointing cross ANOTHER town (not the one you may
-   be standing in)? "town" = a distinct place sits in the view cone;
-   "open" = none does. The stood-in place is excluded so "in city aimed
-   out of city" works. */
-export function lookOk(cand, azDeg, places, look) {
-  if (!look || !places.length) return true;
+/* look: does the solved pointing cross OTHER built-up land (not what you
+   stand in)? "town" = yes; "open" = no. The exclusion is what makes
+   "in city aimed out of city" work. */
+export function lookOk(cand, azDeg, ctx, look) {
+  if (!look) return true;
+  const urbans = ctx.urbans || [], places = ctx.places || [];
+  if (urbans.length) {
+    const hit = rayHitsUrban(cand, azDeg, urbans, 8);
+    return look === "town" ? hit : !hit;
+  }
+  if (!places.length) return true;
   const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
   const hit = places.some((p) => {
     const rad = PLACE_RADIUS_KM[p.ptype] ?? 1;
@@ -365,9 +550,14 @@ export async function fetchLandmarks(lat, lon, radKm, kinds) {
   const j = await r.json();
   const out = [];
   for (const e of j.elements || []) {
+    const t = e.tags || {};
+    /* built-up land-use ways come back as bounding boxes (out bb) */
+    if (t.landuse && e.bounds && isFinite(e.bounds.minlat)) {
+      out.push({ kind: "urban", bbox: [e.bounds.minlat, e.bounds.maxlat, e.bounds.minlon, e.bounds.maxlon] });
+      continue;
+    }
     const la = e.lat ?? e.center?.lat, lo = e.lon ?? e.center?.lon;
     if (!isFinite(la) || !isFinite(lo)) continue;
-    const t = e.tags || {};
     const kind = t.man_made === "water_tower" ? "water"
       : (t.man_made === "mast" || t.man_made === "communications_tower") ? "mast"
         : t.man_made === "chimney" ? "chimney"

@@ -779,9 +779,18 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   pin governs, per-kind camera-to-structure RANGE GATES without which a
   town of mapped towers passes every cell, unmapped pins skipped, peaks
   never spawn rings); SETTING filters (stood in/out of a town, looking
-  at a town/open — OSM place nodes with per-type built-up radii,
-  `settingOk`/`lookOk`, the stood-in place excluded from the look test
-  so "in city aimed out" works, no place data ⇒ never filter); and a
+  at a town/open — primary signal is OSM built-up LAND-USE bboxes
+  (`urbanDistKm`/`rayHitsUrban`; a place NODE's type radius passed a
+  bare field 1 km from a village node as "in a town" — field report),
+  place nodes as fallback, the stood-in patch excluded from the look
+  test so "in city aimed out" works, no data ⇒ never filter); a
+  NEAR-RIDGE DEPTH LAYER (`nearSkyline` second boundary below the far
+  wall + `ridgeProfileOf` interior crests, scored JOINTLY per pointing
+  bin under the far layer's fitted pitch — post-hoc evaluation at the
+  far-chosen azimuth punished the truth when a smooth wall left azimuth
+  ambiguous, measured; joint scoring picks truth 1.37× and punishes
+  2 km displacement ~9.5× where far-only preferred the displaced spot);
+  and a
   STABILIZED-PAN LOCK (`lockedFrameSet`: a posePath's relative az/el/fov
   bakes all frames into ONE rigid sample set over a single global
   rotation — measured on the synthetic world it sharpened best/median
