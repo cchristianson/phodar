@@ -46,6 +46,22 @@ Notable changes to Phodar. Format loosely follows
   search that takes captions-grade queries ("India lower Himalaya
   range") via Nominatim, framing the map to the result's bounding box
   so an area answer reads as an area, not a fake point.
+
+### Changed
+- **Position-step name search survives caption-grade queries.**
+  Nominatim is exact-name matching with zero fuzz — measured: "lower
+  himalayan range" hits the real mountain range, "lower himalaya range"
+  returns NOTHING — so a failed phrase now gets a bounded relaxation
+  ladder: the query with sighting-caption noise words stripped
+  (UAP/over/seen/…), then each remaining content word alone, with
+  single-word hits kept only when they are AREAS (wide bounding box or
+  a place/boundary/natural class — keeps "Himalayas", drops a
+  restaurant named Himalaya). An area-sized result is tagged with its
+  width ("~2341 km area"), frames the whole area on the pin map
+  (programmatic fitBounds, guarded so no position commit fires), sets
+  the pin at its centre with an honest note, and points at 📍 Find my
+  spot when media is attached. Browser e2e: the full caption "UAP over
+  the lower Himalaya range India" resolves in ≤5 requests.
 - **🔏 C2PA cryptographic verification** (user-approved dependency —
   Adobe's open-source c2pa-js SDK). The byte-scan's "a Content
   Credentials manifest exists" note now upgrades to a checked verdict:

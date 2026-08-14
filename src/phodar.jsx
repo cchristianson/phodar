@@ -671,7 +671,7 @@ const HELP_SECTIONS = [
     intro: "Where you stood is one end of every sight-line, so it has to be right. Set it any way you like, then refine on the map by dragging the ground under the fixed pin. Also set the date/time (drives the Sun/Moon/star positions) and, optionally, which way and how high you looked.",
     groups: [
       { h: "Set your location", items: [
-        { t: "Find your spot by name", d: "Type a town, address, or landmark and 🔎 Search. Results are tagged exact address (teal) or road/area (amber — drag the pin to your spot)." },
+        { t: "Find your spot by name", d: "Type a town, address, or landmark and 🔎 Search. Vague works too — “lower Himalayan range India” finds the region even with extra words, and an area-sized result frames the whole area on the map (tagged with its width) with the pin at its centre, ready to zoom in or hand to 📍 Find my spot. Results are tagged exact address (teal) or road/area (amber — drag the pin to your spot)." },
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
@@ -8949,7 +8949,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
    Imagery by default (a rooftop is a better anchor than a street
    name), OSM street as the toggle.
    ============================================================ */
-function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizOn, onHoriz }) {
+function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizOn, onHoriz, fit }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const layersRef = useRef(null);     // {sat, street, trans, ref}
@@ -9107,6 +9107,18 @@ function PinMap({ lat, lon, origin, others, onChange, bearing, tilt, fov, horizO
     if (!ready) return;
     drawAim();
   }, [bearing, tilt, fov, ready]);
+
+  /* frame the map to an AREA search result (a region / mountain range /
+     town from the name search) — programmatic, so the moveend guard eats
+     it and no position commit fires */
+  useEffect(() => {
+    const map = mapRef.current; if (!map || !ready || !fit || !Array.isArray(fit.b) || !fit.b.every(isNum)) return;
+    try {
+      progRef.current = true;
+      map.fitBounds([[fit.b[0], fit.b[2]], [fit.b[1], fit.b[3]]], { animate: false, maxZoom: 14 });
+    } catch (e) { progRef.current = false; }
+    hud(); drawAim();
+  }, [fit && fit.k, ready]); // eslint-disable-line
 
   /* entering move mode: recentre on the position so the crosshair sits on it.
      Either mode: refresh the HUD/cone + the free-look pin marker. */
@@ -9696,6 +9708,8 @@ function PositionEditor({ src, update, others, viewOnly }) {
   const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
   const [findBusy, setFindBusy] = useState(false);
   const [fsOpen, setFsOpen] = useState(false); // 📍 Find my spot overlay — the ONLY surface of that feature outside its button
+  const [mapFit, setMapFit] = useState(null);  // {b:[s,n,w,e], k} — frame the pin map to an AREA search result
+  const [areaMsg, setAreaMsg] = useState("");  // one-line note after picking an area-sized result
   const [tiltHint, setTiltHint] = useState(false); // side-view angle popup while sliding
   const tiltHintRef = useRef(0);
   const pokeTiltHint = () => { setTiltHint(true); clearTimeout(tiltHintRef.current); tiltHintRef.current = setTimeout(() => setTiltHint(false), 1100); };
@@ -10126,19 +10140,62 @@ function PositionEditor({ src, update, others, viewOnly }) {
         }
       } catch (e) { /* fall back to Nominatim */ }
     }
-    try {
-      const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=" + encodeURIComponent(query), { headers: { Accept: "application/json" } });
-      if (r.ok) {
+    const nomFetch = async (qq) => {
+      try {
+        const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&q=" + encodeURIComponent(qq), { headers: { Accept: "application/json" } });
+        if (!r.ok) return [];
         const j = await r.json();
-        (Array.isArray(j) ? j : []).forEach((p) => hits.push({ lat: +p.lat, lon: +p.lon, name: p.display_name, precise: !!(p.address && p.address.house_number) }));
+        return (Array.isArray(j) ? j : []).map((p) => {
+          const bbox = Array.isArray(p.boundingbox) ? p.boundingbox.map(Number) : null; // [s, n, w, e]
+          const wKm = bbox && bbox.every(isNum) ? (bbox[3] - bbox[2]) * 111.32 * Math.max(0.2, Math.cos(+p.lat * D2R)) : 0;
+          return { lat: +p.lat, lon: +p.lon, name: p.display_name, precise: !!(p.address && p.address.house_number), bbox, wKm, cat: p.category || p.class || "" };
+        });
+      } catch (e) { return []; }
+    };
+    hits.push(...await nomFetch(query));
+    /* RELAXATION LADDER — measured against real caption-grade queries:
+       Nominatim is exact-name matching with zero fuzz ("lower himalayan
+       range" hits the mountain range, "lower himalaya range" returns
+       NOTHING), so a failed phrase gets two rescue passes: (1) the query
+       with sighting-caption noise words stripped, (2) each remaining
+       content word alone — those single-word hits are kept only when they
+       are AREAS (wide bbox or a place/boundary/natural class), which is
+       what keeps "Himalayas" and drops a restaurant named Himalaya. */
+    if (!hits.some((p) => isNum(p.lat))) {
+      const STOP = /^(ufo|uap|ufos|over|above|the|a|an|at|in|on|near|by|seen|saw|video|photo|footage|sighting|caught|of|from|was|were|looking|strange|weird|object|lights?)$/i;
+      const words = query.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w && !STOP.test(w));
+      const stripped = words.join(" ");
+      const tries = [];
+      if (stripped && stripped.toLowerCase() !== query.toLowerCase()) tries.push({ t: stripped, phrase: true });
+      for (const w of words.filter((x) => x.length >= 4).slice(0, 3)) tries.push({ t: w, phrase: false });
+      for (const { t, phrase } of tries) {
+        const got = await nomFetch(t);
+        hits.push(...(phrase ? got : got.filter((p) => p.wKm > 5 || /^(place|boundary|natural)$/.test(p.cat))));
+        if (hits.length >= 6) break;
+        await new Promise((res) => setTimeout(res, 350)); // Nominatim rate courtesy
       }
-    } catch (e) { /* handled by the empty-hits check below */ }
-    const clean = hits.filter((p) => isNum(p.lat) && isNum(p.lon));
+    }
+    /* dedupe near-identical results from different ladder rungs */
+    const clean = [];
+    for (const p of hits) {
+      if (!isNum(p.lat) || !isNum(p.lon)) continue;
+      if (clean.every((c) => Math.abs(c.lat - p.lat) > 1e-3 || Math.abs(c.lon - p.lon) > 1e-3)) clean.push(p);
+    }
     if (!clean.length) setPlaces({ err: "No match — try a nearby town or landmark, paste coordinates, or drag the pin below." });
-    else setPlaces(clean);
+    else setPlaces(clean.slice(0, 6));
     setFindBusy(false);
   };
-  const pickPlace = (p) => { update({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) }); setPlaces(null); setQ(p.name.split(",").slice(0, 2).join(",").trim()); };
+  const pickPlace = (p) => {
+    update({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) });
+    setPlaces(null); setQ(p.name.split(",").slice(0, 2).join(",").trim());
+    /* an AREA result (region, mountain range, town) frames the map to its
+       bounding box so it reads as an area — a lone pin at street zoom in
+       the middle of a 1500 km range would be a silent lie */
+    if (p.bbox && p.wKm > 2) {
+      setMapFit({ b: p.bbox, k: Date.now() });
+      setAreaMsg(`Area result ~${Math.round(p.wKm)} km wide — the pin is at its centre. Zoom in and drag to your spot${src.mediaUrl ? ", or let 📍 Find my spot search a patch of it" : ""}.`);
+    } else setAreaMsg("");
+  };
   const grabDem = async () => {
     setDemBusy(true); setDemMsg("");
     try {
@@ -10190,12 +10247,13 @@ function PositionEditor({ src, update, others, viewOnly }) {
                     style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 10px", background: "transparent", border: "none", borderTop: i ? "1px solid var(--line)" : "none", color: "var(--ink)", fontSize: 12, cursor: "pointer" }}>
                     <span style={{ color: "var(--teal)" }}>📍</span> {p.name}
                     <span style={{ color: "var(--dim)", fontFamily: "var(--mono)", fontSize: 10 }}>  {p.lat.toFixed(4)}, {p.lon.toFixed(4)}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: p.precise ? "var(--teal)" : "var(--amber)" }}>  {p.precise ? "· exact address" : "· road/area — drag pin to your spot"}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: p.precise ? "var(--teal)" : "var(--amber)" }}>  {p.precise ? "· exact address" : (p.wKm > 2 ? `· ~${Math.round(p.wKm)} km area` : "· road/area — drag pin to your spot")}</span>
                   </button>
                 ))}
               </div>
             )}
             {places && places.err && <div className="warn">{places.err}</div>}
+            {areaMsg && <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 5, lineHeight: 1.5 }}>{areaMsg}</div>}
             {/* compact manual coordinate entry — the MAP below is the focus;
                 these are the type/paste fallback + fine-tune */}
             <div className="grid3" style={{ marginTop: 6, gap: 6 }}>
@@ -10268,7 +10326,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
                   <PinMap lat={+src.lat} lon={+src.lon}
                     origin={src.meta && isNum(src.meta.lat) ? { lat: +src.meta.lat, lon: +src.meta.lon } : null}
                     others={others} bearing={bearing} tilt={tilt} fov={fovH}
-                    horizOn={horizOn} onHoriz={togHoriz}
+                    horizOn={horizOn} onHoriz={togHoriz} fit={mapFit}
                     onChange={viewOnly ? undefined : ((la, lo) => update({ lat: la.toFixed(6), lon: lo.toFixed(6) }))} />
                   {horizOn && (
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 96, zIndex: 900, background: "#08101F", borderTop: "1px solid var(--line)" }}>
