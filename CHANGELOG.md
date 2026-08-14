@@ -48,6 +48,18 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Changed
+- **Find my spot: 🌦 weather cross-check.** The clip SHOWS its sky, and
+  the claimed date + a candidate area imply one: the search now reads
+  the sky from its own sampled frames (saturated blue = clear,
+  white-gray dome = overcast, hazy in-between = mixed and honestly
+  no-call) and compares it against the reanalysis archive's cloud cover
+  for the searched area on the stated date (reusing `fetchWeatherAt` /
+  the `/api/winds` proxy, ERA5 for older dates). Agreement is mild
+  support; a clean contradiction ("clip is overcast, archive says 8%
+  cloud") says to question the date or the area. Structural honesty:
+  cloud data is ~25 km coarse, so the check judges the AREA+DATE
+  pairing and can never separate candidates inside one search — the
+  line says so.
 - **Find my spot: setting filters on real land-use + the near-ridge
   depth layer.** Field report: "in a town" passed a spot with zero
   buildings — a place NODE marks a town's *center*, and its type radius

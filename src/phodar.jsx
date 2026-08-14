@@ -36,7 +36,7 @@ import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
-import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, SWEEP_FOVS } from "./geoloc.js";
+import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, skyStats, skyCondition, cloudMatch, SWEEP_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -675,7 +675,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
-        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, or type something as vague as “lower Himalaya India” into the 🔎 place search — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, or type something as vague as “lower Himalaya India” into the 🔎 place search — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. With a sighting date set, a 🌦 weather cross-check compares the clip's own sky (read from the frames — clear blue vs overcast gray) against the reanalysis archive's cloud cover for the searched area on that date: agreement is mild support, a clear contradiction says to question the date or the area. It judges the AREA (weather data is ~25 km coarse), never one candidate over another, and a hazy in-between sky honestly yields no verdict. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9424,7 +9424,8 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
           const imd = cx.getImageData(0, 0, cv.width, cv.height).data;
           const pts = farSkyline(imd, cv.width, cv.height);
           const near = pts ? nearSkyline(imd, cv.width, cv.height, pts) : null;
-          return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts, near };
+          const sky = skyStats(imd, cv.width, cv.height);
+          return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts, near, sky };
         };
         const out = [];
         if (src.mediaKind === "video") {
@@ -9606,6 +9607,19 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       /* verdict from the uniform grid only (twin rings oversample their
          neighborhoods and would fake a sharp spread) */
       const v = { ...sweepVerdict(out.filter((o) => o.grid).map((o) => o.score)), dropped: (preN - cands.length) + (scoredN - out.length), locked: locked ? usable.length : 0, layers2: out.some((o) => o.nearScore != null) };
+      /* weather cross-check: the clip's own sky vs the reanalysis archive
+         for this AREA on the stated date (cloud cover is ~25 km coarse —
+         it validates the area+date pairing, never one candidate over
+         another). Needs a stated time and a readable daytime sky. */
+      if (isNum(src.whenMs)) {
+        const cond = skyCondition(usable.map((f) => f.sky));
+        if (cond) {
+          try {
+            const w2 = await fetchWeatherAt(c.lat, c.lng, +src.whenMs);
+            if (w2 && isFinite(w2.cloud)) v.wx = { cond, cloud: Math.round(w2.cloud), ...cloudMatch(cond, w2.cloud) };
+          } catch (e) { }
+        }
+      }
       /* rank: pin-consistent candidates first, then score; thin to 500 m */
       out.sort((a, b) => {
         const pa = a.pinDev != null && a.pinDev <= 25, pb = b.pinDev != null && b.pinDev <= 25;
@@ -9782,6 +9796,13 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                   {verdict.layers2 ? " ⛰ Two ridge layers matched — the near ridge's depth against the far wall is scored too." : ""}
                   {verdict.dropped ? ` ${verdict.dropped} candidates ruled out by your setting choices.` : ""}
                 </div>
+                {verdict.wx && (
+                  <div style={{ fontSize: 11, lineHeight: 1.5, marginTop: 4, color: verdict.wx.verdict === "match" ? "var(--teal)" : verdict.wx.verdict === "mismatch" ? "var(--red)" : "var(--dim)" }}>
+                    {verdict.wx.verdict === "match" && `🌦 Archive weather agrees: ~${verdict.wx.cloud}% cloud over this area on the stated date fits the clip's ${verdict.wx.cond} sky.`}
+                    {verdict.wx.verdict === "mismatch" && `🌦 Archive weather DISAGREES: ~${verdict.wx.cloud}% cloud over this area on the stated date, but the clip's sky is ${verdict.wx.cond} — question the date or the area (weather is ~25 km coarse, so this judges the area, not one spot).`}
+                    {verdict.wx.verdict === "weak" && `🌦 Weather check: ~${verdict.wx.cloud}% cloud here on the stated date — no strong verdict either way.`}
+                  </div>
+                )}
                 {results.map((r, i) => (
                   <div key={i} onClick={() => { setSel(i); const map = mapRef.current; map && map.flyTo([r.lat, r.lon], Math.max(map.getZoom(), 15)); }}
                     style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 6px", marginTop: 3, borderRadius: 8, cursor: "pointer", background: sel === i ? "rgba(94,234,212,.08)" : "transparent", border: `1px solid ${sel === i ? "var(--teal)" : "var(--line)"}`, fontFamily: "var(--mono)", fontSize: 11.5 }}>

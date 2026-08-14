@@ -496,6 +496,44 @@ export function lockedFrameSet(perFrame) {
   return { fov: perFrame[0].fov, ss, std: Math.max(0.15, std) };
 }
 
+/* ---------- weather cross-check ----------
+   The clip SHOWS its sky; the claimed date + a candidate area imply one
+   from the reanalysis archive. A mismatch (clip overcast, archive says
+   clear) indicts the date or the area. Two honesty notes are structural:
+   cloud cover is ~25 km coarse, so this is an AREA-level check that can
+   never separate candidates inside one search — and a hazy in-between
+   sky reads as "mixed", which yields no verdict rather than a guess. */
+export function skyStats(px, W, H) {
+  const d = px.data ? px.data : px;
+  let lum = 0, br = 0, n = 0;
+  const y0 = Math.round(H * 0.02), y1 = Math.round(H * 0.10);
+  for (let ci = 0; ci < 36; ci++) {
+    const x = Math.round((0.04 + (0.92 * ci) / 35) * (W - 1));
+    for (let y = y0; y <= y1; y += 2) {
+      const i = (y * W + x) * 4;
+      lum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      br += d[i + 2] - d[i];
+      n++;
+    }
+  }
+  return n ? { lum: lum / n, br: br / n } : null;
+}
+export function skyCondition(stats) {
+  const st = (stats || []).filter(Boolean);
+  if (!st.length) return null;
+  const lum = st.reduce((a, s) => a + s.lum, 0) / st.length;
+  const br = st.reduce((a, s) => a + s.br, 0) / st.length;
+  if (lum < 90) return null;      // dark sky — no daytime cloud read
+  if (br >= 30) return "clear";   // saturated blue
+  if (br <= 16) return "overcast"; // white/gray dome
+  return "mixed";                  // hazy in-between — honest no-call
+}
+export function cloudMatch(cond, cloudPct) {
+  if (!cond || cond === "mixed" || !isFinite(cloudPct)) return { verdict: "weak" };
+  if (cond === "overcast") return { verdict: cloudPct >= 65 ? "match" : cloudPct <= 25 ? "mismatch" : "weak" };
+  return { verdict: cloudPct <= 30 ? "match" : cloudPct >= 80 ? "mismatch" : "weak" };
+}
+
 /* ---------- honesty gate ----------
    From the field rounds: a NON-decisive sweep runs best/median ≈ 0.87–0.9;
    a synthetic true-position recovery runs well under 0.6. The gap is wide,

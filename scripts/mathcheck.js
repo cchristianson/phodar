@@ -4131,6 +4131,23 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     `geoloc: depth layer separates displaced candidates (${sepFar.toFixed(2)} → ${sepNear.toFixed(2)}×)`);
   ok(Math.max(...withNear.slice(1)) / withNear[0] > 4,
     `geoloc: a grossly displaced candidate is punished hard (${(Math.max(...withNear.slice(1)) / withNear[0]).toFixed(1)}×)`);
+
+  /* weather cross-check: the clip's own sky read + the archive verdict */
+  const mkSky = (r, g, b) => {
+    const Ws = 200, Hs = 120, ds = new Uint8ClampedArray(Ws * Hs * 4);
+    for (let i = 0; i < Ws * Hs; i++) { ds[i * 4] = r; ds[i * 4 + 1] = g; ds[i * 4 + 2] = b; ds[i * 4 + 3] = 255; }
+    return GL.skyStats(ds, Ws, Hs);
+  };
+  ok(GL.skyCondition([mkSky(90, 140, 215)]) === "clear", "geoloc: saturated blue sky reads clear");
+  ok(GL.skyCondition([mkSky(200, 202, 208)]) === "overcast", "geoloc: white-gray dome reads overcast");
+  ok(GL.skyCondition([mkSky(150, 160, 172)]) === "mixed", "geoloc: hazy in-between reads mixed — no false confidence");
+  ok(GL.skyCondition([mkSky(40, 45, 60)]) === null, "geoloc: dark sky → no daytime cloud read at all");
+  ok(GL.cloudMatch("overcast", 92).verdict === "match" && GL.cloudMatch("overcast", 8).verdict === "mismatch",
+    "geoloc: overcast clip vs archive — 92% cloud matches, 8% indicts the date/area");
+  ok(GL.cloudMatch("clear", 12).verdict === "match" && GL.cloudMatch("clear", 95).verdict === "mismatch",
+    "geoloc: clear clip vs archive — the symmetric case");
+  ok(GL.cloudMatch("mixed", 92).verdict === "weak" && GL.cloudMatch("overcast", 45).verdict === "weak",
+    "geoloc: ambiguous sky or middling cloud → weak, never a verdict from noise");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
