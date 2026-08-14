@@ -7,6 +7,38 @@ Notable changes to Phodar. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **📍 Find my spot — skyline geolocation** (position step). For media
+  with stripped location data: give it a rough search area and it
+  sweeps candidate positions, matching the DEM terrain skyline against
+  EVERY usable frame at once (one camera can't point everywhere — a
+  candidate must explain all frames within one ±40° pointing window),
+  and ranks where the shot fits best with the implied facing direction.
+  Optionally, tap a frame and pin a structure the photo shows (💧 water
+  tank / 📡 mast): pins are matched against OSM twins
+  (`/api/landmarks`) and candidates that also place the pinned
+  structure in the right direction are badged and ranked first —
+  field-proven the discriminating constraint (2° deviation for the
+  true area vs 60–160° for rivals on the Himalaya test clip, where
+  silhouette shape alone was NOT decisive across a 28 km box in four
+  successive harness rounds). That honesty is structural: a flat score
+  spread says "terrain alone can't decide — treat these as ranked
+  suggestions", never a confident wrong pin. The final check stays
+  human: tap a candidate, eyeball the satellite imagery, drag ⌖ onto
+  your actual spot, adopt (sets position + viewing direction).
+  Deliberately zero ambient UI: one button on the position step, a
+  self-contained overlay, no sky-view changes. Under the hood: a
+  haze-proof far-skyline detector (atmospheric scattering makes distant
+  ridges literally sky-blue — luminance deficit from the top-sky
+  reference sees through it, and a sky-quality gate drops frames
+  without clean sky instead of letting them flatten the joint score);
+  one shared z11+z8 heightfield region (~26 MB) for the whole sweep
+  instead of a 15 MB demSampler entry per candidate (which would OOM an
+  iPad); FOV swept per frame (witnesses zoom) unless the lens is known.
+  Pure core in `src/geoloc.js`, 15 mathcheck assertions (synthetic
+  sweep recovers a known cell exactly with per-frame pointing, far
+  detector to sub-pixel, decisive-vs-flat verdict calibrated to the
+  field data), 18-assertion browser e2e driving the real UI with the
+  real 91 s Himalaya clip end to end.
 - **🔏 C2PA cryptographic verification** (user-approved dependency —
   Adobe's open-source c2pa-js SDK). The byte-scan's "a Content
   Credentials manifest exists" note now upgrades to a checked verdict:

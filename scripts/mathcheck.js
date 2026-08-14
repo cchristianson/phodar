@@ -3876,5 +3876,103 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   approx(out[0].glintDeg, out[0].phaseDeg, 0.6, "glint: at zenith the nadir-mirror law makes glint = phase (exact invariant)");
 }
 
+// --- 📍 Find my spot (geoloc.js) — haze-proof far-skyline detector, joint
+//     multi-frame sweep recovering a known position on a synthetic world,
+//     pin bearing geometry, and the decisive-vs-flat honesty gate.
+{
+  const GL = await import("../src/geoloc.js");
+  const { dirToPixK } = await import("../src/math/projection.js");
+
+  /* far-skyline detector on a synthetic hazy scene: bright sky over a
+     DISTANT haze-blued ridge (dark in luminance, blue in chroma — the
+     case that captured the blueness-keyed detectSkyline in the field)
+     over a dark near band */
+  const W = 288, H = 200;
+  const mk = (skyLum) => {
+    const d = new Uint8ClampedArray(W * H * 4);
+    const yb = (x) => Math.round(60 + 20 * Math.sin(x / 40));
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        let r, g, b;
+        if (y < yb(x)) { r = g = b = skyLum; }               // sky
+        else if (y < 150) { r = 100; g = 110; b = 150; }     // hazy far ridge (lum ~110, bluer than sky)
+        else { r = 30; g = 60; b = 30; }                     // near vegetation
+        d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+      }
+    return d;
+  };
+  const pts = GL.farSkyline(mk(205), W, H);
+  ok(pts && pts.length >= 40, "geoloc: far skyline found on the hazy synthetic scene");
+  const maxErr = Math.max(...pts.map((p) => Math.abs(p.y - (60 + 20 * Math.sin(p.x / 40)))));
+  ok(maxErr <= 4, `geoloc: detected boundary is the FAR ridge to ≤4 px (got ${maxErr.toFixed(1)})`);
+  ok(GL.farSkyline(mk(120), W, H) === null, "geoloc: dim top band fails the sky-quality gate → frame dropped, not garbage");
+
+  /* joint sweep on a synthetic world: three cones, observer truth at a
+     known grid cell, three "frames" panned across them at FOV 30 */
+  const CONES = [
+    { n: 6000, e: 2000, r: 2500, h: 900 },
+    { n: 7000, e: -1500, r: 1800, h: 700 },
+    { n: 4000, e: 5000, r: 1500, h: 600 },
+  ];
+  const world = (e, n) => {
+    let z = 100;
+    for (const c of CONES) {
+      const d = Math.hypot(e - c.e, n - c.n);
+      if (d < c.r) z = Math.max(z, 100 + c.h * (1 - d / c.r));
+    }
+    return z;
+  };
+  const mLat = 111320, mLonS = 111320 * Math.cos((30 * Math.PI) / 180);
+  const C0 = { lat: 30, lon: 78 };
+  const truth = { lat: 30 + 2000 / mLat, lon: 78 - 2000 / mLonS }; // grid cell (+2 km N, −2 km E)
+  const sampAt = (lat, lon) => {
+    const e0 = (lon - C0.lon) * mLonS, n0 = (lat - C0.lat) * mLat;
+    return { sampleEN: (e, n) => world(e0 + e, n0 + n), h0: world(e0, n0) };
+  };
+  /* render frames from the truth cell */
+  const tru = sampAt(truth.lat, truth.lon);
+  const skT = skylineFromSampler(tru.sampleEN, tru.h0);
+  const elT = (a) => skylineElAt(skT.els, a);
+  const FW = 720, FH = 1280, TRUE_FOV = 30;
+  const frameSets = [10, 40, 70].map((azF) => {
+    const fpts = [];
+    for (let i = 0; i < 44; i++) {
+      const az = azF - 13 + (26 * i) / 43;
+      const g = dirFromAzEl(az, elT(az));
+      const p = dirToPixK(g, FW, FH, azF, 10, 0, TRUE_FOV, 0);
+      if (p) fpts.push({ x: Math.round(p.px), y: Math.round(p.py) });
+    }
+    return { sets: GL.skySampleSets(fpts, FW, FH, [20, 30, 42]) };
+  });
+  const cands = GL.gridCandidates(C0.lat, C0.lon, 4, 2);
+  ok(cands.length === 25, "geoloc: 4 km / 2 km grid → 25 candidates");
+  const scored = cands.map((c) => {
+    const s = sampAt(c.lat, c.lon);
+    return { ...c, ...GL.scoreCandidate(frameSets, s.sampleEN, s.h0) };
+  }).sort((a, b) => a.score - b.score);
+  const wDist = Math.hypot((scored[0].lat - truth.lat) * mLat, (scored[0].lon - truth.lon) * mLonS);
+  ok(wDist < 1, `geoloc: sweep recovers the true cell exactly (winner ${wDist.toFixed(0)} m off)`);
+  const fAz = scored[0].frameAz.map((f) => f.az);
+  ok(Math.max(...fAz.map((a, i) => GL.angDiff(a, [10, 40, 70][i]))) < 5,
+    `geoloc: per-frame pointing recovered (got ${fAz.map((a) => a.toFixed(0)).join("/")} for 10/40/70)`);
+  const verdict = GL.sweepVerdict(scored.map((s) => s.score));
+  ok(verdict.decisive, `geoloc: distinctive terrain → decisive verdict (ratio ${verdict.ratio})`);
+  ok(!GL.sweepVerdict([0.23, 0.24, 0.245, 0.25, 0.252, 0.255, 0.256, 0.259, 0.26]).decisive,
+    "geoloc: the field-measured flat spread (best/med ~0.9) must NOT read as decisive");
+
+  /* pin geometry */
+  approx(GL.bearingDeg(30, 78, 30 + 300 / mLat, 78), 0, 0.01, "geoloc: bearing due north");
+  approx(GL.bearingDeg(30, 78, 30, 78 + 300 / mLonS), 90, 0.1, "geoloc: bearing due east");
+  approx(GL.pinAzOffsetDeg(FW / 2, FW, 30), 0, 1e-9, "geoloc: center pin → zero offset");
+  approx(GL.pinAzOffsetDeg(FW, FW, 30), 15, 1e-6, "geoloc: right-edge pin → +FOV/2 (tan-true)");
+  const ring = GL.ringCandidates(30, 78, 300, 8);
+  ok(ring.length === 9 && ring[0].ringBrg === null, "geoloc: ring = twin + 8 offsets");
+  const rd = Math.hypot((ring[3].lat - 30) * mLat, (ring[3].lon - 78) * mLonS);
+  approx(rd, 300, 1, "geoloc: ring radius 300 m");
+  const dev = GL.pinDeviation({ lat: 30, lon: 78 }, { lat: 30 + 300 / mLat, lon: 78 }, 350, 10);
+  approx(dev, 0, 0.01, "geoloc: pin due north + frame az 350 + pixel offset +10° → deviation 0");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");

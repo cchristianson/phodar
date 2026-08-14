@@ -524,6 +524,52 @@ async function apiMasts(q, res) {
     return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
   }
 }
+/* typed landmark twins for 📍 Find my spot — structures a witness can pin
+   in a photo and we can match to map data. Kinds are allowlisted so the
+   proxy stays a landmark lookup, not a general Overpass relay. */
+const LANDMARK_KINDS = {
+  water_tower: `["man_made"="water_tower"]`,
+  mast: `["man_made"~"^(mast|communications_tower)$"]`,
+  tower: `["man_made"="tower"]`,
+};
+const landmarksCache = new Map();
+async function apiLandmarks(q, res) {
+  const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(30000, Math.max(1000, +q.get("r") || 15000));
+  if (!isFinite(lat) || !isFinite(lon)) return json(res, 400, { error: "lat/lon required" });
+  const kinds = String(q.get("kinds") || "water_tower,mast,tower").split(",").map((s) => s.trim()).filter((k) => LANDMARK_KINDS[k]);
+  if (!kinds.length) return json(res, 400, { error: "no valid kinds" });
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r},${kinds.join("+")}`;
+  const hit = landmarksCache.get(key);
+  if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
+  const la = lat.toFixed(5), lo = lon.toFixed(5);
+  const parts = kinds.map((k) => `node${LANDMARK_KINDS[k]}(around:${r},${la},${lo});way${LANDMARK_KINDS[k]}(around:${r},${la},${lo});`).join("");
+  const ql = `[out:json][timeout:20];(${parts});out center tags qt 600;`;
+  const eps = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+  ];
+  const attempt = (ep) => fetch(`${ep}?data=${encodeURIComponent(ql)}`, { headers: { "user-agent": "phodar/1 (landmark twins)", accept: "application/json" }, signal: AbortSignal.timeout(18000) })
+    .then(async (rr) => {
+      const host = ep.split("/")[2];
+      if (!rr.ok) throw new Error(`${host} HTTP ${rr.status}`);
+      const j = await rr.json();
+      if (!j || !Array.isArray(j.elements)) throw new Error(`${host} bad body`);
+      if (j.remark && /timed out|runtime error|memory/i.test(j.remark)) throw new Error(`${host} BUSY`);
+      if (j.elements.length === 0) throw new Error(`${host} EMPTY`);
+      return j;
+    });
+  try {
+    const j = await Promise.any(eps.map(attempt));
+    landmarksCache.set(key, { t: Date.now(), body: j });
+    return json(res, 200, j);
+  } catch (e) {
+    const errs = (e && e.errors ? e.errors : [e]).map((x) => String(x.message || x));
+    if (errs.every((m) => /EMPTY/.test(m))) { const body = { elements: [], note: "reachable; no matching structures in range" }; landmarksCache.set(key, { t: Date.now(), body }); return json(res, 200, body); }
+    return json(res, 502, { error: `overpass busy (${errs.join("; ")})` });
+  }
+}
 const peaksCache = new Map(); // key → { t, body }
 async function apiPeaks(q, res) {
   const lat = coord(q, "lat", 90), lon = coord(q, "lon", 180), r = Math.min(160000, Math.max(1000, +q.get("r") || 40000));
@@ -1237,6 +1283,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === "/api/fireballs") return await apiFireballs(u.searchParams, res);
     if (u.pathname === "/api/peaks") return await apiPeaks(u.searchParams, res);
     if (u.pathname === "/api/masts") return await apiMasts(u.searchParams, res);
+    if (u.pathname === "/api/landmarks") return await apiLandmarks(u.searchParams, res);
     if (u.pathname === "/api/sondesites") return await apiSondeSites(u.searchParams, res);
     if (u.pathname === "/api/airspace") return await apiAirspace(u.searchParams, res);
     if (u.pathname === "/api/kp") return await apiKp(u.searchParams, res);

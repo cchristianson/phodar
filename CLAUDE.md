@@ -750,6 +750,32 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   server proxy. Census failures (CORS/non-US) fall through to Nominatim.
   Results are labeled exact-address vs road/area (drag the pin). Readable
   place names in reports still open.
+- **📍 Skyline geolocation ("Find my spot"): DONE** (`src/geoloc.js` pure +
+  15 mathcheck assertions; `/api/landmarks` Overpass proxy, kinds
+  allowlisted; FindSpot overlay off ONE position-step button — zero
+  ambient UI by user decree, no sky-view changes). Locates
+  stripped-metadata media in a user-chosen area: multi-frame skyline
+  sweep (every usable frame must fit inside one ±40° pointing window;
+  per-frame free FOV normalized by el-spread so narrow FOV can't cheat)
+  + optional user-pinned structures (💧/📡) matched to OSM twins with a
+  bearing-consistency test. Findings baked in from four harness rounds
+  on a real 91 s Himalaya clip (30.33,78.02 ±14 km), don't relearn them:
+  (1) silhouette shape alone was NOT decisive there — best/median ≈ 0.9
+  vs the 0.72 gate, so `sweepVerdict` says "terrain can't decide alone"
+  rather than inventing a pin; the PIN was what discriminated (2° for
+  the true neighborhood vs 60–160° for rivals). (2) `farSkyline` exists
+  because atmospheric haze makes a distant ridge literally sky-blue —
+  stock `detectSkyline` (blueness-keyed, still right for snap-to-ridges)
+  latched a near tree line; luminance-deficit-from-top-sky sees through
+  haze, and its sky-quality gate DROPS badly-exposed frames instead of
+  letting garbage curves flatten the joint score. (3) The sweep uses ONE
+  shared z11+z8 region heightfield (`loadRegion`, ~26 MB) — never
+  demSampler per candidate (~15 MB EACH, OOMs an iPad at 100+
+  candidates; loadGrid/gridSample were exported for exactly this).
+  (4) e2e note: sandbox/test Chromium has no H.264 — transcode test
+  clips to VP8 webm first (`DEMUXER_ERROR_NO_SUPPORTED_STREAMS` is the
+  tell). Still open: peak pins (natural=peak twins), near-ridge depth
+  layer as a second matching signal, power-line pins.
 Design principle: each check outputs the same shape — a candidate with
 predicted az/el/angular-size/motion and an angular separation from the
 witness sight-line — so the report can rank ALL mundane explanations in one

@@ -161,8 +161,12 @@ const ty = (lat, z) => {
   return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * (1 << z);
 };
 
-/* ---------- browser loader: tiles → Float32 heightfield grids ---------- */
-async function loadGrid(lat, lon, z, half) {
+/* ---------- browser loader: tiles → Float32 heightfield grids ----------
+   Exported for geoloc.js's region sweep, which loads ONE shared coarse
+   grid pair for a whole candidate grid instead of a ~15 MB demSampler
+   entry per candidate (a 100-candidate sweep through demSampler would
+   OOM an iPad). */
+export async function loadGrid(lat, lon, z, half) {
   const cx = Math.floor(tx(lon, z)), cy = Math.floor(ty(lat, z));
   const n = 2 * half + 1, size = n * 256;
   const cv = document.createElement("canvas");
@@ -188,7 +192,7 @@ async function loadGrid(lat, lon, z, half) {
   return { h, size, z, x0: cx - half, y0: cy - half };
 }
 
-function gridSample(g, lat, lon) {
+export function gridSample(g, lat, lon) {
   const px = (tx(lon, g.z) - g.x0) * 256, py = (ty(lat, g.z) - g.y0) * 256;
   if (px < 0.5 || py < 0.5 || px >= g.size - 1.5 || py >= g.size - 1.5) return null;
   const x = Math.floor(px), y = Math.floor(py), fx = px - x, fy = py - y;

@@ -36,6 +36,7 @@ import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
+import { farSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, SWEEP_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -674,6 +675,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin a 💧 water tank or 📡 mast the photo shows — candidates that also place that structure in the right direction get a 📍 badge, and one good pin sharpens the search a lot. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9306,6 +9308,334 @@ function DistanceMapPick({ lat, lon, azCenter, azObj, elObj, fovH, objAng, initD
 }
 
 /* ============================================================
+   📍 FIND MY SPOT — skyline geolocation overlay (position step)
+
+   Locates stripped-metadata media inside a user-chosen search area by
+   matching the DEM terrain skyline against every usable frame at once
+   (src/geoloc.js), optionally anchored by structures the user pins in
+   the frames (water tank / mast) matched to OSM twins. ENTIRELY
+   self-contained: one button on the position step opens it, closing it
+   leaves nothing behind — no sky-view changes, no ambient controls
+   (deliberate: the UI is already busy, this is an occasional tool).
+
+   Honesty is structural: frames without clean sky are shown as skipped,
+   and when the terrain spread is non-decisive (field-measured: a 28 km
+   Himalaya-foothill box ran best/median ≈ 0.9 four sweeps in a row) the
+   results say "terrain can't decide alone — treat these as suggestions".
+   The map stays live so the human does the final check: fly to a
+   candidate, eyeball the imagery, drag the crosshair onto the actual
+   rooftop, adopt.
+   ============================================================ */
+const FS_PIN_KINDS = [
+  { k: "water", glyph: "💧", label: "water tank" },
+  { k: "mast", glyph: "📡", label: "mast / tower" },
+];
+function FindSpot({ src, onAdopt, onSave, onClose }) {
+  const boxRef = useRef(null);
+  const mapRef = useRef(null);
+  const circleRef = useRef(null);
+  const markersRef = useRef(null);
+  const cancelRef = useRef(false);
+  const [frames, setFrames] = useState(null);          // [{i,t,url,W,H,pts}] | null loading | {err}
+  const [pins, setPins] = useState(() => (src.findSpot?.pins || []));
+  const [pinView, setPinView] = useState(null);        // frame index open for pinning | null
+  const [pending, setPending] = useState(null);        // {x,y} awaiting a kind chip
+  const [radKm, setRadKm] = useState(src.findSpot?.radKm || 8);
+  const [running, setRunning] = useState(false);
+  const [prog, setProg] = useState("");
+  const [results, setResults] = useState(src.findSpot?.results || null);
+  const [verdict, setVerdict] = useState(src.findSpot?.verdict || null);
+  const [sel, setSel] = useState(null);                // selected result index
+  const [err, setErr] = useState("");
+
+  /* ---- map (Esri imagery + fixed center crosshair + search-radius ring) ---- */
+  useEffect(() => {
+    const el = boxRef.current; if (!el) return;
+    const at = src.findSpot?.at || (isNum(src.lat) ? { lat: +src.lat, lng: +src.lon } : { lat: 20, lng: 0 });
+    const map = L.map(el, { center: [at.lat, at.lng], zoom: src.findSpot?.at || isNum(src.lat) ? 11 : 2, zoomControl: false, attributionControl: true, doubleClickZoom: false });
+    mapRef.current = map;
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics" }).addTo(map);
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19 }).addTo(map);
+    circleRef.current = L.circle([at.lat, at.lng], { radius: radKm * 1000, color: "#F5A93F", weight: 1.2, opacity: 0.7, fill: false, interactive: false }).addTo(map);
+    map.on("move", () => circleRef.current && circleRef.current.setLatLng(map.getCenter()));
+    markersRef.current = L.layerGroup().addTo(map);
+    requestAnimationFrame(() => { try { map.invalidateSize(false); } catch (e) { } });
+    return () => { map.remove(); mapRef.current = null; };
+  }, []); // eslint-disable-line
+  useEffect(() => { circleRef.current && circleRef.current.setRadius(radKm * 1000); }, [radKm]);
+
+  /* result markers — rank-numbered, amber for pin-consistent candidates */
+  useEffect(() => {
+    const lg = markersRef.current; if (!lg) return;
+    lg.clearLayers();
+    (results || []).forEach((r, i) => {
+      const m = L.marker([r.lat, r.lon], {
+        icon: L.divIcon({ className: "", iconSize: [0, 0], html: `<div class="lmk ${r.pinDev != null && r.pinDev <= 25 ? "lmk-fix" : "lmk-tri"}" style="font-size:13px">${i + 1}<span>${r.pinDev != null && r.pinDev <= 25 ? "📍 consistent" : ""}</span></div>` }),
+      }).addTo(lg);
+      m.on("click", () => { setSel(i); const map = mapRef.current; map && map.flyTo([r.lat, r.lon], Math.max(map.getZoom(), 15)); });
+    });
+  }, [results]);
+
+  /* ---- sample frames once: video → 8 spread across the kept span; photo → 1.
+     Each ≤960 px, far-skyline detected immediately so the strip shows which
+     frames actually contribute. ---- */
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        if (!src.mediaUrl) throw new Error("no media attached");
+        const grab = (drawable, w, h, t) => {
+          const sc = Math.min(1, 960 / Math.max(w, h));
+          const cv = document.createElement("canvas");
+          cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+          const cx = cv.getContext("2d", { willReadFrequently: true });
+          cx.drawImage(drawable, 0, 0, cv.width, cv.height);
+          const pts = farSkyline(cx.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height);
+          return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts };
+        };
+        const out = [];
+        if (src.mediaKind === "video") {
+          const v = document.createElement("video");
+          v.muted = true; v.playsInline = true; v.preload = "auto";
+          v.src = src.mediaUrl;
+          await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error(v.error ? `video error ${v.error.code}${v.error.message ? ": " + v.error.message : ""}` : "video failed to load")); });
+          const { t0, t1 } = trimOf(src, v.duration);
+          const N = Math.min(8, Math.max(3, Math.round((t1 - t0) / 6)));
+          for (let i = 0; i < N && !dead; i++) {
+            const t = t0 + ((t1 - t0) * (i + 0.5)) / N;
+            await new Promise((res) => { v.onseeked = () => res(); v.currentTime = Math.min(t, v.duration - 0.05); });
+            out.push({ i, ...grab(v, v.videoWidth, v.videoHeight, t) });
+          }
+          v.removeAttribute("src"); try { v.load(); } catch (e) { }
+        } else {
+          const im = new Image();
+          im.src = src.mediaUrl;
+          await new Promise((res, rej) => { im.onload = res; im.onerror = () => rej(new Error("photo failed to load")); });
+          out.push({ i: 0, ...grab(im, im.naturalWidth, im.naturalHeight, 0) });
+        }
+        if (!dead) setFrames(out);
+      } catch (e) { if (!dead) setFrames({ err: e.message || String(e) }); }
+    })();
+    return () => { dead = true; };
+  }, []); // eslint-disable-line
+
+  /* DESKTOP: Escape closes (capture + stop so nothing underneath also fires) */
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []); // eslint-disable-line
+
+  const usable = Array.isArray(frames) ? frames.filter((f) => f.pts) : [];
+
+  /* ---- the sweep ---- */
+  const run = async () => {
+    const map = mapRef.current; if (!map || running) return;
+    setRunning(true); setErr(""); setResults(null); setVerdict(null); setSel(null); cancelRef.current = false;
+    try {
+      if (!usable.length) throw new Error("no frame has a clean sky-over-terrain skyline — this needs visible hills or ridges against bright sky");
+      const c = map.getCenter();
+      /* a known lens locks the FOV; unknown (and any video — witnesses zoom)
+         sweeps the candidate FOVs per frame */
+      const fovs = src.mediaKind !== "video" && isNum(src.meta?.fovH) ? [+src.meta.fovH] : SWEEP_FOVS;
+      const frameSets = usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, fovs) }));
+      setProg("terrain…");
+      const region = await loadRegion(c.lat, c.lng, radKm);
+      /* landmark twins only when something is pinned — no pins, no query */
+      let twins = [];
+      if (pins.length) {
+        setProg("landmarks…");
+        try { twins = (await fetchLandmarks(c.lat, c.lng, radKm, ["water_tower", "mast", "tower"])).slice(0, 40); } catch (e) { }
+      }
+      const stepKm = radKm <= 5 ? 1 : radKm <= 9 ? 2 : 3;
+      const cands = gridCandidates(c.lat, c.lng, radKm, stepKm).map((x) => ({ ...x, grid: true }));
+      for (const tw of twins) for (const rc of ringCandidates(tw.lat, tw.lon, 300, 8)) cands.push({ ...rc, twin: tw });
+      const out = [];
+      for (let i = 0; i < cands.length; i++) {
+        if (cancelRef.current) throw new Error("cancelled");
+        const cd = cands[i];
+        try {
+          const s = regionSampler(region, cd.lat, cd.lon);
+          const r = scoreCandidate(frameSets, s.sampleEN, s.h0);
+          if (r) out.push({ ...cd, ...r });
+        } catch (e) { }
+        if ((i & 3) === 3) { setProg(`${i + 1}/${cands.length}`); await new Promise((r) => setTimeout(r, 0)); }
+      }
+      if (!out.length) throw new Error("terrain unreachable for this area");
+      /* pin consistency: for twin-anchored candidates, where the pinned frame
+         says the structure is vs where the twin actually is from there */
+      for (const o of out) {
+        if (!o.twin) continue;
+        const pi = pins.find((p) => p.kind === o.twin.kind || (p.kind === "mast" && o.twin.kind === "tower"));
+        if (!pi) continue;
+        const fsIdx = frameSets.findIndex((x) => x.f.i === pi.fi);
+        if (fsIdx < 0) continue;
+        const fa = o.frameAz[fsIdx];
+        const off = pinAzOffsetDeg(pi.x, frameSets[fsIdx].f.W, frameSets[fsIdx].sets[fa.fovIdx].fov);
+        o.pinDev = +pinDeviation(o, o.twin, fa.az, off).toFixed(0);
+      }
+      /* verdict from the uniform grid only (twin rings oversample their
+         neighborhoods and would fake a sharp spread) */
+      const v = sweepVerdict(out.filter((o) => o.grid).map((o) => o.score));
+      /* rank: pin-consistent candidates first, then score; thin to 500 m */
+      out.sort((a, b) => {
+        const pa = a.pinDev != null && a.pinDev <= 25, pb = b.pinDev != null && b.pinDev <= 25;
+        if (pa !== pb) return pa ? -1 : 1;
+        return a.score - b.score;
+      });
+      const mLon = 111.32 * Math.max(0.2, Math.cos(c.lat * D2R));
+      const top = [];
+      for (const o of out) {
+        if (top.length >= 8) break;
+        if (top.every((t) => Math.hypot((t.lat - o.lat) * 111.32, (t.lon - o.lon) * mLon) > 0.5)) {
+          top.push({ lat: +o.lat.toFixed(5), lon: +o.lon.toFixed(5), score: +o.score.toFixed(3), az: Math.round(o.az), h0: Math.round(o.h0), pinDev: o.pinDev ?? null, twin: o.twin ? { kind: o.twin.kind, name: o.twin.name } : null });
+        }
+      }
+      setResults(top); setVerdict(v);
+      onSave && onSave({ at: { lat: c.lat, lng: c.lng }, radKm, pins, results: top, verdict: v, ranAt: Date.now() });
+    } catch (e) {
+      if (!/cancelled/.test(String(e))) setErr(e.message || String(e));
+    }
+    setProg(""); setRunning(false);
+  };
+
+  /* ---- pin view: tap the structure, then pick what it is ---- */
+  const frame = pinView != null && Array.isArray(frames) ? frames[pinView] : null;
+  const tapFrame = (e) => {
+    const el = e.currentTarget;
+    const r = el.getBoundingClientRect();   // live — never cached (iOS)
+    const x = ((e.clientX - r.left) / r.width) * frame.W;
+    const y = ((e.clientY - r.top) / r.height) * frame.H;
+    setPending({ x: Math.round(x), y: Math.round(y) });
+  };
+  const addPin = (kind) => {
+    setPins((p) => [...p.filter((q) => q.fi !== frame.i), { fi: frame.i, x: pending.x, y: pending.y, kind }]);
+    setPending(null);
+  };
+
+  const selR = sel != null && results ? results[sel] : null;
+  return (
+    <div className="mappick-modal">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--line)" }}>
+        <div style={{ flex: 1, fontFamily: "var(--mono)", fontWeight: 800, letterSpacing: ".1em", fontSize: 12 }}>📍 FIND MY SPOT</div>
+        {pinView == null && <>
+          <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomOut()}>−</button>
+          <button className="btn sm" onClick={() => mapRef.current && mapRef.current.zoomIn()}>+</button>
+        </>}
+        <button className="btn sm" onClick={() => {
+          if (pinView != null) {
+            setPinView(null); setPending(null);
+            requestAnimationFrame(() => { try { mapRef.current && mapRef.current.invalidateSize(false); } catch (e) { } });
+          } else onClose();
+        }}>{pinView != null ? "‹ Back" : "✕ Close"}</button>
+      </div>
+
+      {/* map area stays MOUNTED while the pin view covers it — Leaflet
+          does not survive an unmount/remount of its container */}
+      <div style={{ flex: 1, minHeight: 0, position: "relative", display: pinView != null ? "none" : "block" }}>
+        <div ref={boxRef} className="mappick" style={{ position: "absolute", inset: 0 }} />
+        <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none", color: "var(--amber)", fontSize: 22, textShadow: "0 0 6px #000", zIndex: 500 }}>⌖</div>
+      </div>
+      {pinView != null && frame ? (
+        /* -------- frame pin view -------- */
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: "#000" }}>
+          <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%" }}>
+              <img src={frame.url} alt="" onClick={tapFrame} className="fs-frame" style={{ display: "block", maxWidth: "100%", maxHeight: "calc(var(--app-height, 100vh) - 190px)", cursor: "crosshair" }} />
+              {pins.filter((p) => p.fi === frame.i).map((p, j) => (
+                <div key={j} onClick={() => setPins((ps) => ps.filter((q) => q !== p))}
+                  style={{ position: "absolute", left: `${(p.x / frame.W) * 100}%`, top: `${(p.y / frame.H) * 100}%`, transform: "translate(-50%,-100%)", fontSize: 20, textShadow: "0 0 6px #000", cursor: "pointer" }}>
+                  {FS_PIN_KINDS.find((k) => k.k === p.kind)?.glyph || "📍"}
+                </div>
+              ))}
+              {pending && <div style={{ position: "absolute", left: `${(pending.x / frame.W) * 100}%`, top: `${(pending.y / frame.H) * 100}%`, transform: "translate(-50%,-50%)", color: "var(--amber)", fontSize: 22, pointerEvents: "none" }}>+</div>}
+            </div>
+          </div>
+          <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--line)" }}>
+            {pending ? (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11.5, color: "var(--dim)" }}>What did you mark?</span>
+                {FS_PIN_KINDS.map((k) => <button key={k.k} className="btn sm amber" onClick={() => addPin(k.k)}>{k.glyph} {k.label}</button>)}
+                <button className="btn sm" onClick={() => setPending(null)}>cancel</button>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
+                Tap a man-made structure the photo shows — a water tank or a mast — and the search will check candidate positions against the same structures on the map. Tap a placed pin to remove it.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* -------- controls under the map -------- */
+        <>
+          <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--line)", maxHeight: "46%", overflowY: "auto" }}>
+            {/* frames strip */}
+            {frames === null && <div style={{ fontSize: 11, color: "var(--dim)" }}><Spin /> reading frames…</div>}
+            {frames && frames.err && <div className="warn">{frames.err}</div>}
+            {Array.isArray(frames) && (
+              <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+                {frames.map((f, i) => (
+                  <div key={i} onClick={() => f.pts && setPinView(i)}
+                    style={{ position: "relative", flex: "0 0 auto", width: 54, height: 74, borderRadius: 6, overflow: "hidden", border: `1.5px solid ${f.pts ? (pins.some((p) => p.fi === f.i) ? "var(--amber)" : "var(--teal)") : "var(--line)"}`, opacity: f.pts ? 1 : 0.35, cursor: f.pts ? "pointer" : "default" }}>
+                    <img src={f.url} alt="" className="fs-thumb" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    {pins.some((p) => p.fi === f.i) && <div style={{ position: "absolute", right: 2, top: 0, fontSize: 12 }}>{FS_PIN_KINDS.find((k) => k.k === pins.find((p) => p.fi === f.i).kind)?.glyph}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {Array.isArray(frames) && (
+              <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 2 }}>
+                {usable.length}/{frames.length} frame{frames.length === 1 ? "" : "s"} show a clean terrain skyline{usable.length < frames.length ? " (dimmed frames have no usable sky and are skipped)" : ""}. Tap a bright frame to pin a structure — optional, but one good pin sharpens the search a lot.
+              </div>
+            )}
+            {/* radius + run */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+              {[4, 8, 12].map((r) => <button key={r} className={`btn sm ${radKm === r ? "teal" : ""}`} onClick={() => setRadKm(r)}>±{r} km</button>)}
+              <div style={{ flex: 1 }} />
+              {running
+                ? <button className="btn sm" onClick={() => { cancelRef.current = true; }}>✕ stop {prog && `(${prog})`}</button>
+                : <button className="btn amber sm" disabled={!usable.length} onClick={run}>🔍 Search this area</button>}
+            </div>
+            {err && <div className="warn" style={{ marginTop: 6 }}>{err}</div>}
+            {/* results */}
+            {results && verdict && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 11, lineHeight: 1.5, color: verdict.decisive ? "var(--teal)" : "var(--amber)" }}>
+                  {verdict.decisive
+                    ? "The terrain match singles out one area — still verify against the imagery before adopting."
+                    : "Terrain alone can't decide inside this area (many spots fit the ridge shape similarly) — treat these as ranked suggestions and verify against the imagery."}
+                  {results.some((r) => r.pinDev != null && r.pinDev <= 25) && " Candidates marked 📍 also place your pinned structure in the right direction."}
+                </div>
+                {results.map((r, i) => (
+                  <div key={i} onClick={() => { setSel(i); const map = mapRef.current; map && map.flyTo([r.lat, r.lon], Math.max(map.getZoom(), 15)); }}
+                    style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 6px", marginTop: 3, borderRadius: 8, cursor: "pointer", background: sel === i ? "rgba(94,234,212,.08)" : "transparent", border: `1px solid ${sel === i ? "var(--teal)" : "var(--line)"}`, fontFamily: "var(--mono)", fontSize: 11.5 }}>
+                    <b style={{ color: "var(--amber)" }}>{i + 1}</b>
+                    <span style={{ flex: 1 }}>{r.lat.toFixed(4)}, {r.lon.toFixed(4)}</span>
+                    {r.pinDev != null && <span style={{ color: r.pinDev <= 25 ? "var(--teal)" : "var(--dim)" }}>📍{r.pinDev}°</span>}
+                    <span style={{ color: "var(--dim)" }}>fit {r.score.toFixed(2)}</span>
+                    <span style={{ color: "var(--teal)" }}>{compass8(r.az)}-facing</span>
+                  </div>
+                ))}
+                <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 4 }}>Tap a candidate to fly there, check the imagery, drag the map so ⌖ sits on your actual spot, then adopt.</div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button className="btn" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+              <button className="btn amber" style={{ flex: 2 }} onClick={() => {
+                const map = mapRef.current; if (!map) return;
+                const c = map.getCenter();
+                onAdopt(c.lat, c.lng, selR ? selR.az : null);
+                onClose();
+              }}>✓ Use ⌖ as my spot</button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    POSITION EDITOR — the wizard's map step
    ============================================================ */
 function PositionEditor({ src, update, others, viewOnly }) {
@@ -9316,6 +9646,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
   const [q, setQ] = useState("");
   const [places, setPlaces] = useState(null); // [{lat,lon,name}] | {err} | null
   const [findBusy, setFindBusy] = useState(false);
+  const [fsOpen, setFsOpen] = useState(false); // 📍 Find my spot overlay — the ONLY surface of that feature outside its button
   const [tiltHint, setTiltHint] = useState(false); // side-view angle popup while sliding
   const tiltHintRef = useRef(0);
   const pokeTiltHint = () => { setTiltHint(true); clearTimeout(tiltHintRef.current); tiltHintRef.current = setTimeout(() => setTiltHint(false), 1100); };
@@ -9841,9 +10172,20 @@ function PositionEditor({ src, update, others, viewOnly }) {
               {posDone && (
                 <button className="btn sm" onClick={grabDem} disabled={demBusy}>{demBusy ? <Spin /> : "⛰ Use terrain elevation"}</button>
               )}
+              {src.mediaUrl && (
+                <button className="btn sm" onClick={() => setFsOpen(true)}>📍 Find my spot</button>
+              )}
             </div>
             {demMsg && <div style={{ fontSize: 11, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 5 }}>{demMsg}</div>}
             {geoErr && <div className="warn">{geoErr}</div>}
+            {fsOpen && (
+              <FindSpot src={src} onClose={() => setFsOpen(false)}
+                onSave={(fs) => update({ findSpot: fs })}
+                onAdopt={(la, lo, az) => {
+                  update({ lat: la.toFixed(6), lon: lo.toFixed(6) });
+                  if (isNum(az)) setBearing(az);
+                }} />
+            )}
             <div style={{ marginTop: 8 }}>
               <ML>Sighting date &amp; time</ML>
               <input type="datetime-local" value={toLocalInput(new Date(isNum(src.whenMs) ? +src.whenMs : Date.now()))}

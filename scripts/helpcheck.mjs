@@ -124,6 +124,8 @@ const NAMED = [
   ["contrailVerdict", /contrail/, "the flight-level humidity contrail check"],
   ["measureLimbDir", /Moon terminator forensic/, "the moon lit-limb orientation forensic"],
   ["c2paverify", /CRYPTOGRAPHICALLY VERIFIED/, "C2PA signature + content-hash verification"],
+  ["FindSpot", /📍 Find my spot/, "the skyline-geolocation position search"],
+  ["farSkyline", /stripped location data/, "the multi-frame skyline sweep behind Find my spot"],
 ];
 const bad = [];
 for (const [needle, re, what] of NAMED) {
