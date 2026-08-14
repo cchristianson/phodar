@@ -675,7 +675,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
-        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin a 💧 water tank or 📡 mast the photo shows — candidates that also place that structure in the right direction get a 📍 badge, and one good pin sharpens the search a lot. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, or type something as vague as “lower Himalaya India” into the 🔎 place search — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin a 💧 water tank or 📡 mast the photo shows — candidates that also place that structure in the right direction get a 📍 badge, and one good pin sharpens the search a lot. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9347,6 +9347,18 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
   const [verdict, setVerdict] = useState(src.findSpot?.verdict || null);
   const [sel, setSel] = useState(null);                // selected result index
   const [err, setErr] = useState("");
+  const pvRef = useRef(null);                          // pin-view image area (measured fit box)
+  const [pvBox, setPvBox] = useState(null);
+  const [q, setQ] = useState("");                      // vague place search ("India lower Himalaya range")
+  const [hits, setHits] = useState(null);              // [{lat,lon,name,bbox}] | {err} | null
+  const [qBusy, setQBusy] = useState(false);
+  useEffect(() => {
+    if (pinView == null) return;
+    const meas = () => { const el = pvRef.current; if (el) setPvBox({ w: el.clientWidth, h: el.clientHeight }); };
+    meas();
+    window.addEventListener("resize", meas);
+    return () => window.removeEventListener("resize", meas);
+  }, [pinView]);
 
   /* ---- map (Esri imagery + fixed center crosshair + search-radius ring) ---- */
   useEffect(() => {
@@ -9427,6 +9439,27 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
   }, []); // eslint-disable-line
 
   const usable = Array.isArray(frames) ? frames.filter((f) => f.pts) : [];
+
+  /* ---- vague place search: Nominatim handles "India lower Himalaya
+     range"-grade queries and returns a bounding box, so an AREA result
+     frames the map at area zoom instead of a fake point pin ---- */
+  const doSearch = async () => {
+    const query = q.trim(); if (!query || qBusy) return;
+    setQBusy(true); setHits(null);
+    try {
+      const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=" + encodeURIComponent(query), { headers: { Accept: "application/json" } });
+      const j = r.ok ? await r.json() : [];
+      const clean = (Array.isArray(j) ? j : []).map((p) => ({ lat: +p.lat, lon: +p.lon, name: p.display_name, bbox: Array.isArray(p.boundingbox) ? p.boundingbox.map(Number) : null })).filter((p) => isNum(p.lat) && isNum(p.lon));
+      setHits(clean.length ? clean : { err: "No match — try a nearby town or region name." });
+    } catch (e) { setHits({ err: "Place search unreachable — check the connection." }); }
+    setQBusy(false);
+  };
+  const pickHit = (p) => {
+    const map = mapRef.current; if (!map) return;
+    if (p.bbox && p.bbox.every(isNum)) map.fitBounds([[p.bbox[0], p.bbox[2]], [p.bbox[1], p.bbox[3]]], { maxZoom: 12 });
+    else map.flyTo([p.lat, p.lon], 11);
+    setHits(null); setQ(p.name.split(",").slice(0, 2).join(",").trim());
+  };
 
   /* ---- the sweep ---- */
   const run = async () => {
@@ -9539,9 +9572,12 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       {pinView != null && frame ? (
         /* -------- frame pin view -------- */
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: "#000" }}>
-          <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ position: "relative", maxWidth: "100%", maxHeight: "100%" }}>
-              <img src={frame.url} alt="" onClick={tapFrame} className="fs-frame" style={{ display: "block", maxWidth: "100%", maxHeight: "calc(var(--app-height, 100vh) - 190px)", cursor: "crosshair" }} />
+          {/* the image is sized to a MEASURED fit box (never CSS max-height
+              guesses): a portrait frame on a phone otherwise overflows the
+              flex column and pushes the kind chips off-screen — field report */}
+          <div ref={pvRef} style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ position: "relative", ...(pvBox ? (() => { const sc = Math.min(pvBox.w / frame.W, pvBox.h / frame.H); return { width: Math.floor(frame.W * sc), height: Math.floor(frame.H * sc) }; })() : { visibility: "hidden" }) }}>
+              <img src={frame.url} alt="" onClick={tapFrame} className="fs-frame" style={{ display: "block", width: "100%", height: "100%", cursor: "crosshair" }} />
               {pins.filter((p) => p.fi === frame.i).map((p, j) => (
                 <div key={j} onClick={() => setPins((ps) => ps.filter((q) => q !== p))}
                   style={{ position: "absolute", left: `${(p.x / frame.W) * 100}%`, top: `${(p.y / frame.H) * 100}%`, transform: "translate(-50%,-100%)", fontSize: 20, textShadow: "0 0 6px #000", cursor: "pointer" }}>
@@ -9569,6 +9605,19 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
         /* -------- controls under the map -------- */
         <>
           <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--line)", maxHeight: "46%", overflowY: "auto" }}>
+            {/* vague place search — the whole point is stripped metadata, so
+                "where roughly?" often starts from a caption, not coordinates */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+              <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doSearch(); }}
+                placeholder='Rough area — e.g. "lower Himalaya India"' style={{ flex: 1, minWidth: 0 }} />
+              <button className="btn sm teal" onClick={doSearch} disabled={qBusy || !q.trim()}>{qBusy ? <Spin /> : "🔎"}</button>
+            </div>
+            {hits && hits.err && <div className="warn" style={{ marginBottom: 6 }}>{hits.err}</div>}
+            {Array.isArray(hits) && hits.map((p, i) => (
+              <div key={i} onClick={() => pickHit(p)} style={{ padding: "6px 8px", marginBottom: 3, border: "1px solid var(--line)", borderRadius: 8, fontSize: 11.5, cursor: "pointer" }}>
+                <span style={{ color: "var(--teal)" }}>📍</span> {p.name}
+              </div>
+            ))}
             {/* frames strip */}
             {frames === null && <div style={{ fontSize: 11, color: "var(--dim)" }}><Spin /> reading frames…</div>}
             {frames && frames.err && <div className="warn">{frames.err}</div>}

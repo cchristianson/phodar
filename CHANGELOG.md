@@ -37,8 +37,15 @@ Notable changes to Phodar. Format loosely follows
   Pure core in `src/geoloc.js`, 15 mathcheck assertions (synthetic
   sweep recovers a known cell exactly with per-frame pointing, far
   detector to sub-pixel, decisive-vs-flat verdict calibrated to the
-  field data), 18-assertion browser e2e driving the real UI with the
-  real 91 s Himalaya clip end to end.
+  field data), 22-assertion browser e2e driving the real UI with the
+  real 91 s Himalaya clip end to end. First field round on an iPhone
+  found two gaps, both fixed same-day: the pin view's portrait frame
+  overflowed its flex box and pushed the kind chips off-screen (the
+  image is now sized to a measured fit box, and the e2e asserts the
+  chips land fully on-screen), and the overlay gained its own 🔎 place
+  search that takes captions-grade queries ("India lower Himalaya
+  range") via Nominatim, framing the map to the result's bounding box
+  so an area answer reads as an area, not a fake point.
 - **🔏 C2PA cryptographic verification** (user-approved dependency —
   Adobe's open-source c2pa-js SDK). The byte-scan's "a Content
   Credentials manifest exists" note now upgrades to a checked verdict:
