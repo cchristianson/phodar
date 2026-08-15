@@ -47,6 +47,27 @@ Notable changes to Phodar. Format loosely follows
   range") via Nominatim, framing the map to the result's bounding box
   so an area answer reads as an area, not a fake point.
 
+### Added (since the geolocation stack)
+- **🖼 Panorama (still) — the pan, registered in hindsight.** A fourth
+  option in the stabilized-clip export menu: every frame projected into
+  ONE equirectangular image at its solved direction (`src/video/
+  panorama.js`). An iPhone panorama registers frames as you sweep; the
+  stabilize walk already did that retrospectively — so messy handheld
+  motion, reversals and zooms all stitch. Frames paint chronologically
+  with feathered edges (exposure differences blend instead of seaming),
+  then the sharpest third (narrowest FOV) repaints on top — a zoom pass
+  becomes a high-resolution inset instead of being buried under later
+  wide shots. Azimuth unwraps across the 0/360 seam, roll rides the
+  per-cell mesh, held frames are skipped, and the canvas respects the
+  iOS guards (≤4600 px side, ≤16 Mpx). A still render: no encoder, no
+  realtime constraints — seeks into one canvas, saved as JPEG. A moving
+  object can appear more than once; the flash says that's its real
+  path, not a glitch. Pure geometry (unwrap, tan-true layout, equirect
+  mapping, zoom-last ordering) is mathcheck-asserted; the compositor is
+  verified in a browser harness (marker dots land at their predicted
+  directions through a rolled frame, overlaps blend, uncovered canvas
+  stays background).
+
 ### Changed
 - **Find my spot: ±1 km fine mode + coordinate paste.** The
   walk-the-last-kilometer tool: once anything (a coarse search, a tip, a

@@ -20,6 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
+import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano } from "./video/panorama.js";
 import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
@@ -721,7 +722,7 @@ const HELP_SECTIONS = [
         { t: "⟳ Re-stabilize to apply", d: "An amber line that appears next to the stabilize button when something the solve DEPENDED on has been edited since it ran — new ⊕ Track points, a moved object mark, a different alignment frame, a changed trim or FOV. It names what changed. Until you re-stabilize, the stored camera path and object track still reflect the old inputs, and nothing else in the app would tell you." },
         { t: "🛸 object overlay", d: "Header toggle for the fitted 3D wireframe and its marks over the photo. It rides the tracked path during stabilized playback, and it is burned into the exported video ONLY while this is on — so turn it off for a clean evidence render." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it. On the results screen (and in the report) a 🎥 track-quality rating (excellent/good/fair/poor) warns when camera motion could be leaking into the trajectory — hard zooms leave the solver too few background anchors to separate camera from object, so those stretches are excluded from reported peak rates and named in the rating." },
-        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. Great as report evidence and for judging stabilization quality frame by frame." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. A fourth option, 🖼 Panorama (still), stitches EVERY frame into one wide image at its solved direction — a retrospective iPhone-style panorama that tolerates messy motion, reversals and zooms (zoomed stretches are composited last, so they become high-resolution insets). A moving object can appear more than once in it; that repetition is its real path across the sky. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Distance, size & the path", items: [
         { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair. While scrubbing stabilized playback, the point nearest the playhead lights up amber so you can see where along the path the clip is; the ◆ shapes / ● dots toggle in the panel swaps the 3D model at every point for plain dots — much easier to read on a dense path." },
@@ -6678,13 +6679,68 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
      output sized so the most-zoomed frames keep native pixel density) |
      "crop" (camera centered on the marked object + both sight-lines, small
      FOV, full source resolution) */
+  /* 🖼 retrospective PANORAMA: every solved frame projected into one
+     equirectangular still — the pan registered in hindsight, however
+     messy the hand motion. Chronological paint, then the sharpest third
+     repainted on top so a zoom pass becomes a high-res inset; feathered
+     frame edges blend exposure differences. A STILL render: no encoder,
+     no realtime constraints — just seeks into one canvas. */
+  const exportPanorama = async () => {
+    const path = (Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null) || playPathRef.current;
+    if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 open the clip in look mode first — no playable path yet"); return; }
+    if (exporting) { exportAbortRef.current++; return; }
+    const run = ++exportAbortRef.current;
+    setExporting(0.01); setFlash("🖼 stitching the panorama…");
+    const v = document.createElement("video");
+    v.muted = true; v.playsInline = true; v.preload = "auto";
+    try {
+      await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; v.src = source.mediaUrl; try { v.load(); } catch (e) { } });
+      const { t0: kt0, t1: kt1 } = trimOf(source, v.duration || Infinity);
+      /* held frames repeat a pose — they add nothing but smear */
+      let raw = path.filter((p) => p.t >= kt0 - 0.01 && p.t <= kt1 + 0.01 && !p.h);
+      if (raw.length < 2) raw = path.filter((p) => p.t >= kt0 - 0.01 && p.t <= kt1 + 0.01);
+      const step = Math.max(1, Math.ceil(raw.length / 90));
+      const samples = unwrapSamples(raw.filter((_, i) => i % step === 0));
+      const natW = source.natW, natH = source.natH;
+      const layout = panoLayout(samples, natW, natH);
+      const cv = document.createElement("canvas");
+      cv.width = layout.W; cv.height = layout.H;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#0b1120"; ctx.fillRect(0, 0, layout.W, layout.H);
+      /* texture at capped native res, feathered per frame */
+      const texW = Math.min(natW, 1920), texH = Math.round(natH * texW / natW);
+      const tcv = document.createElement("canvas"); tcv.width = texW; tcv.height = texH;
+      const tcx = tcv.getContext("2d");
+      const order = renderOrder(samples);
+      const seek = (t) => new Promise((res) => { v.onseeked = () => res(); v.currentTime = Math.min(Math.max(t, 0.02), (v.duration || t) - 0.05); });
+      for (let i = 0; i < order.length; i++) {
+        if (exportAbortRef.current !== run) { setExporting(0); setFlash("🖼 panorama cancelled"); return; }
+        const p = samples[order[i]];
+        await seek(p.t);
+        tcx.clearRect(0, 0, texW, texH);
+        tcx.drawImage(v, 0, 0, texW, texH);
+        featherAlpha(tcx, texW, texH, 0.05);
+        drawFramePano(ctx, tcv, texW, texH, p, layout);
+        setExporting(0.02 + 0.96 * ((i + 1) / order.length));
+      }
+      const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.92));
+      if (!blob) throw new Error("canvas export failed");
+      download("phodar-panorama.jpg", blob, "image/jpeg");
+      setFlash(`🖼 panorama saved — ${layout.W}×${layout.H} px covering ${(layout.azMax - layout.azMin).toFixed(0)}° × ${(layout.elMax - layout.elMin).toFixed(0)}° from ${samples.length} frames. A moving object may appear more than once — that's its real path.`);
+    } catch (e) {
+      setFlash("🖼 panorama failed: " + ((e && e.message) || e));
+    }
+    v.removeAttribute("src"); try { v.load(); } catch (e) { }
+    setExporting(0);
+  };
+
   const exportStabilized = async (mode) => {
     if (typeof mode !== "string") mode = "view";
     /* a solved path when there is one; otherwise the SAME preview path the
        scrubber plays — sensor-derived for instrumented clips, flat placement
        poses otherwise. Export no longer requires a stabilize run (field ask:
        on the plane clip the sensor path was already better than what the
-       visual stabilizer could add). */
+       visual stabilizer could add). (Same path source as 🖼 exportPanorama.) */
     const path = (Array.isArray(source?.posePath) && source.posePath.length > 1 ? source.posePath : null) || playPathRef.current;
     if (!path || path.length < 2 || source?.mediaKind !== "video" || !source?.mediaUrl || !source?.natW) { setFlash("🎞 open the clip in look mode first — no playable path yet"); return; }
     if (typeof MediaRecorder === "undefined") { setFlash("⬇ this browser can't record video (no MediaRecorder)"); return; }
@@ -8601,9 +8657,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   ["view", "▣ World view", "the dome framing shown in playback — grid + all visible sky layers burned in"],
                   ["full", "⛶ Max resolution", "clean footage, no overlays — native source detail, sized so zoomed frames keep every pixel"],
                   ...(source?.A?.p1 && source?.A?.p2 ? [["crop", "◎ Object close-up", "zoomed crop that follows the object, pixel-pinned per frame at export — clean, no overlays"]] : []),
+                  ["pano", "🖼 Panorama (still)", "every frame stitched into ONE wide image at its solved direction — messy pans and zooms welcome; zoomed stretches land on top as high-res insets"],
                 ].map(([m, t2, d2]) => (
                   <button key={m} className="btn sm" style={{ textAlign: "left", padding: "8px 10px" }}
-                    onClick={() => { setExportMenu(false); exportStabilized(m); }}>
+                    onClick={() => { setExportMenu(false); if (m === "pano") exportPanorama(); else exportStabilized(m); }}>
                     <span style={{ color: "var(--teal)" }}>{t2}</span>
                     <span style={{ display: "block", fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{d2}</span>
                   </button>

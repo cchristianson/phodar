@@ -4158,5 +4158,29 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(GL.urbanCoverage(dense, 30.33, 14).ok, "geoloc: a real mapped town passes the trust gate");
 }
 
+// --- 🖼 retrospective panorama — pure geometry: azimuth unwrap across the
+//     0/360 seam, tan-true frame extents, layout caps, equirect mapping,
+//     zoom-detail-last render order.
+{
+  const PN = await import("../src/video/panorama.js");
+  const uw = PN.unwrapSamples([{ az: 350, el: 5, fov: 40, t: 0 }, { az: 0, el: 5, fov: 40, t: 1 }, { az: 10, el: 5, fov: 40, t: 2 }]);
+  ok(uw.map((p) => p.uAz).join() === "350,360,370", "pano: a pan across the 0/360 seam unwraps continuously");
+  const border = PN.frameBorder({ uAz: 0, el: 0, roll: 0, fov: 40 }, 720, 1280);
+  const azs = border.map((b) => b.az), els = border.map((b) => b.el);
+  approx(Math.max(...azs), 20, 0.5, "pano: frame border reaches +fov/2 in azimuth (tan-true)");
+  approx(Math.min(...azs), -20, 0.5, "pano: …and −fov/2");
+  ok(Math.max(...els) > 25 && Math.max(...els) < 40, `pano: portrait vertical extent is tangent-scaled (${Math.max(...els).toFixed(1)}°)`);
+  const lay = PN.panoLayout(PN.unwrapSamples([{ az: 0, el: 10, roll: 0, fov: 40, t: 0 }, { az: 60, el: 10, roll: 0, fov: 40, t: 1 }]), 720, 1280);
+  ok(lay.azMax - lay.azMin > 95 && lay.azMax - lay.azMin < 110, `pano: two frames 60° apart span ~100° (${(lay.azMax - lay.azMin).toFixed(0)}°)`);
+  ok(lay.W <= 4600 && lay.H <= 4600 && lay.W * lay.H <= 16e6, `pano: layout respects the iOS canvas guards (${lay.W}×${lay.H})`);
+  const [x0, y0] = PN.equirectXY(lay, lay.azMin, lay.elMax);
+  ok(Math.abs(x0) < 1e-9 && Math.abs(y0) < 1e-9, "pano: equirect origin maps to canvas (0,0)");
+  const [x1] = PN.equirectXY(lay, lay.azMin + 10, lay.elMax);
+  approx(x1, 10 * lay.ppd, 1e-6, "pano: 10° of azimuth = 10·ppd pixels");
+  const ord = PN.renderOrder([{ fov: 40 }, { fov: 40 }, { fov: 12 }, { fov: 40 }, { fov: 11 }, { fov: 40 }].map((s, i) => ({ ...s, t: i })));
+  ok(ord.slice(0, 6).join() === "0,1,2,3,4,5" && ord.slice(6).join() === "2,4",
+    "pano: chronological pass, then the sharpest (most-zoomed) frames repainted on top");
+}
+
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
 console.log("mathcheck: all assertions passed");
