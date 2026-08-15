@@ -1279,6 +1279,16 @@ terrain stay frozen and only the object moves. Build ladder:
    (panoKeepRef skips that one invalidation — the corrections came FROM
    the composite, so the path is pulled into agreement with it and a
    rebuild would re-measure ~zero) and retires the offer bar.
+   **🖼 STALENESS, not destruction (field workflow)**: scrubbing the
+   live frame over the composite is how users FIND the frames needing
+   an ⚓ anchor — so a path re-derive (anchors/smoothing) keeps the
+   composite and marks it stale (amber 🖼 chip + an "⟳ Re-stitch" bar;
+   the 📐 bar hides while stale — its corrections described the old
+   stitch). Re-stitch rebuilds from the anchored path; exporting the
+   still while stale rebuilds first. Only a NEW SOLVE (posePathRaw /
+   mediaUrl change: re-stabilize, ↶, ✕ clear, ⟳ re-attach) hard-resets.
+   Tapping 🖼 never rebuilds implicitly — a rebuild costs a minute and
+   mid-anchoring the stale composite is exactly the working reference.
    **Manual pose correction (⚓ Fix frames): DONE** — playback-row
    ⚓ opens a mode where you scrub to a frame that lost the world lock,
    drag the photo back onto the true horizon/terrain (one finger = az/el,

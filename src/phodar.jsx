@@ -728,7 +728,7 @@ const HELP_SECTIONS = [
         { t: "⟳ Re-stabilize to apply", d: "An amber line that appears next to the stabilize button when something the solve DEPENDED on has been edited since it ran — new ⊕ Track points, a moved object mark, a different alignment frame, a changed trim or FOV. It names what changed. Until you re-stabilize, the stored camera path and object track still reflect the old inputs, and nothing else in the app would tell you." },
         { t: "🛸 object overlay", d: "Header toggle for the fitted 3D wireframe and its marks over the photo. It rides the tracked path during stabilized playback, and it is burned into the exported video ONLY while this is on — so turn it off for a clean evidence render." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it. On the results screen (and in the report) a 🎥 track-quality rating (excellent/good/fair/poor) warns when camera motion could be leaking into the trajectory — hard zooms leave the solver too few background anchors to separate camera from object, so those stretches are excluded from reported peak rates and named in the rating." },
-        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. A fourth option, 🖼 Panorama (still), stitches EVERY frame into one wide image at its solved direction — a retrospective iPhone-style panorama that tolerates messy motion, reversals and zooms (zoomed stretches are composited last, so they become high-resolution insets). A moving object can appear more than once in it; that repetition is its real path across the sky. Each frame is re-registered against the growing composite before painting (the solved pose seeds it, the pixels finish it), and weak frames — held, reference-starved, mid whip-pan — are left out. The 🖼 sky-layer toggle lays the finished panorama on the dome under the live frame, whose bright border shows where the current moment sits as you scrub. When the stitch measures real pose corrections (including zoom-scale fixes — the solve's FOV estimate mid-zoom carries a few percent of error), an amber bar offers 📐 Apply to path: the corrections become ⚓ anchors on the camera path, so playback, the trajectory, exports and the live frame over the panorama all agree. Opt-in, bounded, and any anchor you placed by hand outranks them; re-stabilizing clears them like any anchor. Great as report evidence and for judging stabilization quality frame by frame." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. A fourth option, 🖼 Panorama (still), stitches EVERY frame into one wide image at its solved direction — a retrospective iPhone-style panorama that tolerates messy motion, reversals and zooms (zoomed stretches are composited last, so they become high-resolution insets). A moving object can appear more than once in it; that repetition is its real path across the sky. Each frame is re-registered against the growing composite before painting (the solved pose seeds it, the pixels finish it), and weak frames — held, reference-starved, mid whip-pan — are left out. The 🖼 sky-layer toggle lays the finished panorama on the dome under the live frame, whose bright border shows where the current moment sits as you scrub. When the stitch measures real pose corrections (including zoom-scale fixes — the solve's FOV estimate mid-zoom carries a few percent of error), an amber bar offers 📐 Apply to path: the corrections become ⚓ anchors on the camera path, so playback, the trajectory, exports and the live frame over the panorama all agree. Opt-in, bounded, and any anchor you placed by hand outranks them; re-stabilizing clears them like any anchor. Scrubbing over the composite is also the easiest way to SPOT a frame that lost its lock — and placing an ⚓ anchor keeps the composite up as your reference: the 🖼 chip turns AMBER (the stitch predates your latest changes) and an ⟳ Re-stitch bar rebuilds it from the anchored path when you're done. Exporting the still while amber re-stitches first, so the saved file always matches the current path. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Distance, size & the path", items: [
         { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair. While scrubbing stabilized playback, the point nearest the playhead lights up amber so you can see where along the path the clip is; the ◆ shapes / ● dots toggle in the panel swaps the 3D model at every point for plain dots — much easier to read on a dense path." },
@@ -3941,14 +3941,21 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [, setPanoReady] = useState(0);
   const panoRef = useRef(null);
   const panoKeepRef = useRef(false); // 📐 Apply changes the path TO MATCH the composite — skip that one invalidation
-  /* a re-solve / re-derive invalidates the stitch — it describes the old
-     path. The one exception is 📐 Apply to path: the corrections came FROM
-     this composite, so the new path agrees with it by construction and a
-     rebuild would just re-measure ~zero corrections. */
+  /* PATH RE-DERIVES (⚓ anchors, smoothing sliders) keep the composite but
+     mark it STALE: the field workflow is to scrub the composite to SEE
+     which frames need re-anchoring, and dropping it on every anchor
+     destroyed the very reference being used (field report). The stitch
+     stays on the dome, the 🖼 chip turns amber, and a ⟳ Re-stitch offer
+     rebuilds FROM THE ANCHORED PATH when the user is ready. 📐 Apply is
+     the one change that leaves the stitch NOT stale — the corrections
+     came from this composite, so the path now agrees with it. */
   useEffect(() => {
     if (panoKeepRef.current) { panoKeepRef.current = false; return; }
-    panoRef.current = null; setPanoOn(false);
+    if (panoRef.current) { panoRef.current.stale = true; setPanoReady((k) => k + 1); }
   }, [source?.posePath]); // eslint-disable-line
+  /* a NEW SOLVE (re-stabilize / undo / ✕ clear / re-attached media) hard-
+     resets — the composite describes a path that no longer exists at all */
+  useEffect(() => { panoRef.current = null; setPanoOn(false); }, [source?.posePathRaw, source?.mediaUrl]); // eslint-disable-line
   const [hueOpen, setHueOpen] = useState(false); // the overlay-color slider, folded behind its swatch
   const [pMode, setPMode] = useState("look"); // 'look' | 'place'
   const [pAz, setPAz] = useState(180);
@@ -6965,7 +6972,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const run = ++exportAbortRef.current;
     setExporting(0.01); setFlash("🖼 stitching the panorama…");
     try {
-      const pn = panoRef.current || await buildPanorama(run);
+      /* a STALE cache (the path moved under it — ⚓ anchors/smoothing) is
+         fine to keep scrubbing over, but an EXPORT is a deliverable:
+         rebuild from the current path rather than saving an outdated one */
+      const pn = (panoRef.current && !panoRef.current.stale) ? panoRef.current : await buildPanorama(run);
       const blob = await new Promise((res) => pn.full.toBlob(res, "image/jpeg", 0.92));
       if (!blob) throw new Error("canvas export failed");
       download("phodar-panorama.jpg", blob, "image/jpeg");
@@ -6996,6 +7006,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     panoRef.current = { ...panoRef.current, fixes: [] };
     update(patch);
     setFlash(`📐 ${pf.length} panorama corrections anchored into the camera path — playback, trajectory and exports now follow them. The composite stays (the path now agrees with it). ↶ via re-stabilize or the ⚓ list.`);
+  };
+  /* ⟳ re-stitch: rebuild the composite FROM THE CURRENT (anchored) path,
+     staying on the dome — the explicit "I'm done anchoring" step. Tapping
+     🖼 never rebuilds implicitly: a rebuild costs a minute, and mid-anchoring
+     the stale composite is exactly the reference being worked against. */
+  const restitchPano = async () => {
+    if (exporting) return;
+    const run = ++exportAbortRef.current;
+    setExporting(0.01); setFlash("🖼 re-stitching on the current camera path…");
+    try { panoRef.current = null; await buildPanorama(run); setPanoOn(true); setFlash("🖼 re-stitched — the composite now reflects your ⚓ anchors and smoothing"); }
+    catch (e) { setFlash(/cancelled/.test(String(e && e.message)) ? "🖼 cancelled" : "🖼 re-stitch failed: " + ((e && e.message) || e)); }
+    setExporting(0);
   };
   const togglePano = async () => {
     if (panoRef.current) { setPanoOn((x) => !x); return; }
@@ -8362,8 +8384,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
               onClick={() => setObjOn((v) => !v)}>🛸</button>
           )}
           {source?.mediaKind === "video" && playPath && playPath.length > 1 && (
-            <button className="btn sm" title="Stitched panorama: the whole pan frozen on the dome under the live frame, whose bright border shows where the current moment sits — scrub to move it. Builds on first tap (each frame re-registered against the composite)."
-              style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: panoOn ? "var(--teal)" : "var(--dim)" }}
+            <button className="btn sm"
+              title={panoOn && panoRef.current?.stale
+                ? "Stitched panorama — AMBER: the camera path changed since this stitch (⚓ anchors / smoothing), so the composite may disagree where frames moved. It stays up as your anchoring reference; ⟳ Re-stitch (below the playback row) rebuilds it from the anchored path."
+                : "Stitched panorama: the whole pan frozen on the dome under the live frame, whose bright border shows where the current moment sits — scrub to move it. Builds on first tap (each frame re-registered against the composite)."}
+              style={{ background: "rgba(15,23,42,.7)", padding: "6px 9px", color: panoOn ? (panoRef.current?.stale ? "var(--amber)" : "var(--teal)") : "var(--dim)" }}
               onClick={togglePano}>🖼</button>
           )}
           {hasPos && (
@@ -8951,10 +8976,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ))}
               </div>
             )}
+            {/* 🖼 STALE OFFER — the composite predates the current camera path
+                (⚓ anchors / smoothing landed since the stitch). It stays on
+                the dome as the anchoring reference; this is the explicit
+                "I'm done anchoring, fold my fixes in" step. */}
+            {!exporting && pMode !== "place" && !calibOn && panoOn && panoRef.current?.stale && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "7px 10px" }}>
+                <span style={{ flex: "1 1 170px", minWidth: 0, fontSize: 10.5, color: "var(--amber)", lineHeight: 1.45 }}>
+                  The composite was stitched before your latest ⚓/smoothing changes — frames you moved may sit differently now.
+                </span>
+                <button className="btn sm amber" style={{ flex: "0 0 auto" }} onClick={restitchPano}
+                  title="Rebuild the panorama from the current camera path — your anchors seed every frame's placement and the re-registration refines from there">⟳ Re-stitch</button>
+              </div>
+            )}
             {/* the row WRAPS with a real min basis on the text: without that a
                 narrow phone crushed the span and pushed the 📐 button off the
                 right edge of the screen (field report) */}
-            {!exporting && pMode !== "place" && !calibOn && panoRef.current && panoRef.current.fixes && panoRef.current.fixes.length > 2 && !viewOnly && (
+            {/* hidden while STALE: these corrections were measured against the
+                old path — a ⟳ re-stitch re-measures them fresh on top of the
+                user's anchors instead of fighting them */}
+            {!exporting && pMode !== "place" && !calibOn && panoRef.current && !panoRef.current.stale && panoRef.current.fixes && panoRef.current.fixes.length > 2 && !viewOnly && (
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "7px 10px" }}>
                 <span style={{ flex: "1 1 170px", minWidth: 0, fontSize: 10.5, color: "var(--amber)", lineHeight: 1.45 }}>
                   The panorama measured {panoRef.current.fixes.length} camera-path corrections{panoRef.current.fovFixed ? ` (${panoRef.current.fovFixed} zoom-scale)` : ""} by matching frames against the composite.

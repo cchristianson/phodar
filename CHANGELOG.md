@@ -48,6 +48,24 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **🖼 × ⚓ — the composite survives anchoring (stale, not destroyed).**
+  Field workflow discovery: scrubbing the live frame over the composite
+  is the best way to SEE which frames lost the world lock and need an ⚓
+  anchor — but every anchor re-derived the path and the invalidation
+  dropped the panorama, destroying the very reference being used. Now a
+  path re-derive (anchors, smoothing sliders) KEEPS the composite on the
+  dome and marks it stale instead: the 🖼 chip turns amber, and an
+  amber "⟳ Re-stitch" bar offers the explicit "I'm done anchoring" step
+  — the rebuild starts from the anchored path (anchors seed every
+  frame's placement; the re-registration refines from there), and the
+  freshly-measured 📐 corrections come back on top of the anchors
+  (the old ones hide while stale — they described the old stitch).
+  Exporting the still while stale rebuilds first (an export is a
+  deliverable; scrubbing tolerates staleness, a saved file shouldn't).
+  A re-stabilize / ↶ / ✕ clear / re-attach still hard-resets — those
+  produce a path the composite never described. Verified end-to-end
+  through the real UI: pin an anchor → composite stays + chip amber +
+  offer appears → ⟳ → chip teal, composite reflects the anchor.
 - **📐 Apply to path v2 — smooth anchors, composite kept.** Two field
   reports in one: "apply to path seems to have glitches" and "why don't
   we have to recalculate the panorama after applying?" The glitches were
