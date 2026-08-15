@@ -4180,6 +4180,40 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const ord = PN.renderOrder([{ fov: 40 }, { fov: 40 }, { fov: 12 }, { fov: 40 }, { fov: 11 }, { fov: 40 }].map((s, i) => ({ ...s, t: i })));
   ok(ord.slice(0, 6).join() === "0,1,2,3,4,5" && ord.slice(6).join() === "2,4",
     "pano: chronological pass, then the sharpest (most-zoomed) frames repainted on top");
+
+  /* quality gate: held frames never qualify; weak solves and whip-pans
+     are dropped when enough strong frames remain */
+  const pth = [];
+  for (let i = 0; i < 30; i++) pth.push({ t: i * 0.5, az: i * 2, el: 5, fov: 40, n: 30 });
+  pth[4] = { ...pth[4], h: 1 };            // held
+  pth[9] = { ...pth[9], n: 3 };            // starved solve
+  pth[14] = { ...pth[14], az: pth[13].az + 20 }; // 40°/s whip
+  const picked = PN.panoPick(pth, 90);
+  ok(!picked.some((p) => p.h) && !picked.some((p) => p.n === 3) && picked.length >= 25,
+    `pano: quality gate drops held/starved/whip frames, keeps the rest (${picked.length}/30)`);
+
+  /* re-registration: a synthetic pattern shifted by a KNOWN (dx,dy) must
+     be recovered by the equirect NCC, and near-zero overlap must refuse */
+  const mkImg = (W2, H2, fill) => {
+    const d = new Uint8ClampedArray(W2 * H2 * 4);
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+      const i = (y * W2 + x) * 4;
+      const v = fill(x, y);
+      d[i] = d[i + 1] = d[i + 2] = v == null ? 0 : v;
+      d[i + 3] = v == null ? 0 : 255;
+    }
+    return { data: d, width: W2, height: H2 };
+  };
+  const patF = (x, y) => 120 + 90 * Math.sin(x / 5) * Math.cos(y / 7);
+  const base2 = mkImg(80, 60, patF);
+  const shifted = mkImg(80, 60, (x, y) => (x - 3 < 0 || y + 2 >= 60) ? null : patF(x - 3, y + 2));
+  /* patch content sits at (+3,−2) relative to base → the CORRECTION the
+     caller applies (dx,dy) is (−3,+2); the browser harness asserts the
+     same convention end-to-end through drawFramePano + uAz adjustment */
+  const sh2 = PN.bestShift(base2, shifted, 6);
+  ok(sh2 && sh2.dx === -3 && sh2.dy === 2, `pano: NCC measures a known mis-registration with the applied sign (got ${sh2 && sh2.dx},${sh2 && sh2.dy} score ${sh2 && sh2.score.toFixed(2)})`);
+  const tiny = mkImg(80, 60, (x, y) => (x < 6 && y < 6) ? patF(x, y) : null);
+  ok(PN.bestShift(base2, tiny, 6) === null, "pano: near-zero overlap → no correction, never a guess");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

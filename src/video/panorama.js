@@ -85,6 +85,66 @@ export function renderOrder(samples) {
   return sharp.length && sharp.length < samples.length ? [...idx, ...sharp] : idx;
 }
 
+/* which frames deserve to be in the panorama at all — the first field
+   render trusted every pose and the solve's weak stretches (few anchors,
+   chained drift, motion blur mid-whip) landed tiles visibly wrong. Held
+   frames never qualify; frames with few background references or high
+   angular rate are dropped unless that would gut the set. */
+export function panoPick(path, maxN = 90) {
+  let keep = path.filter((p) => !p.h);
+  const strong = keep.filter((p, i) => {
+    if (p.n != null && p.n < 8) return false;
+    const q = keep[i - 1];
+    if (q && p.t > q.t) {
+      const rate = Math.abs(sd(p.az, q.az)) / Math.max(0.05, p.t - q.t);
+      if (rate > 25) return false; // whip-pan: motion blur + solve lag
+    }
+    return true;
+  });
+  if (strong.length >= Math.max(8, keep.length * 0.4)) keep = strong;
+  const step = Math.max(1, Math.ceil(keep.length / maxN));
+  return keep.filter((_, i) => i % step === 0);
+}
+
+/* re-registration: in equirect space a pixel shift IS an angular shift,
+   so aligning a frame against the growing panorama is a plain 2D
+   zero-mean NCC over small shifts of the coarse grayscale, masked to
+   where BOTH have content (alpha > 0). This is what real stitchers do —
+   the solved pose seeds the placement, the image itself finishes it. */
+export function bestShift(base, patch, R = 6) {
+  const W = base.width, H = base.height;
+  const gb = new Float32Array(W * H), gp = new Float32Array(W * H);
+  const ab = new Uint8Array(W * H), ap = new Uint8Array(W * H);
+  for (let i = 0, j = 0; i < W * H; i++, j += 4) {
+    gb[i] = 0.299 * base.data[j] + 0.587 * base.data[j + 1] + 0.114 * base.data[j + 2];
+    gp[i] = 0.299 * patch.data[j] + 0.587 * patch.data[j + 1] + 0.114 * patch.data[j + 2];
+    ab[i] = base.data[j + 3] > 40 ? 1 : 0;
+    ap[i] = patch.data[j + 3] > 40 ? 1 : 0;
+  }
+  let best = null;
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      let n = 0, sb = 0, sp = 0, sbb = 0, spp = 0, sbp = 0;
+      for (let y = Math.max(0, dy); y < Math.min(H, H + dy); y++) {
+        const yp = y - dy;
+        for (let x = Math.max(0, dx); x < Math.min(W, W + dx); x++) {
+          const xp = x - dx;
+          const ib = y * W + x, ip = yp * W + xp;
+          if (!ab[ib] || !ap[ip]) continue;
+          const b = gb[ib], p = gp[ip];
+          n++; sb += b; sp += p; sbb += b * b; spp += p * p; sbp += b * p;
+        }
+      }
+      if (n < 200) continue;
+      const vb = sbb - (sb * sb) / n, vp = spp - (sp * sp) / n;
+      if (vb < 1e-6 || vp < 1e-6) continue;
+      const ncc = (sbp - (sb * sp) / n) / Math.sqrt(vb * vp);
+      if (!best || ncc > best.score) best = { dx, dy, score: ncc, n };
+    }
+  }
+  return best && best.score >= 0.35 ? best : null;
+}
+
 /* ---------- canvas side (browser harness–tested) ---------- */
 
 /* feather the texture's edges to transparent so overlapping frames blend */

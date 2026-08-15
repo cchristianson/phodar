@@ -48,6 +48,23 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **🖼 Panorama v2 — re-registered stitching + the dome layer.** The
+  first field render placed tiles visibly wrong: the solve's weak
+  stretches (few anchors, chained drift, whip-pans) were trusted
+  blindly. Two fixes: `panoPick` gates frames (held frames never
+  qualify; starved solves and >25°/s whip-pans are dropped when enough
+  strong frames remain), and every frame is now RE-REGISTERED against
+  the growing composite before painting — in equirect space a pixel
+  shift IS an angular shift, so alignment is a plain masked NCC on the
+  coarse grayscale (`bestShift`; the solved pose seeds the placement,
+  the pixels finish it; the sharp-repaint pass reuses the corrected
+  poses). And the panorama now lives ON THE DOME: a 🖼 sky-layer toggle
+  (builds the stitch on first tap, session-cached, invalidated by any
+  re-solve) lays the whole pan frozen under the live frame, whose
+  bright accent border shows exactly where the current moment sits —
+  scrubbing moves the live frame across the composite. Sign convention
+  proven end-to-end in the browser harness: a deliberate +2° pose bias
+  is measured as −4 px and exactly undone.
 - **🖼 Panorama (still) — the pan, registered in hindsight.** A fourth
   option in the stabilized-clip export menu: every frame projected into
   ONE equirectangular image at its solved direction (`src/video/
