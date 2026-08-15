@@ -1202,7 +1202,19 @@ terrain stay frozen and only the object moves. Build ladder:
    frame (full ≤0.3 s, gone by 1.1 s, 0.15 floor while the Track tool
    is active; the route polyline stays faint). Verified visually: the
    wireframe sits on the ground-truth dot across an in-app world-view
-   export. **Manual pose correction (⚓ Fix frames): DONE** — playback-row
+   export. **🖼 Retrospective PANORAMA: DONE** (`src/video/panorama.js`,
+   fourth export-menu option) — every solved frame warped into ONE
+   equirect still (x = az, y = el; rectilinear degenerates past ~100°
+   sweeps). Chronological paint with feathered frame edges, then the
+   sharpest THIRD (narrowest fov) repainted on top so a zoom pass
+   becomes a high-res inset rather than being buried by later wide
+   frames. Azimuth unwrapped across 0/360, held frames skipped, iOS
+   canvas guards respected, no encoder (still render → JPEG download).
+   Pure geometry mathcheck-asserted; compositor verified in a Chromium
+   harness (marker dots at predicted directions through a rolled
+   frame). Future hook: a panorama is ONE wide frame — feed it back
+   into Find-my-spot as a single sample set.
+   **Manual pose correction (⚓ Fix frames): DONE** — playback-row
    ⚓ opens a mode where you scrub to a frame that lost the world lock,
    drag the photo back onto the true horizon/terrain (one finger = az/el,
    two-finger twist = roll; two-finger drag pans the view, pinch zooms),
