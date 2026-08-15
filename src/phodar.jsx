@@ -7143,11 +7143,44 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const pinCtx = pinCvs ? pinCvs.getContext("2d", { willReadFrequently: true }) : null;
       const pinSt = { oAz: 0, oEl: 0, has: 0, missRun: 0, ok: 0 };
       let pinTry = 0;
+      /* OBJECT POLARITY from the human's own marks: sample the MARKED frame
+         at the marked pixel — is the object brighter or darker than its
+         surround? The sweep is otherwise appearance-blind, and on a dusk
+         clip a BRIGHT cloud lump out-contrasted the faint dark object from
+         ~12 s on: the pin "locked" on the cloud and the close-up slid off
+         the object (field-measured against the user's session). Clutter of
+         the wrong sign can never win now; ambiguous contrast (<4 gray
+         levels) leaves the polarity open rather than guessing. */
+      let pinPol = 0;
+      if (camFollow && pinCtx) {
+        try {
+          await new Promise((res) => {
+            const wd = setTimeout(res, 3000);
+            v.onseeked = () => { clearTimeout(wd); res(); };
+            v.currentTime = clampN(markT, 0.02, Math.max(0.02, (v.duration || 1) - 0.05));
+          });
+          const svp = (v.videoWidth || natW) / natW;
+          const mx0 = (source.A.p1.x + source.A.p2.x) / 2, my0 = (source.A.p1.y + source.A.p2.y) / 2;
+          const R0 = Math.max(6, Math.round(Math.hypot(source.A.p1.x - source.A.p2.x, source.A.p1.y - source.A.p2.y)));
+          const S = Math.min(560, R0 * 6);
+          pinCvs.width = S; pinCvs.height = S;
+          pinCtx.drawImage(v, (mx0 - S / 2) * svp, (my0 - S / 2) * svp, S * svp, S * svp, 0, 0, S, S);
+          const dd = pinCtx.getImageData(0, 0, S, S).data;
+          let iS = 0, iN = 0, oS = 0, oN = 0;
+          for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+            const l = 0.299 * dd[(y * S + x) * 4] + 0.587 * dd[(y * S + x) * 4 + 1] + 0.114 * dd[(y * S + x) * 4 + 2];
+            const rr = Math.hypot(x - S / 2, y - S / 2);
+            if (rr < R0 * 0.5) { iS += l; iN++; } else if (rr > R0 * 1.2 && rr < R0 * 2.5) { oS += l; oN++; }
+          }
+          const d0 = iS / Math.max(1, iN) - oS / Math.max(1, oN);
+          if (Math.abs(d0) >= 4) pinPol = d0 > 0 ? 1 : -1;
+        } catch (e) { pinPol = 0; }
+      }
       const refinePin = (p, pred) => {
         if (!pinCtx || !v.videoWidth) return pred;
         pinTry++;
         const sv = (v.videoWidth || natW) / natW;
-        const r = pinStep(pinSt, pred, { natW, natH, pose: p, maxAng: maxAngX }, (cx, cy, W2) => {
+        const r = pinStep(pinSt, pred, { natW, natH, pose: p, maxAng: maxAngX, pol: pinPol }, (cx, cy, W2) => {
           if (pinCvs.width !== W2) { pinCvs.width = W2; pinCvs.height = W2; }
           try {
             pinCtx.fillStyle = "#000"; pinCtx.fillRect(0, 0, W2, W2);

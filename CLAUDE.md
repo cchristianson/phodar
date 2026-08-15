@@ -1043,7 +1043,18 @@ terrain stay frozen and only the object moves. Build ladder:
    border out-contrasts a faint object and the pin LOCKED ON THE EDGE
    at deep zoom. All four asserted; verified on the user's clip+session
    with a before/after crop montage (28/83 locks and a lost tail →
-   53/83 with the object in frame throughout).
+   53/83 with the object in frame throughout). **Plus POLARITY (second
+   field round, "not centered by the end")**: the sweep was
+   appearance-blind (|inner−ring|) and a BRIGHT cloud lump entering the
+   crop at ~12 s out-contrasted the faint DARK object — confident false
+   locks on the cloud. The export samples the MARKED frame at the
+   marked pixel once (brighter/darker/ambiguous, ±4 gray-level dead
+   zone) and pinFind scores SIGNED via opts.pol — wrong-sign clutter
+   can never win the sweep or bias the centroid. Mathcheck proves it
+   both ways (with pol the dark object beats a stronger bright blob;
+   blind, the blob wins); replay of the user's session shows the
+   12–15 s stretch on the crosshair and the object centered to the
+   final treeline descent.
    The warp texture is NATIVE for full/crop, guarded only by the iOS
    canvas ceiling (4600 px side / 16 Mpx) — the old 2048 texture cap
    silently halved 4K sources before the warp ever saw them; "view"

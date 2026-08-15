@@ -48,6 +48,26 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **◎ Close-up pin: object POLARITY from the marks (the "not centered
+  by the end" fix).** Second field round on the 10× clip, after v4: the
+  re-stabilized track was again measured dead-on (0.00–0.06° at every
+  waypoint), yet the exported close-up drifted off the object from
+  ~12 s — the frame-by-frame replay showed why: a BRIGHT cloud lump
+  enters the crop there, and the pin's contrast sweep was
+  polarity-blind (|inner − ring|), so the cloud out-contrasted the
+  increasingly faint DARK object and the pin "locked" on the cloud
+  confidently. The human's own marks say which way the object differs
+  from the sky, so the export now samples the marked frame at the
+  marked pixel once (brighter/darker/ambiguous) and `pinFind` scores
+  signed: clutter of the wrong sign can never win the sweep or bias
+  the centroid, and an ambiguous measurement (<4 gray levels) honestly
+  leaves the sweep unsigned rather than guessing. Proven both ways in
+  mathcheck — with polarity the faint dark object beats a stronger
+  bright blob (4 px off center); polarity-blind, the blob wins — and
+  verified on the user's exact session + clip: the 12–15 s false-lock
+  stretch now sits on the crosshair and the object stays centered
+  through the end of the clip, including the final descent into the
+  treeline.
 - **◎ Close-up pin v4 — the object stays in frame at deep zoom.** Field
   report on the 10× Germany clip after the full stabilize→panorama→
   anchor workflow: the exported close-up lost the object for stretches —

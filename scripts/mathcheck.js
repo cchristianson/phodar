@@ -2862,6 +2862,38 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const rE = pinStep(stE, { az: aeE.az, el: aeE.el }, { natW, natH, pose: oPose, maxAng: 1.0 }, sampleEdge);
   if (rE.mode === "lock") { console.error("  FAIL pin edge: locked onto the black frame border"); fails++; }
   else console.log(`  ok   pin edge: black frame border never wins the contrast sweep (mode ${rE.mode})`);
+  /* POLARITY (field case: from ~12 s a BRIGHT cloud lump out-contrasted the
+     faint dark object and the polarity-blind sweep locked on the cloud).
+     With pol −1 from the human's marks the dark object wins even against a
+     stronger bright blob; polarity-blind, the bright blob wins — both
+     asserted so the discrimination is proven, not assumed. */
+  const objP = { x: 300, y: 640 }, cloudP = { x: 420, y: 640 };
+  const sampleClutter = (cx, cy, W2) => {
+    const d = new Uint8ClampedArray(W2 * W2 * 4);
+    for (let y = 0; y < W2; y++) for (let x = 0; x < W2; x++) {
+      const nx = cx - W2 / 2 + x, ny = cy - W2 / 2 + y;
+      let v = 150;
+      const rO = Math.hypot(nx - objP.x, ny - objP.y);
+      if (rO < 40) v -= 22 * Math.exp(-(rO * rO) / (2 * 24 * 24));   // faint dark object
+      const rC = Math.hypot(nx - cloudP.x, ny - cloudP.y);
+      if (rC < 60) v += 55 * Math.exp(-(rC * rC) / (2 * 36 * 36));   // brighter cloud lump
+      const i = (y * W2 + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    }
+    return d;
+  };
+  const dPredC = pixToDirK(360, 640, natW, natH, oPose.az, oPose.el, oPose.roll, oPose.fov, oPose.k);
+  const aeC = dirToAzEl(dPredC);
+  const runClutter = (pol) => {
+    const stC = { oAz: 0, oEl: 0, has: 0, missRun: 0, ok: 0 };
+    const rC = pinStep(stC, { az: aeC.az, el: aeC.el }, { natW, natH, pose: oPose, maxAng: 1.0, pol }, sampleClutter);
+    const pp = dirToPixK(dirFromAzEl(rC.az, rC.el), natW, natH, oPose.az, oPose.el, oPose.roll, oPose.fov, oPose.k);
+    return { mode: rC.mode, dObj: Math.hypot(pp.px - objP.x, pp.py - objP.y), dCloud: Math.hypot(pp.px - cloudP.x, pp.py - cloudP.y) };
+  };
+  const cNeg = runClutter(-1), cBlind = runClutter(0);
+  if (cNeg.mode === "lock" && cNeg.dObj < cNeg.dCloud && cNeg.dObj < 25) console.log(`  ok   pin polarity: dark object beats a brighter cloud lump when polarity is known (${cNeg.dObj.toFixed(0)}px off object)`);
+  else { console.error("  FAIL pin polarity: dark object must win with pol −1", cNeg); fails++; }
+  if (cBlind.dCloud < cBlind.dObj) console.log("  ok   pin polarity: polarity-blind sweep picks the cloud — the discrimination is real, not incidental");
+  else { console.error("  FAIL pin polarity control: expected the blind sweep to pick the cloud", cBlind); fails++; }
 }
 
 /* ── re-anchoring solved paths across a placement change ────────────────────

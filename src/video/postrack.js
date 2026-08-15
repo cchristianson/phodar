@@ -1276,6 +1276,14 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
      track carries the camera honestly instead. */
   const bd = opts.bounds || { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9 };
   const inB = (x, y) => x - 3 * objR >= bd.x0 && x + 3 * objR <= bd.x1 && y - 3 * objR >= bd.y0 && y + 3 * objR <= bd.y1;
+  /* opts.pol: the object's KNOWN polarity vs its surround (+1 brighter,
+     −1 darker, 0 unknown → |diff| as before). The sweep is otherwise
+     appearance-blind, and on a real dusk clip a BRIGHT cloud lump
+     out-contrasted the faint dark object from ~12 s on — the pin "locked"
+     confidently on the cloud while the object slid out of the close-up
+     (field-measured; the human's own marks say which way the object
+     differs from the sky, so clutter of the wrong sign never wins). */
+  const pol = opts.pol || 0;
   const ii = new Float64Array((w + 1) * (h + 1));
   for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += g[y * w + x]; ii[(y + 1) * (w + 1) + (x + 1)] = ii[y * (w + 1) + (x + 1)] + row; } }
   const box = (a, b, c, d) => {
@@ -1288,7 +1296,8 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
     const o = box(x - 3 * objR, y - 3 * objR, x + 3 * objR, y + 3 * objR);
     if (!i2.n || o.n <= i2.n) return 0;
     const ring = (o.m * o.n - i2.m * i2.n) / (o.n - i2.n);
-    return Math.abs(i2.m - ring);
+    const d = i2.m - ring;
+    return pol ? Math.max(0, d * pol) : Math.abs(d);
   };
   let best = 0, bx = Math.round(x0), by = Math.round(y0);
   for (let y = Math.round(y0 - reach); y <= y0 + reach; y += step) for (let x = Math.round(x0 - reach); x <= x0 + reach; x += step) {
@@ -1304,7 +1313,8 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
   for (let y = -R; y <= R; y++) for (let x = -R; x <= R; x++) {
     const px = bx + x, py = by + y;
     if (px < 0 || py < 0 || px >= w || py >= h || Math.hypot(x, y) > R) continue;
-    const wg = Math.abs(g[py * w + px] - ring);
+    const wg0 = g[py * w + px] - ring;
+    const wg = pol ? Math.max(0, wg0 * pol) : Math.abs(wg0);
     ws += wg; xs += wg * px; ys += wg * py;
   }
   return ws > 0 ? { x: xs / ws, y: ys / ws, score: best } : { x: bx, y: by, score: best };
@@ -1398,7 +1408,7 @@ export function pinStep(st, pred, o, sample) {
     x0: -(bp.px - W2 / 2), y0: -(bp.py - W2 / 2),
     x1: o.natW - (bp.px - W2 / 2), y1: o.natH - (bp.py - W2 / 2),
   };
-  const f = data ? pinFind(data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: isLock ? 2 : 3, bounds }) : null;
+  const f = data ? pinFind(data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: isLock ? 2 : 3, bounds, pol: o.pol || 0 }) : null;
   if (!f || f.score < 5) return miss("faded");
   const fd = pixToDirK(bp.px + (f.x - W2 / 2), bp.py + (f.y - W2 / 2), o.natW, o.natH, o.pose.az, o.pose.el, o.pose.roll || 0, o.pose.fov, o.pose.k || 0);
   const fae = dirToAzEl(fd);
