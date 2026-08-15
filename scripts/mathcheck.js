@@ -1366,10 +1366,23 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       for (let i = 0; i < TW * TH; i++) { flat[i * 4] = flat[i * 4 + 1] = flat[i * 4 + 2] = 124; flat[i * 4 + 3] = 255; }
       const rFlat = stepTracker(mkTk(), flat);
       approx(!rFlat.cut && rFlat.held ? 1 : 0, 1, 0, "scene cut: a featureless same-palette frame stays a plain hold");
+      /* the WB-swing lesson (field correction: "it's not a cut, it's a hard
+         zoom"): a zoom into open sky re-exposes and re-white-balances — a
+         full palette flip inside one continuous shot — so color must NEVER
+         be cut evidence. A featureless blue frame after a dusk scene is an
+         honest hold, and a same-scene frame under a strong WB/gain swing
+         must still PLACE (gray NCC is invariant to per-channel affine). */
       const blue = new Uint8ClampedArray(TW * TH * 4);
       for (let i = 0; i < TW * TH; i++) { blue[i * 4] = 70; blue[i * 4 + 1] = 120; blue[i * 4 + 2] = 205; blue[i * 4 + 3] = 255; }
       const rBlue = stepTracker(mkTk(), blue);
-      approx(rBlue.cut === 1 ? 1 : 0, 1, 0, "scene cut: a palette flip (dusk gray → blue sky) is caught by chromaticity where gray NCC is blind");
+      approx(!rBlue.cut && rBlue.held ? 1 : 0, 1, 0, "scene cut: a palette flip alone is NOT a cut — featureless blue after dusk stays a hold (WB-swing lesson)");
+      const wb = new Uint8ClampedArray(tframes[1]);
+      for (let i = 0; i < TW * TH; i++) {
+        const v = wb[i * 4];
+        wb[i * 4] = Math.min(255, v * 0.5 + 18); wb[i * 4 + 1] = Math.min(255, v * 0.55 + 26); wb[i * 4 + 2] = Math.min(255, v * 0.7 + 72);
+      }
+      const rWb = stepTracker(mkTk(), wb);
+      approx(!rWb.cut && !rWb.held ? 1 : 0, 1, 0, "scene cut: a hard white-balance/exposure swing on the SAME scene still places the frame");
       const rSame = stepTracker(mkTk(), tframes[1]);
       approx(!rSame.cut ? 1 : 0, 1, 0, "scene cut: an ordinary same-scene step is never flagged");
     }

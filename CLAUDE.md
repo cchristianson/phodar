@@ -912,29 +912,31 @@ terrain stay frozen and only the object moves. Build ladder:
    garbage solve; and the walk
    runs `despikePath` (neighbour-interpolation despike, ramps preserved,
    weak frames yield sooner) before saving, reported as "N glitches
-   smoothed". **SCENE-CUT DETECTION (compilation clips)**: field case —
-   a clip hard-cut from a dusk city segment to unrelated daytime sky at
-   23.6 s (a social-media splice; ffmpeg's scene score was only 0.24
-   because both sides are mostly sky), and the walk solved the splice as
-   camera motion, poisoning every later pose (the panorama then painted
-   two scenes into one canvas, registration "locking" featureless sky
-   onto sky at 0.97). stepTracker returns `cut: 1` when nothing placed a
-   frame AND either (a) a healthy template herd matched NOTHING while
-   the whole-frame register only offered a gate-rejected teleport or a
-   sub-0.45 best (same-scene frames at ≤¼ s always re-find some
-   templates; coarse NCC alone can't decide — unrelated SMOOTH scenes
-   correlate ~0.6 at 96 px, measured), or (b) a CHROMATICITY jump
-   (dusk gray vs daylight blue are near-identical in LUMINANCE — the
-   exact blindness of gray NCC; chromaticity also cancels auto-exposure).
-   The walk confirms via its existing bisection (blur resolves at finer
-   spacing, a cut never does), STOPS the direction at the cut, persists
-   `source.sceneCuts`, keeps the object pass inside the solved span, and
-   states it in the flash + playback row + a measure-step line by the ✂
-   trim. Known limitation (measured): two spliced scenes of
-   near-identical smooth content AND palette can cross-match template-
-   wise and be missed — the trim is the manual override. Mathcheck:
-   noise-cut flagged, palette flip flagged, featureless hold stays
-   plain, ordinary step never flagged. **Roll-hinted registration**: the whole-frame NCC assumes
+   smoothed". **SCENE-CUT DETECTION (compilation clips)**: stepTracker
+   returns `cut: 1` under ONE conservative conjunction — nothing placed
+   the frame, a healthy template herd matched NOTHING (same-scene frames
+   at ≤¼ s always re-find some templates, however wrong the pose), and
+   the whole-frame register offered only a gate-rejected teleport or a
+   sub-0.45 best (coarse NCC alone can't decide — unrelated SMOOTH
+   scenes correlate ~0.6 at 96 px, measured). The walk confirms via its
+   existing bisection (blur resolves at finer spacing, a splice never
+   does), STOPS the direction at the cut, persists `source.sceneCuts`,
+   keeps the object pass inside the solved span, and states it in the
+   flash + playback row + a measure-step line by the ✂ trim.
+   **A CHROMATICITY (palette-flip) tell was built and REMOVED the same
+   day — do not rebuild it**: the field clip that motivated all this
+   turned out to be a CONTINUOUS hard zoom into open sky ("it's not a
+   cut, it's a hard zoom") — the camera re-exposes and re-white-
+   balances, turning dusk gray bright blue inside one shot, so no color
+   statistic separates a WB swing from a splice. Long HELD runs now
+   KEEP their `h` flag on the saved path (short runs are bridged away)
+   so panoPick's held-frame gate actually fires — a frozen pose painted
+   new frames over old content at the frozen direction in the pano.
+   Known limitation (measured): spliced scenes of near-identical smooth
+   content can cross-match template-wise and be missed — the trim is
+   the manual override. Mathcheck: noise-cut flagged, palette flip NOT
+   flagged, WB-swung same-scene frame still places, featureless hold
+   stays plain, ordinary step never flagged. **Roll-hinted registration**: the whole-frame NCC assumes
    the frame sits at the reference's roll — a handheld tilt of ~5°+
    decorrelates it (field-observed: the clip's rolled tail, horizon
    tilted ~12°, lost every global lock and froze the pose while the

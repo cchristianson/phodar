@@ -6129,7 +6129,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       }
       const bridged = drop.size;
       if (bridged) { const kept2 = path.filter((_, i2) => !drop.has(i2)); path.length = 0; path.push(...kept2); }
-      path.forEach((p) => delete p.h);
+      /* long held runs KEEP their h flag (short ones were dropped above):
+         a held pose is a frozen repeat, known-wrong whenever the camera
+         kept moving — panoPick must be able to exclude those frames (a
+         hard zoom into featureless sky froze the pose and the panorama
+         painted the new frames over old content at the frozen direction,
+         field-measured), and trackQuality already reads h honestly. Only
+         the h:0 markers are noise to strip. */
+      path.forEach((p) => { if (!p.h) delete p.h; });
       /* single blurred frames can solve a hair (or wildly) off and read as a
          brief "jump out of lock" in playback — despike against neighbours
          (real motion is a ramp across samples and is preserved) */

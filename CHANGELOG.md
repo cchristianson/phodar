@@ -49,36 +49,40 @@ Notable changes to Phodar. Format loosely follows
 
 ### Added (since the geolocation stack)
 - **🎬 Scene-cut detection — a compilation clip is not one camera.**
-  Field case (the second "still no better" report): the clip hard-cut
-  from a dusk city segment to unrelated daytime-sky footage at 23.6 s —
-  a social-media splice, subtle enough that even ffmpeg's scene detector
-  scores it below its default threshold because both sides are mostly
-  featureless sky. The stabilizer solved the splice as camera motion, so
-  every pose after the cut was fiction, and the panorama dutifully
-  painted two unrelated scenes into one canvas (the registration then
-  "locked" sky onto sky at 0.97 confidence — featureless content
-  correlates with anything). No stitcher fix could help; the fix is
-  upstream and honest: `stepTracker` now returns scene-cut evidence when
-  nothing placed a frame — either a healthy template herd where not ONE
-  template re-found its target while the whole-frame register only
-  "matched" as an impossible teleport (same-scene frames at ≤¼ s always
-  re-find some), or a chromaticity jump (dusk warm-gray → daylight blue
-  have near-identical LUMINANCE, which is why gray correlation alone is
-  blind to exactly this splice; chromaticity also normalizes out
-  auto-exposure swings). The walk confirms by its existing time
-  bisection — same-scene blur resolves at finer spacing, a real cut
-  never does — then STOPS at the cut instead of solving fiction,
-  records `source.sceneCuts`, and says so: in the solve flash, in the
-  playback row ("solve stops at the 23.6s scene cut"), and on the
-  measure step next to the ✂ trim that isolates either scene. The
-  object pass stays inside the solved span too — no more tracking "the
-  object" into different footage through a held pose. Asserted in
-  mathcheck four ways (noise-textured cut flagged, palette flip caught,
-  featureless frame stays an honest hold, ordinary step never flagged);
-  verified end-to-end on the user's actual spliced clip. Stated
-  limitation: two spliced scenes of near-identical smooth content AND
-  palette can still cross-match — measured on synthetic smooth fields —
-  so a missed cut is possible; the trim remains the manual override.
+  Genuine splices exist in shared UFO clips, and solving one as camera
+  motion poisons every pose past it. `stepTracker` now returns scene-cut
+  evidence under ONE deliberately conservative conjunction: nothing
+  placed the frame, a healthy template herd re-found NOT ONE target
+  (same-scene frames at ≤¼ s always re-find some, however wrong the
+  pose), and the whole-frame register offered only an impossible
+  teleport or a score below what adjacent same-scene frames ever
+  produce. The walk confirms via its existing time bisection — blur and
+  whip-pans resolve at finer spacing, a real splice never does — then
+  STOPS at the cut instead of solving fiction, records
+  `source.sceneCuts`, and says so in the solve flash, the playback row,
+  and a measure-step line beside the ✂ trim that isolates either scene.
+  The object pass stays inside the solved span too — no tracking "the
+  object" into unrelated footage through a held pose. **Field
+  correction baked in the same day**: a chromaticity (palette-flip)
+  tell was built and REMOVED — the reporting user's clip proved that a
+  hard zoom into open sky re-exposes AND re-white-balances, turning a
+  dusk-gray scene bright blue inside one continuous shot, so color is
+  never splice evidence. Asserted in mathcheck five ways: a
+  noise-textured cut is flagged; a palette flip alone is NOT; a hard
+  WB/exposure swing on the same scene still places the frame (gray NCC
+  is affine-invariant); featureless frames stay honest holds; ordinary
+  steps are never flagged. Stated limitation: two spliced scenes of
+  near-identical smooth content can cross-match (measured on synthetic
+  smooth fields) — the trim remains the manual override.
+- **🖼 Panorama: held frames excluded for real.** A long held run keeps
+  its `h` flag on the saved path now (short runs were already bridged
+  away; the flag used to be stripped from ALL entries) — so `panoPick`'s
+  held-frame gate, which could never actually fire, excludes them from
+  the composite. Field case: a hard zoom into featureless sky froze the
+  pose, and the panorama painted the new frames over old content at the
+  frozen direction. A held pose is a frozen repeat — known-wrong
+  whenever the camera kept moving — and `trackQuality` already reads
+  the flag honestly.
 - **🖼 Panorama v3 — adaptive-resolution registration (the "ran it 3
   times and no better" fix).** The v2 re-registration ran every frame
   against ONE fixed 2 px/° coarse twin of the whole panorama — and a

@@ -815,25 +815,22 @@ export function stepTracker(tracker, nextData, opts = {}) {
   // assigned from a possibly-drifted estimate) get their world dir re-derived
   // under the corrected pose
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
-  /* SCENE-CUT EVIDENCE (spliced/compilation clips — field case: a dusk city
-     segment hard-cut to unrelated daytime footage at 23.6 s, and the walk
-     solved the splice as camera motion, poisoning every later pose). Only
-     evaluated when NOTHING placed the frame. Coarse NCC alone cannot decide
-     — two unrelated smooth scenes correlate ~0.6 at 96 px (measured), so the
-     tells are CONJUNCTIONS:
-     1. STARVED + IMPLAUSIBLE: with a healthy template herd, not one sparse
-        template re-found its target (same-scene frames at ≤¼ s always
-        re-find some, however wrong the pose), AND the whole-frame register
-        either only "matched" as a gate-rejected teleport or scored below
-        what adjacent same-scene frames ever do. Featureless content fails
-        the herd/area preconditions and stays an honest hold.
-     2. CHROMATICITY JUMP: a splice usually changes the palette outright
-        (dusk warm-gray → daylight blue — near-identical LUMINANCE, which
-        is why the gray NCC alone can't see it). Chromaticity normalizes
-        exposure out, so an auto-exposure swing does not trip it.
-     Same-scene blur/whip can also fail to place for one step — the CALLER
-     must confirm by bisecting in time (real motion resolves at finer
-     spacing, a real cut never does) before acting on this flag. */
+  /* SCENE-CUT EVIDENCE (spliced/compilation clips). Only evaluated when
+     NOTHING placed the frame, and deliberately ONE conservative tell —
+     STARVED + IMPLAUSIBLE: with a healthy template herd, not one sparse
+     template re-found its target (same-scene frames at ≤¼ s always re-find
+     some, however wrong the pose), AND the whole-frame register either only
+     "matched" as a gate-rejected teleport or scored below what adjacent
+     same-scene frames ever do. Featureless content fails the herd/area
+     preconditions and stays an honest hold, and coarse NCC alone can never
+     decide — two unrelated smooth scenes correlate ~0.6 at 96 px (measured).
+     A CHROMATICITY tell was built here and REMOVED the same day (field
+     correction): a hard zoom into open sky re-exposes AND re-white-balances
+     — a dusk-gray scene reads bright blue within one continuous shot — so a
+     palette flip is not splice evidence, and no color statistic separates a
+     WB swing from a cut. Same-scene blur/whip can also fail to place for
+     one step — the CALLER must confirm by bisecting in time (real motion
+     resolves at finer spacing, a real cut never does) before acting. */
   let cut = 0;
   if (!solved && !glob && !chain) {
     let okN = 0; for (const tr of tracked) if (tr.ok) okN++;
@@ -844,16 +841,6 @@ export function stepTracker(tracker, nextData, opts = {}) {
         const diag = registerGray(prevG, p0, curG, natW, natH, { minScore: -1, fovMax: fovCap, areaMin: 0.045, sLo: 0.76, sHi: 1.33, sStep: 1.075 });
         if (diag && diag.score < 0.45) cut = 1;
       }
-    }
-    if (!cut) {
-      const chroma = (d) => {
-        let r = 0, g = 0, b = 0;
-        for (let i = 0; i < d.length; i += 1028) { r += d[i]; g += d[i + 1]; b += d[i + 2]; } // 1028 = 257 px × 4 — off-grid stride samples scattered pixels
-        const t = r + g + b || 1;
-        return { r: r / t, g: g / t, b: b / t };
-      };
-      const a = chroma(tracker.prevData), b2 = chroma(nextData);
-      if (Math.abs(a.r - b2.r) + Math.abs(a.g - b2.g) + Math.abs(a.b - b2.b) > 0.12) cut = 1;
     }
   }
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept; tracker.prevG = curG;
