@@ -9382,8 +9382,12 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
   /* ---- map (Esri imagery + fixed center crosshair + search-radius ring) ---- */
   useEffect(() => {
     const el = boxRef.current; if (!el) return;
-    const at = src.findSpot?.at || (isNum(src.lat) ? { lat: +src.lat, lng: +src.lon } : { lat: 20, lng: 0 });
-    const map = L.map(el, { center: [at.lat, at.lng], zoom: src.findSpot?.at || isNum(src.lat) ? 11 : 2, zoomControl: false, attributionControl: true, doubleClickZoom: false });
+    /* the CURRENT pin wins over any saved search center — typing
+       coordinates on the position page IS telling this tool where to
+       look (field report: a stale saved center made the user re-paste
+       the same coordinates inside the overlay) */
+    const at = isNum(src.lat) && isNum(src.lon) ? { lat: +src.lat, lng: +src.lon } : (src.findSpot?.at || { lat: 20, lng: 0 });
+    const map = L.map(el, { center: [at.lat, at.lng], zoom: isNum(src.lat) ? 13 : src.findSpot?.at ? 11 : 2, zoomControl: false, attributionControl: true, doubleClickZoom: false });
     mapRef.current = map;
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19, attribution: "© Esri, Maxar, Earthstar Geographics" }).addTo(map);
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 21, maxNativeZoom: 19 }).addTo(map);
