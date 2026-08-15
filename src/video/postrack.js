@@ -1267,6 +1267,15 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
   const objR = Math.max(2, Math.round(opts.objR || 5));
   const reach = Math.max(4, Math.round(opts.reach || 16));
   const step = Math.max(1, Math.round(opts.step || 2));
+  /* opts.bounds {x0,y0,x1,y1}: the region of the window backed by REAL frame
+     pixels. The caller pads out-of-frame area with black, and that artificial
+     boundary out-contrasts a faint object — at deep zoom the pin LOCKED ONTO
+     THE FRAME EDGE and steered the close-up camera at it (field-measured on
+     the 10× clip). A candidate's whole center-surround box must sit on real
+     pixels; an object genuinely that close to the edge is a miss, and the
+     track carries the camera honestly instead. */
+  const bd = opts.bounds || { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9 };
+  const inB = (x, y) => x - 3 * objR >= bd.x0 && x + 3 * objR <= bd.x1 && y - 3 * objR >= bd.y0 && y + 3 * objR <= bd.y1;
   const ii = new Float64Array((w + 1) * (h + 1));
   for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += g[y * w + x]; ii[(y + 1) * (w + 1) + (x + 1)] = ii[y * (w + 1) + (x + 1)] + row; } }
   const box = (a, b, c, d) => {
@@ -1283,9 +1292,11 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
   };
   let best = 0, bx = Math.round(x0), by = Math.round(y0);
   for (let y = Math.round(y0 - reach); y <= y0 + reach; y += step) for (let x = Math.round(x0 - reach); x <= x0 + reach; x += step) {
+    if (!inB(x, y)) continue;
     const s = cs(x, y); if (s > best) { best = s; bx = x; by = y; }
   }
   for (let y = by - step; y <= by + step; y++) for (let x = bx - step; x <= bx + step; x++) {
+    if (!inB(x, y)) continue;
     const s = cs(x, y); if (s > best) { best = s; bx = x; by = y; }
   }
   const R = objR + 2, ring = box(bx - 3 * R, by - 3 * R, bx + 3 * R, by + 3 * R).m;
@@ -1322,7 +1333,17 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
      the lock releases and the aim GLIDES back to the track (no snap).
    · EMA (α=0.6) on the output only — find noise never reaches the camera raw.
 
-   st: mutable {prevDir, missRun, emaDir, ok} (create as {} per export).
+   HOLD/GLIDE RIDE THE TRACK (v4 — field case: the object moved at ~7°/s
+   while the phone tilted after it, and a WORLD-hold froze the aim in world
+   coordinates — any brief fade in that stretch parted the camera from the
+   mover immediately and the close-up went empty). The state is now the
+   OFFSET from the track, not an absolute direction: a hold keeps the last
+   measured offset while the track carries the motion (continuity through
+   the fade is preserved — the offset is continuous at the miss), and a
+   release GLIDES the offset to zero. A static object degenerates to the
+   old behaviour exactly.
+
+   st: mutable {oAz, oEl, has, missRun, ok} (create as {} per export).
    pred: {az, el} track prediction for this frame.
    o: {natW, natH, pose:{az,el,roll,fov,k}, maxAng, holdFrames?}.
    sample(cx, cy, W2): RGBA data of a W2×W2 native-resolution window centered
@@ -1331,40 +1352,66 @@ export function pinFind(data, w, h, x0, y0, opts = {}) {
    Returns {az, el, mode} — mode ∈ lock | hold | glide | pred | gated | faded. */
 export function pinStep(st, pred, o, sample) {
   const HOLD = o.holdFrames ?? 10;
-  const predDir = dirFromAzEl(pred.az, pred.el);
-  const lerpU = (a, b, u) => unit([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
-  const ang = (a, b) => Math.acos(Math.min(1, Math.max(-1, dot(a, b))));
-  const out = (d, mode) => { const ae = dirToAzEl(d); return { az: ae.az, el: ae.el, mode }; };
-  const isLock = !!st.prevDir && (st.missRun || 0) < HOLD;
+  const angDp = (a, b) => ((a - b + 540) % 360) - 180;
+  const out = (mode) => ({ az: (((pred.az + (st.oAz || 0)) % 360) + 360) % 360, el: pred.el + (st.oEl || 0), mode });
+  const isLock = !!st.has && (st.missRun || 0) < HOLD;
   const miss = (why) => {
     st.missRun = (st.missRun || 0) + 1;
-    if (st.prevDir && st.missRun < HOLD) return out(st.emaDir || st.prevDir, "hold");
-    st.prevDir = null;
-    if (st.emaDir) {
-      st.emaDir = lerpU(st.emaDir, predDir, 0.12);
-      if (ang(st.emaDir, predDir) < 0.0006) st.emaDir = null; // arrived — back on the track
-      return out(st.emaDir || predDir, "glide");
+    if (st.has && st.missRun < HOLD) return out("hold"); // offset held — the track carries the motion
+    st.has = 0;
+    if (Math.abs(st.oAz || 0) > 0.03 || Math.abs(st.oEl || 0) > 0.03) {
+      st.oAz = (st.oAz || 0) * 0.88; st.oEl = (st.oEl || 0) * 0.88; // glide the offset home, never snap
+      return out("glide");
     }
+    st.oAz = 0; st.oEl = 0;
     return { ...pred, mode: why || "pred" };
   };
-  const baseDir = isLock ? st.prevDir : predDir;
+  const baseDir = dirFromAzEl(pred.az + (isLock ? st.oAz || 0 : 0), pred.el + (isLock ? st.oEl || 0 : 0));
   const bp = dirToPixK(baseDir, o.natW, o.natH, o.pose.az, o.pose.el, o.pose.roll || 0, o.pose.fov, o.pose.k || 0);
   if (!bp) return miss();
+  /* DEEP-ZOOM SCALING (field case: a 10× zoom clip, object off frame for
+     stretches of the close-up). Two caps tuned for small objects at
+     moderate zoom failed together at fov ~5°:
+     · the LOCKED search reach was ±objR·2 ≈ ±0.2° — but between the
+       solve's 0.25 s samples the interpolated pose is wrong by up to ~1°
+       at that zoom, so the pin's own prediction landed outside its window,
+       missed, and the hold/glide frames wore the raw pose error in a
+       ±1.1° crop. The locked reach must cover the POSE-INTERPOLATION
+       error, which scales with pixels-per-degree, not object size.
+     · objR was capped at 14 px while the object spanned 150–230 px — the
+       center-surround peak sat on the object's RIM, aiming the camera
+       half an object off even when locked. The detector radius follows
+       the object's real pixel size now (integral-image cost is O(1) in
+       objR; the window cap is what bounds work). */
   const objPx = Math.min(220, Math.max(4, o.natW * Math.tan((Math.max(0.05, o.maxAng) * D2R) / 2) / Math.tan((o.pose.fov * D2R) / 2)));
-  const objR = Math.min(14, Math.max(2, Math.round(objPx / 2)));
-  const reach = isLock ? Math.max(10, objR * 2) : Math.round(Math.min(240, Math.max(110, objPx * 6)));
+  const objR = Math.min(40, Math.max(2, Math.round(objPx / 2)));
+  const pxPerDeg = o.natW / Math.max(2, o.pose.fov);
+  const reach = isLock
+    ? Math.max(10, objR * 2, Math.min(200, Math.round(pxPerDeg * 0.8)))
+    : Math.round(Math.min(260, Math.max(110, objPx * 6)));
   const half = reach + objR * 3 + 4;
-  const W2 = Math.min(560, 2 * half);
+  const W2 = Math.min(720, 2 * half);
   const data = sample(bp.px, bp.py, W2);
-  const f = data ? pinFind(data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: isLock ? 2 : 3 }) : null;
+  /* the frame's real-pixel rect in window coordinates — the caller pads
+     out-of-frame area with black, which must never win the contrast sweep */
+  const bounds = {
+    x0: -(bp.px - W2 / 2), y0: -(bp.py - W2 / 2),
+    x1: o.natW - (bp.px - W2 / 2), y1: o.natH - (bp.py - W2 / 2),
+  };
+  const f = data ? pinFind(data, W2, W2, W2 / 2, W2 / 2, { objR, reach: Math.min(reach, W2 / 2 - objR * 3 - 1), step: isLock ? 2 : 3, bounds }) : null;
   if (!f || f.score < 5) return miss("faded");
   const fd = pixToDirK(bp.px + (f.x - W2 / 2), bp.py + (f.y - W2 / 2), o.natW, o.natH, o.pose.az, o.pose.el, o.pose.roll || 0, o.pose.fov, o.pose.k || 0);
-  const acqGate = (o.maxAng * 2.5 + 0.6) * D2R;
-  if (ang(fd, predDir) > (isLock ? acqGate * 4 : acqGate)) return miss("gated");
-  st.prevDir = fd; st.missRun = 0;
-  st.emaDir = st.emaDir ? lerpU(st.emaDir, fd, 0.6) : fd;
-  st.ok = (st.ok || 0) + 1;
-  return out(st.emaDir, "lock");
+  const fae = dirToAzEl(fd);
+  const offAz = angDp(fae.az, pred.az), offEl = fae.el - pred.el;
+  const mag = Math.hypot(offAz * Math.cos(pred.el * D2R), offEl);
+  const acqGate = o.maxAng * 2.5 + 0.6;
+  if (mag > (isLock ? acqGate * 4 : acqGate)) return miss("gated");
+  /* EMA on the OFFSET (α=0.6): find noise never reaches the camera raw,
+     while the track's own motion passes through un-lagged */
+  st.oAz = st.has ? (st.oAz || 0) + (offAz - (st.oAz || 0)) * 0.6 : offAz;
+  st.oEl = st.has ? (st.oEl || 0) + (offEl - (st.oEl || 0)) * 0.6 : offEl;
+  st.has = 1; st.missRun = 0; st.ok = (st.ok || 0) + 1;
+  return out("lock");
 }
 
 /* --- USER-TUNABLE SMOOTHING STRENGTH (the field slider) ---------------------

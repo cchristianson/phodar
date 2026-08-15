@@ -48,7 +48,37 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
-- **🖼 × ⚓ — the composite survives anchoring (stale, not destroyed).**
+- **◎ Close-up pin v4 — the object stays in frame at deep zoom.** Field
+  report on the 10× Germany clip after the full stabilize→panorama→
+  anchor workflow: the exported close-up lost the object for stretches —
+  reproduced frame-by-frame against the user's exact session (whose
+  track was measured DEAD-ON: 0.00–0.05° at every waypoint), which
+  isolated three pin failures, each fixed and asserted:
+  1. **The locked search window scaled with object size only** (±0.2°) —
+     but between the solve's 0.25 s samples the interpolated pose is
+     wrong by up to ~1° at 5° FOV, so the pin missed its own prediction
+     and the fallback frames wore the raw pose error inside a ±1.1°
+     crop. The window now scales with pixels-per-degree.
+  2. **The detector radius was capped at 14 px** while the object
+     spanned 150–230 px — the contrast peak sat on the object's RIM.
+     The radius follows the real pixel size now (the integral-image
+     sweep is O(1) in radius).
+  3. **A fade world-held the aim frozen** while the object moved at
+     ~7°/s (the phone tilting after it) — any brief miss in that
+     stretch parted the camera from the mover and the close-up went
+     empty. Hold/glide now ride the TRACK as an offset: a hold keeps
+     the last measured offset while the track carries the motion, and
+     a release glides the offset to zero (a static object degenerates
+     to the old behaviour exactly — all previous fade assertions pass
+     unchanged).
+  Plus a fourth found on the way: at deep zoom the acquire window
+  reaches the frame border, where the sampling pad (black) formed a
+  huge artificial contrast edge — the pin could lock onto THE FRAME
+  EDGE itself. The sweep now excludes any candidate whose contrast
+  boxes leave the real frame. Verified on the user's clip+session with
+  a before/after crop montage: the old policy locked 28/83 sampled
+  frames and lost the object entirely past 16 s; the new one locks
+  53/83 with the object in frame throughout.
   Field workflow discovery: scrubbing the live frame over the composite
   is the best way to SEE which frames lost the world lock and need an ⚓
   anchor — but every anchor re-derived the path and the invalidation

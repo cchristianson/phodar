@@ -7141,7 +7141,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          by the real pinFind: poor track went 380 px rms wander → 41 px. */
       const pinCvs = camFollow ? document.createElement("canvas") : null;
       const pinCtx = pinCvs ? pinCvs.getContext("2d", { willReadFrequently: true }) : null;
-      const pinSt = { prevDir: null, missRun: 0, emaDir: null, ok: 0 };
+      const pinSt = { oAz: 0, oEl: 0, has: 0, missRun: 0, ok: 0 };
       let pinTry = 0;
       const refinePin = (p, pred) => {
         if (!pinCtx || !v.videoWidth) return pred;

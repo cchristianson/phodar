@@ -1019,22 +1019,31 @@ terrain stay frozen and only the object moves. Build ladder:
    grid pitch scales with FOV down to 0.5°). OVERLAYS ONLY ON "view"
    (grid + readout + all visible sky layers + wireframe): "full" and
    "crop" are CLEAN evidence renders, nothing burned in (user decision).
-   **Close-up PIXEL PIN — v3 (`pinStep`, postrack.js, pure + mathcheck-
+   **Close-up PIXEL PIN — v4 (`pinStep`, postrack.js, pure + mathcheck-
    asserted).** The crop camera re-locks on the object's ACTUAL pixels
    every frame (pinFind contrast sweep), because the solved track carries
    sub-degree error that the crop zoom magnifies into gross wander. The
-   v2 lesson, learned from a real field close-up (object swung ±20% of
-   the frame and LEFT it): never gate the locked chain against the TRACK
-   — the track is the thing the pin exists to correct, so with ~1° of
-   track error the gate rejected the pin's own correct finds and the
-   miss path eased the camera back onto the bad track. v3 policy: while
-   locked, the tight search window IS the gate (a 4× backstop bounds a
-   runaway chain); ACQUIRE still gates against the track (a bird must
-   not capture the camera — human outranks pixels); brief fades
-   WORLD-HOLD the last lock; a released lock GLIDES back to the track,
-   never snaps. Reproduced + fixed in a harness driving the real
-   pinFind: a 1.2°-wander track went from 380 px rms object wander (with
-   losses) to 41 px, identical to a good track.
+   v2 lesson (object swung ±20% of the frame and LEFT it): never gate
+   the locked chain against the TRACK — the track is the thing the pin
+   exists to correct. v3 policy: while locked, the tight search window
+   IS the gate (4× backstop); ACQUIRE still gates against the track
+   (human outranks pixels); releases GLIDE, never snap. **v4 (the 10×
+   Germany clip: object off frame for stretches even with a track
+   measured dead-on at every waypoint)**: (1) the LOCKED window scales
+   with px-per-degree, not object size — between 0.25 s solve samples
+   the interpolated pose is ~1° wrong at 5° FOV and the old ±0.2°
+   window missed its own prediction; (2) the detector radius follows
+   the object's real pixel size (a 14 px cap put the contrast peak on a
+   200 px object's RIM); (3) hold/glide are an OFFSET FROM THE TRACK,
+   not a frozen world direction — the field object moved ~7°/s during
+   fades, and a world-hold parted from it instantly (static objects
+   degenerate to the old behaviour exactly); (4) pinFind takes
+   opts.bounds and never considers candidates whose contrast boxes
+   leave the real frame — the caller's black padding at the frame
+   border out-contrasts a faint object and the pin LOCKED ON THE EDGE
+   at deep zoom. All four asserted; verified on the user's clip+session
+   with a before/after crop montage (28/83 locks and a lost tail →
+   53/83 with the object in frame throughout).
    The warp texture is NATIVE for full/crop, guarded only by the iOS
    canvas ceiling (4600 px side / 16 Mpx) — the old 2048 texture cap
    silently halved 4K sources before the warp ever saw them; "view"

@@ -2805,6 +2805,65 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   else console.log(`  ok   pinFind: empty gradient sky scores ${f.score.toFixed(2)} — no false lock`);
 }
 
+/* ── pinStep at DEEP ZOOM (field case: 10× zoom clip, object off frame for
+   stretches of the close-up). At fov 5° one degree is ~144 px: between the
+   solve's 0.25 s knots the interpolated pose can be ~1° wrong, so a LOCKED
+   pin whose search window scales only with object size (±0.2°) missed its
+   own prediction and the hold/glide frames wore the raw pose error. The
+   locked window now scales with px-per-degree, and the detector radius
+   follows the object's real pixel size (a 14 px cap put the contrast peak
+   on a 200 px object's RIM). A locked pin must re-find the object through
+   a 0.7° pose lie and aim so the object renders centered. */
+{
+  const natW = 720, natH = 1280;
+  const oPose = { az: 0, el: 40, roll: 0, fov: 5, k: 0 };       // interpolated (wrong) pose
+  const tPose = { az: 0.7, el: 40, roll: 0, fov: 5, k: 0 };     // the frame's TRUE pose
+  const dTrue = pixToDirK(360, 640, natW, natH, tPose.az, tPose.el, tPose.roll, tPose.fov, tPose.k); // object at true frame center
+  const objNat = dirToPixK(dTrue, natW, natH, tPose.az, tPose.el, tPose.roll, tPose.fov, tPose.k);   // its native pixel (360,640)
+  const sample = (cx, cy, W2) => {
+    const d = new Uint8ClampedArray(W2 * W2 * 4);
+    for (let y = 0; y < W2; y++) for (let x = 0; x < W2; x++) {
+      const nx = cx - W2 / 2 + x, ny = cy - W2 / 2 + y;
+      const rr = Math.hypot(nx - objNat.px, ny - objNat.py);
+      let v = 150 + 12 * (ny / natH);
+      if (rr < 55) v -= 65 * Math.exp(-(rr * rr) / (2 * 34 * 34));
+      const i = (y * W2 + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    }
+    return d;
+  };
+  const st = { oAz: 0, oEl: 0, has: 1, missRun: 0, ok: 3 }; // LOCKED, dead-on last frame (zero offset from the track)
+  const ae = dirToAzEl(dTrue);
+  let r = pinStep(st, { az: ae.az, el: ae.el }, { natW, natH, pose: oPose, maxAng: 1.0 }, sample);
+  if (r.mode !== "lock") { console.error("  FAIL pin deep zoom: locked pin must survive a 0.7° pose lie, got mode", r.mode); fails++; }
+  else console.log("  ok   pin deep zoom: locked pin re-finds the object through a 0.7° pose-interpolation error");
+  /* the EMA converges over a couple of frames while the pose error persists —
+     what steady tracking inside a knot interval actually looks like */
+  for (let i = 0; i < 2; i++) r = pinStep(st, { az: ae.az, el: ae.el }, { natW, natH, pose: oPose, maxAng: 1.0 }, sample);
+  const aimPx = dirToPixK(dirFromAzEl(r.az, r.el), natW, natH, oPose.az, oPose.el, oPose.roll, oPose.fov, oPose.k);
+  const missPx = Math.hypot(aimPx.px - objNat.px, aimPx.py - objNat.py);
+  approx(missPx, 0, 9, "pin deep zoom: aim converges onto the object within 3 frames (px miss)");
+  /* FRAME-EDGE HONESTY: at deep zoom the acquire window reaches the frame
+     border, where the caller's black padding forms a huge artificial
+     contrast edge — the pin locked onto THE FRAME EDGE and steered the
+     close-up at it (field-measured). With no object in reach, an
+     edge-in-window search must MISS, never lock on the border. */
+  const sampleEdge = (cx, cy, W2) => {
+    const d = new Uint8ClampedArray(W2 * W2 * 4);
+    for (let y = 0; y < W2; y++) for (let x = 0; x < W2; x++) {
+      const nx = cx - W2 / 2 + x;
+      const v = nx < 0 || nx >= natW ? 0 : 150; // black padding left of the frame
+      const i = (y * W2 + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    }
+    return d;
+  };
+  const dEdge = pixToDirK(90, 640, natW, natH, oPose.az, oPose.el, oPose.roll, oPose.fov, oPose.k); // near the left frame edge
+  const aeE = dirToAzEl(dEdge);
+  const stE = { oAz: 0, oEl: 0, has: 0, missRun: 99, ok: 0 }; // acquiring (wide window)
+  const rE = pinStep(stE, { az: aeE.az, el: aeE.el }, { natW, natH, pose: oPose, maxAng: 1.0 }, sampleEdge);
+  if (rE.mode === "lock") { console.error("  FAIL pin edge: locked onto the black frame border"); fails++; }
+  else console.log(`  ok   pin edge: black frame border never wins the contrast sweep (mode ${rE.mode})`);
+}
+
 /* ── re-anchoring solved paths across a placement change ────────────────────
    posePath/objPath are solved relative to the alignment frame's placement;
    when the placement moves, the stored world data must rotate by exactly the
@@ -3319,6 +3378,20 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(holdDriftMax < 0.02, `held frames stay ON the last lock, not the track (max drift ${holdDriftMax.toFixed(3)}°)`);
   ok(glides >= 10, `long fade releases and glides toward the track (${glides} glide frames)`);
   ok(maxStep < 0.35, `no snap anywhere in the fade path (max step ${maxStep.toFixed(3)}°/frame)`);
+  // MOVING-OBJECT fade (field case: a mover at ~7°/s tilted after by the
+  // phone — a world-frozen hold parted from it immediately and the close-up
+  // went empty). A hold must RIDE THE TRACK: pred moves, the held offset
+  // stays, so the aim moves with the object.
+  {
+    const stM = { oAz: 0.31, oEl: -0.12, has: 1, missRun: 0, ok: 5 };
+    let maxRide = 0;
+    for (let fi = 1; fi <= 5; fi++) {
+      const pm = { az: 250 + fi * 0.23, el: 20 + fi * 0.11 };  // the object keeps moving during the fade
+      const r = pinStep(stM, pm, o, () => null);               // pixels gone — pure hold
+      maxRide = Math.max(maxRide, Math.hypot(r.az - (pm.az + 0.31), r.el - (pm.el - 0.12)));
+    }
+    ok(maxRide < 1e-9, `a fade on a MOVING object rides the track with the held offset (max dev ${maxRide.toExponential(1)})`);
+  }
   // clutter safety: a track 10° wrong must NOT let pixels capture the camera —
   // the acquire window never reaches the object, so the aim stays on the track
   const stBad = { prevDir: null, missRun: 0, emaDir: null, ok: 0 };
