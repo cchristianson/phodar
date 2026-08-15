@@ -48,6 +48,18 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Changed
+- **Find my spot: ±1 km fine mode + coordinate paste.** The
+  walk-the-last-kilometer tool: once anything (a coarse search, a tip, a
+  report) has you within a neighborhood, paste coordinates like
+  "30.379, 78.104" into the 🔎 search to jump straight there, pick
+  ±1 km, and the sweep runs ~200 m cells with 150 m structure rings.
+  The results header says plainly what changes at that scale: the ridge
+  shape barely moves between cells, so the pinned structures and the
+  near-ridge layer do the ranking — pin everything the frames show.
+  Twin structures are fetched over at least 3 km regardless of the
+  radius (the anchor tank may sit just outside a tight circle), and the
+  result-thinning distance scales with the grid so fine candidates
+  aren't collapsed away.
 - **Find my spot: 🌦 weather cross-check.** The clip SHOWS its sky, and
   the claimed date + a candidate area imply one: the search now reads
   the sky from its own sampled frames (saturated blue = clear,
