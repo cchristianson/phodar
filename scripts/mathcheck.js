@@ -4301,6 +4301,35 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(wZoom.azMin >= wLayBig.azMin - 1e-9 && wZoom.azMax <= wLayBig.azMax + 1e-9 &&
     wZoom.elMin >= wLayBig.elMin - 1e-9 && wZoom.elMax <= wLayBig.elMax + 1e-9,
     "pano: the window stays inside the composite it crops from");
+  /* CONTENT-EQUATOR ROTATION (near-zenith clips): equirect degenerates at
+     the poles — a tilt-to-70° clip's frames span enormous azimuth there and
+     the layout ballooned to a fictional 347° (field case). panoRot builds
+     the pano in a rotated frame whose equator runs through the content. */
+  {
+    const zen = [{ az: 350, el: 62, roll: 3, fov: 40, t: 0 }, { az: 10, el: 71, roll: -5, fov: 40, t: 1 }, { az: 355, el: 66, roll: 1, fov: 40, t: 2 }];
+    const flatSet = [{ az: 250, el: 8, roll: 0, fov: 40, t: 0 }, { az: 270, el: 12, roll: 0, fov: 40, t: 1 }];
+    ok(PN.panoRot(flatSet) === null, "panoRot: equatorial content keeps the old path (null — byte-identical)");
+    const rot = PN.panoRot(zen);
+    ok(rot && Math.abs(rot.el) > 60, `panoRot: engages on near-zenith content (mean el ${rot && rot.el}°)`);
+    let rtWorst = 0, pixWorst = 0;
+    for (const p of zen) {
+      const rp = rot.pose(p, false), back = rot.pose(rp, true);
+      rtWorst = Math.max(rtWorst, Math.abs(((back.az - p.az + 540) % 360) - 180), Math.abs(back.el - p.el), Math.abs(back.roll - p.roll));
+      for (const [x, y] of [[80, 60], [900, 1500]]) {
+        const gw = pixToDirK(x, y, 1080, 1920, p.az, p.el, p.roll, p.fov, 0);
+        const gr = pixToDirK(x, y, 1080, 1920, rp.az, rp.el, rp.roll, rp.fov, 0);
+        const gwr = rot.dir(gw, false);
+        pixWorst = Math.max(pixWorst, Math.acos(Math.min(1, gr[0] * gwr[0] + gr[1] * gwr[1] + gr[2] * gwr[2])) * R2D);
+      }
+    }
+    ok(rtWorst < 0.01, `panoRot: pose round-trip exact (worst ${rtWorst.toFixed(4)}°)`);
+    ok(pixWorst < 0.01, `panoRot: rotated pose renders the same pixels — roll handled (worst ${pixWorst.toFixed(4)}°)`);
+    const layRaw = PN.panoLayout(PN.unwrapSamples(zen), 1080, 1920);
+    const layRot = PN.panoLayout(PN.unwrapSamples(zen.map((p) => rot.pose(p, false))), 1080, 1920);
+    ok(layRot.azMax - layRot.azMin < 120 && layRaw.azMax - layRaw.azMin > 150,
+      `panoRot: zenith layout un-balloons (${(layRaw.azMax - layRaw.azMin).toFixed(0)}° → ${(layRot.azMax - layRot.azMin).toFixed(0)}°)`);
+  }
+
   /* the window layout is equirectXY-compatible: the whole frame footprint
      maps inside the window (padding may be asymmetric at layout edges) */
   const inWin = PN.frameBorder({ uAz: 40, el: 10, roll: 0, fov: 10 }, 1920, 1080).every((b) => {

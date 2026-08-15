@@ -74,6 +74,24 @@ Notable changes to Phodar. Format loosely follows
   steps are never flagged. Stated limitation: two spliced scenes of
   near-identical smooth content can cross-match (measured on synthetic
   smooth fields) — the trim remains the manual override.
+- **🖼 Panorama: near-zenith clips build on their own equator (the real
+  "still no better" fix for the sky-zoom clip).** Equirect degenerates
+  at the poles: a frame whose corners approach el 90° spans enormous
+  azimuth there, so a clip that tilts well up — the user's hard zoom to
+  el ~70°, which is exactly where UFO clips point — ballooned the
+  layout to a fictional 347° span and fanned its content into polar
+  smears (the offline walk proved the solve itself was sane: el 20→70°,
+  a 6.8× zoom, azimuth within ±25°). `panoRot` now rotates the world so
+  the content's mean direction sits on the equator, the whole panorama
+  (registration windows, corrections, both paint passes) builds in
+  rotated coordinates, and only the world-facing edges rotate back: the
+  dome layer's pixel→direction mapping and the 📐 camera-path anchors
+  (pose az/el/roll mapped through the frame's rotated up-vector — roll
+  is not rotation-invariant). Equatorial clips return null and keep the
+  proven path byte-identical (the Himalaya composite is untouched).
+  Mathcheck: engages only past ±25° mean elevation, pose round-trip and
+  pixel-mapping exact to sub-millidegree with roll handled, and the
+  synthetic zenith layout un-balloons 361°→54°.
 - **🖼 Panorama: held frames excluded for real.** A long held run keeps
   its `h` flag on the saved path now (short runs were already bridged
   away; the flag used to be stripped from ALL entries) — so `panoPick`'s

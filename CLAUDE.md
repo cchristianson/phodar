@@ -1238,6 +1238,15 @@ terrain stay frozen and only the object moves. Build ladder:
    harness (marker dots at predicted directions through a rolled
    frame). Future hook: a panorama is ONE wide frame — feed it back
    into Find-my-spot as a single sample set.
+   **NEAR-ZENITH ROTATION (`panoRot`)**: equirect degenerates at the
+   poles — a tilt-to-70° clip (the field sky-zoom case; the solve was
+   SANE, ±25° az) ballooned the layout to a fictional 347° and fanned
+   content into polar smears. Content past ±25° mean elevation builds
+   the whole pano in a rotated frame whose equator runs through the
+   content; only the dome pixel→dir mapping and the 📐 fixes rotate
+   back (roll is NOT rotation-invariant — mapped via the rotated
+   up-vector; the sign is asserted against pixToDirK to
+   sub-millidegree). Equatorial clips return null → byte-identical.
    **v2 RE-REGISTRATION + v3 ADAPTIVE WINDOWS**: the solved pose only
    SEEDS each frame's placement — before painting, the frame is
    registered against the growing composite (equirect pixel shift IS

@@ -23,10 +23,55 @@
    and are exercised in a browser harness.
    ============================================================ */
 
-import { pixToDirK } from "../math/projection.js";
-import { dirToAzEl } from "../math/geodesy.js";
+import { pixToDirK, photoBasis } from "../math/projection.js";
+import { dirToAzEl, dirFromAzEl, D2R, R2D } from "../math/geodesy.js";
 
 const sd = (a, b) => ((a - b + 540) % 360) - 180; // signed shortest az difference
+
+/* CONTENT-EQUATOR ROTATION (the near-zenith fix). Equirect degenerates at
+   the poles: a frame whose corners approach el 90° spans enormous azimuth,
+   so a clip tilted well up (field case: a hard zoom to el ~70° — exactly
+   where UFO clips point) ballooned the layout to a fictional 347° span and
+   fanned its content into polar smears. The classic cure: rotate the WORLD
+   so the content's mean direction sits on the equator, build the whole
+   panorama in rotated coordinates (registration, corrections, painting all
+   consistent there), and rotate back only at the world-facing edges (the
+   dome layer's pixel→direction mapping, the 📐 camera-path fixes).
+   Equatorial clips (|mean el| ≤ gate) return null and keep the old path
+   byte-identical. `dir(g, inv)` rotates a direction; `pose(p, inv)` maps a
+   whole pose az/el/roll (fov is rotation-invariant) — roll via the frame's
+   rotated up-vector against the roll-less basis at the new center. */
+export function panoRot(samples, opts = {}) {
+  const gate = opts.gate ?? 25;
+  let sx = 0, sy = 0, sz = 0;
+  for (const p of samples) {
+    const d = dirFromAzEl(((((p.uAz != null ? p.uAz : p.az)) % 360) + 360) % 360, p.el);
+    sx += d[0]; sy += d[1]; sz += d[2];
+  }
+  const L = Math.hypot(sx, sy, sz) || 1;
+  const me = dirToAzEl([sx / L, sy / L, sz / L]);
+  if (Math.abs(me.el) <= gate) return null;
+  const a = [Math.cos(me.az * D2R), -Math.sin(me.az * D2R), 0]; // the "right" axis at the mean azimuth
+  const phi = -me.el * D2R;                                     // tip the mean direction down to el 0
+  const rod = (v, ang) => {
+    const c = Math.cos(ang), s = Math.sin(ang), d = a[0] * v[0] + a[1] * v[1] + a[2] * v[2];
+    const cx = a[1] * v[2] - a[2] * v[1], cy = a[2] * v[0] - a[0] * v[2], cz = a[0] * v[1] - a[1] * v[0];
+    return [v[0] * c + cx * s + a[0] * d * (1 - c), v[1] * c + cy * s + a[1] * d * (1 - c), v[2] * c + cz * s + a[2] * d * (1 - c)];
+  };
+  const dir = (g, inv) => rod(g, inv ? -phi : phi);
+  const pose = (p, inv) => {
+    const b = photoBasis((((p.az % 360) + 360) % 360), p.el, p.roll || 0);
+    const f2 = dir(b.f, inv), u2 = dir(b.u, inv);
+    const ae = dirToAzEl(f2);
+    const b0 = photoBasis(ae.az, ae.el, 0);
+    /* photoBasis: u = u0·cos(roll) − r0·sin(roll) with u0 = r0×f, so
+       cross(u0,u)·f = −sin(roll) — hence the negated numerator */
+    const cxv = [b0.u[1] * u2[2] - b0.u[2] * u2[1], b0.u[2] * u2[0] - b0.u[0] * u2[2], b0.u[0] * u2[1] - b0.u[1] * u2[0]];
+    const roll2 = Math.atan2(-(cxv[0] * f2[0] + cxv[1] * f2[1] + cxv[2] * f2[2]), b0.u[0] * u2[0] + b0.u[1] * u2[1] + b0.u[2] * u2[2]) * R2D;
+    return { ...p, az: +ae.az.toFixed(4), el: +ae.el.toFixed(4), roll: +roll2.toFixed(3) };
+  };
+  return { el: +me.el.toFixed(2), az: +me.az.toFixed(2), dir, pose };
+}
 
 /* posePath entries → samples with a CONTINUOUS azimuth axis (a pan that
    crosses 359→0 must not tear the canvas in half) */

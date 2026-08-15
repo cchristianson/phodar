@@ -20,7 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
-import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame, regWindow } from "./video/panorama.js";
+import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame, regWindow, panoRot } from "./video/panorama.js";
 import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
@@ -5590,7 +5590,10 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         const rowD = [], rowS = [];
         for (let c2 = 0; c2 <= cols; c2++) {
           const az = lay.azMin + (c2 / cols) * spanAz;
-          const pr = projectD(dirFromAzEl(((az % 360) + 360) % 360, el));
+          /* rotated layouts (near-zenith clips) map pano coords → world via
+             the inverse content-equator rotation */
+          const gd = dirFromAzEl(((az % 360) + 360) % 360, el);
+          const pr = projectD(pn.rot ? pn.rot.dir(gd, true) : gd);
           rowD.push(pr.inFront ? [pr.x * W, pr.y * H] : null);
           rowS.push([((az - lay.azMin) / spanAz) * dome.width, ((lay.elMax - el) / spanEl) * dome.height]);
         }
@@ -6818,7 +6821,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const { t0: kt0, t1: kt1 } = trimOf(source, v.duration || Infinity);
       const picked = panoPick(path.filter((p) => p.t >= kt0 - 0.01 && p.t <= kt1 + 0.01), 90);
       if (picked.length < 2) throw new Error("too few usable frames in the kept span");
-      const samples = unwrapSamples(picked);
+      /* near-zenith clips build in a ROTATED frame whose equator runs
+         through the content (panoRot) — equirect at the pole fanned a
+         tilt-to-70° clip into a fictional 347° span (field case). All
+         internals run in rotated coords; only the dome mapping and the
+         📐 fixes rotate back. */
+      const rot = panoRot(picked);
+      const samples = unwrapSamples(rot ? picked.map((p) => rot.pose(p, false)) : picked);
       const natW = source.natW, natH = source.natH;
       const layout = panoLayout(samples, natW, natH);
       const cv = document.createElement("canvas"); cv.width = layout.W; cv.height = layout.H;
@@ -6898,7 +6907,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           if (Math.abs(dAz) > 1e-9 || Math.abs(dEl) > 1e-9) corrected++;
           if (bestScore >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
             (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
-            fixes.push({ t: +p.t.toFixed(3), az: +((((p.uAz % 360) + 360) % 360)).toFixed(3), el: +p.el.toFixed(3), roll: +(p.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
+            /* ⚓ anchors live in WORLD coordinates — rotate the corrected pose back */
+            const wq = rot ? rot.pose({ az: ((p.uAz % 360) + 360) % 360, el: p.el, roll: p.roll || 0 }, true) : { az: ((p.uAz % 360) + 360) % 360, el: p.el, roll: p.roll || 0 };
+            fixes.push({ t: +p.t.toFixed(3), az: +((((wq.az % 360) + 360) % 360)).toFixed(3), el: +wq.el.toFixed(3), roll: +(wq.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
           }
         }
         drawFramePano(ctx, tcv, texW, texH, p, layout);
@@ -6923,7 +6934,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       dcv.getContext("2d").drawImage(cv, 0, 0, dcv.width, dcv.height);
       /* thin the anchor candidates — 90 chips would flood the ⚓ list */
       const fixStep = Math.max(1, Math.ceil(fixes.length / 30));
-      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed, fixes: fixes.filter((_, i2) => i2 % fixStep === 0) };
+      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed, rot, fixes: fixes.filter((_, i2) => i2 % fixStep === 0) };
       setPanoReady((k) => k + 1);
       return panoRef.current;
     } finally {
