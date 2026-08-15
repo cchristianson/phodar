@@ -4283,6 +4283,33 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   const regClean = PN.registerFrame(base2, (s) => resample(base2, s), { R: 4 });
   ok(regClean && regClean.scale === 1, "pano: an unbiased frame keeps scale 1 — no FOV jitter from the ladder");
 
+  /* 📐 smoothCorrections: the per-frame registrations are noisy independent
+     measurements of a SMOOTH drift — raw exact anchors imprinted the noise
+     on the camera path (field: a 5.5° re-lock flip between adjacent
+     samples + a ±0.6° sawtooth read as playback glitches). Despike must
+     kill a lone flip, smoothing must damp the sawtooth, a genuine ramp
+     must pass through, and unmeasured samples must stay null without
+     contaminating neighbours. */
+  {
+    const mkC = (vals) => vals.map((v, i) => (v == null ? { t: i, dAz: 0, dEl: 0, r: 1, score: 0.2 } : { t: i, dAz: v, dEl: 0, r: 1, score: 0.9 }));
+    const flip = mkC([0.2, 0.25, 0.3, 3.4, 0.4, 0.45, 0.5]);
+    const sFlip = PN.smoothCorrections(flip);
+    ok(Math.abs(sFlip[3].dAz - 0.35) < 0.25, `pano-fix smoothing: a lone 3° re-lock flip snaps back to its neighbours (got ${sFlip[3].dAz.toFixed(2)})`);
+    const saw = mkC([0, 0.6, -0.5, 0.55, -0.45, 0.5, -0.5, 0.6, 0]);
+    const sSaw = PN.smoothCorrections(saw);
+    const rms = (a) => Math.sqrt(a.reduce((s, c) => s + c.dAz * c.dAz, 0) / a.length);
+    ok(rms(sSaw.slice(1, 8)) < rms(saw.slice(1, 8)) * 0.6, `pano-fix smoothing: sawtooth damped (rms ${rms(saw.slice(1, 8)).toFixed(2)} → ${rms(sSaw.slice(1, 8)).toFixed(2)})`);
+    const ramp = mkC([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]);
+    const sRamp = PN.smoothCorrections(ramp);
+    ok(sRamp.every((c, i) => Math.abs(c.dAz - ramp[i].dAz) < 0.15), "pano-fix smoothing: a genuine drift ramp passes through");
+    const gap = PN.smoothCorrections(mkC([0.4, 0.4, null, 0.4, 0.4]));
+    ok(gap[2] === null && Math.abs(gap[1].dAz - 0.4) < 0.05 && Math.abs(gap[3].dAz - 0.4) < 0.05,
+      "pano-fix smoothing: an unmeasured sample stays null and never contaminates its neighbours");
+    const zoomSpike = [{ t: 0, dAz: 0, dEl: 0, r: 1, score: 0.9 }, { t: 1, dAz: 0, dEl: 0, r: 1.2, score: 0.9 }, { t: 2, dAz: 0, dEl: 0, r: 1, score: 0.9 }];
+    const sZoom = PN.smoothCorrections(zoomSpike);
+    ok(Math.abs(sZoom[1].r - 1) < 0.05, `pano-fix smoothing: a lone ×1.2 zoom-scale spike is pulled back (got ×${sZoom[1].r.toFixed(2)})`);
+  }
+
   /* v3 adaptive registration windows: a deep-zoom frame must get enough
      pixels to correlate (the v2 fixed 2 px/° twin gave it ~20 — field-
      measured as zero zoom corrections exactly where they were needed),

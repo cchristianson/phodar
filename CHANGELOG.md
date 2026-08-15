@@ -48,6 +48,30 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **📐 Apply to path v2 — smooth anchors, composite kept.** Two field
+  reports in one: "apply to path seems to have glitches" and "why don't
+  we have to recalculate the panorama after applying?" The glitches were
+  real and measurable: the per-frame registrations are independent
+  measurements carrying ~1-pixel quantization plus occasional re-lock
+  flips (on the reporting clip: a 5.5° dAz step between adjacent samples
+  where the registration jumped to a different lock, and a ±0.6°
+  sawtooth) — and applying them as EXACT ⚓ anchors imprinted that noise
+  straight onto the camera path. The drift they measure is smooth, so
+  `smoothCorrections` (pure, mathcheck-asserted) now despikes the
+  correction series against snapshot neighbours (a lone flip snaps back;
+  an in-place pass would mangle alternating noise) and runs a light
+  two-pass 3-tap over the measured samples only — unmeasured frames stay
+  null and never contaminate neighbours; FOV rides as log-ratio so zoom
+  corrections smooth multiplicatively; a genuine drift ramp passes
+  through untouched (sawtooth rms 0.53°→0.05° in the assertion). The
+  COMPOSITE keeps painting with the raw per-frame locks — pixels want
+  exact registration, the path wants the drift. And the recalculation
+  question answers itself once stated: the corrections came FROM the
+  composite, so applying them pulls the path INTO agreement with it — a
+  rebuild would re-measure ~zero. The apply now says so, keeps the
+  stitch live on the dome through that one path change (it used to be
+  invalidated like any path edit and silently vanish), and retires the
+  📐 offer bar whose corrections are now in the path.
 - **🎬 Scene-cut detection — a compilation clip is not one camera.**
   Genuine splices exist in shared UFO clips, and solving one as camera
   motion poisons every pose past it. `stepTracker` now returns scene-cut

@@ -251,6 +251,53 @@ export function registerFrame(base, renderPatch, opts = {}) {
   return best;
 }
 
+/* 📐 CORRECTION SMOOTHING (the "apply to path has glitches" fix). The
+   per-frame registrations are independent measurements: each carries
+   ~1/ppd° of quantization plus occasional re-lock flips (field-measured
+   on the city clip: a 5.5° dAz step between adjacent samples where the
+   registration jumped to a different lock, and a ±0.6° sawtooth). The
+   camera-path corrections they describe are SMOOTH — solve drift ramps
+   over seconds — so applying the raw series as exact ⚓ anchors imprints
+   the measurement noise onto the path as visible playback glitches.
+   Despike (a lone sample far from both neighbours snaps to their
+   midpoint — a re-lock flip on one frame), then a light 3-tap smoothing
+   over the MEASURED samples only (unmeasured gaps stay null and never
+   contaminate neighbours). FOV rides as log-ratio so zoom corrections
+   smooth multiplicatively. The COMPOSITE keeps the raw per-frame
+   corrections — pixels want the exact per-frame lock; the PATH wants
+   the drift they measure. */
+export function smoothCorrections(corr, opts = {}) {
+  const passes = opts.passes ?? 2;
+  const minScore = opts.minScore ?? 0.5;
+  const meas = corr.map((c) => (c && c.score >= minScore
+    ? { ...c, lr: Math.log(Math.max(0.5, Math.min(2, c.r || 1))) } : null));
+  const n = meas.length, fields = ["dAz", "dEl", "lr"];
+  /* despike against a SNAPSHOT of the original neighbours — an in-place
+     sequential pass let each snap change the next point's reference and
+     mangled alternating noise into a wander instead of cleaning it */
+  const orig = meas.map((c) => c && { dAz: c.dAz, dEl: c.dEl, lr: c.lr });
+  for (let i = 0; i < n; i++) {
+    const c = meas[i], a = orig[i - 1], b = orig[i + 1];
+    if (!c || !a || !b) continue;
+    for (const f of fields) {
+      const mid = (a[f] + b[f]) / 2, spread = Math.abs(a[f] - b[f]);
+      /* an outlier deviates from the neighbours' interpolation by MORE than
+         the neighbours disagree with each other (a ramp passes through) */
+      const lim = f === "lr" ? Math.max(0.02, spread) : Math.max(0.35, spread * 1.2);
+      if (Math.abs(c[f] - mid) > lim) c[f] = mid;
+    }
+  }
+  for (let p = 0; p < passes; p++) {
+    const prev = meas.map((c) => c && { dAz: c.dAz, dEl: c.dEl, lr: c.lr });
+    for (let i = 0; i < n; i++) {
+      const c = meas[i], a = prev[i - 1], b = prev[i + 1];
+      if (!c || !a || !b) continue;
+      for (const f of fields) c[f] = prev[i][f] * 0.5 + (a[f] + b[f]) * 0.25;
+    }
+  }
+  return meas.map((c) => c && { ...c, r: Math.exp(c.lr) });
+}
+
 /* ---------- canvas side (browser harness–tested) ---------- */
 
 /* feather the texture's edges to transparent so overlapping frames blend */

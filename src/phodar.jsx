@@ -20,7 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
-import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame, regWindow, panoRot } from "./video/panorama.js";
+import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame, regWindow, panoRot, smoothCorrections } from "./video/panorama.js";
 import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
@@ -3940,8 +3940,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
   const [panoOn, setPanoOn] = useState(false); // 🖼 stitched panorama laid on the dome (built on first toggle, session-cached)
   const [, setPanoReady] = useState(0);
   const panoRef = useRef(null);
-  /* a re-solve / re-derive invalidates the stitch — it describes the old path */
-  useEffect(() => { panoRef.current = null; setPanoOn(false); }, [source?.posePath]); // eslint-disable-line
+  const panoKeepRef = useRef(false); // 📐 Apply changes the path TO MATCH the composite — skip that one invalidation
+  /* a re-solve / re-derive invalidates the stitch — it describes the old
+     path. The one exception is 📐 Apply to path: the corrections came FROM
+     this composite, so the new path agrees with it by construction and a
+     rebuild would just re-measure ~zero corrections. */
+  useEffect(() => {
+    if (panoKeepRef.current) { panoKeepRef.current = false; return; }
+    panoRef.current = null; setPanoOn(false);
+  }, [source?.posePath]); // eslint-disable-line
   const [hueOpen, setHueOpen] = useState(false); // the overlay-color slider, folded behind its swatch
   const [pMode, setPMode] = useState("look"); // 'look' | 'place'
   const [pAz, setPAz] = useState(180);
@@ -6862,7 +6869,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
          register strongly become candidate ⚓ anchors for the camera
          path itself (offered, never auto-applied). */
       let corrected = 0, fovFixed = 0, carry = 1;
-      const fixes = [];
+      const corr = []; // per-sample correction measurements → smoothed → ⚓ fixes
       for (let i = 0; i < samples.length; i++) {
         if (exportAbortRef.current !== run) throw new Error("cancelled");
         const p = samples[i];
@@ -6905,12 +6912,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const dAz = p.uAz - az0, dEl = p.el - el0;
           if (window.__panoDebug) console.log(`PANO ${i} t=${p.t.toFixed(2)} fov=${p.fov.toFixed(1)} roll=${(p.roll || 0).toFixed(1)} A=${regA ? regA.score.toFixed(2) : "-"} B=${reg ? reg.score.toFixed(2) + "@x" + reg.scale : "-"} dAz=${dAz.toFixed(2)} dEl=${dEl.toFixed(2)} ppdA=${wA.ppd.toFixed(1)} ppdB=${wB.ppd.toFixed(1)}`);
           if (Math.abs(dAz) > 1e-9 || Math.abs(dEl) > 1e-9) corrected++;
-          if (bestScore >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
-            (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
-            /* ⚓ anchors live in WORLD coordinates — rotate the corrected pose back */
-            const wq = rot ? rot.pose({ az: ((p.uAz % 360) + 360) % 360, el: p.el, roll: p.roll || 0 }, true) : { az: ((p.uAz % 360) + 360) % 360, el: p.el, roll: p.roll || 0 };
-            fixes.push({ t: +p.t.toFixed(3), az: +((((wq.az % 360) + 360) % 360)).toFixed(3), el: +wq.el.toFixed(3), roll: +(wq.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
-          }
+          /* record the raw measurement — the ⚓ fixes are derived AFTER the
+             loop from the DESPIKED+SMOOTHED series (smoothCorrections): the
+             registrations carry quantization + occasional re-lock flips, and
+             raw per-frame anchors imprinted that noise on the path as
+             playback glitches (field report). The COMPOSITE keeps painting
+             with the raw per-frame locks — pixels want exact, the path
+             wants the smooth drift they measure. */
+          corr.push({ t: p.t, uAz0: az0, el0, fov0, roll: p.roll || 0, dAz, dEl, r: p.fov / fov0, score: bestScore });
         }
         drawFramePano(ctx, tcv, texW, texH, p, layout);
         setExporting(0.02 + 0.7 * ((i + 1) / samples.length));
@@ -6932,6 +6941,16 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dcv = document.createElement("canvas");
       dcv.width = Math.max(2, Math.round(layout.W * dsc)); dcv.height = Math.max(2, Math.round(layout.H * dsc));
       dcv.getContext("2d").drawImage(cv, 0, 0, dcv.width, dcv.height);
+      /* ⚓ fixes from the SMOOTHED correction series, in WORLD coordinates */
+      const fixes = [];
+      for (const c of smoothCorrections(corr)) {
+        if (!c) continue;
+        if (Math.abs(c.dAz) > 4 || Math.abs(c.dEl) > 4) continue;
+        if (Math.abs(c.dAz) < 0.1 && Math.abs(c.dEl) < 0.1 && Math.abs(c.r - 1) < 0.015) continue;
+        const az2 = c.uAz0 + c.dAz;
+        const wq = rot ? rot.pose({ az: ((az2 % 360) + 360) % 360, el: c.el0 + c.dEl, roll: c.roll }, true) : { az: ((az2 % 360) + 360) % 360, el: c.el0 + c.dEl, roll: c.roll };
+        fixes.push({ t: +c.t.toFixed(3), az: +((((wq.az % 360) + 360) % 360)).toFixed(3), el: +wq.el.toFixed(3), roll: +(wq.roll || 0).toFixed(2), fov: +(c.fov0 * c.r).toFixed(2), src: "pano" });
+      }
       /* thin the anchor candidates — 90 chips would flood the ⚓ list */
       const fixStep = Math.max(1, Math.ceil(fixes.length / 30));
       panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed, rot, fixes: fixes.filter((_, i2) => i2 % fixStep === 0) };
@@ -6970,8 +6989,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     const merged = user.concat(pf.filter((f) => user.every((u) => Math.abs(+u.t - +f.t) > 0.15))).sort((a, b) => a.t - b.t);
     const patch = { poseFixes: merged, ...rederivePaths(merged, camSNow, objSNow) };
     mediaDel(source.id + ":stab");
+    /* the composite stays valid — the path is being pulled TO it — so keep
+       the stitch on the dome through this one path change, and retire the
+       offer bar (its corrections are now in the path) */
+    panoKeepRef.current = true;
+    panoRef.current = { ...panoRef.current, fixes: [] };
     update(patch);
-    setFlash(`📐 ${pf.length} panorama corrections anchored into the camera path — playback, trajectory and exports now follow them. ↶ via re-stabilize or the ⚓ list.`);
+    setFlash(`📐 ${pf.length} panorama corrections anchored into the camera path — playback, trajectory and exports now follow them. The composite stays (the path now agrees with it). ↶ via re-stabilize or the ⚓ list.`);
   };
   const togglePano = async () => {
     if (panoRef.current) { setPanoOn((x) => !x); return; }

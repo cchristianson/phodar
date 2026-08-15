@@ -1266,6 +1266,19 @@ terrain stay frozen and only the object moves. Build ladder:
    recovery asserted in the browser harness (a fov-8 frame lying +0.7°
    az/15% zoom → 0.01°/1.2% residual) and verified BY EYE on the real
    Himalaya clip via the Playwright drive before shipping.
+   **📐 APPLY SMOOTHING (field: "apply to path has glitches")**: the
+   per-frame registrations are noisy independent measurements (1-px
+   quantization + re-lock flips — a 5.5° dAz step and a ±0.6° sawtooth
+   measured on the city clip) of a SMOOTH drift, so raw exact anchors
+   imprinted the noise on the path. `smoothCorrections` (panorama.js,
+   pure, mathcheck-asserted) despikes vs SNAPSHOT neighbours (an
+   in-place pass mangles alternating noise) + light 2-pass 3-tap over
+   measured samples only; FOV as log-ratio; ramps pass through. The
+   composite keeps the RAW per-frame locks (pixels want exact; the path
+   wants the drift). Applying KEEPS the composite on the dome
+   (panoKeepRef skips that one invalidation — the corrections came FROM
+   the composite, so the path is pulled into agreement with it and a
+   rebuild would re-measure ~zero) and retires the offer bar.
    **Manual pose correction (⚓ Fix frames): DONE** — playback-row
    ⚓ opens a mode where you scrub to a frame that lost the world lock,
    drag the photo back onto the true horizon/terrain (one finger = az/el,
