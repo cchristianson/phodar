@@ -36,7 +36,7 @@ import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
 import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
-import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, skyStats, skyCondition, cloudMatch, SWEEP_FOVS } from "./geoloc.js";
+import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, skyStats, skyCondition, cloudMatch, urbanCoverage, SWEEP_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -9555,7 +9555,11 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       for (const tw of twins.filter((t) => t.kind !== "peak").slice(0, 40)) for (const rc of ringCandidates(tw.lat, tw.lon, 300, 8)) cands.push({ ...rc, twin: tw });
       /* setting filter, position half: "I stood in a town" / "outside" kills
          candidates before any skyline math runs (also saves the compute) */
-      const setCtx = { urbans, places };
+      /* trust land-use only where it's actually mapped densely enough —
+         Dehradun field case: 1.35% coverage with the city core 1.4 km
+         from the nearest polygon filtered out the TRUE neighborhood */
+      const luOk = urbans.length && urbanCoverage(urbans, c.lat, radKm).ok;
+      const setCtx = luOk ? { urbans, places } : { places };
       const preN = cands.length;
       if (stood) cands = cands.filter((cd) => settingOk(cd, setCtx, stood));
       if (!cands.length) throw new Error(`no candidate in this area matches "${stood === "town" ? "stood in a town" : "stood outside town"}" — widen the area or clear the setting`);

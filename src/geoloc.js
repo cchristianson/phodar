@@ -442,8 +442,26 @@ export function rayHitsUrban(cand, azDeg, urbans, maxKm = 8) {
   }
   return false;
 }
+/* Is the land-use mapping locally TRUSTWORTHY? Measured on Dehradun
+   (~700k metro): 187 scattered polygons covering 1.35% of a 14 km
+   search circle, with even the city core 1.4 km from the nearest one —
+   filtering on that killed the true neighborhood. A land-use layer is
+   only primary when it covers a meaningful fraction of the search
+   area; below the gate the caller should fall back to place nodes. */
+export function urbanCoverage(urbans, centerLat, radKm) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((centerLat * Math.PI) / 180));
+  let area = 0;
+  for (const u of urbans) {
+    const [s, n, w, e] = u.bbox;
+    area += (n - s) * 111.32 * (e - w) * mLon;
+  }
+  const frac = area / (Math.PI * radKm * radKm);
+  return { frac, ok: frac >= 0.04 };
+}
+
 /* stood: "town" = on built-up land; "out" = clearly off it. Land-use
-   boxes when mapped, place-node radii as fallback, no data → no filter. */
+   boxes when mapped AND dense enough to trust, place-node radii as
+   fallback, no data → no filter. */
 export function settingOk(cand, ctx, stood) {
   if (!stood) return true;
   const urbans = ctx.urbans || [], places = ctx.places || [];

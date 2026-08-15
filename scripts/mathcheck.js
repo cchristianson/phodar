@@ -4148,6 +4148,14 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     "geoloc: clear clip vs archive — the symmetric case");
   ok(GL.cloudMatch("mixed", 92).verdict === "weak" && GL.cloudMatch("overcast", 45).verdict === "weak",
     "geoloc: ambiguous sky or middling cloud → weak, never a verdict from noise");
+
+  /* land-use trust gate — the Dehradun field case: 1.35% coverage must
+     demote to the place-node fallback, dense mapping must not */
+  const sparse = Array.from({ length: 187 }, (_, i) => ({ kind: "urban", bbox: [30 + i * 1e-3, 30 + i * 1e-3 + 0.0019, 78, 78.0022] }));
+  const cov = GL.urbanCoverage(sparse, 30.33, 14);
+  ok(cov.frac < 0.02 && !cov.ok, `geoloc: Dehradun-grade sparse land-use fails the trust gate (${(cov.frac * 100).toFixed(1)}%)`);
+  const dense = [{ kind: "urban", bbox: [30.29, 30.37, 77.97, 78.07] }];
+  ok(GL.urbanCoverage(dense, 30.33, 14).ok, "geoloc: a real mapped town passes the trust gate");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
