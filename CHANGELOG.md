@@ -48,6 +48,22 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **🖼 Panorama: zoom-scale registration (the two-trees fix).** Field
+  case: the final zoomed frame of a clip landed at the wrong SIZE — the
+  same tree twice, small in the current frame and large in the previous
+  one. A shift can never fix that: a zoom error is a SCALE error, and
+  the solve's FOV estimate mid-zoom carries a few percent of error.
+  `registerFrame` now searches a small FOV-scale ladder alongside the
+  shift — the frame's coarse footprint is rendered at candidate zoom
+  corrections and the correlation picks the one that locks onto the
+  composite. Scale 1 is privileged (a rung must beat it by a real
+  margin, so non-zooming frames never jitter their FOV), and the ladder
+  only runs mid-zoom or when the plain shift can't lock, so steady pans
+  cost nothing extra. Proven both ways: mathcheck corrects a synthetic
+  15% zoom bias to 1.2% residual and keeps clean frames at scale 1; the
+  browser harness pulls a claimed 46° FOV back to 40.5° against a true
+  40° through the real render path. The flash reports how many frames
+  were zoom-corrected.
 - **🖼 Panorama v2 — re-registered stitching + the dome layer.** The
   first field render placed tiles visibly wrong: the solve's weak
   stretches (few anchors, chained drift, whip-pans) were trusted

@@ -20,7 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
-import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, bestShift } from "./video/panorama.js";
+import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame } from "./video/panorama.js";
 import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
@@ -6788,7 +6788,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tcx = tcv.getContext("2d");
       const seek = (t) => new Promise((res) => { v.onseeked = () => res(); v.currentTime = Math.min(Math.max(t, 0.02), (v.duration || t) - 0.05); });
       /* pass 1 — chronological, each frame re-registered then painted */
-      let corrected = 0;
+      let corrected = 0, fovFixed = 0;
       for (let i = 0; i < samples.length; i++) {
         if (exportAbortRef.current !== run) throw new Error("cancelled");
         const p = samples[i];
@@ -6797,10 +6797,22 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         tcx.drawImage(v, 0, 0, texW, texH);
         featherAlpha(tcx, texW, texH, 0.05);
         if (i > 0) {
-          tctx.clearRect(0, 0, cLay.W, cLay.H);
-          drawFramePano(tctx, tcv, texW, texH, p, cLay, 8);
-          const sh = bestShift(cctx.getImageData(0, 0, cLay.W, cLay.H), tctx.getImageData(0, 0, cLay.W, cLay.H), 6);
-          if (sh && (sh.dx || sh.dy)) { p.uAz += sh.dx / cppd; p.el -= sh.dy / cppd; corrected++; }
+          const baseImg = cctx.getImageData(0, 0, cLay.W, cLay.H);
+          const renderPatch = (s) => {
+            tctx.clearRect(0, 0, cLay.W, cLay.H);
+            drawFramePano(tctx, tcv, texW, texH, s === 1 ? p : { ...p, fov: p.fov * s }, cLay, 8);
+            return tctx.getImageData(0, 0, cLay.W, cLay.H);
+          };
+          /* the FOV-scale ladder runs only where it pays: mid-zoom (the
+             solve's FOV error lives there — field case: the same tree at
+             two sizes) or when the plain shift can't lock */
+          const zooming = Math.abs(p.fov - samples[i - 1].fov) / Math.max(p.fov, samples[i - 1].fov) > 0.03;
+          let reg = registerFrame(baseImg, renderPatch, { R: 6, scales: zooming ? undefined : [1] });
+          if (!zooming && (!reg || reg.score < 0.55)) reg = registerFrame(baseImg, renderPatch, { R: 6 });
+          if (reg) {
+            if (reg.dx || reg.dy) { p.uAz += reg.dx / cppd; p.el -= reg.dy / cppd; corrected++; }
+            if (reg.scale !== 1) { p.fov *= reg.scale; fovFixed++; }
+          }
         }
         drawFramePano(ctx, tcv, texW, texH, p, layout);
         drawFramePano(cctx, tcv, texW, texH, p, cLay, 8);
@@ -6823,7 +6835,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dcv = document.createElement("canvas");
       dcv.width = Math.max(2, Math.round(layout.W * dsc)); dcv.height = Math.max(2, Math.round(layout.H * dsc));
       dcv.getContext("2d").drawImage(cv, 0, 0, dcv.width, dcv.height);
-      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected };
+      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed };
       setPanoReady((k) => k + 1);
       return panoRef.current;
     } finally {
@@ -6839,7 +6851,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const blob = await new Promise((res) => pn.full.toBlob(res, "image/jpeg", 0.92));
       if (!blob) throw new Error("canvas export failed");
       download("phodar-panorama.jpg", blob, "image/jpeg");
-      setFlash(`🖼 panorama saved — ${pn.full.width}×${pn.full.height} px, ${(pn.layout.azMax - pn.layout.azMin).toFixed(0)}°×${(pn.layout.elMax - pn.layout.elMin).toFixed(0)}° from ${pn.n} frames (${pn.corrected} re-registered against the composite). A moving object may appear more than once — that's its real path. The 🖼 header toggle lays it on the dome.`);
+      setFlash(`🖼 panorama saved — ${pn.full.width}×${pn.full.height} px, ${(pn.layout.azMax - pn.layout.azMin).toFixed(0)}°×${(pn.layout.elMax - pn.layout.elMin).toFixed(0)}° from ${pn.n} frames (${pn.corrected} re-registered${pn.fovFixed ? `, ${pn.fovFixed} zoom-scale corrected` : ""}). A moving object may appear more than once — that's its real path. The 🖼 header toggle lays it on the dome.`);
     } catch (e) {
       setFlash(/cancelled/.test(String(e && e.message)) ? "🖼 panorama cancelled" : "🖼 panorama failed: " + ((e && e.message) || e));
     }

@@ -145,6 +145,31 @@ export function bestShift(base, patch, R = 6) {
   return best && best.score >= 0.35 ? best : null;
 }
 
+/* full registration of one frame against the composite: shift AND scale.
+   A zoom error is a SCALE error — the solve's FOV estimate during fast
+   zooms carries a few percent of error that a shift can never fix
+   (field case: the same tree twice at two sizes). renderPatch(s) must
+   render the frame's coarse equirect footprint at fov×s; the ladder
+   picks the scale whose footprint locks onto the composite. Scale 1 is
+   privileged: a different rung must BEAT it by a real margin, so
+   non-zooming frames never jitter their FOV. */
+export const FOV_LADDER = [1, 0.94, 1.06, 0.88, 1.13, 0.82, 1.21];
+export function registerFrame(base, renderPatch, opts = {}) {
+  const R = opts.R ?? 6;
+  const scales = opts.scales ?? FOV_LADDER;
+  const margin = opts.margin ?? 0.04;
+  let unit = null, best = null;
+  for (const s of scales) {
+    const sh = bestShift(base, renderPatch(s), R);
+    if (!sh) continue;
+    if (s === 1) unit = { ...sh, scale: 1 };
+    if (!best || sh.score > best.score) best = { ...sh, scale: s };
+  }
+  if (!best) return null;
+  if (unit && best.scale !== 1 && best.score < unit.score + margin) return unit;
+  return best;
+}
+
 /* ---------- canvas side (browser harness–tested) ---------- */
 
 /* feather the texture's edges to transparent so overlapping frames blend */

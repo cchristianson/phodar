@@ -4214,6 +4214,24 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(sh2 && sh2.dx === -3 && sh2.dy === 2, `pano: NCC measures a known mis-registration with the applied sign (got ${sh2 && sh2.dx},${sh2 && sh2.dy} score ${sh2 && sh2.score.toFixed(2)})`);
   const tiny = mkImg(80, 60, (x, y) => (x < 6 && y < 6) ? patF(x, y) : null);
   ok(PN.bestShift(base2, tiny, 6) === null, "pano: near-zero overlap → no correction, never a guess");
+
+  /* zoom-scale registration (the two-trees field case): the frame's
+     content is 15% larger than its claimed FOV implies — renderPatch(s)
+     resamples about the center, and the ladder must pick the shrinking
+     rung; an unbiased frame must keep scale 1 (the privileged rung). */
+  const resample = (img, s) => mkImg(img.width, img.height, (x, y) => {
+    const cx2 = img.width / 2, cy2 = img.height / 2;
+    const sx2 = Math.round(cx2 + (x - cx2) / s), sy2 = Math.round(cy2 + (y - cy2) / s);
+    if (sx2 < 0 || sy2 < 0 || sx2 >= img.width || sy2 >= img.height) return null;
+    const i = (sy2 * img.width + sx2) * 4;
+    return img.data[i + 3] ? img.data[i] : null;
+  });
+  const TRUE_BIAS = 1.15;
+  const regBias = PN.registerFrame(base2, (s) => resample(base2, TRUE_BIAS * s), { R: 4 });
+  ok(regBias && regBias.scale < 1 && Math.abs(TRUE_BIAS * regBias.scale - 1) < 0.06,
+    `pano: 15% zoom bias corrected by the ladder (picked ×${regBias && regBias.scale} → residual ${regBias ? Math.abs(TRUE_BIAS * regBias.scale - 1).toFixed(3) : "-"})`);
+  const regClean = PN.registerFrame(base2, (s) => resample(base2, s), { R: 4 });
+  ok(regClean && regClean.scale === 1, "pano: an unbiased frame keeps scale 1 — no FOV jitter from the ladder");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }
