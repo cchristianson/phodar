@@ -722,7 +722,7 @@ const HELP_SECTIONS = [
         { t: "⟳ Re-stabilize to apply", d: "An amber line that appears next to the stabilize button when something the solve DEPENDED on has been edited since it ran — new ⊕ Track points, a moved object mark, a different alignment frame, a changed trim or FOV. It names what changed. Until you re-stabilize, the stored camera path and object track still reflect the old inputs, and nothing else in the app would tell you." },
         { t: "🛸 object overlay", d: "Header toggle for the fitted 3D wireframe and its marks over the photo. It rides the tracked path during stabilized playback, and it is burned into the exported video ONLY while this is on — so turn it off for a clean evidence render." },
         { t: "▶ world-locked playback", d: "After stabilizing, a ▶ + scrubber appears in look mode. Each frame is drawn at its own solved pose: the sky, terrain and stars stay frozen on the dome while the video frame visibly moves around — the object traces its TRUE angular path. The object outline stays pinned at its marked sky position (the video's object passes through it at the marked frame). ↺ returns to the marked frame; the readout shows each frame's time and how many background references held it. On the results screen (and in the report) a 🎥 track-quality rating (excellent/good/fair/poor) warns when camera motion could be leaking into the trajectory — hard zooms leave the solver too few background anchors to separate camera from object, so those stretches are excluded from reported peak rates and named in the rating." },
-        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. A fourth option, 🖼 Panorama (still), stitches EVERY frame into one wide image at its solved direction — a retrospective iPhone-style panorama that tolerates messy motion, reversals and zooms (zoomed stretches are composited last, so they become high-resolution insets). A moving object can appear more than once in it; that repetition is its real path across the sky. Each frame is re-registered against the growing composite before painting (the solved pose seeds it, the pixels finish it), and weak frames — held, reference-starved, mid whip-pan — are left out. The 🖼 sky-layer toggle lays the finished panorama on the dome under the live frame, whose bright border shows where the current moment sits as you scrub. Great as report evidence and for judging stabilization quality frame by frame." },
+        { t: "⬇ export the stabilized clip", d: "Renders the whole clip world-locked — every frame at its own solved pose from a fixed camera — and saves it as a real video file (mp4 on iPhone). Three framings: World view (the dome framing you see in playback, with the az/el grid, pose readout, and every visible sky layer burned in), Max resolution (CLEAN footage, no overlays, at native source detail — sized so the most-zoomed frames keep every pixel), and Object close-up (a clean full-resolution crop centered on the marked object, no overlays). Tap again to cancel. A fourth option, 🖼 Panorama (still), stitches EVERY frame into one wide image at its solved direction — a retrospective iPhone-style panorama that tolerates messy motion, reversals and zooms (zoomed stretches are composited last, so they become high-resolution insets). A moving object can appear more than once in it; that repetition is its real path across the sky. Each frame is re-registered against the growing composite before painting (the solved pose seeds it, the pixels finish it), and weak frames — held, reference-starved, mid whip-pan — are left out. The 🖼 sky-layer toggle lays the finished panorama on the dome under the live frame, whose bright border shows where the current moment sits as you scrub. When the stitch measures real pose corrections (including zoom-scale fixes — the solve's FOV estimate mid-zoom carries a few percent of error), an amber bar offers 📐 Apply to path: the corrections become ⚓ anchors on the camera path, so playback, the trajectory, exports and the live frame over the panorama all agree. Opt-in, bounded, and any anchor you placed by hand outranks them; re-stabilizing clears them like any anchor. Great as report evidence and for judging stabilization quality frame by frame." },
       ]},
       { h: "Distance, size & the path", items: [
         { t: "⊕ Trajectory (read-only)", d: "The path and its numbered points show here for reference against the real sky, but you lay them down and edit them on step 1 — ⊕ Track points to tap the path, ✎ Adjust for a point's timing (Δt), turn tightness, size and rotation. This is why the sky view no longer needs an aiming crosshair. While scrubbing stabilized playback, the point nearest the playhead lights up amber so you can see where along the path the clip is; the ◆ shapes / ● dots toggle in the panel swaps the 3D model at every point for plain dots — much easier to read on a dense path." },
@@ -6787,16 +6787,25 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const tcv = document.createElement("canvas"); tcv.width = texW; tcv.height = texH;
       const tcx = tcv.getContext("2d");
       const seek = (t) => new Promise((res) => { v.onseeked = () => res(); v.currentTime = Math.min(Math.max(t, 0.02), (v.duration || t) - 0.05); });
-      /* pass 1 — chronological, each frame re-registered then painted */
-      let corrected = 0, fovFixed = 0;
+      /* pass 1 — chronological, each frame re-registered then painted.
+         The zoom-scale correction CARRIES FORWARD: a mid-zoom FOV error
+         is smooth in time, so each frame is seeded with the trend
+         measured so far and the ladder only hunts the residual — big
+         cumulative errors stay reachable rung by rung. Corrections that
+         register strongly become candidate ⚓ anchors for the camera
+         path itself (offered, never auto-applied). */
+      let corrected = 0, fovFixed = 0, carry = 1;
+      const fixes = [];
       for (let i = 0; i < samples.length; i++) {
         if (exportAbortRef.current !== run) throw new Error("cancelled");
         const p = samples[i];
+        const az0 = p.uAz, el0 = p.el, fov0 = p.fov;
         await seek(p.t);
         tcx.clearRect(0, 0, texW, texH);
         tcx.drawImage(v, 0, 0, texW, texH);
         featherAlpha(tcx, texW, texH, 0.05);
         if (i > 0) {
+          if (carry !== 1) p.fov *= carry;
           const baseImg = cctx.getImageData(0, 0, cLay.W, cLay.H);
           const renderPatch = (s) => {
             tctx.clearRect(0, 0, cLay.W, cLay.H);
@@ -6806,12 +6815,18 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           /* the FOV-scale ladder runs only where it pays: mid-zoom (the
              solve's FOV error lives there — field case: the same tree at
              two sizes) or when the plain shift can't lock */
-          const zooming = Math.abs(p.fov - samples[i - 1].fov) / Math.max(p.fov, samples[i - 1].fov) > 0.03;
+          const zooming = Math.abs(p.fov - samples[i - 1].fov * carry) / Math.max(p.fov, samples[i - 1].fov) > 0.03;
           let reg = registerFrame(baseImg, renderPatch, { R: 6, scales: zooming ? undefined : [1] });
           if (!zooming && (!reg || reg.score < 0.55)) reg = registerFrame(baseImg, renderPatch, { R: 6 });
           if (reg) {
             if (reg.dx || reg.dy) { p.uAz += reg.dx / cppd; p.el -= reg.dy / cppd; corrected++; }
             if (reg.scale !== 1) { p.fov *= reg.scale; fovFixed++; }
+            carry = Math.min(1.6, Math.max(0.6, carry * (reg.scale || 1)));
+            const dAz = p.uAz - az0, dEl = p.el - el0;
+            if (reg.score >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
+              (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
+              fixes.push({ t: +p.t.toFixed(3), az: +((((p.uAz % 360) + 360) % 360)).toFixed(3), el: +p.el.toFixed(3), roll: +(p.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
+            }
           }
         }
         drawFramePano(ctx, tcv, texW, texH, p, layout);
@@ -6835,7 +6850,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const dcv = document.createElement("canvas");
       dcv.width = Math.max(2, Math.round(layout.W * dsc)); dcv.height = Math.max(2, Math.round(layout.H * dsc));
       dcv.getContext("2d").drawImage(cv, 0, 0, dcv.width, dcv.height);
-      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed };
+      /* thin the anchor candidates — 90 chips would flood the ⚓ list */
+      const fixStep = Math.max(1, Math.ceil(fixes.length / 30));
+      panoRef.current = { layout, full: cv, dome: dcv, n: samples.length, corrected, fovFixed, fixes: fixes.filter((_, i2) => i2 % fixStep === 0) };
       setPanoReady((k) => k + 1);
       return panoRef.current;
     } finally {
@@ -6856,6 +6873,23 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       setFlash(/cancelled/.test(String(e && e.message)) ? "🖼 panorama cancelled" : "🖼 panorama failed: " + ((e && e.message) || e));
     }
     setExporting(0);
+  };
+  /* 📐 feed the panorama's measured corrections back into the CAMERA PATH
+     as ⚓ anchors — playback, trajectory, exports and the live-frame-over-
+     panorama then all agree. Opt-in by design (the reverted terrain
+     auto-anchor is the cautionary tale), corrections are bounded (≤4°,
+     ladder-limited FOV) and pixel-derived from the clip's own composite;
+     any hand-placed ⚓ within 0.15 s outranks a pano anchor. Re-stabilize
+     clears them like any anchor. */
+  const applyPanoFixes = () => {
+    const pf = panoRef.current?.fixes;
+    if (!pf || !pf.length || !source || !update) return;
+    const user = (Array.isArray(source?.poseFixes) ? source.poseFixes : []).filter((f) => f && f.src !== "terrain");
+    const merged = user.concat(pf.filter((f) => user.every((u) => Math.abs(+u.t - +f.t) > 0.15))).sort((a, b) => a.t - b.t);
+    const patch = { poseFixes: merged, ...rederivePaths(merged, camSNow, objSNow) };
+    mediaDel(source.id + ":stab");
+    update(patch);
+    setFlash(`📐 ${pf.length} panorama corrections anchored into the camera path — playback, trajectory and exports now follow them. ↶ via re-stabilize or the ⚓ list.`);
   };
   const togglePano = async () => {
     if (panoRef.current) { setPanoOn((x) => !x); return; }
@@ -8803,6 +8837,14 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                     <span style={{ display: "block", fontSize: 10, color: "var(--dim)", marginTop: 2 }}>{d2}</span>
                   </button>
                 ))}
+              </div>
+            )}
+            {!exporting && pMode !== "place" && !calibOn && panoRef.current && panoRef.current.fixes && panoRef.current.fixes.length > 2 && !viewOnly && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "7px 10px" }}>
+                <span style={{ flex: 1, fontSize: 10.5, color: "var(--amber)", lineHeight: 1.45 }}>
+                  The panorama measured {panoRef.current.fixes.length} camera-path corrections{panoRef.current.fovFixed ? ` (${panoRef.current.fovFixed} zoom-scale)` : ""} by matching frames against the composite.
+                </span>
+                <button className="btn sm amber" onClick={applyPanoFixes}>📐 Apply to path</button>
               </div>
             )}
           </>

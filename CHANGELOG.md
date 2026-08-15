@@ -48,6 +48,21 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **📐 Panorama corrections → the camera path.** The composite measures
+  where each frame REALLY belongs — and now those measurements can flow
+  back into the solve. The stitcher carries the zoom-scale correction
+  forward frame to frame (a mid-zoom FOV error is smooth in time, so
+  each frame is seeded with the trend and the ladder only hunts the
+  residual — large cumulative errors stay reachable rung by rung), and
+  strong registrations (score ≥ 0.5, ≤4°, ladder-bounded FOV) become
+  candidate ⚓ anchors. An amber bar offers "📐 Apply to path": they
+  merge into poseFixes through the existing anchor machinery, so
+  playback, the trajectory, exports and the live-frame-over-panorama
+  all follow — previously the live frame drew at the uncorrected solved
+  pose and visibly disagreed with the composite behind it (field
+  report). Deliberately OPT-IN with hand-placed anchors outranking
+  (the reverted terrain auto-anchor is the cautionary tale);
+  re-stabilizing clears them like any anchor.
 - **🖼 Panorama: zoom-scale registration (the two-trees fix).** Field
   case: the final zoomed frame of a clip landed at the wrong SIZE — the
   same tree twice, small in the current frame and large in the previous
