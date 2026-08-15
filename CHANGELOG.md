@@ -48,6 +48,37 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **🎬 Scene-cut detection — a compilation clip is not one camera.**
+  Field case (the second "still no better" report): the clip hard-cut
+  from a dusk city segment to unrelated daytime-sky footage at 23.6 s —
+  a social-media splice, subtle enough that even ffmpeg's scene detector
+  scores it below its default threshold because both sides are mostly
+  featureless sky. The stabilizer solved the splice as camera motion, so
+  every pose after the cut was fiction, and the panorama dutifully
+  painted two unrelated scenes into one canvas (the registration then
+  "locked" sky onto sky at 0.97 confidence — featureless content
+  correlates with anything). No stitcher fix could help; the fix is
+  upstream and honest: `stepTracker` now returns scene-cut evidence when
+  nothing placed a frame — either a healthy template herd where not ONE
+  template re-found its target while the whole-frame register only
+  "matched" as an impossible teleport (same-scene frames at ≤¼ s always
+  re-find some), or a chromaticity jump (dusk warm-gray → daylight blue
+  have near-identical LUMINANCE, which is why gray correlation alone is
+  blind to exactly this splice; chromaticity also normalizes out
+  auto-exposure swings). The walk confirms by its existing time
+  bisection — same-scene blur resolves at finer spacing, a real cut
+  never does — then STOPS at the cut instead of solving fiction,
+  records `source.sceneCuts`, and says so: in the solve flash, in the
+  playback row ("solve stops at the 23.6s scene cut"), and on the
+  measure step next to the ✂ trim that isolates either scene. The
+  object pass stays inside the solved span too — no more tracking "the
+  object" into different footage through a held pose. Asserted in
+  mathcheck four ways (noise-textured cut flagged, palette flip caught,
+  featureless frame stays an honest hold, ordinary step never flagged);
+  verified end-to-end on the user's actual spliced clip. Stated
+  limitation: two spliced scenes of near-identical smooth content AND
+  palette can still cross-match — measured on synthetic smooth fields —
+  so a missed cut is possible; the trim remains the manual override.
 - **🖼 Panorama v3 — adaptive-resolution registration (the "ran it 3
   times and no better" fix).** The v2 re-registration ran every frame
   against ONE fixed 2 px/° coarse twin of the whole panorama — and a

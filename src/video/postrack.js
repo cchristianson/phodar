@@ -512,8 +512,9 @@ export function stepTracker(tracker, nextData, opts = {}) {
      wrong differential fix poisons the chain, and consecutive frames should
      correlate strongly or not at all. */
   const prevG = tracker.prevG || tracker.refG;
+  let chainRaw = null; // pre-gate result: non-null means the frames DID correlate (same scene), even if the fix was implausible
   if (!glob && curG && prevG && o.chain !== false) {
-    chain = registerGray(prevG, p0, curG, natW, natH, { minScore: 0.6, fovMax: fovCap, areaMin: 0.045, sLo: 0.76, sHi: 1.33, sStep: 1.075 });
+    chainRaw = chain = registerGray(prevG, p0, curG, natW, natH, { minScore: 0.6, fovMax: fovCap, areaMin: 0.045, sLo: 0.76, sHi: 1.33, sStep: 1.075 });
     /* per-step plausibility: adjacent samples are ≤¼ s apart — a fix implying
        a teleport is a misregistration (aliased cloud rows), not motion */
     if (chain) {
@@ -814,11 +815,52 @@ export function stepTracker(tracker, nextData, opts = {}) {
   // assigned from a possibly-drifted estimate) get their world dir re-derived
   // under the corrected pose
   if (anchored) for (const f of kept) if (!f.prime) f.g = pixToDirK(f.tx * sc, f.ty * sc, natW, natH, pose.az, pose.el, pose.roll, pose.fov, pose.k || 0);
+  /* SCENE-CUT EVIDENCE (spliced/compilation clips — field case: a dusk city
+     segment hard-cut to unrelated daytime footage at 23.6 s, and the walk
+     solved the splice as camera motion, poisoning every later pose). Only
+     evaluated when NOTHING placed the frame. Coarse NCC alone cannot decide
+     — two unrelated smooth scenes correlate ~0.6 at 96 px (measured), so the
+     tells are CONJUNCTIONS:
+     1. STARVED + IMPLAUSIBLE: with a healthy template herd, not one sparse
+        template re-found its target (same-scene frames at ≤¼ s always
+        re-find some, however wrong the pose), AND the whole-frame register
+        either only "matched" as a gate-rejected teleport or scored below
+        what adjacent same-scene frames ever do. Featureless content fails
+        the herd/area preconditions and stays an honest hold.
+     2. CHROMATICITY JUMP: a splice usually changes the palette outright
+        (dusk warm-gray → daylight blue — near-identical LUMINANCE, which
+        is why the gray NCC alone can't see it). Chromaticity normalizes
+        exposure out, so an auto-exposure swing does not trip it.
+     Same-scene blur/whip can also fail to place for one step — the CALLER
+     must confirm by bisecting in time (real motion resolves at finer
+     spacing, a real cut never does) before acting on this flag. */
+  let cut = 0;
+  if (!solved && !glob && !chain) {
+    let okN = 0; for (const tr of tracked) if (tr.ok) okN++;
+    const starved = feats.length >= 8 && okN <= Math.max(1, feats.length * 0.06);
+    if (starved) {
+      if (chainRaw) cut = 1; // best whole-frame "match" was an impossible teleport, and zero templates agree with it
+      else if (curG && prevG && o.chain !== false) {
+        const diag = registerGray(prevG, p0, curG, natW, natH, { minScore: -1, fovMax: fovCap, areaMin: 0.045, sLo: 0.76, sHi: 1.33, sStep: 1.075 });
+        if (diag && diag.score < 0.45) cut = 1;
+      }
+    }
+    if (!cut) {
+      const chroma = (d) => {
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < d.length; i += 1028) { r += d[i]; g += d[i + 1]; b += d[i + 2]; } // 1028 = 257 px × 4 — off-grid stride samples scattered pixels
+        const t = r + g + b || 1;
+        return { r: r / t, g: g / t, b: b / t };
+      };
+      const a = chroma(tracker.prevData), b2 = chroma(nextData);
+      if (Math.abs(a.r - b2.r) + Math.abs(a.g - b2.g) + Math.abs(a.b - b2.b) > 0.12) cut = 1;
+    }
+  }
   tracker.prevData = nextData; tracker.lastPose = pose; tracker.features = kept; tracker.prevG = curG;
   /* held = neither the sparse solve nor a coarse register (global OR chain)
      placed this frame — the pose is the PREVIOUS frame's, frozen. Known-wrong
      whenever the camera kept moving; callers can bridge by interpolation. */
-  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, chained: !glob && chain ? +chain.score.toFixed(2) : null, relocked: relock ? 1 : 0, held: !solved && !glob && !chain };
+  return { pose, nInliers, features: kept, scale: s, anchored, drift, global: glob ? +glob.score.toFixed(2) : null, chained: !glob && chain ? +chain.score.toFixed(2) : null, relocked: relock ? 1 : 0, held: !solved && !glob && !chain, ...(cut ? { cut: 1 } : {}) };
 }
 
 /* Snap an object seed onto the object itself. Marks are rarely centred to

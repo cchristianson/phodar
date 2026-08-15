@@ -3296,6 +3296,16 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
                   )}
                 </div>
               )}
+              {/* a compilation splice found by the stabilizer: one camera path
+                  cannot describe two different scenes, so the solve stops at
+                  the cut — name it here, where the ✂ trim that isolates either
+                  scene lives */}
+              {Array.isArray(src?.sceneCuts) && src.sceneCuts.length > 0 && (
+                <div className="warn" style={{ marginTop: 4, fontSize: 10.5 }}
+                  title="The stabilizer found a hard cut: the frames on either side show different footage (a spliced/compilation clip). Camera solving, tracking and the panorama only cover the scene containing your alignment frame. Use ✂ to trim the clip to one scene; re-stabilize after trimming to analyze the other.">
+                  🎬 <b>Scene cut at {src.sceneCuts.map((c) => (+c).toFixed(1) + "s").join(", ")}</b> — this clip splices different footage together. Analysis covers only the scene with your alignment frame; ✂ trim to one scene to work on the other.
+                </div>
+              )}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <button className="btn sm" style={{ padding: "6px 9px", minWidth: 36 }} title={vidPlaying ? "Pause" : "Play the clip (it never auto-plays on upload)"} onClick={togglePlay}>{vidPlaying ? "⏸" : "▶"}</button>
                 <button className="btn sm" style={{ padding: "6px 8px" }} onClick={() => seek(Math.max(0, vidT - 0.033))}>−1 fr</button>
@@ -5938,6 +5948,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     posePath: source?.posePath || null, posePathRaw: source?.posePathRaw || null,
     objPath: source?.objPath || null, objPathRaw: source?.objPathRaw || null,
     poseFixes: source?.poseFixes || null, sensorSync: source?.sensorSync || null,
+    sceneCuts: source?.sceneCuts || null,
     track: Array.isArray(source?.track) && source.track.length ? source.track : null,
   });
   const undoStabilize = () => {
@@ -5951,11 +5962,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         posePath: p.posePath || null, posePathRaw: p.posePathRaw || null,
         objPath: p.objPath || null, objPathRaw: p.objPathRaw || null,
         poseFixes: p.poseFixes || null, sensorSync: p.sensorSync || null,
+        sceneCuts: p.sceneCuts || null,
         ...(p.track ? { track: p.track } : {}), preStab: null,
       });
       setFlash(p.posePath && p.posePath.length > 1 ? "↶ back to the previous stabilize" : "↶ stabilization removed — the original clip is back");
     } else {
-      update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, preStab: null });
+      update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, preStab: null, sceneCuts: null });
       setFlash("↶ stabilization removed — the original clip is back");
     }
   };
@@ -6034,6 +6046,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const entry = (t2, r2) => ({ t: t2, az: +r2.pose.az.toFixed(3), el: +r2.pose.el.toFixed(3), roll: +r2.pose.roll.toFixed(3), fov: +r2.pose.fov.toFixed(2), k: +(r2.pose.k || 0).toFixed(5), n: r2.nInliers, h: r2.held ? 1 : 0, ...(r2.chained != null ? { c: 1 } : {}) });
       const path = [{ t: +refT.toFixed(3), az: +refPose.az.toFixed(3), el: +refPose.el.toFixed(3), roll: +refPose.roll.toFixed(3), fov: +refPose.fov.toFixed(2), k: +(refPose.k || 0).toFixed(5), n: t0.features.length }];
       let done = 0, ancCount = 0;
+      const sceneCuts = []; // hard splice points found mid-walk (compilation clips)
       const total = (fwd.length + bwd.length) * (objMid ? 2 : 1);
       setStabTotal(total);
       const walk = async (list, tracker) => {
@@ -6054,16 +6067,29 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const tryStep = async (tFrom, tTo, depth) => { // steps the tracker onto tTo (either direction); returns tTo's result
             const s0 = snap();
             let r = await stepAt(tTo);
-            if (r.nInliers < 6 && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
+            if ((r.nInliers < 6 || r.cut) && depth > 0 && Math.abs(tTo - tFrom) > 0.09) {
               Object.assign(tracker, s0);               // rewind — take it in two halves
               const tm = +((tFrom + tTo) / 2).toFixed(3);
               const rm = await tryStep(tFrom, tm, depth - 1);
+              /* SCENE CUT confirmed in the first half — same-scene blur/whip
+                 resolves at finer spacing, a splice never does. Don't push the
+                 midpoint (a pose across a cut describes nothing) and don't
+                 attempt the second half; the walk stops in this direction. */
+              if (rm.cut) return rm;
               path.push(entry(tm, rm));
               r = await tryStep(tm, tTo, depth - 1);
             }
+            if (r.cut && r.cutAt == null) r.cutAt = +((Math.min(tFrom, tTo) + Math.abs(tTo - tFrom) / 2)).toFixed(2);
             return r;
           };
           const r = await tryStep(prevT, t, 2);
+          if (r.cut) {
+            /* the clip switches to DIFFERENT FOOTAGE here (a compilation
+               splice) — every pose past it would be fiction. Stop this
+               direction at the cut and say so; ✂ trim covers the other side. */
+            sceneCuts.push(r.cutAt != null ? r.cutAt : +((prevT + t) / 2).toFixed(2));
+            return true;
+          }
           path.push(entry(t, r));
           if (r.anchored) {
             const k = path.length - 1;
@@ -6215,8 +6241,12 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           const a = guides[lo], b = guides[hi], u = hi === lo ? 0 : (tt - a.t) / Math.max(1e-9, b.t - a.t);
           return unit([a.g[0] + (b.g[0] - a.g[0]) * u, a.g[1] + (b.g[1] - a.g[1]) * u, a.g[2] + (b.g[2] - a.g[2]) * u]);
         };
-        const fwdO = times.filter((t) => t > markT + 1e-6);
-        const bwdO = times.filter((t) => t < markT - 1e-6).reverse();
+        /* stay inside the SOLVED span: past a scene cut the camera path ends,
+           and tracking "the object" into unrelated footage through a held
+           pose would fabricate a trajectory */
+        const sT0 = path[0].t, sT1 = path[path.length - 1].t;
+        const fwdO = times.filter((t) => t > markT + 1e-6 && t <= sT1 + 0.13);
+        const bwdO = times.filter((t) => t < markT - 1e-6 && t >= sT0 - 0.13).reverse();
         for (const list of [fwdO, bwdO]) {
           if (stabAbortRef.current !== run) break;
           if (!list.length) continue;
@@ -6285,7 +6315,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         : null;
       /* poseFixes cleared: ⚓ anchors were corrections OF THE OLD SOLVE — carrying
          them onto a fresh solve would re-apply stale deltas to good frames */
-      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, stabSig: stabSigOf({ ...source, ...(track2 ? { track: track2 } : {}) }), ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
+      if (update) update({ posePath: path, posePathRaw: pathRaw, objPath: objGood ? objPath : null, objPathRaw: objGood ? objRaw : null, poseFixes: null, preStab, stabSig: stabSigOf({ ...source, ...(track2 ? { track: track2 } : {}) }), sceneCuts: sceneCuts.length ? sceneCuts.sort((a, b) => a - b) : null, ...(sensorSync ? { sensorSync } : {}), ...(track2 ? { track: track2 } : {}) });
       mediaDel(source.id + ":stab");   // any previously exported render is stale under the new path
       setStabBusy(0); setStabTotal(0);
       const fovs = path.map((p) => p.fov), fovLo = Math.min(...fovs), fovHi = Math.max(...fovs);
@@ -6313,9 +6343,13 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const heldTail = lastLock != null && objPath.length ? (+objPath[objPath.length - 1].t - lastLock) : 0;
       const lostNote = heldTail > 0.8 ? ` · ⚠ last locked at ${lastLock.toFixed(1)}s, the final ${heldTail.toFixed(1)}s is held, not measured` : "";
       const objNote = objMid ? (objGood ? ` · object tracked (${objOk}/${objOk + objMiss} frames${guideNote}${objSmoothNote})${lostNote}` : ` · object lost (${objOk}/${objOk + objMiss} matched — outline stays at the marked spot; tip: mark a few Track points on the measure step and re-stabilize for a guided track)`) : "";
+      /* a compilation splice is not camera motion — the walk stopped there
+         rather than solving unrelated footage as one camera. Honest + the
+         actionable next step in one line. */
+      const cutNote = sceneCuts.length ? ` · 🎬 SCENE CUT at ${sceneCuts.map((c2) => c2.toFixed(1) + "s").join(", ")} — the clip switches to different footage there, so only the scene with your alignment frame was solved (✂ trim to the other side to analyze it separately)` : "";
       setFlash(weak > path.length * 0.25
-        ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there. Play it with ▶ in look mode.`
-        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${chainNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
+        ? `🎞 solved ${path.length} frames, but ${weak} had too few background references (pose held) — expect drift there.${cutNote} Play it with ▶ in look mode.`
+        : `🎞 stabilized: ${path.length} frames solved${weak ? ` (${weak} held)` : ""}${zoomNote}${ancNote}${chainNote}${glitchNote}${bridgeNote}${sizeNote}${trimNote}${sensorNote}${cutNote}${objNote}. ▶ play in look mode — the sky stays locked, the frame moves.`);
     } catch (e) { setStabBusy(0); setStabTotal(0); setFlash("🎞 stabilization failed on this video"); }
     finally { v.removeAttribute("src"); try { v.load(); } catch (e) { } }
   };
@@ -6564,7 +6598,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
     if (!source || !update) return;
     playingRef.current = false; setPlaying(false); setPlayPose(null);
     setFixOn(false); setSmoothOpen(false); setExportMenu(false);
-    update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null });
+    update({ posePath: null, posePathRaw: null, objPath: null, objPathRaw: null, poseFixes: null, sensorSync: null, preStab: null, sceneCuts: null });
     mediaDel(source.id + ":stab");   // any exported render described the old solve
     setFlash("✕ stabilization cleared — the original clip, your marks, waypoints and alignment are untouched. 🎞 Stabilize to solve it again.");
   };
@@ -6853,6 +6887,7 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
           }
           const bestScore = Math.max(regA ? regA.score : 0, reg ? reg.score : 0);
           const dAz = p.uAz - az0, dEl = p.el - el0;
+          if (window.__panoDebug) console.log(`PANO ${i} t=${p.t.toFixed(2)} fov=${p.fov.toFixed(1)} roll=${(p.roll || 0).toFixed(1)} A=${regA ? regA.score.toFixed(2) : "-"} B=${reg ? reg.score.toFixed(2) + "@x" + reg.scale : "-"} dAz=${dAz.toFixed(2)} dEl=${dEl.toFixed(2)} ppdA=${wA.ppd.toFixed(1)} ppdB=${wB.ppd.toFixed(1)}`);
           if (Math.abs(dAz) > 1e-9 || Math.abs(dEl) > 1e-9) corrected++;
           if (bestScore >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
             (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
@@ -8741,7 +8776,9 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: !solvedPath ? "var(--amber)" : playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
                     {!solvedPath && (previewKind === "sensor" ? " · from motion log, not stabilized" : " · preview, not stabilized")}
-                    {solveShort && <span style={{ color: "var(--amber)" }}> · ✂ solve is narrower than the trim — re-stabilize</span>}
+                    {Array.isArray(source?.sceneCuts) && source.sceneCuts.length > 0
+                      ? <span style={{ color: "var(--amber)" }}> · 🎬 stops at the {(+source.sceneCuts[0]).toFixed(1)}s scene cut — different footage beyond it</span>
+                      : solveShort && <span style={{ color: "var(--amber)" }}> · ✂ solve is narrower than the trim — re-stabilize</span>}
                   </span>
                   {/* always offered (not only mid-playback): after scrubbing —
                       or returning from a tool that kept the scrubbed frame —

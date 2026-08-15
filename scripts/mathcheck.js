@@ -1336,6 +1336,43 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(gHint && (!gRaw || gHint.score >= gRaw.score) ? 1 : 0, 1, 0, "roll hint: de-rotated match scores at least the raw one");
       approx(gHint && Math.abs(gHint.az - 250.3) < 1.2 ? 1 : 0, 1, 0, "roll hint: center az recovered through the roll");
     }
+
+    // SCENE CUT (field case: a compilation clip hard-cut from a dusk city
+    // segment to unrelated daytime sky at 23.6 s — the walk solved the splice
+    // as camera motion and every later pose was fiction). stepTracker must
+    // flag a textured-but-uncorrelated next frame and a palette flip, while
+    // featureless and ordinary same-scene frames stay plain holds/solves.
+    {
+      /* scene B is genuinely DIFFERENT content (sharp hash-noise) — two
+         smooth sinusoid fields are too self-similar to separate (measured:
+         15/36 templates cross-match and the solve "succeeds"), and real
+         splices swap content character, palette, or both. The
+         smooth-vs-smooth splice is a stated limitation the chroma tell
+         usually covers. */
+      const texNoise = () => {
+        const data = new Uint8ClampedArray(TW * TH * 4);
+        for (let y = 0; y < TH; y++) for (let x = 0; x < TW; x++) {
+          const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+          const v = 50 + 170 * (s - Math.floor(s));
+          const i = (y * TW + x) * 4;
+          data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+        }
+        return data;
+      };
+      const mkTk = () => initTracker(tframes[0], TW, TH, natW, natH, P0, { mode: "day", minMatch: 6, maxN: 40, patch: 11, search: 14 });
+      const rCut = stepTracker(mkTk(), texNoise());
+      approx(rCut.cut === 1 ? 1 : 0, 1, 0, "scene cut: textured-but-uncorrelated frame is flagged");
+      const flat = new Uint8ClampedArray(TW * TH * 4);
+      for (let i = 0; i < TW * TH; i++) { flat[i * 4] = flat[i * 4 + 1] = flat[i * 4 + 2] = 124; flat[i * 4 + 3] = 255; }
+      const rFlat = stepTracker(mkTk(), flat);
+      approx(!rFlat.cut && rFlat.held ? 1 : 0, 1, 0, "scene cut: a featureless same-palette frame stays a plain hold");
+      const blue = new Uint8ClampedArray(TW * TH * 4);
+      for (let i = 0; i < TW * TH; i++) { blue[i * 4] = 70; blue[i * 4 + 1] = 120; blue[i * 4 + 2] = 205; blue[i * 4 + 3] = 255; }
+      const rBlue = stepTracker(mkTk(), blue);
+      approx(rBlue.cut === 1 ? 1 : 0, 1, 0, "scene cut: a palette flip (dusk gray → blue sky) is caught by chromaticity where gray NCC is blind");
+      const rSame = stepTracker(mkTk(), tframes[1]);
+      approx(!rSame.cut ? 1 : 0, 1, 0, "scene cut: an ordinary same-scene step is never flagged");
+    }
   }
 
   // 4i. SOFT SKY (clouds only — field ask: "most UFO videos have nothing to
