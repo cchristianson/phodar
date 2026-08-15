@@ -48,6 +48,36 @@ Notable changes to Phodar. Format loosely follows
   so an area answer reads as an area, not a fake point.
 
 ### Added (since the geolocation stack)
+- **🖼 Panorama v3 — adaptive-resolution registration (the "ran it 3
+  times and no better" fix).** The v2 re-registration ran every frame
+  against ONE fixed 2 px/° coarse twin of the whole panorama — and a
+  deeply zoomed frame (~10° FOV) spans only ~20 px there, below what
+  any correlation can lock, so the zoom stretches that needed
+  correction most got none (field-measured: 2–3 zoom-scale corrections
+  across ~85 frames, composite unchanged after three runs). Each frame
+  now registers inside its OWN local window (`regWindow`) at a
+  resolution where it spans ~100–200 px whatever its FOV, with the
+  base cropped from the FULL-RES composite so the detail is really
+  there — two levels: a placement lock reaching ~±2° at any zoom
+  depth, then the FOV-scale ladder at ~2× the density (a zoom error is
+  a scale error, and scale needs pixels — exactly what the fixed twin
+  denied the zoomed frames). Wide frames keep the old coarse floor, so
+  their cost and behavior barely change; correction quantization on a
+  zoomed frame drops from 0.5° to ~0.05°. Proven in mathcheck (window
+  sizing/bounds/mapping) and the browser harness: a fov-8 frame lying
+  by +0.7° az and 15% zoom — the exact starved case — recovers to
+  0.01° az and 1.2% FOV residual through the real render path.
+
+### Fixed
+- **iOS text autosizing inflated the sky-view status text** ("why is
+  the text under the re-stabilize button so big?"): Safari's font
+  boosting re-sized text-dense blocks the styles never asked it to,
+  which also widened rows until buttons clipped off the right edge of
+  the screen. The stylesheet now pins `text-size-adjust: 100%`, the 📐
+  panorama bar wraps with a real minimum text basis, and the playback
+  row wraps as a backstop — the ⬇ %-progress button can no longer be
+  pushed off-screen even under large accessibility text.
+
 - **📐 Panorama corrections → the camera path.** The composite measures
   where each frame REALLY belongs — and now those measurements can flow
   back into the solve. The stitcher carries the zoom-scale correction

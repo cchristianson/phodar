@@ -145,6 +145,42 @@ export function bestShift(base, patch, R = 6) {
   return best && best.score >= 0.35 ? best : null;
 }
 
+/* ADAPTIVE-RESOLUTION registration window (v3 — the field fix). The
+   first re-registration pass ran on ONE fixed 2 px/° coarse twin of the
+   whole panorama, and a deeply zoomed frame (~10° fov) spans only ~20 px
+   there — below bestShift's own overlap gate, uncorrelatable — so the
+   zoom stretches that need correction most got none (measured on the
+   real clip: 2-3 zoom-scale corrections across ~85 frames). Instead,
+   each frame gets its own LOCAL window around its predicted footprint,
+   at a resolution chosen so the frame spans ~`target` px whatever its
+   FOV; the base is cropped from the FULL-RES composite so the detail is
+   really there. Same equirect mapping, so a pixel shift in the window
+   is still an angular shift (1/ppd °/px). Pure: returns the window
+   layout (equirectXY-compatible) — the caller does the canvas work. */
+export function regWindow(layout, pose, W, H, opts = {}) {
+  const target = opts.target ?? 96;   // px the frame should span in the window
+  const padDeg = opts.padDeg ?? 2.2;  // search headroom each side
+  let azMin = 1e9, azMax = -1e9, elMin = 1e9, elMax = -1e9;
+  for (const b of frameBorder(pose, W, H)) {
+    if (b.az < azMin) azMin = b.az;
+    if (b.az > azMax) azMax = b.az;
+    if (b.el < elMin) elMin = b.el;
+    if (b.el > elMax) elMax = b.el;
+  }
+  const spanAz = Math.max(0.5, azMax - azMin), spanEl = Math.max(0.5, elMax - elMin);
+  /* never below the old coarse scale, never above the composite's own
+     resolution (upscaling the crop would invent no detail) */
+  const ppd = Math.min(Math.max(2, target / spanAz), layout.ppd);
+  const wAzMin = Math.max(layout.azMin, azMin - padDeg), wAzMax = Math.min(layout.azMax, azMax + padDeg);
+  const wElMin = Math.max(layout.elMin, elMin - padDeg), wElMax = Math.min(layout.elMax, elMax + padDeg);
+  return {
+    azMin: wAzMin, azMax: wAzMax, elMin: wElMin, elMax: wElMax, ppd,
+    W: Math.max(2, Math.round((wAzMax - wAzMin) * ppd)),
+    H: Math.max(2, Math.round((wElMax - wElMin) * ppd)),
+    spanAz, spanEl,
+  };
+}
+
 /* full registration of one frame against the composite: shift AND scale.
    A zoom error is a SCALE error — the solve's FOV estimate during fast
    zooms carries a few percent of error that a shift can never fix

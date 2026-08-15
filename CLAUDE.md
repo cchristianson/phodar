@@ -1214,6 +1214,25 @@ terrain stay frozen and only the object moves. Build ladder:
    harness (marker dots at predicted directions through a rolled
    frame). Future hook: a panorama is ONE wide frame — feed it back
    into Find-my-spot as a single sample set.
+   **v2 RE-REGISTRATION + v3 ADAPTIVE WINDOWS**: the solved pose only
+   SEEDS each frame's placement — before painting, the frame is
+   registered against the growing composite (equirect pixel shift IS
+   angular shift; masked zero-mean NCC in `bestShift`, shift + a
+   privileged-scale-1 FOV ladder in `registerFrame`, corrections
+   carried forward through a zoom). v3 lesson (three failed field runs
+   before it): registration resolution must ADAPT — the v2 fixed
+   2 px/° whole-pano twin left a ~10° zoomed frame only ~20 px wide,
+   uncorrelatable, so exactly the frames that needed the zoom-scale
+   correction got none. `regWindow` gives each frame a local window at
+   ~100–200 px across its own footprint (never above the composite's
+   ppd), base CROPPED FROM THE FULL-RES COMPOSITE, two levels
+   (placement lock ±~2°, then the scale ladder at ~2× density).
+   Strong corrections become candidate ⚓ anchors offered via the 📐
+   "Apply to path" bar (opt-in; hand anchors outrank; the reverted
+   terrain auto-anchor is why it never auto-applies). Deep-zoom
+   recovery asserted in the browser harness (a fov-8 frame lying +0.7°
+   az/15% zoom → 0.01°/1.2% residual) and verified BY EYE on the real
+   Himalaya clip via the Playwright drive before shipping.
    **Manual pose correction (⚓ Fix frames): DONE** — playback-row
    ⚓ opens a mode where you scrub to a frame that lost the world lock,
    drag the photo back onto the true horizon/terrain (one finger = az/el,

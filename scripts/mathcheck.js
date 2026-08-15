@@ -4232,6 +4232,32 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
     `pano: 15% zoom bias corrected by the ladder (picked ×${regBias && regBias.scale} → residual ${regBias ? Math.abs(TRUE_BIAS * regBias.scale - 1).toFixed(3) : "-"})`);
   const regClean = PN.registerFrame(base2, (s) => resample(base2, s), { R: 4 });
   ok(regClean && regClean.scale === 1, "pano: an unbiased frame keeps scale 1 — no FOV jitter from the ladder");
+
+  /* v3 adaptive registration windows: a deep-zoom frame must get enough
+     pixels to correlate (the v2 fixed 2 px/° twin gave it ~20 — field-
+     measured as zero zoom corrections exactly where they were needed),
+     a wide frame must not balloon the window, and the resolution must
+     never exceed the composite's own (upscaling invents no detail). */
+  const wLayBig = PN.panoLayout(PN.unwrapSamples([
+    { az: 0, el: 10, roll: 0, fov: 60, t: 0 }, { az: 40, el: 10, roll: 0, fov: 10, t: 1 },
+  ]), 1920, 1080);
+  const wZoom = PN.regWindow(wLayBig, { uAz: 40, el: 10, roll: 0, fov: 10 }, 1920, 1080, { target: 96, padDeg: 2.2 });
+  ok(wZoom.ppd * wZoom.spanAz >= 90 && wZoom.ppd > 4,
+    `pano: a 10° zoom frame spans ~target px in its window (${(wZoom.ppd * wZoom.spanAz).toFixed(0)} px at ${wZoom.ppd.toFixed(1)} px/°)`);
+  const wWide = PN.regWindow(wLayBig, { uAz: 0, el: 10, roll: 0, fov: 60 }, 1920, 1080, { target: 96, padDeg: 2.2 });
+  ok(wWide.ppd === 2 && wWide.W < 260,
+    `pano: a wide frame keeps the coarse floor — bounded window (${wWide.W}×${wWide.H} at ${wWide.ppd} px/°)`);
+  ok(wZoom.ppd <= wLayBig.ppd + 1e-9, "pano: window resolution never exceeds the composite's own ppd");
+  ok(wZoom.azMin >= wLayBig.azMin - 1e-9 && wZoom.azMax <= wLayBig.azMax + 1e-9 &&
+    wZoom.elMin >= wLayBig.elMin - 1e-9 && wZoom.elMax <= wLayBig.elMax + 1e-9,
+    "pano: the window stays inside the composite it crops from");
+  /* the window layout is equirectXY-compatible: the whole frame footprint
+     maps inside the window (padding may be asymmetric at layout edges) */
+  const inWin = PN.frameBorder({ uAz: 40, el: 10, roll: 0, fov: 10 }, 1920, 1080).every((b) => {
+    const [wx, wy] = PN.equirectXY(wZoom, b.az, b.el);
+    return wx >= -0.5 && wx <= wZoom.W + 0.5 && wy >= -0.5 && wy <= wZoom.H + 0.5;
+  });
+  ok(inWin, "pano: the frame's full footprint maps inside its registration window");
 }
 
 if (fails) { console.error(`\nmathcheck: ${fails} assertion(s) failed`); process.exit(1); }

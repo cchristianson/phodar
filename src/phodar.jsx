@@ -20,7 +20,7 @@ import { solveManualPoses } from "./video/manualpose.js";
 import { pixelToGround, groundSpanM, centerGSD, haversineM, bearingDeg as bearingDegGround, rayToGround, groundHomography, pixelToGroundH, groundSpanH, groundKinematics } from "./math/geolocate.js";
 import { poseFromGravity, poseQuality, poseFromOrientation, upFromOrientation, gravitySign } from "./capture/pose.js";
 import { muxMp4 } from "./video/mp4mux.js";
-import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame } from "./video/panorama.js";
+import { unwrapSamples, panoLayout, renderOrder, featherAlpha, drawFramePano, panoPick, registerFrame, regWindow } from "./video/panorama.js";
 import { makeZip as makeZipBytes, strU8, unzipEntryText, unzipBinEntries } from "./report/zip.js";
 import { analyze, arbitrateBearings, aspectSpan, covEllipse } from "./math/triangulate.js";
 import { trackDirections, kinematics, analyzeTracks, videoKinematics, stereoVideo, mixedStereo, trackQuality } from "./math/kinematics.js";
@@ -311,6 +311,12 @@ const css = `
   --mono:ui-monospace,'SF Mono','Roboto Mono',Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+/* iOS Safari "text autosizing" inflates text-dense blocks (the stabilize
+   status lines, the 📐 panorama bar) to a size the styles never asked for,
+   which also widens rows until buttons clip off-screen. 100% = render the
+   authored sizes. (field report: "why is the text under the re-stabilize
+   button so big / buttons get clipped at right side") */
+html{-webkit-text-size-adjust:100%; text-size-adjust:100%;}
 /* inline loading spinner — replaces the old "…" load indicators everywhere */
 .spin{display:inline-block; width:1em; height:1em; vertical-align:-0.15em;
   border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
@@ -6774,15 +6780,26 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
       const samples = unwrapSamples(picked);
       const natW = source.natW, natH = source.natH;
       const layout = panoLayout(samples, natW, natH);
-      /* coarse twin for registration: ~2 px/deg, alpha = coverage */
-      const cppd = 2;
-      const cLay = { ...layout, ppd: cppd, W: Math.max(2, Math.round((layout.azMax - layout.azMin) * cppd)), H: Math.max(2, Math.round((layout.elMax - layout.elMin) * cppd)) };
       const cv = document.createElement("canvas"); cv.width = layout.W; cv.height = layout.H;
       const ctx = cv.getContext("2d");
-      const ccv = document.createElement("canvas"); ccv.width = cLay.W; ccv.height = cLay.H;
-      const cctx = ccv.getContext("2d", { willReadFrequently: true });
-      const tmp = document.createElement("canvas"); tmp.width = cLay.W; tmp.height = cLay.H;
-      const tctx = tmp.getContext("2d", { willReadFrequently: true });
+      /* v3 ADAPTIVE registration windows: the v2 fixed 2 px/° twin left a
+         deeply-zoomed frame ~20 px wide — uncorrelatable, so the zoom
+         stretches that needed correction most got none (field-measured:
+         2-3 zoom-scale fixes across ~85 frames, composite still wrong).
+         Now each frame registers in its OWN local window (regWindow) at a
+         resolution where it spans ~100-200 px, base cropped from the
+         FULL-RES composite. Two reusable canvases, resized per frame
+         (assignment clears them). */
+      const bwCv = document.createElement("canvas");
+      const bwCtx = bwCv.getContext("2d", { willReadFrequently: true });
+      const pwCv = document.createElement("canvas");
+      const pwCtx = pwCv.getContext("2d", { willReadFrequently: true });
+      const winBase = (wl) => {
+        bwCv.width = wl.W; bwCv.height = wl.H;
+        const sc = layout.ppd / wl.ppd;
+        bwCtx.drawImage(cv, (wl.azMin - layout.azMin) * layout.ppd, (layout.elMax - wl.elMax) * layout.ppd, wl.W * sc, wl.H * sc, 0, 0, wl.W, wl.H);
+        return bwCtx.getImageData(0, 0, wl.W, wl.H);
+      };
       const texW = Math.min(natW, 1920), texH = Math.round(natH * texW / natW);
       const tcv = document.createElement("canvas"); tcv.width = texW; tcv.height = texH;
       const tcx = tcv.getContext("2d");
@@ -6806,31 +6823,43 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
         featherAlpha(tcx, texW, texH, 0.05);
         if (i > 0) {
           if (carry !== 1) p.fov *= carry;
-          const baseImg = cctx.getImageData(0, 0, cLay.W, cLay.H);
-          const renderPatch = (s) => {
-            tctx.clearRect(0, 0, cLay.W, cLay.H);
-            drawFramePano(tctx, tcv, texW, texH, s === 1 ? p : { ...p, fov: p.fov * s }, cLay, 8);
-            return tctx.getImageData(0, 0, cLay.W, cLay.H);
+          const winPatch = (wl, pose) => {
+            pwCv.width = wl.W; pwCv.height = wl.H;
+            drawFramePano(pwCtx, tcv, texW, texH, pose, wl, 8);
+            return pwCtx.getImageData(0, 0, wl.W, wl.H);
           };
-          /* the FOV-scale ladder runs only where it pays: mid-zoom (the
-             solve's FOV error lives there — field case: the same tree at
-             two sizes) or when the plain shift can't lock */
+          /* LEVEL A — lock the PLACEMENT: window at ~96 px across the
+             frame, shift search reaching ~±2° at any zoom depth */
+          const wA = regWindow(layout, p, natW, natH, { target: 96, padDeg: 2.2 });
+          const regA = registerFrame(winBase(wA), (s) => winPatch(wA, s === 1 ? p : { ...p, fov: p.fov * s }), {
+            R: Math.min(24, Math.max(4, Math.ceil(1.8 * wA.ppd))), scales: [1],
+          });
+          if (regA && (regA.dx || regA.dy)) { p.uAz += regA.dx / wA.ppd; p.el -= regA.dy / wA.ppd; }
+          /* LEVEL B — refine + the FOV-SCALE ladder at ~2× the density
+             (a zoom error is a scale error, and scale needs pixels: this
+             is exactly what the fixed twin denied the zoomed frames).
+             The ladder runs mid-zoom or when the plain refine can't lock. */
           const zooming = Math.abs(p.fov - samples[i - 1].fov * carry) / Math.max(p.fov, samples[i - 1].fov) > 0.03;
-          let reg = registerFrame(baseImg, renderPatch, { R: 6, scales: zooming ? undefined : [1] });
-          if (!zooming && (!reg || reg.score < 0.55)) reg = registerFrame(baseImg, renderPatch, { R: 6 });
+          const wB = regWindow(layout, p, natW, natH, { target: 200, padDeg: 0.9 });
+          const mkB = (s) => winPatch(wB, s === 1 ? p : { ...p, fov: p.fov * s });
+          const baseB = winBase(wB);
+          const RB = Math.min(14, Math.max(5, Math.ceil(0.5 * wB.ppd)));
+          let reg = registerFrame(baseB, mkB, { R: RB, scales: zooming ? undefined : [1] });
+          if (!zooming && (!reg || reg.score < 0.55)) reg = registerFrame(baseB, mkB, { R: RB });
           if (reg) {
-            if (reg.dx || reg.dy) { p.uAz += reg.dx / cppd; p.el -= reg.dy / cppd; corrected++; }
+            if (reg.dx || reg.dy) { p.uAz += reg.dx / wB.ppd; p.el -= reg.dy / wB.ppd; }
             if (reg.scale !== 1) { p.fov *= reg.scale; fovFixed++; }
             carry = Math.min(1.6, Math.max(0.6, carry * (reg.scale || 1)));
-            const dAz = p.uAz - az0, dEl = p.el - el0;
-            if (reg.score >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
-              (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
-              fixes.push({ t: +p.t.toFixed(3), az: +((((p.uAz % 360) + 360) % 360)).toFixed(3), el: +p.el.toFixed(3), roll: +(p.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
-            }
+          }
+          const bestScore = Math.max(regA ? regA.score : 0, reg ? reg.score : 0);
+          const dAz = p.uAz - az0, dEl = p.el - el0;
+          if (Math.abs(dAz) > 1e-9 || Math.abs(dEl) > 1e-9) corrected++;
+          if (bestScore >= 0.5 && Math.abs(dAz) <= 4 && Math.abs(dEl) <= 4 &&
+            (Math.abs(dAz) >= 0.1 || Math.abs(dEl) >= 0.1 || Math.abs(p.fov / fov0 - 1) >= 0.015)) {
+            fixes.push({ t: +p.t.toFixed(3), az: +((((p.uAz % 360) + 360) % 360)).toFixed(3), el: +p.el.toFixed(3), roll: +(p.roll || 0).toFixed(2), fov: +p.fov.toFixed(2), src: "pano" });
           }
         }
         drawFramePano(ctx, tcv, texW, texH, p, layout);
-        drawFramePano(cctx, tcv, texW, texH, p, cLay, 8);
         setExporting(0.02 + 0.7 * ((i + 1) / samples.length));
       }
       /* pass 2 — the sharpest third repainted on top, at the CORRECTED poses */
@@ -8703,7 +8732,11 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                   <button className="btn sm" style={{ minWidth: 34 }} title="Forward one frame"
                     onClick={() => { playingRef.current = false; setPlaying(false); showFrame(playIdx + 1); }}>›</button>
                 </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {/* flexWrap is a backstop: normally the status span absorbs all
+                    slack, but if the buttons alone ever exceed the width (large
+                    accessibility text), they wrap instead of clipping off the
+                    right edge (field report: the ⬇ %-progress button clipped) */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <button className="btn sm amber" style={{ minWidth: 34 }} onClick={togglePlay}>{playing ? "⏸" : "▶"}</button>
                   <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--mono)", fontSize: 10, color: !solvedPath ? "var(--amber)" : playPose ? "var(--teal)" : "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {(playPath[playIdx]?.t ?? 0).toFixed(2)}s{isNum(playPath[playIdx]?.n) ? ` · ${playPath[playIdx].n} refs` : ""}
@@ -8839,12 +8872,15 @@ function SkyAimer({ open, onClose, lat, lng, whenMs, initAz, initAlt, marks, whi
                 ))}
               </div>
             )}
+            {/* the row WRAPS with a real min basis on the text: without that a
+                narrow phone crushed the span and pushed the 📐 button off the
+                right edge of the screen (field report) */}
             {!exporting && pMode !== "place" && !calibOn && panoRef.current && panoRef.current.fixes && panoRef.current.fixes.length > 2 && !viewOnly && (
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "7px 10px" }}>
-                <span style={{ flex: 1, fontSize: 10.5, color: "var(--amber)", lineHeight: 1.45 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8, background: "rgba(43,34,14,.6)", border: "1px solid var(--amber)", borderRadius: 10, padding: "7px 10px" }}>
+                <span style={{ flex: "1 1 170px", minWidth: 0, fontSize: 10.5, color: "var(--amber)", lineHeight: 1.45 }}>
                   The panorama measured {panoRef.current.fixes.length} camera-path corrections{panoRef.current.fovFixed ? ` (${panoRef.current.fovFixed} zoom-scale)` : ""} by matching frames against the composite.
                 </span>
-                <button className="btn sm amber" onClick={applyPanoFixes}>📐 Apply to path</button>
+                <button className="btn sm amber" style={{ flex: "0 0 auto" }} onClick={applyPanoFixes}>📐 Apply to path</button>
               </div>
             )}
           </>
