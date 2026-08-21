@@ -15006,6 +15006,15 @@ Here is the sighting:`;
         </div>
       )}
       {impMsg && <div style={{ fontSize: 12, color: impMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 6, textAlign: "center" }}>{impMsg}</div>}
+      {/* easter egg: faint 🌲 pinned to the SCREEN's bottom-right corner,
+          linking to a companion app. fixed — a knowing exception to
+          invariant #9: decorative, the wrapper swallows no touches
+          (pointer-events:none), and a stale position during a pinch
+          strands nothing functional. */}
+      <div style={{ position: "fixed", right: "calc(10px + env(safe-area-inset-right, 0px))", bottom: "calc(10px + env(safe-area-inset-bottom, 0px))", zIndex: 40, pointerEvents: "none" }}>
+        <a href="https://tree-angulator-production.up.railway.app/" aria-label="Tree-angulator" title=""
+          style={{ opacity: 0.22, fontSize: 13, textDecoration: "none", filter: "grayscale(0.4)", pointerEvents: "auto" }}>🌲</a>
+      </div>
       {real.length > 0 && (
         <div className="card" style={{ margin: "18px 0 0" }}>
           <ML>Sighting name</ML>
