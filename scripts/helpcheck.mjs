@@ -53,7 +53,7 @@ for (const m of app.matchAll(/<button\b[^>]*>\s*([^<>{}\n]{1,60}?)\s*<\/button>/
 for (const m of app.matchAll(/>\s*([^<>{}\n]{1,60}?)\s*<\/button>/g)) labels.add(m[1].trim());
 
 /* pull the distinctive glyphs out of those labels */
-const GLYPH = /[\u2190-\u21FF\u2300-\u27BF\u2B00-\u2BFF\uFF0B\u{1F300}-\u{1FAFF}]/u;
+const GLYPH = /[\u2190-\u21FF\u2300-\u27BF\u25A0-\u25FF\u2B00-\u2BFF\uFF0B\u{1F300}-\u{1FAFF}]/u;
 const seen = new Map();                    // glyph → an example label
 for (const l of labels) {
   for (const ch of [...l]) {
@@ -91,6 +91,7 @@ const NAMED = [
   ["poseFixes", /Fix frames/, "manual per-frame pose correction"],
   ["horiz3d", /▲ 3D \/ ▤ profile/, "the 3D terrain vista on step 2"],
   ["setPeek", /📷 hold/, "hold-to-compare the photo against the terrain preview"],
+  ["peakSampleSets", /mark each summit/i, "⛰ peak-constellation matching in Find my spot"],
   ["autoStarAlign", /Auto star align/, "automatic plate solving"],
   ["matchSkyline", /Snap to ridges/, "terrain skyline snapping"],
   ["FlightLogCheck", /flight-log check/i, "the drone flight-log calibration check"],

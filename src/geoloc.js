@@ -30,11 +30,21 @@
    region loader, landmark fetch), which are never called by tests.
    ============================================================ */
 
-import { pixToDirK } from "./math/projection.js";
-import { dirToAzEl } from "./math/geodesy.js";
-import { skylineFromSampler, skylineElAt, loadGrid, gridSample } from "./terrain.js";
+import { pixToDirK, solvePoseAnchors } from "./math/projection.js";
+import { dirToAzEl, dirFromAzEl } from "./math/geodesy.js";
+import { skylineFromSampler, skylineElAt, demSummits, loadGrid, gridSample } from "./terrain.js";
 
 export const SWEEP_FOVS = [15, 20, 27, 36, 48]; // candidate horizontal FOVs when the lens is unknown (zoom clips vary per frame)
+/* A SUPERSET for frames carrying peak marks. SWEEP_FOVS was tuned on a
+   zoomed clip and stops at 48°, but an UNZOOMED phone frame is 50–70°
+   across — so the truth simply is not in the ladder, and everything is
+   then matched through a lens geometry that never existed. Measured on
+   real Huairou terrain: with the truth FOV at 48° the sweep put the true
+   cell FIRST of 81 at 0.08° rms; the identical run at 50° dropped it to
+   27th. Only frames the user actually marked use the wider rungs, so
+   every unmarked frame keeps the validated ladder exactly; being a
+   superset, a marked frame keeps all its old hypotheses too. */
+export const PEAK_FOVS = [15, 20, 27, 36, 48, 58, 68, 80];
 export const AZ_STEP = 2;                       // sweep curve resolution (deg) — the coherence window is ±40°, 2° bins are plenty
 export const WIN_DEG = 40;                      // one camera pans, it doesn't teleport: all frames must point within ±this of one center
 
@@ -278,6 +288,251 @@ function azCurveJoint(sets, nearSets, elAt, prof, stepDeg = AZ_STEP, nearW = 0.7
   return { c, fi, stepDeg };
 }
 
+/* ============================================================
+   PEAK CONSTELLATION MATCH
+   ============================================================
+   The sweep above matches the skyline as a CURVE, and the field lesson
+   recorded at the top of this file is that curve shape alone was often
+   not decisive. A person reading the same photo has information the
+   curve detector does not:
+
+   1. They can point at the actual SUMMITS — including ones the detector
+      never sees, because haze blues a far ridge into the sky, or a
+      foreground (a bridge deck, a tree line) covers the top of frame.
+   2. They know which ridge is IN FRONT of which. That is depth, and the
+      marched DEM has the range to every crest, so the claim is testable.
+
+   So the marks are matched as a rigid CONSTELLATION, the same way
+   blindStarAlign matches an asterism: the pattern of angular gaps is
+   what identifies the terrain, with the camera's pointing, pitch and
+   roll solved for rather than assumed. Three constraints do the work,
+   and each rules out matches that a nearest-neighbour score would take:
+
+   - ONE-TO-ONE. Two marks can never claim the same summit. (This is the
+     hole in matching pins independently: N pins can all match the one
+     mapped peak that happens to lie that way, and every candidate then
+     "passes".)
+   - ORDER. Marks read left to right in the frame; their summits must
+     read the same way around the horizon. A crossed assignment is a
+     wrong match wearing a small residual.
+   - DEPTH. Every mark tagged near must land on a closer summit than
+     every mark tagged far. An untagged mark constrains nothing.
+
+   Pure: takes the marks, the DEM summits and a rotation, returns the
+   fit or null. No DEM, no pixels, no fetch. */
+export const PEAK_REF_DEG = 1.0;   // rms that scores 1.0 in the sweep's bin currency
+const PEAK_AZ_GATE = 6;            // deg a mark may sit from its summit and still pair
+
+/* marks (tapped pixels) → per-FOV angular sample sets, mirroring
+   skySampleSets so a frame's peaks and its skyline are hypothesised at
+   the SAME lens. `depth` rides along: "near" | "far" | null. */
+export function peakSampleSets(marks, W, H, fovs = SWEEP_FOVS) {
+  return fovs.map((fov) => {
+    const fpx = (W / 2) / Math.tan((fov * Math.PI) / 360);
+    const ms = marks.map((p) => {
+      const ae = dirToAzEl(pixToDirK(p.x, p.y, W, H, 0, 0, 0, fov, 0));
+      /* x/y ride along: the exact re-solve (refinePeakPose) needs the
+         original pixels, not this frame-relative approximation of them */
+      return { az: ae.az > 180 ? ae.az - 360 : ae.az, el: ae.el, thx: Math.atan2(p.x - W / 2, fpx), depth: p.depth || null, x: p.x, y: p.y };
+    }).sort((a, b) => a.az - b.az);   // left to right, so the order test is a walk
+    return { fov, ms };
+  });
+}
+
+/* one-to-one greedy pairing of marks to summits under a rotation.
+   Greedy over the globally cheapest pair first: with a handful of marks
+   this lands on the same answer a full assignment would, and it is
+   deterministic, which matters more here than the last 1% of optimality. */
+function pairUp(ms, summits, dAz, cost) {
+  const cand = [];
+  for (let i = 0; i < ms.length; i++) {
+    const wAz = ms[i].az + dAz;
+    for (let j = 0; j < summits.length; j++) {
+      const da = angDiff(summits[j].az, wAz);
+      if (da > PEAK_AZ_GATE) continue;
+      cand.push({ i, j, c: cost(ms[i], summits[j], da) });
+    }
+  }
+  cand.sort((a, b) => a.c - b.c);
+  const mi = new Array(ms.length).fill(-1), used = new Set();
+  for (const c of cand) {
+    if (mi[c.i] >= 0 || used.has(c.j)) continue;
+    mi[c.i] = c.j; used.add(c.j);
+  }
+  return mi;
+}
+
+/* fit the pitch intercept + roll slope over the paired marks — the same
+   two free parameters the skyline matcher absorbs, so the peaks score on
+   PATTERN, never on where the camera happened to be aimed */
+function fitPeakPose(ms, summits, mi) {
+  let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < ms.length; i++) {
+    if (mi[i] < 0) continue;
+    const r = summits[mi[i]].el - ms[i].el;
+    n++; sx += ms[i].thx; sy += r; sxx += ms[i].thx * ms[i].thx; sxy += ms[i].thx * r;
+  }
+  if (!n) return null;
+  const den = n * sxx - sx * sx;
+  const b = Math.abs(den) > 1e-9 ? (n * sxy - sx * sy) / den : 0;
+  return { a: (sy - b * sx) / n, b, n };
+}
+
+export function matchPeaksAt(ms, summits, dAz, opts = {}) {
+  if (ms.length < 2 || !summits.length) return null;
+  /* pass 1 — azimuth only. Rotation is the unknown being scanned; pitch
+     and roll cannot move a mark sideways, so azimuth alone is the honest
+     way to seed the correspondence before any pose is fitted. */
+  let mi = pairUp(ms, summits, dAz, (m, su, da) => da);
+  let fit = fitPeakPose(ms, summits, mi);
+  if (!fit) return null;
+  /* pass 2 — re-pair on the full 2-D residual under that pose (ICP) */
+  mi = pairUp(ms, summits, dAz, (m, su, da) => Math.hypot(da, su.el - m.el - (fit.a + fit.b * m.thx)));
+  fit = fitPeakPose(ms, summits, mi);
+  if (!fit || fit.n < 2) return null;
+  /* ORDER: marks are sorted left to right, so their summits must advance
+     monotonically around the horizon (unwrapped against the first) */
+  const seq = [];
+  for (let i = 0; i < ms.length; i++) if (mi[i] >= 0) seq.push(summits[mi[i]].az);
+  for (let k = 1; k < seq.length; k++) {
+    let d = seq[k] - seq[k - 1];
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    if (d <= 0) return null;                       // crossed: not this constellation
+  }
+  /* DEPTH: nothing the witness called near may sit behind anything they
+     called far. Untagged marks are silent — a person who did not say is
+     not evidence either way. */
+  let nearMax = 0, farMin = Infinity;
+  for (let i = 0; i < ms.length; i++) {
+    if (mi[i] < 0 || !ms[i].depth) continue;
+    const d = summits[mi[i]].distM;
+    if (ms[i].depth === "near") nearMax = Math.max(nearMax, d);
+    else farMin = Math.min(farMin, d);
+  }
+  if (nearMax && isFinite(farMin) && nearMax >= farMin * (opts.depthTol ?? 0.9)) return null;
+  /* AZIMUTH IS AN INTERCEPT, not the bin it was found in. The scan steps
+     in 2° bins, and for a handful of discrete points that quantization
+     alone lands up to ~1° of azimuth residual on every candidate — which
+     buries the differences between them (measured on real Huairou
+     terrain: the TRUE cell scored 0.69° when its own marks should fit it
+     near-exactly, and it ranked 11th). Pitch was already fitted for the
+     same reason; the camera's bearing is no more known than its tilt, so
+     the mean azimuth offset is removed too and the bin scan only has to
+     find the right CORRESPONDENCE. */
+  const daOf = (i) => {
+    let da = summits[mi[i]].az - (ms[i].az + dAz);
+    while (da > 180) da -= 360;
+    while (da < -180) da += 360;
+    return da;
+  };
+  /* ...and the LENS is an unknown too, which is the whole premise here:
+     the metadata is stripped. FOV is only ENUMERATED (a coarse ladder),
+     and between two rungs a wrong lens scale spreads the constellation
+     by a fixed fraction — a systematic the ranking cannot see past.
+     Measured on real terrain: at a truth FOV sitting on a rung the true
+     cell came FIRST at 0.08°; at 50° and 65°, between rungs, it fell to
+     0.6°/0.52° and 21st/15th. So the azimuth residual is fitted as
+     intercept + SLOPE in the mark's own off-axis angle, and that slope
+     IS the leftover lens scale. Fitted only at 4+ marks: with 3 it would
+     leave a single degree of freedom, and with 2 it is degenerate — the
+     fit would be exact for any terrain whatsoever, which is worse than
+     useless, it is a false pass. */
+  const fitScale = fit.n >= 4;
+  let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < ms.length; i++) {
+    if (mi[i] < 0) continue;
+    n++; const x = ms[i].az, y = daOf(i);
+    sx += x; sy += y; sxx += x * x; sxy += x * y;
+  }
+  const den = n * sxx - sx * sx;
+  const sAz = fitScale && Math.abs(den) > 1e-9 ? (n * sxy - sx * sy) / den : 0;
+  const da0 = (sy - sAz * sx) / n;
+  let s2 = 0;
+  for (let i = 0; i < ms.length; i++) {
+    if (mi[i] < 0) continue;
+    const da = daOf(i) - (da0 + sAz * ms[i].az);
+    const de = summits[mi[i]].el - ms[i].el - (fit.a + fit.b * ms[i].thx);
+    s2 += da * da + de * de;
+  }
+  const rms = Math.sqrt(s2 / fit.n);
+  /* an unmatched mark is a summit the DEM does not put there — real
+     evidence against this position, not something to quietly drop */
+  const miss = (ms.length - fit.n) / ms.length;
+  return { rms, cost: rms + (opts.missPenalty ?? 2) * miss, n: fit.n, pairs: mi, az: dAz + da0, a: fit.a, b: fit.b };
+}
+
+/* per-azimuth-bin cost curve, shaped exactly like azCurve so the sweep
+   can fold peaks into the SAME bins the skyline is scored in. Folding
+   (rather than evaluating peaks afterwards at the skyline's chosen
+   azimuth) is the lesson the near-ridge layer already taught: post-hoc
+   evaluation lets a wrong azimuth win first and then punishes the truth
+   for it. */
+const PEAK_NOFIT = 3;   // bin cost when no legal constellation exists there
+export function peakCurve(peakSets, summits, stepDeg = AZ_STEP, opts = {}) {
+  const NB = Math.round(360 / stepDeg);
+  const c = new Float32Array(NB).fill(PEAK_NOFIT);
+  const fi = new Uint8Array(NB);
+  for (let vi = 0; vi < peakSets.length; vi++) {
+    const ms = peakSets[vi].ms;
+    for (let b = 0; b < NB; b++) {
+      const m = matchPeaksAt(ms, summits, b * stepDeg - 180, opts);
+      if (!m) continue;
+      const v = Math.min(PEAK_NOFIT, m.cost / PEAK_REF_DEG);
+      if (v < c[b]) { c[b] = v; fi[b] = vi; }
+    }
+  }
+  return { c, fi, stepDeg };
+}
+
+/* EXACT polish for the winners. matchPeaksAt above is a SCREEN: it maps
+   a mark's in-frame azimuth straight onto world azimuth, which is the
+   same flat approximation the skyline sweep makes and is wrong by a few
+   tenths of a degree on a tilted camera at wide FOV (the 1/cos(el)
+   convergence of invariant #3, in the other direction). That costs
+   nothing in RANKING — every candidate is screened through the same
+   geometry, so the contrast between them survives — but it must never be
+   reported as the accuracy of a fix.
+
+   So the top handful of results are re-solved properly, exactly the way
+   autoStarAlign polishes its coarse search: the paired summits become
+   world-direction anchors and solvePoseAnchors fits az/el/roll/FOV to
+   them, returning a TRUE angular rms. It also hands back the FOV the
+   terrain implies, which is worth having on a clip with no lens data.
+   Needs ≥3 pairs — solvePoseAnchors only fits the centre at 3+, and a
+   two-point "solve" would just re-report its own seed. */
+export function refinePeakPose(marks, W, H, summits, pairs, seed) {
+  const anchors = [];
+  for (let i = 0; i < marks.length; i++) {
+    if (!pairs || pairs[i] < 0) continue;
+    const su = summits[pairs[i]];
+    anchors.push({ px: marks[i].x, py: marks[i].y, g: dirFromAzEl(su.az, su.el), su });
+  }
+  if (anchors.length < 3) return null;
+  const p = solvePoseAnchors(anchors, W, H, seed.az, seed.el ?? 0, { roll: seed.roll || 0, fov: seed.fov, k: 0, lockK: true });
+  return { az: p.az, el: p.el, roll: p.roll, fov: p.fov, rms: p.rms, n: anchors.length, summits: anchors.map((a) => a.su) };
+}
+
+/* which mountain IS it: pair each matched summit with the nearest OSM
+   named peak, by projecting the summit out along its own bearing and
+   range from the solved camera position. A summit with no named peak
+   near it stays unnamed — the DEM knows there is a mountain there, and
+   OSM simply may not have named it. */
+export function nameSummits(cand, summits, osmPeaks, tolKm = 0.8) {
+  const mLon = 111.32 * Math.max(0.2, Math.cos((cand.lat * Math.PI) / 180));
+  return summits.map((su) => {
+    const dKm = su.distM / 1000, a = su.az * Math.PI / 180;
+    const lat = cand.lat + (dKm * Math.cos(a)) / 111.32, lon = cand.lon + (dKm * Math.sin(a)) / mLon;
+    let best = null, bd = Infinity;
+    for (const pk of osmPeaks || []) {
+      if (!pk.name) continue;
+      const d = Math.hypot((pk.lat - lat) * 111.32, (pk.lon - lon) * mLon);
+      if (d < bd) { bd = d; best = pk; }
+    }
+    return { ...su, lat: +lat.toFixed(5), lon: +lon.toFixed(5), name: bd <= tolKm ? best.name : null, nameKm: bd <= tolKm ? +bd.toFixed(2) : null };
+  });
+}
+
 /* score one candidate position: DEM skyline there vs every frame.
    Frames may carry `nearSets` (the detected SECOND ridge layer, scored
    jointly against the DEM's interior visible crests — the depth signal
@@ -288,15 +543,67 @@ export function scoreCandidate(frameSets, sampleEN, h0, opts = {}) {
   const anyNear = frameSets.some((f) => f.nearSets);
   const prof = anyNear ? ridgeProfileOf(sk) : null;
   const step = opts.stepDeg ?? AZ_STEP;
-  const curves = frameSets.map((f) => f.nearSets && prof
-    ? azCurveJoint(f.sets, f.nearSets, elAt, prof, step, opts.nearW ?? 0.7)
-    : azCurve(f.sets, elAt, step));
+  /* summits are derived ONCE per candidate and shared by every frame */
+  const sums = frameSets.some((f) => f.peakSets) ? demSummits(sk, opts.summit) : null;
+  const peakW = opts.peakW ?? 1;
+  /* frames and curves must stay INDEX-ALIGNED — coherentWindow returns
+     one frameAz per curve and the callers read it against their own
+     frame list, so a frame that yields no curve is dropped from both */
+  const used = [], usedIdx = [], curves = [];
+  for (const f of frameSets) {
+    const pk = f.peakSets && sums && sums.length ? peakCurve(f.peakSets, sums, step, opts) : null;
+    /* a frame may have NO usable skyline and still carry marks — the
+       haze/foreground case this exists for (a bridge deck across the top
+       of frame defeats every edge detector, and the ridge behind it is
+       still perfectly markable) */
+    let cur = null;
+    if (!f.sets) cur = pk;
+    else {
+      const base = f.nearSets && prof
+        ? azCurveJoint(f.sets, f.nearSets, elAt, prof, step, opts.nearW ?? 0.7)
+        : azCurve(f.sets, elAt, step);
+      if (!pk) cur = base;
+      else {
+        const c = new Float32Array(base.c.length);
+        for (let b = 0; b < c.length; b++) c[b] = base.c[b] + peakW * pk.c[b];
+        cur = { c, fi: base.fi, stepDeg: base.stepDeg };
+      }
+    }
+    if (cur) { used.push(f); usedIdx.push(frameSets.indexOf(f)); curves.push(cur); }
+  }
+  if (!curves.length) return null;
   const w = coherentWindow(curves, opts.winDeg ?? WIN_DEG, opts.keepFrac ?? 0.75);
   if (!w) return null;
+  /* report the peak match at the SOLVED pointing: the rms, and which DEM
+     summits the marks landed on (with their ranges) so the result can be
+     checked against the imagery rather than taken on faith */
+  let peakRms = null, peakPairs = null;
+  if (sums && sums.length) {
+    let sum = 0, n = 0;
+    for (let i = 0; i < used.length; i++) {
+      const f = used[i], fa = w.frameAz[i];
+      if (!f.peakSets || !fa) continue;
+      const set = f.peakSets[fa.fovIdx] || f.peakSets[0];
+      const m = matchPeaksAt(set.ms, sums, fa.az, opts);
+      if (!m) continue;
+      sum += m.rms; n++;
+      /* the pointing of a peaks-only frame comes from the FIT, not from
+         the bin it was bracketed in: with azimuth fitted the curve is
+         flat across a correspondence's whole basin, so the bin is only a
+         bracket and reading a bearing off it would be a few degrees out.
+         A frame that also has a skyline keeps the skyline's bin — that
+         path is field-validated and not mine to move. */
+      if (!f.sets && isFinite(m.az)) fa.az = ((m.az % 360) + 360) % 360;
+      if (!peakPairs) peakPairs = set.ms.map((mk, k) => (m.pairs[k] >= 0
+        ? { az: +(mk.az + fa.az).toFixed(1), depth: mk.depth, distM: Math.round(sums[m.pairs[k]].distM), el: +sums[m.pairs[k]].el.toFixed(2) }
+        : { az: +(mk.az + fa.az).toFixed(1), depth: mk.depth, distM: null, el: null }));
+    }
+    if (n) peakRms = +(sum / n).toFixed(2);
+  }
   /* report how well the near layer agreed at the solved pointing */
   let nearSum = 0, nearN = 0;
-  for (let i = 0; i < frameSets.length; i++) {
-    const f = frameSets[i];
+  for (let i = 0; i < used.length; i++) {
+    const f = used[i];
     if (!f.nearSets || !prof) continue;
     const fa = w.frameAz[i];
     const far = f.sets[fa.fovIdx], near = f.nearSets[fa.fovIdx];
@@ -311,7 +618,13 @@ export function scoreCandidate(frameSets, sampleEN, h0, opts = {}) {
     }
     if (n2 >= 12) { nearSum += Math.sqrt(s2 / n2) / far.std; nearN++; }
   }
-  return { ...w, nearScore: nearN ? +(nearSum / nearN).toFixed(3) : null, h0 };
+  /* frameAz is handed back indexed by the CALLER's frameSets, with null
+     where a frame produced no curve — callers read it against their own
+     frame list (that is how a pin finds its frame's pointing), so a
+     silently shortened array would mis-attribute every pin after the gap */
+  const frameAz = frameSets.map(() => null);
+  for (let i = 0; i < usedIdx.length; i++) frameAz[usedIdx[i]] = w.frameAz[i];
+  return { ...w, frameAz, nearScore: nearN ? +(nearSum / nearN).toFixed(3) : null, peakRms, peakPairs, h0 };
 }
 
 /* ---------- candidate generation ---------- */

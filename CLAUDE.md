@@ -809,7 +809,53 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   far-chosen azimuth punished the truth when a smooth wall left azimuth
   ambiguous, measured; joint scoring picks truth 1.37× and punishes
   2 km displacement ~9.5× where far-only preferred the displaced spot);
-  and a
+  a
+  ⛰ PEAK CONSTELLATION (`demSummits` in terrain.js + `peakSampleSets`/
+  `matchPeaksAt`/`peakCurve`/`refinePeakPose`/`nameSummits`): the sweep
+  matches skyline CURVES, but a person reading a photo has two things
+  the curve detector does not — they can point at the actual SUMMITS
+  (including ones haze or a foreground hides from every edge detector),
+  and they know which ridge stands IN FRONT of which. So marked apexes
+  are matched as a rigid asterism the way blindStarAlign matches stars,
+  under three constraints that each kill a match a nearest-neighbour
+  score would take: ONE-TO-ONE (two marks can never claim one summit —
+  the hole in matching pins independently, where N pins all match the
+  one mapped peak that lies that way and every candidate "passes"),
+  ORDER (left-to-right in frame must read the same way round the
+  horizon), and DEPTH (the DEM march carries the RANGE to every crest,
+  so "that one is in front" is testable and a spot that can only fit by
+  putting the near ridge behind the far one is rejected). Peaks fold
+  into the SAME azimuth bins as the skyline (post-hoc evaluation is the
+  mistake the near-ridge layer already taught), and a frame with NO
+  readable skyline at all can carry marks alone — which is the case
+  this exists for. **Two fixes that came out of running it against the
+  real Huairou DEM, both worth not relearning**: (1) AZIMUTH IS A
+  FITTED INTERCEPT, not the 2° bin it was found in — for a handful of
+  discrete points the bin quantization alone lands ~1° of residual on
+  every candidate and buries the differences (the true cell scored
+  0.69° against its OWN terrain and ranked 11th; fitted, 0.18°), so the
+  bin is only a correspondence bracket and the bearing comes from the
+  fit; (2) THE LENS IS AN UNKNOWN TOO and is fitted as an azimuth
+  SLOPE — SWEEP_FOVS stops at 48° (tuned on a zoomed clip) while an
+  unzoomed phone frame is 50–70°, and between rungs a wrong lens scale
+  is a systematic no ranking can see past. Measured: truth at a rung →
+  true cell 1st of 81 at 0.08°; truth at 50° → 21st; with PEAK_FOVS
+  (a superset, used only on marked frames so unmarked ones keep the
+  validated ladder) plus the slope fit → 1st again at 0.06°, and the
+  exact re-solve returns az/tilt/FOV exactly at 0.000° rms. The slope
+  is fitted ONLY at 4+ marks: at 2 it is degenerate and would fit any
+  terrain whatsoever — a false pass, not a weak result. matchPeaksAt is
+  a SCREEN (flat azimuth model, ~0.15° floor on a tilted wide view);
+  the winner is re-solved exactly through `solvePoseAnchors` for a true
+  angular rms plus the FOV the terrain implies, then its summits are
+  named from OSM so a human can check the answer instead of trusting
+  it. Honest limit, measured: at 65° the true cell came 2nd, beaten by
+  0.01° — repetitive terrain really can offer a rival, which is what
+  sweepVerdict already exists to say. All mathcheck-asserted (one-to-one,
+  order, depth both ways, sub-bin absorption, the lens fit and its
+  degeneracy guard, a scrambled constellation still failing, and a
+  peaks-ONLY sweep recovering the true cell with no skyline curve at
+  all); and a
   STABILIZED-PAN LOCK (`lockedFrameSet`: a posePath's relative az/el/fov
   bakes all frames into ONE rigid sample set over a single global
   rotation — measured on the synthetic world it sharpened best/median

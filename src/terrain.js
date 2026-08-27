@@ -148,6 +148,72 @@ export function rayClearance(sampleEN, h0, azDeg, elDeg, distM) {
   return first != null ? { dBlock: first, belowM: worst } : null;
 }
 
+/* ---------- DISCRETE SUMMITS ----------
+   skylineFromSampler describes the terrain as CURVES, and the Find-my-
+   spot sweep matches curve shape. A person looking at a photo does
+   something different and often stronger: they see distinct PEAKS, and
+   they can tell which ridge is in front of which. demSummits turns the
+   marched terrain into that same vocabulary — the discrete apexes a
+   witness would point at — so a human's marks can be matched to the DEM
+   as a constellation rather than a curve.
+
+   A summit is a local maximum in ELEVATION ANGLE (which is what a photo
+   measures — not in metres: a nearer, lower hill can out-top a distant
+   giant, and in the photo it does) whose angular PROMINENCE clears
+   `prom`. Prominence is elevation minus the key saddle: walk out both
+   ways to the first higher ground, take the lowest point reached on each
+   side, and the HIGHER of those two governs — the standard definition,
+   bounded to `spanDeg` so a peak with no higher ground anywhere doesn't
+   scan the whole horizon. That bound is an approximation and is why a
+   returned `prom` is a floor, not gospel.
+
+   Both layers are emitted: summits ON the silhouette (layer 0) and
+   summits on the visible interior crests (layer 1), each carrying the
+   marched RANGE. The range is what makes the depth tags on a person's
+   marks testable — "that one is in front" is a claim the DEM can check.
+   Returned most-prominent first. */
+function summitsOf(n, elOf, circ, prom, spanSteps) {
+  const at = (i) => elOf(circ ? ((i % n) + n) % n : i);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const e = at(i);
+    if (!isFinite(e)) continue;
+    /* strict one side, non-strict the other: a flat top yields ONE summit */
+    const l = !circ && i === 0 ? -Infinity : at(i - 1);
+    const r = !circ && i === n - 1 ? -Infinity : at(i + 1);
+    if (!(e > l && e >= r)) continue;
+    let key = -Infinity;
+    for (const dir of [-1, 1]) {
+      let lo = e;
+      for (let k = 1; k <= spanSteps; k++) {
+        const j = i + dir * k;
+        if (!circ && (j < 0 || j >= n)) break;
+        const v = at(j);
+        if (!isFinite(v) || v > e) break;      // higher ground ends the walk
+        if (v < lo) lo = v;
+      }
+      if (lo > key) key = lo;                  // the higher saddle governs
+    }
+    const p = e - key;
+    if (p >= prom) out.push({ i, el: e, prom: p });
+  }
+  return out;
+}
+export function demSummits(sk, opts = {}) {
+  const prom = opts.prom ?? 0.3, maxN = opts.maxN ?? 80;
+  const spanSteps = Math.round((opts.spanDeg ?? 30) / AZ_STEP);
+  const out = [];
+  for (const m of summitsOf(N_AZ, (i) => sk.els[i], true, prom, spanSteps))
+    out.push({ az: m.i * AZ_STEP, el: m.el, distM: sk.dists[m.i], prom: m.prom, layer: 0 });
+  for (const seg of sk.ridges || []) {
+    const pr = Math.round((opts.spanDeg ?? 30) / AZ_STEP);
+    for (const m of summitsOf(seg.pts.length, (i) => seg.pts[i][1], false, prom, Math.min(pr, seg.pts.length)))
+      out.push({ az: seg.pts[m.i][0], el: m.el, distM: seg.dist, prom: m.prom, layer: 1 });
+  }
+  out.sort((a, b) => b.prom - a.prom);
+  return out.slice(0, maxN);
+}
+
 export function skylineElAt(els, azDeg) {
   const x = (((azDeg % 360) + 360) % 360) / AZ_STEP;
   const i = Math.floor(x), f = x - i;

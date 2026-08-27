@@ -36,8 +36,8 @@ import { aperture, relMag, colorDesc } from "./checks/photometry.js";
 import { fetchAirports } from "./checks/airports.js";
 import { fetchLaunches } from "./checks/launches.js";
 import { fetchFireballs } from "./checks/fireballs.js";
-import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, TERRAIN_ATTRIB } from "./terrain.js";
-import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, twinAnchors, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, skyStats, skyCondition, cloudMatch, urbanCoverage, SWEEP_FOVS } from "./geoloc.js";
+import { predictedSkyline, skylineElAt, demElevation, demSampler, detectSkyline, matchSkyline, rayClearance, skylineFromSampler, demSummits, TERRAIN_ATTRIB } from "./terrain.js";
+import { farSkyline, nearSkyline, skySampleSets, scoreCandidate, gridCandidates, ringCandidates, pinAzOffsetDeg, pinsDeviation, twinAnchors, peakSampleSets, matchPeaksAt, refinePeakPose, nameSummits, sweepVerdict, loadRegion, regionSampler, fetchLandmarks, lockedFrameSet, settingOk, lookOk, skyStats, skyCondition, cloudMatch, urbanCoverage, SWEEP_FOVS, PEAK_FOVS } from "./geoloc.js";
 import { predictedBuildingBoxes, convexHull2, visibleSegs, bboxHit, BLDG_RADIUS_M } from "./buildings.js";
 import { predictedRoadDirs, roadElOf, roadCrossings } from "./roads.js";
 import { fetchMasts, mastsNear } from "./checks/masts.js";
@@ -682,7 +682,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
-        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, type something as vague as “lower Himalaya India” into the 🔎 search, or paste coordinates like “30.379, 78.104” to jump straight there — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Tap a bright frame in the strip first to pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, 🌉 bridge, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. A 🌉 bridge is the one pin with real LENGTH, so it is matched along its whole span — the pinned direction only has to hit the bridge somewhere, not its map centre — and the search also tries viewpoints at each end of it, since you photograph a bridge from a bank. Read it for what it is: a long bridge seen from close up covers a wide arc of sky, so it settles which side of the water you stood on far better than it narrows the direction — pair it with a point structure when the photo shows one. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. With a sighting date set, a 🌦 weather cross-check compares the clip's own sky (read from the frames — clear blue vs overcast gray) against the reanalysis archive's cloud cover for the searched area on that date: agreement is mild support, a clear contradiction says to question the date or the area. It judges the AREA (weather data is ~25 km coarse), never one candidate over another, and a hazy in-between sky honestly yields no verdict. Once a search (or your own detective work) has you within a neighborhood, switch to ±1 km FINE mode: ~200 m cells where the ridge shape barely changes, so your pinned structures and the near ridge do the ranking — the walk-the-last-kilometer tool. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, type something as vague as “lower Himalaya India” into the 🔎 search, or paste coordinates like “30.379, 78.104” to jump straight there — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Two ways to give it more than the ridge outline, both on any frame in the strip. **⛰ Peaks — mark each summit** the photo shows, tapping the apex itself, and say whether it stands on the near ridge or the far one. Three or more summits become a CONSTELLATION: the pattern of angular gaps between them identifies the terrain much the way a star pattern identifies the sky, so the search solves your direction, tilt and zoom rather than assuming them, and every candidate must explain your marks one-to-one, in your left-to-right order, with your front/back calls checked against the elevation model's own ranges — a spot that can only fit by putting the near ridge behind the far one is rejected outright. This works on frames the automatic skyline detector cannot read AT ALL — haze that blues a far ridge into the sky, or a foreground across the top of the frame — which is exactly when it is worth the most, so mark peaks even on a dimmed frame. The leading candidate is then re-solved exactly against the summits it matched and reported with a true angular error, the lens width the terrain implies, and each summit's distance and OpenStreetMap name where it has one: check those names against your frame before believing the spot. An unnamed summit is real terrain the map simply hasn't named. Second, **📌 Structures** — pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, 🌉 bridge, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. A 🌉 bridge is the one pin with real LENGTH, so it is matched along its whole span — the pinned direction only has to hit the bridge somewhere, not its map centre — and the search also tries viewpoints at each end of it, since you photograph a bridge from a bank. Read it for what it is: a long bridge seen from close up covers a wide arc of sky, so it settles which side of the water you stood on far better than it narrows the direction — pair it with a point structure when the photo shows one. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. With a sighting date set, a 🌦 weather cross-check compares the clip's own sky (read from the frames — clear blue vs overcast gray) against the reanalysis archive's cloud cover for the searched area on that date: agreement is mild support, a clear contradiction says to question the date or the area. It judges the AREA (weather data is ~25 km coarse), never one candidate over another, and a hazy in-between sky honestly yields no verdict. Once a search (or your own detective work) has you within a neighborhood, switch to ±1 km FINE mode: ~200 m cells where the ridge shape barely changes, so your pinned structures and the near ridge do the ranking — the walk-the-last-kilometer tool. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9776,6 +9776,16 @@ const FS_PIN_KINDS = [
   { k: "bridge", glyph: "🌉", label: "bridge", osm: ["bridge"] },
   { k: "peak", glyph: "🏔", label: "named peak", osm: ["peak"] },
 ];
+/* Depth is the second thing a person knows that a curve detector cannot:
+   which ridge stands in FRONT of which. The DEM march carries the range
+   to every crest, so the claim is testable — and being able to say "no
+   idea" matters as much as the two answers, because a guess here would
+   be scored as evidence. */
+const FS_DEPTHS = [
+  { d: "near", glyph: "▲", label: "near ridge", col: "#8FD3C7" },
+  { d: "far", glyph: "△", label: "far ridge", col: "#F5A93F" },
+  { d: null, glyph: "◇", label: "not sure", col: "#9AA7BD" },
+];
 function FindSpot({ src, onAdopt, onSave, onClose }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
@@ -9787,7 +9797,9 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
   const [stood, setStood] = useState(src.findSpot?.stood || null); // "town" | "out" | null
   const [look, setLook] = useState(src.findSpot?.look || null);    // "town" | "open" | null
   const [pinView, setPinView] = useState(null);        // frame index open for pinning | null
-  const [pending, setPending] = useState(null);        // {x,y} awaiting a kind chip
+  const [peaks, setPeaks] = useState(() => (src.findSpot?.peaks || [])); // [{fi,x,y,depth}] marked summits
+  const [markMode, setMarkMode] = useState("peak");    // what a tap on a frame places: "peak" | "pin"
+  const [pending, setPending] = useState(null);        // {x,y} awaiting a kind/depth chip
   const [radKm, setRadKm] = useState(src.findSpot?.radKm || 8);
   const [running, setRunning] = useState(false);
   const [prog, setProg] = useState("");
@@ -9967,9 +9979,28 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
         }).filter(Boolean);
         if (perNear.length) lockedNear = lockedFrameSet(perNear);
       }
+      /* a marked frame is hypothesised over the WIDER ladder — and its
+         skyline sets over the same one, because scoreCandidate indexes
+         both by one fov index: they must describe the same lens */
+      const ladderOf = (f) => (fovs === SWEEP_FOVS && peaks.filter((p) => p.fi === f.i).length >= 2 ? PEAK_FOVS : fovs);
+      const peaksOf = (f) => {
+        const mk = peaks.filter((p) => p.fi === f.i);
+        return mk.length >= 2 ? peakSampleSets(mk, f.W, f.H, ladderOf(f)) : undefined;
+      };
       const frameSets = locked
         ? [{ f: usable[0], sets: [locked], nearSets: lockedNear ? [lockedNear] : undefined }]
-        : usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, fovs), nearSets: f.near ? skySampleSets(f.near, f.W, f.H, fovs) : undefined }));
+        : usable.map((f) => ({ f, sets: skySampleSets(f.pts, f.W, f.H, ladderOf(f)), nearSets: f.near ? skySampleSets(f.near, f.W, f.H, ladderOf(f)) : undefined, peakSets: peaksOf(f) }));
+      /* frames the SKYLINE detector could not read still carry marks —
+         the whole reason peaks exist. They join as peaks-only entries.
+         (In locked mode too: the rigid pan lock is a skyline construct,
+         and a constellation is already rotation-invariant, so it needs
+         no lock — it just contributes its own entry.) */
+      for (const f of frames) {
+        if (frameSets.some((x) => x.f === f)) continue;
+        const ps = peaksOf(f);
+        if (ps) frameSets.push({ f, peakSets: ps });
+      }
+      if (!frameSets.length) throw new Error("nothing to match — no frame has a readable skyline, and no frame has 2+ ⛰ peaks marked");
       setProg("terrain…");
       const region = await loadRegion(c.lat, c.lng, radKm);
       /* landmark twins only for the PINNED kinds (nearest-first — a dense
@@ -10051,6 +10082,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
               const fsIdx = frameSets.findIndex((x) => x.f.i === pi.fi);
               if (fsIdx < 0) continue;
               const fa = o.frameAz[fsIdx];
+              if (!fa) continue;               // that frame contributed no curve
               const off = pinAzOffsetDeg(pi.x, frameSets[fsIdx].f.W, frameSets[fsIdx].sets[fa.fovIdx].fov);
               pinObs.push({ kind: pi.kind, azDeg: (fa.az + off + 360) % 360 });
             }
@@ -10087,11 +10119,41 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
       for (const o of out) {
         if (top.length >= 8) break;
         if (top.every((t) => Math.hypot((t.lat - o.lat) * 111.32, (t.lon - o.lon) * mLon) > dedupeKm)) {
-          top.push({ lat: +o.lat.toFixed(5), lon: +o.lon.toFixed(5), score: +o.score.toFixed(3), az: Math.round(o.az), h0: Math.round(o.h0), pinDev: o.pinDev ?? null, twin: o.twin ? { kind: o.twin.kind, name: o.twin.name } : null });
+          top.push({ lat: +o.lat.toFixed(5), lon: +o.lon.toFixed(5), score: +o.score.toFixed(3), az: Math.round(o.az), h0: Math.round(o.h0), pinDev: o.pinDev ?? null, peakRms: o.peakRms ?? null, peakPairs: o.peakPairs || null, twin: o.twin ? { kind: o.twin.kind, name: o.twin.name } : null });
         }
       }
+      /* EXACT polish, winner only: the sweep screens a thousand cells with
+         a flat-azimuth approximation (fine for ranking, wrong to report),
+         so the leader is re-solved properly against the summits its marks
+         matched — a true angular rms, the pointing, and the FOV the
+         terrain implies. Then the summits get NAMES from OSM, which is
+         what makes the answer checkable by a human instead of trusted. */
+      if (top.length && top[0].peakPairs && peaks.length >= 3) {
+        setProg("solving peaks…");
+        try {
+          const w = top[0], best = out.find((o) => +o.lat.toFixed(5) === w.lat && +o.lon.toFixed(5) === w.lon);
+          const pf = frames.find((f) => peaks.filter((p) => p.fi === f.i).length >= 3);
+          if (best && pf) {
+            const fsIdx = frameSets.findIndex((x) => x.f === pf);
+            const fa = fsIdx >= 0 ? best.frameAz[fsIdx] : null;
+            const set = fa && frameSets[fsIdx].peakSets ? (frameSets[fsIdx].peakSets[fa.fovIdx] || frameSets[fsIdx].peakSets[0]) : null;
+            if (set) {
+              const sp = regionSampler(region, best.lat, best.lon);
+              const sums = demSummits(skylineFromSampler(sp.sampleEN, sp.h0));
+              const m = matchPeaksAt(set.ms, sums, fa.az);
+              const ref = m && refinePeakPose(set.ms, pf.W, pf.H, sums, m.pairs, { az: fa.az, el: 0, roll: 0, fov: set.fov });
+              if (ref) {
+                let osm = [];
+                try { osm = await fetchPeaks(best.lat, best.lon, best.h0, 45); } catch (e) { }
+                w.peakSolve = { az: +ref.az.toFixed(1), el: +ref.el.toFixed(1), roll: +ref.roll.toFixed(1), fov: +ref.fov.toFixed(1), rms: +ref.rms.toFixed(2), n: ref.n,
+                  summits: nameSummits({ lat: best.lat, lon: best.lon }, ref.summits, osm).map((x) => ({ name: x.name, km: +(x.distM / 1000).toFixed(2), az: Math.round(x.az), lat: x.lat, lon: x.lon })) };
+              }
+            }
+          }
+        } catch (e) { }
+      }
       setResults(top); setVerdict(v);
-      onSave && onSave({ at: { lat: c.lat, lng: c.lng }, radKm, pins, stood, look, results: top, verdict: v, ranAt: Date.now() });
+      onSave && onSave({ at: { lat: c.lat, lng: c.lng }, radKm, pins, peaks, stood, look, results: top, verdict: v, ranAt: Date.now() });
     } catch (e) {
       if (!/cancelled/.test(String(e))) setErr(e.message || String(e));
     }
@@ -10113,6 +10175,11 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
     setPins((p) => [...p, { fi: frame.i, x: pending.x, y: pending.y, kind }]);
     setPending(null);
   };
+  const addPeak = (depth) => {
+    setPeaks((p) => [...p, { fi: frame.i, x: pending.x, y: pending.y, depth }]);
+    setPending(null);
+  };
+  const framePeaks = frame ? peaks.filter((p) => p.fi === frame.i) : [];
 
   const selR = sel != null && results ? results[sel] : null;
   return (
@@ -10146,6 +10213,15 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
           <div ref={pvRef} style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <div style={{ position: "relative", ...(pvBox ? (() => { const sc = Math.min(pvBox.w / frame.W, pvBox.h / frame.H); return { width: Math.floor(frame.W * sc), height: Math.floor(frame.H * sc) }; })() : { visibility: "hidden" }) }}>
               <img src={frame.url} alt="" onClick={tapFrame} className="fs-frame" style={{ display: "block", width: "100%", height: "100%", cursor: "crosshair" }} />
+              {framePeaks.map((p, j) => {
+                const dd = FS_DEPTHS.find((k) => k.d === (p.depth || null)) || FS_DEPTHS[2];
+                return (
+                  <div key={`pk${j}`} onClick={(e) => { e.stopPropagation(); setPeaks((ps) => ps.filter((q) => q !== p)); }}
+                    style={{ position: "absolute", left: `${(p.x / frame.W) * 100}%`, top: `${(p.y / frame.H) * 100}%`, transform: "translate(-50%,-50%)", fontSize: 17, padding: 12, color: dd.col, textShadow: "0 0 6px #000", cursor: "pointer" }}>
+                    {dd.glyph}
+                  </div>
+                );
+              })}
               {pins.filter((p) => p.fi === frame.i).map((p, j) => (
                 <div key={j} onClick={(e) => { e.stopPropagation(); setPins((ps) => ps.filter((q) => q !== p)); }}
                   style={{ position: "absolute", left: `${(p.x / frame.W) * 100}%`, top: `${(p.y / frame.H) * 100}%`, transform: "translate(-50%,-50%)", fontSize: 20, padding: 12, textShadow: "0 0 6px #000", cursor: "pointer" }}>
@@ -10156,11 +10232,29 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
             </div>
           </div>
           <div style={{ padding: "8px 12px 12px", borderTop: "1px solid var(--line)" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 7 }}>
+              <button className={`btn sm ${markMode === "peak" ? "teal" : ""}`} onClick={() => { setMarkMode("peak"); setPending(null); }}>⛰ Peaks</button>
+              <button className={`btn sm ${markMode === "pin" ? "teal" : ""}`} onClick={() => { setMarkMode("pin"); setPending(null); }}>📌 Structures</button>
+              <div style={{ flex: 1 }} />
+              <span style={{ fontSize: 10.5, color: "var(--dim)", fontFamily: "var(--mono)" }}>{framePeaks.length}⛰ · {pins.filter((p) => p.fi === frame.i).length}📌</span>
+            </div>
             {pending ? (
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11.5, color: "var(--dim)" }}>What did you mark?</span>
-                {FS_PIN_KINDS.map((k) => <button key={k.k} className="btn sm amber" onClick={() => addPin(k.k)}>{k.glyph} {k.label}</button>)}
-                <button className="btn sm" onClick={() => setPending(null)}>cancel</button>
+              markMode === "peak" ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11.5, color: "var(--dim)" }}>Which ridge is that summit on?</span>
+                  {FS_DEPTHS.map((k) => <button key={k.label} className="btn sm" style={{ color: k.col }} onClick={() => addPeak(k.d)}>{k.glyph} {k.label}</button>)}
+                  <button className="btn sm" onClick={() => setPending(null)}>cancel</button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11.5, color: "var(--dim)" }}>What did you mark?</span>
+                  {FS_PIN_KINDS.map((k) => <button key={k.k} className="btn sm amber" onClick={() => addPin(k.k)}>{k.glyph} {k.label}</button>)}
+                  <button className="btn sm" onClick={() => setPending(null)}>cancel</button>
+                </div>
+              )
+            ) : markMode === "peak" ? (
+              <div style={{ fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
+                Tap each summit the photo shows — the apex itself, as precisely as you can — and say whether it sits on the near ridge or the far one. Three or more summits make a CONSTELLATION: the pattern of gaps between them identifies the terrain the way a star pattern identifies the sky, so the search solves your direction, tilt and zoom instead of assuming them. Peaks work on frames the skyline detector can't read at all — haze that blues a far ridge into the sky, or a foreground across the top of frame — so mark them even on a dimmed frame. The front/back calls are checked against the elevation model's own ranges: a spot that can only explain your marks by putting the near ridge behind the far one is rejected. Tap a placed ▲ to remove it.
               </div>
             ) : (
               <div style={{ fontSize: 11.5, color: "var(--dim)", lineHeight: 1.5 }}>
@@ -10192,11 +10286,12 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
             {Array.isArray(frames) && (
               <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
                 {frames.map((f, i) => (
-                  <div key={i} onClick={() => f.pts && setPinView(i)}
-                    style={{ position: "relative", flex: "0 0 auto", width: 54, height: 74, borderRadius: 6, overflow: "hidden", border: `1.5px solid ${f.pts ? (pins.some((p) => p.fi === f.i) ? "var(--amber)" : "var(--teal)") : "var(--line)"}`, opacity: f.pts ? 1 : 0.35, cursor: f.pts ? "pointer" : "default" }}>
+                  <div key={i} onClick={() => setPinView(i)}
+                    style={{ position: "relative", flex: "0 0 auto", width: 54, height: 74, borderRadius: 6, overflow: "hidden", border: `1.5px solid ${peaks.some((p) => p.fi === f.i) || pins.some((p) => p.fi === f.i) ? "var(--amber)" : f.pts ? "var(--teal)" : "var(--line)"}`, opacity: f.pts || peaks.some((p) => p.fi === f.i) ? 1 : 0.45, cursor: "pointer" }}>
                     <img src={f.url} alt="" className="fs-thumb" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                    {pins.some((p) => p.fi === f.i) && (
+                    {(pins.some((p) => p.fi === f.i) || peaks.some((p) => p.fi === f.i)) && (
                       <div style={{ position: "absolute", right: 2, top: 0, fontSize: 12 }}>
+                        {peaks.filter((p) => p.fi === f.i).length ? `⛰${peaks.filter((p) => p.fi === f.i).length}` : ""}
                         {pins.filter((p) => p.fi === f.i).slice(0, 2).map((p) => FS_PIN_KINDS.find((k) => k.k === p.kind)?.glyph).join("")}
                         {pins.filter((p) => p.fi === f.i).length > 2 ? "+" : ""}
                       </div>
@@ -10207,11 +10302,19 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
             )}
             {Array.isArray(frames) && (
               <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 2 }}>
-                {usable.length}/{frames.length} frame{frames.length === 1 ? "" : "s"} show a clean terrain skyline{usable.length < frames.length ? " (dimmed frames have no usable sky and are skipped)" : ""}. Tap a bright frame to pin a structure — optional, but one good pin sharpens the search a lot.
+                {usable.length}/{frames.length} frame{frames.length === 1 ? "" : "s"} show a clean terrain skyline{usable.length < frames.length ? " (dimmed frames gave the detector no readable sky — you can still mark ⛰ peaks on them by hand, which is often the better signal)" : ""}. Tap any frame to mark ⛰ summits or 📌 structures — both are optional, and either one sharpens the search a lot.
               </div>
             )}
             {Array.isArray(frames) && Array.isArray(src.posePath) && src.posePath.length >= 2 && (
               <div style={{ fontSize: 10.5, color: "var(--teal)", marginTop: 3 }}>🎞 Stabilized pan detected — frame directions and zoom will be locked together for the search.</div>
+            )}
+            {peaks.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
+                {peaks.map((p, i) => {
+                  const dd = FS_DEPTHS.find((k) => k.d === (p.depth || null)) || FS_DEPTHS[2];
+                  return <button key={i} className="btn sm ghost" style={{ color: dd.col }} onClick={() => setPeaks((ps) => ps.filter((q) => q !== p))}>{dd.glyph} {dd.label} ✕</button>;
+                })}
+              </div>
             )}
             {pins.length > 0 && (
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
@@ -10237,7 +10340,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
               <div style={{ flex: 1 }} />
               {running
                 ? <button className="btn sm" onClick={() => { cancelRef.current = true; }}>✕ stop {prog && `(${prog})`}</button>
-                : <button className="btn amber sm" disabled={!usable.length} onClick={run}>🔍 Search this area</button>}
+                : <button className="btn amber sm" disabled={!usable.length && peaks.length < 2} onClick={run}>🔍 Search this area</button>}
             </div>
             {err && <div className="warn" style={{ marginTop: 6 }}>{err}</div>}
             {/* results */}
@@ -10250,6 +10353,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                       ? "The terrain match singles out one area — still verify against the imagery before adopting."
                       : "Terrain alone can't decide inside this area (many spots fit the ridge shape similarly) — treat these as ranked suggestions and verify against the imagery."}
                   {results.some((r) => r.pinDev != null && r.pinDev <= 25) && " Candidates marked 📍 also place your pinned structure in the right direction."}
+                  {results.some((r) => r.peakRms != null) && ` ⛰ shows how well each spot explains your marked summits as one constellation — one-to-one, in your left-to-right order, with your front/back calls checked against the model's own ranges.`}
                   {verdict.locked ? ` 🎞 ${verdict.locked} frames searched as one stabilized pan.` : ""}
                   {verdict.layers2 ? " ⛰ Two ridge layers matched — the near ridge's depth against the far wall is scored too." : ""}
                   {verdict.dropped ? ` ${verdict.dropped} candidates ruled out by your setting choices.` : ""}
@@ -10267,10 +10371,30 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                     <b style={{ color: "var(--amber)" }}>{i + 1}</b>
                     <span style={{ flex: 1 }}>{r.lat.toFixed(4)}, {r.lon.toFixed(4)}</span>
                     {r.pinDev != null && <span style={{ color: r.pinDev <= 25 ? "var(--teal)" : "var(--dim)" }}>📍{r.pinDev}°</span>}
+                    {r.peakRms != null && <span style={{ color: r.peakRms <= 1 ? "var(--teal)" : "var(--dim)" }}>⛰{r.peakRms}°</span>}
                     <span style={{ color: "var(--dim)" }}>fit {r.score.toFixed(2)}</span>
                     <span style={{ color: "var(--teal)" }}>{compass8(r.az)}-facing</span>
                   </div>
                 ))}
+                {results[0] && results[0].peakSolve && (
+                  <div style={{ marginTop: 6, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: 8, fontSize: 11, lineHeight: 1.55 }}>
+                    <div style={{ color: "var(--teal)", fontFamily: "var(--mono)" }}>
+                      ⛰ PEAK SOLVE (candidate 1) — {results[0].peakSolve.n} summits, rms {results[0].peakSolve.rms}°
+                    </div>
+                    <div style={{ color: "var(--dim)", fontFamily: "var(--mono)", fontSize: 10.5 }}>
+                      looking {compass8(results[0].peakSolve.az)} {results[0].peakSolve.az}° · tilt {results[0].peakSolve.el}° · roll {results[0].peakSolve.roll}° · lens ≈{results[0].peakSolve.fov}° wide
+                    </div>
+                    {results[0].peakSolve.summits.map((su, k) => (
+                      <div key={k} style={{ fontFamily: "var(--mono)", fontSize: 10.5, marginTop: 2 }}>
+                        <span style={{ color: "var(--amber)" }}>{su.name || "(unnamed summit)"}</span>
+                        <span style={{ color: "var(--dim)" }}> — {su.km} km, bearing {su.az}°</span>
+                      </div>
+                    ))}
+                    <div style={{ color: "var(--dim)", fontSize: 10, marginTop: 3 }}>
+                      This is the exact re-solve of the leading candidate against the summits your marks matched, so the rms is a true angular residual — the ⛰ column above is the faster screen the ranking uses. Names come from OpenStreetMap; an unnamed summit is real terrain the map simply hasn't named. Check the named peaks against the frame before believing the spot.
+                    </div>
+                  </div>
+                )}
                 <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 4 }}>Tap a candidate to fly there, check the imagery, drag the map so ⌖ sits on your actual spot, then adopt.</div>
               </div>
             )}

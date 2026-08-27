@@ -7,7 +7,7 @@ import { sunPos, moonFrac } from "../src/math/astro.js";
 import { nearestLevel, balloonVerdict } from "../src/checks/winds.js";
 import { rankCandidates, spanForAircraft } from "../src/checks/adsb.js";
 import { trackQuality, trackAngAt, trackDirections, sourceTrack, videoKinematics, stereoVideo, mixedStereo, analyzeTracks, trackSegments, interSegments, inSegments, segsDur, kinematics } from "../src/math/kinematics.js";
-import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline } from "../src/terrain.js";
+import { skylineFromSampler, skylineElAt, AZ_STEP, matchSkyline, detectSkyline, demSummits } from "../src/terrain.js";
 import { raDecToAzEl, starAzEl, precessFromJ2000, refractionDeg, moonPos } from "../src/math/astro.js";
 import { declination } from "../src/math/geomag.js";
 import { parseMediaMeta } from "../src/exif.js";
@@ -4206,6 +4206,132 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
      never by a length test, which would send it back to centre-matching */
   approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 60 }], [{ kind: "bridge", ...at(0, 800), pts: [[at(600, 800), at(-600, 800)]] }]), 0, 0.1,
     "geoloc: a ONE-part bridge still takes the span path (0°, not the 30° centre miss)");
+
+  /* ---------- PEAK CONSTELLATION MATCH ----------
+     The same three-cone world, but matched the way a person reads a
+     photo: mark the summits, say which ridge is in front, and let the
+     pattern of angular gaps identify the terrain. */
+  const skS = demSummits(skT);
+  const coneAzEl = CONES.map((c) => {
+    const de = c.e - (-2000), dn = c.n - 2000;              // from the truth cell
+    return { az: ((Math.atan2(de, dn) * 180) / Math.PI + 360) % 360, dist: Math.hypot(de, dn) };
+  }).sort((a, b) => a.az - b.az);
+  ok(skS.length >= 3, `geoloc: demSummits finds the cone apexes (${skS.length} summits)`);
+  const found = coneAzEl.map((c) => skS.reduce((b, s) => (GL.angDiff(s.az, c.az) < GL.angDiff(b.az, c.az) ? s : b), skS[0]));
+  ok(Math.max(...found.map((f, i) => GL.angDiff(f.az, coneAzEl[i].az))) < 1.5,
+    `geoloc: each apex is a summit at its true bearing (worst ${Math.max(...found.map((f, i) => GL.angDiff(f.az, coneAzEl[i].az))).toFixed(2)}°)`);
+  ok(Math.max(...found.map((f, i) => Math.abs(f.distM / coneAzEl[i].dist - 1))) < 0.08,
+    "geoloc: a summit carries the marched RANGE — which is what makes a depth tag testable");
+  /* mark those three apexes in one wide frame at a known pose */
+  const PAZ = 40, PEL = 7, PFOV = 90;
+  const mkMark = (c, depth) => {
+    const su = found[coneAzEl.indexOf(c)];
+    const p = dirToPixK(dirFromAzEl(su.az, su.el), FW, FH, PAZ, PEL, 0, PFOV, 0);
+    return { x: p.px, y: p.py, depth };
+  };
+  const marks = coneAzEl.map((c) => mkMark(c, null));
+  const pset = GL.peakSampleSets(marks, FW, FH, [PFOV])[0];
+  const hit = GL.matchPeaksAt(pset.ms, skS, PAZ);
+  ok(hit && hit.n === 3, "geoloc: three marked apexes pair one-to-one with three DEM summits");
+  /* the per-bin matcher is a SCREEN — it maps in-frame azimuth straight
+     onto world azimuth, the same flat approximation the skyline sweep
+     makes, which on a 7°-pitched camera at 90° FOV is worth a few tenths
+     of a degree. Good enough to RANK by, never good enough to report. */
+  ok(hit && hit.rms < 0.9, `geoloc: the screen fits at the true pointing (rms ${hit ? hit.rms.toFixed(3) : "—"}°)`);
+  /* …and the exact re-solve on the winner recovers the real pose */
+  const ref = GL.refinePeakPose(pset.ms, FW, FH, skS, hit.pairs, { az: PAZ, el: PEL, roll: 0, fov: PFOV });
+  ok(ref && ref.rms < 0.2, `geoloc: the exact re-solve gets a TRUE angular rms (${ref ? ref.rms.toFixed(3) : "—"}° vs the screen's ${hit.rms.toFixed(2)}°)`);
+  ok(ref && GL.angDiff(ref.az, PAZ) < 0.4 && Math.abs(ref.el - PEL) < 0.4,
+    `geoloc: …and recovers the true pointing (${ref ? ref.az.toFixed(2) + "/" + ref.el.toFixed(2) : "—"} vs ${PAZ}/${PEL})`);
+  ok(ref && Math.abs(ref.fov / PFOV - 1) < 0.06,
+    `geoloc: …and the FOV the terrain implies (${ref ? ref.fov.toFixed(1) : "—"}° vs ${PFOV}°) — a lens estimate for a clip with no EXIF`);
+  /* naming: a matched summit projected out along its own bearing+range
+     lands on the mapped peak it is, and an unmapped one stays unnamed */
+  const osm = coneAzEl.map((c, i) => {
+    const a = c.az * Math.PI / 180;
+    return { name: `Cone ${i + 1}`, lat: truth.lat + (c.dist * Math.cos(a)) / mLat, lon: truth.lon + (c.dist * Math.sin(a)) / mLonS };
+  });
+  const named = GL.nameSummits(truth, ref.summits, osm);
+  ok(named.filter((n) => n.name).length === 3, `geoloc: every matched summit resolves to its mapped peak (${named.map((n) => n.name || "—").join(", ")})`);
+  ok(GL.nameSummits(truth, ref.summits, [])[0].name === null,
+    "geoloc: no mapped peak nearby → the summit stays unnamed rather than borrowing a name");
+  ok(new Set(hit.pairs).size === 3, "geoloc: ONE-TO-ONE — no two marks may claim the same summit");
+  /* a wrong rotation must not fit: this is the whole discriminating power */
+  const wrong = GL.matchPeaksAt(pset.ms, skS, PAZ + 25);
+  ok(!wrong || wrong.cost > 4 * hit.cost, `geoloc: a 25°-wrong pointing does not fit the constellation (${wrong ? wrong.cost.toFixed(2) : "no match"})`);
+  /* ORDER: a mark set whose left-to-right reading is scrambled against
+     the terrain is a wrong match wearing a small residual */
+  const swapped = { ...pset, ms: pset.ms.map((m, i) => ({ ...m, el: pset.ms[[0, 2, 1][i]].el })) };
+  const crossed = GL.matchPeaksAt([pset.ms[0], { ...pset.ms[2], az: pset.ms[1].az, thx: pset.ms[1].thx }, { ...pset.ms[1], az: pset.ms[2].az, thx: pset.ms[2].thx }], skS, PAZ);
+  ok(!crossed || crossed.rms > hit.rms * 3, "geoloc: a crossed assignment is rejected, not scored as a near miss");
+  /* DEPTH: the witness's front/back call is checked against the ranges */
+  const near0 = coneAzEl.reduce((a, b) => (a.dist < b.dist ? a : b));
+  const far0 = coneAzEl.reduce((a, b) => (a.dist > b.dist ? a : b));
+  const rightWay = GL.matchPeaksAt(GL.peakSampleSets(coneAzEl.map((c) => mkMark(c, c === near0 ? "near" : c === far0 ? "far" : null)), FW, FH, [PFOV])[0].ms, skS, PAZ);
+  ok(rightWay && rightWay.n === 3, "geoloc: depth tags that AGREE with the DEM ranges pass through");
+  const backwards = GL.matchPeaksAt(GL.peakSampleSets(coneAzEl.map((c) => mkMark(c, c === near0 ? "far" : c === far0 ? "near" : null)), FW, FH, [PFOV])[0].ms, skS, PAZ);
+  ok(backwards === null, "geoloc: 'that one is in front' contradicted by the DEM rejects the match outright");
+  /* the per-bin curve brackets the true pointing, and the AZIMUTH IS
+     FITTED inside it: the scan steps in 2° bins, and for a handful of
+     discrete points that quantization alone would leave up to ~1° on
+     every candidate and bury the differences between them. So the bin is
+     only a correspondence bracket — the bearing comes from the fit. */
+  const pc = GL.peakCurve([pset], skS, 2);
+  let bb = 0;
+  for (let b = 1; b < pc.c.length; b++) if (pc.c[b] < pc.c[bb]) bb = b;
+  const binAz = ((bb * 2 - 180) % 360 + 360) % 360;
+  const atBin = GL.matchPeaksAt(pset.ms, skS, binAz);
+  ok(atBin && GL.angDiff(atBin.az, PAZ) <= 0.6,
+    `geoloc: the fitted bearing recovers the true pointing (${atBin ? atBin.az.toFixed(2) : "—"}° vs ${PAZ}°, from bin ${binAz.toFixed(0)}°)`);
+  /* a rotation deliberately offset INSIDE a bin must give the same
+     answer — that is what "fitted, not quantized" means */
+  const offBin = GL.matchPeaksAt(pset.ms, skS, PAZ + 0.9);
+  ok(offBin && Math.abs(offBin.rms - hit.rms) < 0.02 && GL.angDiff(offBin.az, hit.az) < 0.05,
+    "geoloc: a sub-bin rotation offset is absorbed, not charged as error");
+  /* THE LENS IS AN UNKNOWN TOO — fitted as an azimuth slope, but only
+     with 4+ marks. At 2 the fit would be exact against ANY terrain,
+     which is not a weak result, it is a false pass. */
+  const four = [...coneAzEl, coneAzEl[0]];
+  ok(GL.matchPeaksAt(pset.ms, skS, PAZ).n === 3, "geoloc: 3 marks fit no lens scale (a single dof would be left)");
+  const scaled = GL.peakSampleSets(marks, FW, FH, [PFOV * 1.12])[0];   // the SAME marks read through a 12%-wrong lens
+  const sc = GL.matchPeaksAt(scaled.ms, skS, PAZ);
+  ok(sc && sc.rms > 0.2, `geoloc: with 3 marks a 12%-wrong lens is NOT absorbed (rms ${sc ? sc.rms.toFixed(2) : "—"}°) — no free pass`);
+  /* …and with FOUR marks it IS fitted, which is the fix that took the
+     real-terrain run from 21st to 1st: the swept ladder is coarse, and
+     between two rungs a wrong lens scale is a systematic that buries the
+     differences between candidates. Four synthetic summits, marked
+     through a lens 12% off the hypothesis being tested. */
+  const S4 = [{ az: 20, el: 3.0, distM: 9000, prom: 2, layer: 0 }, { az: 33, el: 6.2, distM: 5000, prom: 2, layer: 0 },
+    { az: 47, el: 4.4, distM: 7000, prom: 2, layer: 0 }, { az: 62, el: 7.1, distM: 4000, prom: 2, layer: 0 }];
+  const HFOV = 60, m4 = S4.map((su) => { const q = dirToPixK(dirFromAzEl(su.az, su.el), FW, FH, 41, 5, 0, HFOV, 0); return { x: q.px, y: q.py }; });
+  const right = GL.matchPeaksAt(GL.peakSampleSets(m4, FW, FH, [HFOV])[0].ms, S4, 41);
+  /* ~0.15° is the SCREEN's own floor on a tilted wide view — its flat
+     azimuth model, the same approximation the skyline sweep makes. The
+     exact re-solve is what reports an accuracy. */
+  ok(right && right.n === 4 && right.rms < 0.2, `geoloc: 4 marks at the true lens fit to the screen's floor (rms ${right ? right.rms.toFixed(3) : "—"}°)`);
+  const offLens = GL.matchPeaksAt(GL.peakSampleSets(m4, FW, FH, [HFOV * 0.88])[0].ms, S4, 41);
+  ok(offLens && offLens.n === 4 && offLens.rms < right.rms * 1.6 + 0.05,
+    `geoloc: …and a 12%-wrong lens rung is ABSORBED at 4 marks (rms ${offLens ? offLens.rms.toFixed(3) : "—"}°) — the between-rungs systematic that cost the real-terrain run 20 places`);
+  /* the absorbed lens error must not become a licence: a genuinely wrong
+     constellation still fails, scale fit or no scale fit */
+  const bogus = GL.matchPeaksAt(GL.peakSampleSets(m4, FW, FH, [HFOV])[0].ms, S4.map((su, i) => ({ ...su, el: su.el + [0, 3.5, -3, 2.5][i] })), 41);
+  ok(!bogus || bogus.rms > 1.5, `geoloc: a scrambled constellation still fails at 4 marks (rms ${bogus ? bogus.rms.toFixed(2) : "no match"}°)`);
+  /* END TO END, and the reason this exists: a frame with NO usable
+     skyline at all — haze, or a bridge deck across the top of frame —
+     still locates the camera from marks alone */
+  const pkCands = GL.gridCandidates(C0.lat, C0.lon, 4, 2);
+  const pkScored = pkCands.map((c) => {
+    const sp = sampAt(c.lat, c.lon);
+    try { return { ...c, ...GL.scoreCandidate([{ peakSets: [pset] }], sp.sampleEN, sp.h0) }; } catch (e) { return null; }
+  }).filter((x) => x && isFinite(x.score)).sort((a, b) => a.score - b.score);
+  const pkOff = Math.hypot((pkScored[0].lat - truth.lat) * mLat, (pkScored[0].lon - truth.lon) * mLonS);
+  ok(pkOff < 1, `geoloc: peaks-ONLY (no skyline curve at all) still recovers the true cell (${pkOff.toFixed(0)} m off)`);
+  ok(pkScored[0].peakRms != null && pkScored[0].peakRms < 0.9,
+    `geoloc: the winner reports its screen peak rms (${pkScored[0].peakRms}°)`);
+  ok(pkScored[0].peakPairs && pkScored[0].peakPairs.every((p) => p.distM > 0),
+    "geoloc: every mark reports the RANGE of the summit it matched — checkable against the imagery");
+  ok(pkScored[0].score < pkScored[Math.floor(pkScored.length / 2)].score * 0.6,
+    `geoloc: peaks separate truth from the median candidate (${pkScored[0].score.toFixed(2)} vs ${pkScored[Math.floor(pkScored.length / 2)].score.toFixed(2)})`);
 
   /* setting-context filters */
   const places = [
