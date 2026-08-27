@@ -9913,7 +9913,11 @@ function FindSpot({ src, onAdopt, onSave, onClose, viewOnly }) {
           vidRef.current = v;                       // stays alive: the scrubber seeks it
           const { t0, t1 } = trimOf(src, v.duration);
           if (!dead) { setSpan({ t0, t1 }); setScrubT(t0); }
-          const N = Math.min(8, Math.max(3, Math.round((t1 - t0) / 6)));
+          /* Denser on a SHORT span, because a trim is the user saying
+             "this is the part that matters" — one frame per 6 s gave a
+             trimmed 20 s clip only the floor of 3 (field report). A long
+             clip is unaffected: it was already at the cap of 8. */
+          const N = Math.min(8, Math.max(3, Math.round((t1 - t0) / 2.5)));
           /* SPAN the clip end to end, don't sample bin CENTRES. Centres
              never offer the start: on a 90 s clip the earliest frame you
              could reach was 5.6 s in, and the thing worth marking — a
