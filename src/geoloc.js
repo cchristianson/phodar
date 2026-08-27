@@ -363,8 +363,101 @@ export function pinDeviation(cand, twin, frameAzDeg, pinOffDeg) {
    town with 31 mapped water towers finds SOME tower within a lax angular
    gate and every cell "passes". A peak is the exception — pinned off the
    skyline, tens of km out, where bearings move slowly but honestly. */
-export const PIN_RANGE_KM = { water: 1.5, mast: 3, chimney: 3, pylon: 1.5, wind: 3, lighthouse: 5, peak: 40 };
+export const PIN_RANGE_KM = { water: 1.5, mast: 3, chimney: 3, pylon: 1.5, wind: 3, lighthouse: 5, bridge: 5, peak: 40 };
 const kindMatch = (p, t) => p === t || (p === "mast" && t === "tower");
+
+/* ---------- EXTENDED (linear) twins ----------
+   Every other pinnable structure is a POINT: a water tower, a mast, a
+   chimney is one bearing from one spot. A BRIDGE is not — it is a line
+   that can run a kilometre, and OSM's centre for it can sit far from the
+   span you actually photographed. Matching a bridge by its centre would
+   punish the true spot for standing near one end (and reward a wrong one
+   that happens to line up with the middle), so an extended twin carries
+   `pts` — its own OSM geometry — and the test asks the honest question
+   instead: does the pinned bearing hit the structure ANYWHERE along its
+   length? Deviation is the angular miss to the nearest point of the span
+   (zero while the ray crosses it) and the range gate uses the NEAREST
+   point, not the centre. Point twins have no `pts` and take the same
+   path they always did. */
+const lonKm = (lat) => 111.32 * Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+/* nearest/farthest distance (km) from the candidate and the smallest
+   bearing miss over the WHOLE polyline. Solved exactly per segment —
+   the ray either crosses the span (miss 0) or its miss is to one of the
+   segment's ends — so a long bridge can't slip between sample points. */
+export function spanParts(pts) {
+  return Array.isArray(pts?.[0]) ? pts : [pts];   // one polyline, or several
+}
+export function spanMetrics(cand, pts, azDeg) {
+  let near = Infinity, far = 0, dev = null;
+  const brg = (n, e) => ((Math.atan2(e, n) * 180) / Math.PI + 360) % 360;
+  const vertex = (n, e) => {
+    const d = Math.hypot(n, e);
+    if (d < near) near = d;
+    if (d > far) far = d;
+    if (d < 0.02) return;                       // a bearing from 20 m away is noise
+    const dv = angDiff(brg(n, e), azDeg);
+    if (dev == null || dv < dev) dev = dv;
+  };
+  const uN = Math.cos((azDeg * Math.PI) / 180), uE = Math.sin((azDeg * Math.PI) / 180);
+  const mLon = lonKm(cand.lat);
+  for (const part of spanParts(pts)) {
+    /* km north / km east of the candidate — the same local plane the rest
+       of the file works in */
+    const P = part.map((q) => [(q.lat - cand.lat) * 111.32, (q.lon - cand.lon) * mLon]);
+    for (const [n, e] of P) vertex(n, e);
+    for (let i = 0; i + 1 < P.length; i++) {
+      const [n0, e0] = P[i], [n1, e1] = P[i + 1];
+      const dN = n1 - n0, dE = e1 - e0, L = Math.hypot(dN, dE);
+      if (L < 1e-9) continue;
+      /* nearest approach of the segment to the candidate (range gate) */
+      const s = Math.max(0, Math.min(1, -(n0 * dN + e0 * dE) / (L * L)));
+      near = Math.min(near, Math.hypot(n0 + dN * s, e0 + dE * s));
+      /* does the sight-line cross this segment? P0 + s·d = t·u, t > 0 */
+      const den = dN * uE - dE * uN;
+      if (Math.abs(den) < 1e-12) continue;      // parallel to the ray
+      const ss = (n0 * uE - e0 * uN) / -den;
+      const t = Math.abs(uN) > Math.abs(uE) ? (n0 + dN * ss) / uN : (e0 + dE * ss) / uE;
+      if (ss >= 0 && ss <= 1 && t > 0.02) dev = 0;
+    }
+  }
+  return { near, far, dev };
+}
+/* where a camera could plausibly have STOOD to photograph this twin —
+   the point itself, or for a span its two most distant points plus the
+   middle between them. A bridge is photographed from a bank, which can
+   be half a kilometre from the point OSM calls its centre; and its OSM
+   geometry is often a CLOSED outline, so "first and last vertex" would
+   be the same spot. Diameter by the usual two-pass walk (farthest from
+   the centroid, then farthest from that), so it works for a closed
+   outline and a chain of separate ways alike. */
+export function twinAnchors(tw) {
+  if (!tw.pts) return [{ lat: tw.lat, lon: tw.lon }];
+  const all = spanParts(tw.pts).flat();
+  if (all.length < 2) return [{ lat: tw.lat, lon: tw.lon }];
+  const mLon = Math.max(0.2, Math.cos((all[0].lat * Math.PI) / 180));
+  const d2 = (a, b) => (a.lat - b.lat) ** 2 + ((a.lon - b.lon) * mLon) ** 2;
+  const cen = { lat: all.reduce((s, q) => s + q.lat, 0) / all.length, lon: all.reduce((s, q) => s + q.lon, 0) / all.length };
+  const far = (from) => all.reduce((b, q) => (d2(q, from) > d2(b, from) ? q : b), all[0]);
+  const A = far(cen), B = far(A);
+  /* the third anchor is the point ON the structure closest to the middle
+     of that diameter — projected onto the EDGES, not snapped to a
+     vertex: a bridge mapped as a closed outline has no vertex near its
+     middle, and snapping would put the third anchor back on a corner */
+  const mid = { lat: (A.lat + B.lat) / 2, lon: (A.lon + B.lon) / 2 };
+  let C = A, cBest = Infinity;
+  for (const part of spanParts(tw.pts)) for (let i = 0; i + 1 < part.length; i++) {
+    const p0 = part[i], p1 = part[i + 1];
+    const dLat = p1.lat - p0.lat, dLon = (p1.lon - p0.lon) * mLon, L2 = dLat * dLat + dLon * dLon;
+    if (L2 < 1e-18) continue;
+    const u = Math.max(0, Math.min(1, ((mid.lat - p0.lat) * dLat + (mid.lon - p0.lon) * mLon * dLon) / L2));
+    const q = { lat: p0.lat + (p1.lat - p0.lat) * u, lon: p0.lon + (p1.lon - p0.lon) * u };
+    const d = d2(q, mid);
+    if (d < cBest) { cBest = d; C = q; }
+  }
+  const out = [];
+  for (const q of [A, C, B]) if (!out.some((o) => d2(o, q) < (0.05 / 111.32) ** 2)) out.push({ lat: q.lat, lon: q.lon });
+  return out;
+}
 
 /* joint consistency of ALL pins at one candidate: each pin's observed
    azimuth (frame pointing + pixel offset) vs the best matching twin
@@ -381,9 +474,19 @@ export function pinsDeviation(cand, pinObs, twins) {
     let best = null;
     for (const tw of twins) {
       if (!kindMatch(po.kind, tw.kind)) continue;
-      const dKm = Math.hypot((tw.lat - cand.lat) * 111.32, (tw.lon - cand.lon) * mLon);
-      if (dKm > rangeKm || dKm < 0.02) continue;
-      const dev = angDiff(bearingDeg(cand.lat, cand.lon, tw.lat, tw.lon), po.azDeg);
+      let near, far, dev;
+      /* ANY twin with geometry takes the span path — a one-way bridge is
+         `pts: [oneLine]`, whose length is 1, so testing pts.length here
+         would silently send the commonest case back to centre-matching */
+      if (tw.pts) {
+        ({ near, far, dev } = spanMetrics(cand, tw.pts, po.azDeg));
+      } else {
+        near = far = Math.hypot((tw.lat - cand.lat) * 111.32, (tw.lon - cand.lon) * mLon);
+        dev = near < 0.02 ? null : angDiff(bearingDeg(cand.lat, cand.lon, tw.lat, tw.lon), po.azDeg);
+      }
+      /* nearest point governs the range gate; the whole structure being
+         inside 20 m is the degenerate case (you are standing ON it) */
+      if (near > rangeKm || far < 0.02 || dev == null) continue;
       if (best == null || dev < best) best = dev;
     }
     if (best == null) continue;
@@ -604,12 +707,20 @@ export async function fetchLandmarks(lat, lon, radKm, kinds) {
   const r = await fetch(`/api/landmarks?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}&r=${Math.round(radKm * 1000)}&kinds=${encodeURIComponent(kinds.join(","))}`, { signal: AbortSignal.timeout(25000) });
   if (!r.ok) throw new Error(`landmarks HTTP ${r.status}`);
   const j = await r.json();
-  const out = [];
+  const out = [], bridgeWays = [];
   for (const e of j.elements || []) {
     const t = e.tags || {};
     /* built-up land-use ways come back as bounding boxes (out bb) */
     if (t.landuse && e.bounds && isFinite(e.bounds.minlat)) {
       out.push({ kind: "urban", bbox: [e.bounds.minlat, e.bounds.maxlat, e.bounds.minlon, e.bounds.maxlon] });
+      continue;
+    }
+    /* bridges come back as WAYS WITH GEOMETRY (out geom) — they are the
+       one pinnable structure with real extent, so the span is kept and
+       matched along its whole length (spanMetrics) */
+    const geom = Array.isArray(e.geometry) ? e.geometry.filter((g) => isFinite(g?.lat) && isFinite(g?.lon)).map((g) => ({ lat: g.lat, lon: g.lon })) : null;
+    if (t.man_made === "bridge" || (t.bridge && t.bridge !== "no")) {
+      if (geom && geom.length) bridgeWays.push({ name: t.name || "", id: e.id, geom });
       continue;
     }
     const la = e.lat ?? e.center?.lat, lo = e.lon ?? e.center?.lon;
@@ -625,6 +736,24 @@ export async function fetchLandmarks(lat, lon, radKm, kinds) {
                     : t.man_made === "tower" ? "tower" : null;
     if (!kind) continue;
     out.push({ lat: la, lon: lo, kind, ptype: t.place || null, name: t.name || "", height: t.height ? parseFloat(t.height) : null });
+  }
+  /* ONE bridge is many OSM ways — the Golden Gate came back as 41 (deck
+     segments, each sidewalk, the structure outline). Left apart they
+     would flood the nearest-80 twin cap and spawn ring candidates around
+     every segment, so ways sharing a NAME become one multi-part twin;
+     unnamed ways stay on their own. Parts are kept SEPARATE inside it
+     rather than concatenated — joining two disjoint segments would
+     invent a span between them that no ray should ever be able to hit. */
+  const byName = new Map();
+  for (const b of bridgeWays) {
+    const key = b.name || `#${b.id}`;
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(b.geom);
+  }
+  for (const [key, parts] of byName) {
+    const longest = parts.reduce((a, b) => (b.length > a.length ? b : a), parts[0]);
+    const c = longest[Math.floor(longest.length / 2)];
+    out.push({ lat: c.lat, lon: c.lon, pts: parts, kind: "bridge", name: key.startsWith("#") ? "" : key });
   }
   return out;
 }

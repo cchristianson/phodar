@@ -4151,6 +4151,62 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
   ok(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "chimney", azDeg: 200 }], twinsAll) === 0 + GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }], twinsAll),
     "geoloc: an untestable pin does not disturb the testable ones");
 
+  /* EXTENDED twin (a bridge): matched along its whole SPAN, not by its
+     map centre. The span below runs 1.2 km due east of the candidate,
+     from 600 m north to 600 m south of the east axis — so its centre
+     bears 90°, but every bearing from ~50° to ~130° hits the structure. */
+  const brSpan = { kind: "bridge", ...at(0, 800), pts: [at(600, 800), at(0, 800), at(-600, 800)] };
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 90 }], [brSpan]), 0, 0.1,
+    "geoloc: bridge — a bearing through its centre hits the span (0°)");
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 60 }], [brSpan]), 0, 0.1,
+    "geoloc: bridge — a bearing onto its far END is a hit too, not a 30° miss");
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 20 }], [brSpan]), 33.1, 1,
+    "geoloc: bridge — a bearing that misses the whole span reports the miss to its nearest point");
+  /* the same geometry as a POINT twin (its OSM centre) would punish the
+     true spot for standing off one end — this is the bug the span fixes */
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 60 }], [{ kind: "bridge", ...at(0, 800) }]), 30, 0.5,
+    "geoloc: the same bridge as a bare centre point misses by 30° — why spans are kept");
+  /* range gate uses the NEAREST point of the span: a bridge whose centre
+     sits beyond the 5 km gate is still testable if one end is close */
+  const brFar = { kind: "bridge", ...at(0, 7000), pts: [at(0, 2000), at(0, 12000)] };
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 90 }], [brFar]), 0, 0.1,
+    "geoloc: bridge — the nearest point of the span governs the range gate, not the centre");
+  ok(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 90 }], [{ kind: "bridge", ...at(0, 7000) }]) === null,
+    "geoloc: a bridge CENTRE 7 km out is beyond the kind's range → untestable");
+  /* the 20 m degeneracy guard: standing on the span is not a free pass on
+     the near vertex, but the far end still carries a real bearing */
+  const onIt = { lat: brSpan.pts[1].lat, lon: brSpan.pts[1].lon };
+  approx(GL.pinsDeviation(onIt, [{ kind: "bridge", azDeg: 0 }], [brSpan]), 0, 0.1,
+    "geoloc: standing on a bridge — the span's far end still answers (deck bearing 0°)");
+  /* point twins must be byte-identical through the new code path */
+  ok(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "mast", azDeg: 95 }], twinsAll) === 5 ||
+    Math.abs(GL.pinsDeviation(cand, [{ kind: "water", azDeg: 0 }, { kind: "mast", azDeg: 95 }], twinsAll) - 5) < 0.1,
+    "geoloc: point twins unchanged by the span path");
+  /* ring anchors: a point twin offers itself, a span offers ends + middle */
+  ok(GL.twinAnchors({ lat: 30, lon: 78 }).length === 1, "geoloc: a point twin spawns one ring anchor");
+  const ans = GL.twinAnchors(brSpan);
+  ok(ans.length === 3 && Math.abs((ans[0].lat - ans[2].lat) * mLat - 1200) < 1,
+    "geoloc: a span twin spawns ring anchors at both ends and the middle (1.2 km apart)");
+  /* a CLOSED outline (OSM maps big bridges as an area): first and last
+     vertex are the same spot, so anchors must come from the diameter */
+  const ring4 = { kind: "bridge", ...at(0, 800), pts: [[at(300, 400), at(300, 1200), at(-300, 1200), at(-300, 400), at(300, 400)]] };
+  const ra = GL.twinAnchors(ring4);
+  ok(ra.length === 3 && Math.hypot((ra[0].lat - ra[2].lat) * mLat, (ra[0].lon - ra[2].lon) * mLonS) > 900,
+    "geoloc: a CLOSED span outline still yields anchors across its diameter, not one repeated corner");
+  /* MULTI-PART twin: one bridge arrives as many OSM ways (the Golden Gate
+     as 41). Parts are matched separately — the gap between two disjoint
+     segments must NOT read as structure a ray can hit. */
+  const twoPart = { kind: "bridge", ...at(0, 800), pts: [[at(600, 800), at(400, 800)], [at(-400, 800), at(-600, 800)]] };
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 63.4 }], [twoPart]), 0, 0.2,
+    "geoloc: multi-part bridge — a bearing onto the first way is a hit");
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 90 }], [twoPart]), 26.5, 0.5,
+    "geoloc: multi-part bridge — the GAP between two ways is not structure (no phantom hit)");
+  /* the COMMONEST case: a bridge that is a single OSM way, i.e. ONE part.
+     Its pts.length is 1, so it must be routed by having geometry at all —
+     never by a length test, which would send it back to centre-matching */
+  approx(GL.pinsDeviation(cand, [{ kind: "bridge", azDeg: 60 }], [{ kind: "bridge", ...at(0, 800), pts: [[at(600, 800), at(-600, 800)]] }]), 0, 0.1,
+    "geoloc: a ONE-part bridge still takes the span path (0°, not the 30° centre miss)");
+
   /* setting-context filters */
   const places = [
     { ...at(0, 0), kind: "place", ptype: "town" },        // town centred on the candidate (radius 2.5 km)

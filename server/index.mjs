@@ -549,15 +549,23 @@ async function apiLandmarks(q, res) {
      the pixel you stand on, which is how "in a town" once passed a bare
      field). */
   const wantUrban = rawKinds.includes("urban");
+  /* bridges are WAYS, not nodes — the only pinnable structure with real
+     extent — so they need `out geom` and therefore their own query
+     (Overpass allows one geometry mode per out). Restricted to NAMED
+     road/rail bridges plus mapped bridge structures: those are the ones
+     a witness can recognise in a photo, and it keeps every culvert in a
+     city out of the answer. */
+  const wantBridge = rawKinds.includes("bridge");
   const kinds = rawKinds.filter((k) => LANDMARK_KINDS[k]);
-  if (!kinds.length && !wantUrban) return json(res, 400, { error: "no valid kinds" });
-  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r},${kinds.join("+")}${wantUrban ? "+urban" : ""}`;
+  if (!kinds.length && !wantUrban && !wantBridge) return json(res, 400, { error: "no valid kinds" });
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${r},${kinds.join("+")}${wantUrban ? "+urban" : ""}${wantBridge ? "+bridge" : ""}`;
   const hit = landmarksCache.get(key);
   if (hit && Date.now() - hit.t < 24 * 3600 * 1000) return json(res, 200, hit.body);
   const la = lat.toFixed(5), lo = lon.toFixed(5);
   const parts = kinds.map((k) => `node${LANDMARK_KINDS[k]}(around:${r},${la},${lo});way${LANDMARK_KINDS[k]}(around:${r},${la},${lo});`).join("");
   const ql = `[out:json][timeout:20];(${parts});out center tags qt 600;`;
   const qlUrban = `[out:json][timeout:20];way["landuse"~"^(residential|retail|commercial|industrial)$"](around:${r},${la},${lo});out bb qt 700;`;
+  const qlBridge = `[out:json][timeout:20];(way["man_made"="bridge"](around:${r},${la},${lo});way["bridge"]["bridge"!="no"]["name"]["highway"](around:${r},${la},${lo});way["bridge"]["bridge"!="no"]["name"]["railway"](around:${r},${la},${lo}););out geom qt 250;`;
   const eps = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -583,11 +591,12 @@ async function apiLandmarks(q, res) {
     }
   };
   try {
-    const [jMain, jUrban] = await Promise.all([
+    const [jMain, jUrban, jBridge] = await Promise.all([
       kinds.length ? race(ql) : Promise.resolve({ elements: [] }),
       wantUrban ? race(qlUrban) : Promise.resolve({ elements: [] }),
+      wantBridge ? race(qlBridge) : Promise.resolve({ elements: [] }),
     ]);
-    const body = { elements: [...jMain.elements, ...jUrban.elements] };
+    const body = { elements: [...jMain.elements, ...jUrban.elements, ...jBridge.elements] };
     if (!body.elements.length) body.note = "reachable; no matching features in range";
     landmarksCache.set(key, { t: Date.now(), body });
     return json(res, 200, body);

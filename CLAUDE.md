@@ -774,11 +774,30 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   candidates; loadGrid/gridSample were exported for exactly this).
   (4) e2e note: sandbox/test Chromium has no H.264 — transcode test
   clips to VP8 webm first (`DEMUXER_ERROR_NO_SUPPORTED_STREAMS` is the
-  tell). Since v1: SEVEN pin kinds (＋pylon/chimney/wind/lighthouse/
-  peak), pins ACCUMULATE (multi-pin resection; `pinsDeviation` — worst
+  tell). Since v1: EIGHT pin kinds (＋pylon/chimney/wind/lighthouse/
+  bridge/peak), pins ACCUMULATE (multi-pin resection; `pinsDeviation` — worst
   pin governs, per-kind camera-to-structure RANGE GATES without which a
   town of mapped towers passes every cell, unmapped pins skipped, peaks
-  never spawn rings); SETTING filters (stood in/out of a town, looking
+  never spawn rings); a BRIDGE is the one pin with EXTENT and is
+  handled as such throughout (`spanMetrics`): its twin carries the OSM
+  geometry, the sight-line is tested against the WHOLE span (exact
+  per-segment ray crossing, so a bearing onto either end is a hit, not
+  a 30° miss against the map centre — asserted both ways), the range
+  gate reads the NEAREST point, and ring candidates land at the span's
+  diameter ends + middle because you photograph a bridge from a bank.
+  Two things the real Golden Gate payload taught: ONE bridge is 41 OSM
+  ways (deck segments, each sidewalk, the outline), so same-NAMED ways
+  merge into one multi-part twin or they flood the nearest-80 twin cap
+  — parts stay SEPARATE inside it, never concatenated, since joining
+  two disjoint segments invents a span a ray could hit; and the
+  geometry is often a CLOSED outline, so ring anchors come from the
+  diameter (two-pass walk) with the third projected onto an EDGE, not
+  snapped to a vertex. Honesty stated in the UI: a long bridge close up
+  covers a wide arc, so it settles which SIDE of the water you stood on
+  far better than it narrows the direction. Server side it needs
+  `out geom` and therefore its own Overpass query (one geometry mode
+  per out), restricted to `man_made=bridge` plus NAMED road/rail
+  bridges — probed live, all three clauses; SETTING filters (stood in/out of a town, looking
   at a town/open — primary signal is OSM built-up LAND-USE bboxes
   (`urbanDistKm`/`rayHitsUrban`; a place NODE's type radius passed a
   bare field 1 km from a village node as "in a town" — field report),
