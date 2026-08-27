@@ -682,7 +682,7 @@ const HELP_SECTIONS = [
         { t: "Latitude / Longitude", d: "Type them, or paste a “lat, lon” pair into either field and it splits automatically." },
         { t: "📎 Use the photo's GPS", d: "Copy the location embedded in the photo's EXIF straight into the fields." },
         { t: "Elev + ⛰ Use terrain elevation", d: "Your ground height in metres. The ⛰ button looks up the DEM terrain height at the pin — steadier than phone-GPS altitude (which wobbles ±5 m)." },
-        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, type something as vague as “lower Himalaya India” into the 🔎 search, or paste coordinates like “30.379, 78.104” to jump straight there — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). Two ways to give it more than the ridge outline, both on any frame in the strip. **⛰ Peaks — mark each summit** the photo shows, tapping the apex itself, and say whether it stands on the near ridge or the far one. Three or more summits become a CONSTELLATION: the pattern of angular gaps between them identifies the terrain much the way a star pattern identifies the sky, so the search solves your direction, tilt and zoom rather than assuming them, and every candidate must explain your marks one-to-one, in your left-to-right order, with your front/back calls checked against the elevation model's own ranges — a spot that can only fit by putting the near ridge behind the far one is rejected outright. This works on frames the automatic skyline detector cannot read AT ALL — haze that blues a far ridge into the sky, or a foreground across the top of the frame — which is exactly when it is worth the most, so mark peaks even on a dimmed frame. The leading candidate is then re-solved exactly against the summits it matched and reported with a true angular error, the lens width the terrain implies, and each summit's distance and OpenStreetMap name where it has one: check those names against your frame before believing the spot. An unnamed summit is real terrain the map simply hasn't named. Second, **📌 Structures** — pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, 🌉 bridge, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. A 🌉 bridge is the one pin with real LENGTH, so it is matched along its whole span — the pinned direction only has to hit the bridge somewhere, not its map centre — and the search also tries viewpoints at each end of it, since you photograph a bridge from a bank. Read it for what it is: a long bridge seen from close up covers a wide arc of sky, so it settles which side of the water you stood on far better than it narrows the direction — pair it with a point structure when the photo shows one. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. With a sighting date set, a 🌦 weather cross-check compares the clip's own sky (read from the frames — clear blue vs overcast gray) against the reanalysis archive's cloud cover for the searched area on that date: agreement is mild support, a clear contradiction says to question the date or the area. It judges the AREA (weather data is ~25 km coarse), never one candidate over another, and a hazy in-between sky honestly yields no verdict. Once a search (or your own detective work) has you within a neighborhood, switch to ±1 km FINE mode: ~200 m cells where the ridge shape barely changes, so your pinned structures and the near ridge do the ranking — the walk-the-last-kilometer tool. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
+        { t: "📍 Find my spot", d: "For media with stripped location data: give it a rough area — drag the map there, type something as vague as “lower Himalaya India” into the 🔎 search, or paste coordinates like “30.379, 78.104” to jump straight there — and 🔍 Search sweeps candidate positions, matching the terrain skyline in every usable frame at once against the elevation model, and ranks where the shot fits best (with the implied facing direction). The frame strip samples the clip end to end — first frame, last frame, and evenly between — and every one of them can be marked, including the dimmed ones. When the thing worth marking is only in view for a moment (a bridge the camera pans off, a ridge that later haze swallows), use 🎞 <b>Scrub to a frame</b>: drag the slider or nudge in ±0.2 s / ±1 s steps until you are on that exact moment, then ＋ Add this frame. It joins the strip in time order with an amber timestamp, marks like any other frame, and is remembered with the sighting; ✕ frame removes it again along with its marks. Two ways to give it more than the ridge outline, both on any frame in the strip. **⛰ Peaks — mark each summit** the photo shows, tapping the apex itself, and say whether it stands on the near ridge or the far one. Three or more summits become a CONSTELLATION: the pattern of angular gaps between them identifies the terrain much the way a star pattern identifies the sky, so the search solves your direction, tilt and zoom rather than assuming them, and every candidate must explain your marks one-to-one, in your left-to-right order, with your front/back calls checked against the elevation model's own ranges — a spot that can only fit by putting the near ridge behind the far one is rejected outright. This works on frames the automatic skyline detector cannot read AT ALL — haze that blues a far ridge into the sky, or a foreground across the top of the frame — which is exactly when it is worth the most, so mark peaks even on a dimmed frame. The leading candidate is then re-solved exactly against the summits it matched and reported with a true angular error, the lens width the terrain implies, and each summit's distance and OpenStreetMap name where it has one: check those names against your frame before believing the spot. An unnamed summit is real terrain the map simply hasn't named. Second, **📌 Structures** — pin the structures the photo shows — 💧 water tank, 📡 mast, ⚡ power pylon, 🏭 chimney, 🌬 wind turbine, 🗼 lighthouse, 🌉 bridge, or a 🏔 named peak off the skyline — as many as you can see, across as many frames as you like (two structures in one frame lock the geometry much harder than one). Candidates that place every pinned structure in the right direction get a 📍 badge; a structure that isn't on the map is simply skipped, never held against a spot. A 🌉 bridge is the one pin with real LENGTH, so it is matched along its whole span — the pinned direction only has to hit the bridge somewhere, not its map centre — and the search also tries viewpoints at each end of it, since you photograph a bridge from a bank. Read it for what it is: a long bridge seen from close up covers a wide arc of sky, so it settles which side of the water you stood on far better than it narrows the direction — pair it with a point structure when the photo shows one. Remove a mistaken pin by tapping it on the frame, or via its ✕ chip in the pin list under the frame strip. Two more levers: the SETTING chips (you stood 🏘 in a town / 🌾 outside one; looking at 🏙 a town / 🌲 open country) rule out whole swaths of candidates using the map's town locations — the witness usually knows the setting even when the metadata is gone — and if you've run 🎞 Stabilize video first, the search locks all frames' directions and zoom together as one rigid pan, a much tighter constraint than treating each frame separately. With a sighting date set, a 🌦 weather cross-check compares the clip's own sky (read from the frames — clear blue vs overcast gray) against the reanalysis archive's cloud cover for the searched area on that date: agreement is mild support, a clear contradiction says to question the date or the area. It judges the AREA (weather data is ~25 km coarse), never one candidate over another, and a hazy in-between sky honestly yields no verdict. Once a search (or your own detective work) has you within a neighborhood, switch to ±1 km FINE mode: ~200 m cells where the ridge shape barely changes, so your pinned structures and the near ridge do the ranking — the walk-the-last-kilometer tool. Honesty note: over gentle or repetitive terrain many spots fit similarly — the tool says so and offers ranked suggestions instead of pretending certainty. Tap a candidate to fly there, check the satellite imagery yourself, drag ⌖ onto your actual spot, and adopt it." },
       ]},
       { h: "The map", items: [
         { t: "Drag the ground under your pin", d: "The crosshair is fixed at centre; drag the map so it lands on your exact standing spot. YOU marks the pin, ● photo GPS shows the photo's location, ▲ are other observers." },
@@ -9781,12 +9781,29 @@ const FS_PIN_KINDS = [
    to every crest, so the claim is testable — and being able to say "no
    idea" matters as much as the two answers, because a guess here would
    be scored as evidence. */
+/* Seek an offscreen video and wait for the frame to actually be there.
+   Two traps, both hit in practice: setting currentTime to the value the
+   element is ALREADY at fires no `seeked` event at all, so a naive await
+   hangs forever — and that is exactly the first sample now that frame 0
+   IS the start of the clip; and a decoder can drop a seek near the very
+   end, so the wait is bounded rather than trusted. */
+function seekVid(v, t) {
+  return new Promise((res) => {
+    const target = Math.max(0, Math.min(t, (v.duration || 0) - 0.05));
+    if (Math.abs(v.currentTime - target) < 0.004 && v.readyState >= 2) return res();
+    let done = false;
+    const fin = () => { if (done) return; done = true; v.removeEventListener("seeked", fin); clearTimeout(tm); res(); };
+    const tm = setTimeout(fin, 2500);
+    v.addEventListener("seeked", fin);
+    try { v.currentTime = target; } catch (e) { fin(); }
+  });
+}
 const FS_DEPTHS = [
   { d: "near", glyph: "▲", label: "near ridge", col: "#8FD3C7" },
   { d: "far", glyph: "△", label: "far ridge", col: "#F5A93F" },
   { d: null, glyph: "◇", label: "not sure", col: "#9AA7BD" },
 ];
-function FindSpot({ src, onAdopt, onSave, onClose }) {
+function FindSpot({ src, onAdopt, onSave, onClose, viewOnly }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);
   const circleRef = useRef(null);
@@ -9798,6 +9815,20 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
   const [look, setLook] = useState(src.findSpot?.look || null);    // "town" | "open" | null
   const [pinView, setPinView] = useState(null);        // frame index open for pinning | null
   const [peaks, setPeaks] = useState(() => (src.findSpot?.peaks || [])); // [{fi,x,y,depth}] marked summits
+  /* frames the user SCRUBBED to, beyond the automatic sample. Stored as
+     {id,t} rather than bare times: a frame's id is what a mark points at
+     (peak.fi / pin.fi), so it must survive a reload AND the removal of
+     some other extra frame — renumbering would silently re-attach every
+     mark after the gap to the wrong frame. */
+  const [extras, setExtras] = useState(() => (src.findSpot?.extras || []));
+  const [span, setSpan] = useState(null);              // {t0,t1} of the analysed clip span
+  const [scrubOn, setScrubOn] = useState(false);
+  const [scrubT, setScrubT] = useState(null);
+  const [scrubUrl, setScrubUrl] = useState(null);
+  const [scrubBusy, setScrubBusy] = useState(false);
+  const vidRef = useRef(null);                         // kept alive for scrubbing
+  const grabRef = useRef(null);
+  const scrubPend = useRef(null), scrubRun = useRef(false);
   const [markMode, setMarkMode] = useState("peak");    // what a tap on a frame places: "peak" | "pin"
   const [pending, setPending] = useState(null);        // {x,y} awaiting a kind/depth chip
   const [radKm, setRadKm] = useState(src.findSpot?.radKm || 8);
@@ -9872,20 +9903,36 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
           const sky = skyStats(imd, cv.width, cv.height);
           return { t, url: cv.toDataURL("image/jpeg", 0.75), W: cv.width, H: cv.height, pts, near, sky };
         };
+        grabRef.current = grab;
         const out = [];
         if (src.mediaKind === "video") {
           const v = document.createElement("video");
           v.muted = true; v.playsInline = true; v.preload = "auto";
           v.src = src.mediaUrl;
           await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error(v.error ? `video error ${v.error.code}${v.error.message ? ": " + v.error.message : ""}` : "video failed to load")); });
+          vidRef.current = v;                       // stays alive: the scrubber seeks it
           const { t0, t1 } = trimOf(src, v.duration);
+          if (!dead) { setSpan({ t0, t1 }); setScrubT(t0); }
           const N = Math.min(8, Math.max(3, Math.round((t1 - t0) / 6)));
+          /* SPAN the clip end to end, don't sample bin CENTRES. Centres
+             never offer the start: on a 90 s clip the earliest frame you
+             could reach was 5.6 s in, and the thing worth marking — a
+             bridge the camera pans off, a ridge that later haze swallows
+             — is often only in the opening seconds (field report). */
           for (let i = 0; i < N && !dead; i++) {
-            const t = t0 + ((t1 - t0) * (i + 0.5)) / N;
-            await new Promise((res) => { v.onseeked = () => res(); v.currentTime = Math.min(t, v.duration - 0.05); });
+            const t = N === 1 ? t0 : t0 + ((t1 - t0) * i) / (N - 1);
+            await seekVid(v, t);
             out.push({ i, ...grab(v, v.videoWidth, v.videoHeight, t) });
           }
-          v.removeAttribute("src"); try { v.load(); } catch (e) { }
+          /* frames scrubbed to in an earlier session, re-derived at their
+             stored ids so their marks still point at them */
+          for (const ex of (src.findSpot?.extras || [])) {
+            if (dead) break;
+            const t = Math.min(Math.max(ex.t, t0), t1);
+            await seekVid(v, t);
+            out.push({ i: ex.id, ...grab(v, v.videoWidth, v.videoHeight, t) });
+          }
+          out.sort((a, b) => a.t - b.t);
         } else {
           const im = new Image();
           im.src = src.mediaUrl;
@@ -9895,8 +9942,57 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
         if (!dead) setFrames(out);
       } catch (e) { if (!dead) setFrames({ err: e.message || String(e) }); }
     })();
-    return () => { dead = true; };
+    return () => {
+      dead = true;
+      const v = vidRef.current;
+      if (v) { v.removeAttribute("src"); try { v.load(); } catch (e) { } vidRef.current = null; }
+    };
   }, []); // eslint-disable-line
+
+  /* ---- scrub to any frame ----
+     Single-in-flight seek loop, the same discipline the stabilized
+     playback uses: a slider emits far more events than a decoder can
+     seek, and firing one seek per event floods it (invariant #7). The
+     pending time is overwritten while a seek is running, so the loop
+     always lands on the LATEST position and never queues a backlog. */
+  const previewAt = async (t) => {
+    scrubPend.current = t;
+    if (scrubRun.current) return;
+    scrubRun.current = true;
+    while (scrubPend.current != null) {
+      const tt = scrubPend.current; scrubPend.current = null;
+      const v = vidRef.current; if (!v) break;
+      try {
+        await seekVid(v, tt);
+        const sc = Math.min(1, 420 / Math.max(v.videoWidth, v.videoHeight));
+        const cv = document.createElement("canvas");
+        cv.width = Math.round(v.videoWidth * sc); cv.height = Math.round(v.videoHeight * sc);
+        cv.getContext("2d").drawImage(v, 0, 0, cv.width, cv.height);
+        setScrubUrl(cv.toDataURL("image/jpeg", 0.72));
+      } catch (e) { break; }
+    }
+    scrubRun.current = false;
+  };
+  const addScrubFrame = async () => {
+    const v = vidRef.current, grab = grabRef.current;
+    if (!v || !grab || scrubT == null || scrubBusy) return;
+    setScrubBusy(true);
+    try {
+      await seekVid(v, scrubT);
+      const id = Math.max(999, ...extras.map((e) => e.id)) + 1;
+      const nf = { i: id, ...grab(v, v.videoWidth, v.videoHeight, scrubT) };
+      setExtras((e) => [...e, { id, t: scrubT }]);
+      setFrames((fs) => [...(Array.isArray(fs) ? fs : []), nf].sort((a, b) => a.t - b.t));
+    } catch (e) { setErr(e.message || String(e)); }
+    setScrubBusy(false);
+  };
+  const dropFrame = (f) => {
+    setExtras((e) => e.filter((x) => x.id !== f.i));
+    setFrames((fs) => (Array.isArray(fs) ? fs.filter((x) => x.i !== f.i) : fs));
+    setPeaks((ps) => ps.filter((p) => p.fi !== f.i));   // its marks describe pixels that are gone
+    setPins((ps) => ps.filter((p) => p.fi !== f.i));
+    setPinView(null);
+  };
 
   /* DESKTOP: Escape closes (capture + stop so nothing underneath also fires) */
   useEffect(() => {
@@ -9936,6 +10032,21 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
     else map.flyTo([p.lat, p.lon], 11);
     setHits(null); setQ(p.name.split(",").slice(0, 2).join(",").trim());
   };
+
+  /* Persist the INPUTS as they change, not only after a completed search.
+     onSave used to be called from exactly one place — the end of a
+     successful sweep — so marking peaks, scrubbing frames in and picking
+     the setting chips was all thrown away if the search errored (DEM
+     unreachable, no candidate matches the setting) or if the panel was
+     simply closed. That was already wrong for a handful of taps; with
+     scrubbed frames it discards real work. Results/verdict are merged
+     through untouched, so this never wipes a sweep that already ran. */
+  const savedMount = useRef(false);
+  useEffect(() => {
+    if (!savedMount.current) { savedMount.current = true; return; }   // opening is not a change
+    if (viewOnly) return;                                             // a reviewer's panel never writes
+    onSave && onSave({ ...(src.findSpot || {}), radKm, pins, peaks, extras, stood, look });
+  }, [pins, peaks, extras, stood, look, radKm]); // eslint-disable-line
 
   /* ---- the sweep ---- */
   const run = async () => {
@@ -10153,7 +10264,7 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
         } catch (e) { }
       }
       setResults(top); setVerdict(v);
-      onSave && onSave({ at: { lat: c.lat, lng: c.lng }, radKm, pins, peaks, stood, look, results: top, verdict: v, ranAt: Date.now() });
+      onSave && onSave({ at: { lat: c.lat, lng: c.lng }, radKm, pins, peaks, extras, stood, look, results: top, verdict: v, ranAt: Date.now() });
     } catch (e) {
       if (!/cancelled/.test(String(e))) setErr(e.message || String(e));
     }
@@ -10236,7 +10347,8 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
               <button className={`btn sm ${markMode === "peak" ? "teal" : ""}`} onClick={() => { setMarkMode("peak"); setPending(null); }}>⛰ Peaks</button>
               <button className={`btn sm ${markMode === "pin" ? "teal" : ""}`} onClick={() => { setMarkMode("pin"); setPending(null); }}>📌 Structures</button>
               <div style={{ flex: 1 }} />
-              <span style={{ fontSize: 10.5, color: "var(--dim)", fontFamily: "var(--mono)" }}>{framePeaks.length}⛰ · {pins.filter((p) => p.fi === frame.i).length}📌</span>
+              <span style={{ fontSize: 10.5, color: "var(--dim)", fontFamily: "var(--mono)" }}>{frame.t != null && src.mediaKind === "video" ? `${frame.t.toFixed(2)}s · ` : ""}{framePeaks.length}⛰ · {pins.filter((p) => p.fi === frame.i).length}📌</span>
+              {frame.i >= 1000 && <button className="btn sm ghost" title="remove this added frame and its marks" onClick={() => dropFrame(frame)}>✕ frame</button>}
             </div>
             {pending ? (
               markMode === "peak" ? (
@@ -10296,6 +10408,14 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
                         {pins.filter((p) => p.fi === f.i).length > 2 ? "+" : ""}
                       </div>
                     )}
+                    {/* the time IS the frame's identity to a user scrubbing
+                        for one particular moment — without it the strip is
+                        eight anonymous thumbnails */}
+                    {src.mediaKind === "video" && (
+                      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, fontFamily: "var(--mono)", fontSize: 9, textAlign: "center", background: "rgba(7,11,20,.72)", color: f.i >= 1000 ? "var(--amber)" : "var(--dim)" }}>
+                        {f.t < 10 ? f.t.toFixed(1) : Math.round(f.t)}s
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -10303,6 +10423,40 @@ function FindSpot({ src, onAdopt, onSave, onClose }) {
             {Array.isArray(frames) && (
               <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 2 }}>
                 {usable.length}/{frames.length} frame{frames.length === 1 ? "" : "s"} show a clean terrain skyline{usable.length < frames.length ? " (dimmed frames gave the detector no readable sky — you can still mark ⛰ peaks on them by hand, which is often the better signal)" : ""}. Tap any frame to mark ⛰ summits or 📌 structures — both are optional, and either one sharpens the search a lot.
+              </div>
+            )}
+            {Array.isArray(frames) && src.mediaKind === "video" && span && (
+              <div style={{ marginTop: 5 }}>
+                <button className={`btn sm ${scrubOn ? "teal" : ""}`} onClick={() => {
+                  const nx = !scrubOn;
+                  setScrubOn(nx);
+                  if (nx && scrubUrl == null) previewAt(scrubT ?? span.t0);
+                }}>🎞 Scrub to a frame</button>
+                {scrubOn && (
+                  <div style={{ marginTop: 6, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}>
+                    {scrubUrl
+                      ? <img src={scrubUrl} alt="" style={{ display: "block", width: "100%", maxHeight: 190, objectFit: "contain", borderRadius: 6, background: "#000" }} />
+                      : <div style={{ height: 90, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--dim)", fontSize: 11 }}><Spin /> seeking…</div>}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 7 }}>
+                      <input type="range" min={span.t0} max={span.t1} step={0.05} value={scrubT ?? span.t0}
+                        onChange={(e) => { const t = +e.target.value; setScrubT(t); previewAt(t); }}
+                        style={{ flex: 1, minWidth: 0 }} />
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--teal)", minWidth: 46, textAlign: "right" }}>{(scrubT ?? span.t0).toFixed(2)}s</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                      {[-1, -0.2, 0.2, 1].map((d) => (
+                        <button key={d} className="btn sm" onClick={() => { const t = Math.min(span.t1, Math.max(span.t0, (scrubT ?? span.t0) + d)); setScrubT(t); previewAt(t); }}>
+                          {d > 0 ? "+" : ""}{d}s
+                        </button>
+                      ))}
+                      <div style={{ flex: 1 }} />
+                      <button className="btn sm amber" disabled={scrubBusy} onClick={addScrubFrame}>{scrubBusy ? <Spin /> : "＋ Add this frame"}</button>
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "var(--dim)", marginTop: 5, lineHeight: 1.5 }}>
+                      The strip samples the clip end to end, which can miss a landmark that is only in view for a moment. Scrub to that moment and add it — the added frame joins the strip in time order (amber timestamp) and can be marked like any other. Added frames are remembered with the sighting.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {Array.isArray(frames) && Array.isArray(src.posePath) && src.posePath.length >= 2 && (
@@ -11004,7 +11158,7 @@ function PositionEditor({ src, update, others, viewOnly }) {
             {demMsg && <div style={{ fontSize: 11, color: demMsg.startsWith("✓") ? "var(--teal)" : "var(--red)", marginTop: 5 }}>{demMsg}</div>}
             {geoErr && <div className="warn">{geoErr}</div>}
             {fsOpen && (
-              <FindSpot src={src} onClose={() => setFsOpen(false)}
+              <FindSpot src={src} onClose={() => setFsOpen(false)} viewOnly={viewOnly}
                 onSave={(fs) => update({ findSpot: fs })}
                 onAdopt={(la, lo, az) => {
                   update({ lat: la.toFixed(6), lon: lo.toFixed(6) });

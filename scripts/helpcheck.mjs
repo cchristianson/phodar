@@ -92,6 +92,7 @@ const NAMED = [
   ["horiz3d", /▲ 3D \/ ▤ profile/, "the 3D terrain vista on step 2"],
   ["setPeek", /📷 hold/, "hold-to-compare the photo against the terrain preview"],
   ["peakSampleSets", /mark each summit/i, "⛰ peak-constellation matching in Find my spot"],
+  ["addScrubFrame", /Scrub to a frame/, "scrubbing Find my spot to a specific frame"],
   ["autoStarAlign", /Auto star align/, "automatic plate solving"],
   ["matchSkyline", /Snap to ridges/, "terrain skyline snapping"],
   ["FlightLogCheck", /flight-log check/i, "the drone flight-log calibration check"],

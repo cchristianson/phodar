@@ -809,6 +809,26 @@ Beyond terrain (item 4) and ADS-B (item 3), verified candidates:
   far-chosen azimuth punished the truth when a smooth wall left azimuth
   ambiguous, measured; joint scoring picks truth 1.37× and punishes
   2 km displacement ~9.5× where far-only preferred the displaced spot);
+  FRAME SELECTION (field report: "only the first few frames have the
+  bridge, and the first image the app gives me is already too late"):
+  the strip sampled bin CENTRES — `t0 + (t1-t0)(i+0.5)/N` — so the
+  earliest reachable frame on a 90 s clip was 5.6 s in, and a landmark
+  visible only at the start was unreachable at any zoom. It now SPANS
+  the clip inclusive (t0 and t1 are both offered), plus 🎞 Scrub to a
+  frame: a slider + ±0.2/±1 s nudges over an offscreen video, preview
+  paced by the SINGLE-IN-FLIGHT seek loop the stabilized playback uses
+  (a slider outruns any decoder — invariant #7), and ＋ adds that exact
+  instant to the strip in time order. Two things this needed: `seekVid`,
+  because setting currentTime to the value the element is ALREADY at
+  fires no `seeked` event and a naive await hangs forever — which is
+  exactly frame 0 now that the first sample IS t0; and STABLE FRAME IDS
+  (extras stored as {id,t}, ids from 1000 up), because a mark points at
+  a frame id and renumbering on insert or removal would silently
+  re-attach every later mark to the wrong frame. Also fixed there:
+  onSave was called from ONE place, the end of a successful sweep, so
+  marks, scrubbed frames and setting chips were discarded whenever the
+  search errored or the panel was merely closed; inputs now persist as
+  they change, merging results through untouched.
   a
   ⛰ PEAK CONSTELLATION (`demSummits` in terrain.js + `peakSampleSets`/
   `matchPeaksAt`/`peakCurve`/`refinePeakPose`/`nameSummits`): the sweep
