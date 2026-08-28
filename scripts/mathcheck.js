@@ -2072,6 +2072,51 @@ approx(mag(sub(B.X, A.X)), 300, 2, "A→B displacement");
       approx(SHAPE_R0().balloon && SHAPE_R0().balloon.length === 9 ? 1 : 0, 1, 0, "balloon: has a default 3/4 pose");
     }
 
+    /* EGG — a solid of revolution whose SHAPE is the asymmetry of its two
+       poles, not its elongation (that would be a tic-tac). Length owns the
+       unit, so dialling the proportions must never resize the measured
+       dimension, and both ends must stay ROUNDED — a real egg has no cusp. */
+    {
+      const egg = (o) => shapeWire("egg", null, o).flat();
+      const radAt = (P, z) => Math.max(...P.filter((p) => Math.abs(p[2] - z) < 0.02).map((p) => Math.hypot(p[0], p[1])), 0);
+      const widest = (P) => P.reduce((b, p) => (Math.hypot(p[0], p[1]) > Math.hypot(b[0], b[1]) ? p : b), P[0]);
+      const P = egg(null);
+      approx(extOf(P, 2), 1, 1e-9, "egg: LENGTH is the unit (1.0 along the axis)");
+      approx(Math.abs(extOf(P, 0) - extOf(P, 1)) < 1e-9 ? 1 : 0, 1, 0, "egg: a solid of revolution (square footprint)");
+      /* width is owned by elong alone, and the taper must not steal from it —
+         otherwise pointing the egg would silently thin it too */
+      for (const el of [1.1, 1.35, 2.0, 2.4]) for (const tp of [0, 0.5, 1]) {
+        const Q = egg({ elong: el, taper: tp });
+        approx(extOf(Q, 2), 1, 1e-9, `egg: length stays 1 at elong ${el} / taper ${tp}`);
+        approx(extOf(Q, 0), 1 / el, 2e-3, `egg: width is 1/elong at elong ${el} / taper ${tp} — taper never resizes it`);
+      }
+      /* taper 0 is a symmetric ellipsoid; taper is what makes it an egg */
+      approx(widest(egg({ taper: 0 }))[2], 0, 2e-3, "egg: taper 0 is a symmetric ellipsoid — widest at the middle");
+      const wz = (tp) => widest(egg({ taper: tp }))[2];
+      approx(wz(0.5) < -0.02 ? 1 : 0, 1, 0, `egg: taper moves the bulge toward the BLUNT end (z ${wz(0.5).toFixed(3)})`);
+      approx(wz(1) < wz(0.5) ? 1 : 0, 1, 0, "egg: more taper moves the bulge further down (monotone)");
+      /* the pointed end is narrower than the blunt end at matching heights */
+      const Pt = egg({ taper: 0.6 });
+      approx(radAt(Pt, 0.35) < radAt(Pt, -0.35) ? 1 : 0, 1, 0,
+        `egg: the +z end is the POINTED one (r ${radAt(Pt, 0.35).toFixed(3)} vs ${radAt(Pt, -0.35).toFixed(3)} at the blunt end)`);
+      /* both poles ROUNDED: the radius must approach zero at each end
+         without the profile ever going negative or flipping through the axis */
+      approx(Math.min(...Pt.map((p) => p[2])), -0.5, 1e-9, "egg: closes at the blunt pole");
+      approx(Math.max(...Pt.map((p) => p[2])), 0.5, 1e-9, "egg: closes at the pointed pole");
+      const nearPole = (P, z) => P.filter((p) => Math.abs(p[2] - z) < 0.06).map((p) => Math.hypot(p[0], p[1]));
+      approx(Math.max(...nearPole(Pt, 0.44)) > 0 && Math.max(...nearPole(Pt, 0.44)) < radAt(Pt, 0.08) ? 1 : 0, 1, 0,
+        "egg: the pointed end is a tighter ROUND cap, not a cusp or a flat");
+      /* an ellipsoid at taper 0 must be mirror-symmetric about the middle */
+      const Sy = egg({ taper: 0 });
+      approx(Math.abs(radAt(Sy, 0.3) - radAt(Sy, -0.3)) < 2e-3 ? 1 : 0, 1, 0, "egg: taper 0 is mirror-symmetric about its waist");
+      [undefined, NaN, -5, 99].forEach((v) => {
+        const Q = egg(v === undefined ? undefined : { elong: v, taper: v });
+        approx(Q.length > 0 && extOf(Q, 2) > 0.5 && extOf(Q, 0) > 0.05 ? 1 : 0, 1, 0, `egg: elong/taper ${String(v)} clamps to a valid solid`);
+      });
+      approx(SHAPES.some((x) => x.k === "egg") ? 1 : 0, 1, 0, "egg: listed in the shape picker");
+      approx(SHAPE_R0().egg && SHAPE_R0().egg.length === 9 ? 1 : 0, 1, 0, "egg: has a default 3/4 pose");
+    }
+
     /* BIRD WING ANGLE — the wing swings about the shoulder instead of sliding
        fore/aft (which is not a thing a wing does). The root must stay welded
        to the body, the span must stay owned by `wing` alone, and an old

@@ -26,6 +26,7 @@ export const SHAPES = [
   { k: "prop", label: "🛩 Small plane" },
   { k: "heli", label: "🚁 Helicopter" },
   { k: "bird", label: "🕊 Bird" },
+  { k: "egg", label: "🥚 Egg" },
   { k: "balloon", label: "🎈 Balloon" },
   { k: "drone", label: "❖ Drone" },
   { k: "jelly", label: "🪼 Jellyfish" },
@@ -374,6 +375,40 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
     if (q > 0.01) C.push(sq(m, 0));
     for (const [sx, sy] of [[1, 1], [1, -1], [-1, -1], [-1, 1]])
       C.push([[sx * a, sy * a * dp, h], [sx * m, sy * m * dp, 0], [sx * a, sy * a * dp, -h]]);
+  } else if (kind === "egg") {
+    /* EGG — a solid of revolution about +z, blunt end DOWN, pointed end up.
+       What makes an egg an egg is not elongation (that is a tic-tac) but
+       ASYMMETRY: both poles are rounded, and the shape is the difference in
+       their radii of curvature. So the profile is an ellipse modulated by a
+       linear taper,
+
+         r(u) = sqrt(1 - u²) · (1 - k·u),   u ∈ [-1, 1] along the axis
+
+       which keeps a vertical tangent at BOTH poles — a real egg has no cusp,
+       the narrow end is simply tighter — while sliding the bulge toward the
+       blunt end. k < 1 always, so the radius can never go negative.
+
+       LENGTH is the unit (1.0 along z) and `elong` sets the width against it,
+       the same convention the tic-tac uses: the measured dimension then stays
+       put while the user dials the proportions, instead of the object
+       silently changing size as it changes shape. The profile is normalised
+       by its own measured maximum so the widest radius is exactly 0.5/elong
+       whatever the taper — otherwise pointing the egg would also thin it. */
+    const elong = Math.max(1.02, Math.min(2.4, opts && isFinite(opts.elong) ? opts.elong : 1.35));
+    const taper = Math.max(0, Math.min(1, opts && isFinite(opts.taper) ? opts.taper : 0.5));
+    const k = 0.6 * taper;
+    const f = (u) => Math.sqrt(Math.max(0, 1 - u * u)) * (1 - k * u);
+    let fMax = 0;
+    for (let i = 0; i <= 400; i++) { const v = f(-1 + (2 * i) / 400); if (v > fMax) fMax = v; }
+    const R = 0.5 / elong / (fMax || 1);
+    const rAt = (u) => R * f(u), zAt = (u) => 0.5 * u;
+    for (const u of [-0.66, -0.3, 0.08, 0.46]) C.push(circ(rAt(u), "z", zAt(u)));
+    const P = Array.from({ length: 41 }, (_, i) => { const u = -1 + (2 * i) / 40; return [rAt(u), zAt(u)]; });
+    for (const md of [0, 45, 90, 135]) {                     // meridians: pole → over → pole
+      const ca = Math.cos(md * D2R), sa = Math.sin(md * D2R);
+      const half = (sg) => P.map(([r, z]) => [sg * r * ca, sg * r * sa, z]);
+      C.push([...half(-1).reverse(), ...half(1)]);
+    }
   } else if (kind === "balloon") {
     /* PARTY BALLOON — envelope up (+z), knot and a dangling string below. The
        single most-mistaken-for-a-UFO object there is, so it earns its own
@@ -454,7 +489,7 @@ export function shapeWire(kind, aspect, opts) { // unit major dimension, centere
    rotX3(−θ) points it down (inverted). Every shape uses +θ so it starts
    right-side-up — the tilt magnitude sets the (unchanged) viewing angle. The
    triangle also gets an in-plane 180° so its apex points up, not down. */
-export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), vee: rotX3(48), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), stealth: rotX3(52), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), balloon: rotX3(84), drone: rotX3(40), jelly: rotX3(82) });
+export const SHAPE_R0 = () => ({ orb: I3, saucer: rotX3(62), capsule: I3, tri: mul3(rotX3(24), rotZ3(180)), vee: rotX3(48), cube: mul3(rotX3(26), rotZ3(35)), pyr: mul3(rotX3(24), rotZ3(30)), stealth: rotX3(52), plane: rotX3(55), prop: rotX3(55), heli: rotX3(48), bird: rotX3(60), egg: rotX3(80), balloon: rotX3(84), drone: rotX3(40), jelly: rotX3(82) });
 
 /* Translate a shapeFit so the APPARENT centre of its projected wireframe —
    the bounding-box centre of the drawn curves — lands exactly on (x, y).

@@ -137,6 +137,24 @@ comments, in this order:
    one dorsal ridge, two folds a side, canted V-tails, cockpit facet. At the
    size these wires are actually drawn (tens of pixels) every extra facet line
    reads as noise; an earlier version with inboard facet edges was unreadable.
+   **Egg** (`egg`) is a solid of revolution about +z, blunt end down. What
+   makes it an egg is not elongation — that is a tic-tac — but the
+   ASYMMETRY of its two poles, so the profile is an ellipse modulated by a
+   linear taper, `r(u) = sqrt(1-u²)·(1-k·u)` over u ∈ [-1,1] with
+   k = 0.6·`taper` (so k < 1 and the radius can never go negative). Both
+   poles keep a vertical tangent — a real egg has no cusp, the narrow end
+   is simply a tighter cap — while the bulge slides toward the blunt end.
+   LENGTH owns the unit (1.0 along z) and `elong` ∈ [1.02,2.4] sets the
+   width against it, the tic-tac's convention, so dialling the proportions
+   never resizes the measured dimension; the profile is normalised by its
+   own sampled maximum so the widest radius is exactly 0.5/elong whatever
+   the taper — otherwise pointing the egg would silently thin it too.
+   `taper` 0 is a symmetric ellipsoid. Mathcheck-asserted (length and width
+   invariance across the whole parameter grid, the bulge moving down
+   monotonically with taper, the +z end being the narrower one, both poles
+   closing round rather than as a cusp or a flat, mirror symmetry at
+   taper 0, and clamps). Spin is correctly withheld — it is a solid of
+   revolution.
    **Balloon** (`balloon`) is the envelope of revolution plus a dangling
    string, `cord` ∈ [0,2] scaling the string and 0 removing it. It exists
    because it is the most-mistaken-for-a-UFO object there is and the taper

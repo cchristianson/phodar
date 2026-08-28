@@ -617,11 +617,11 @@ const HELP_SECTIONS = [
         { t: "✂ Trim (video)", d: "Opens the trim bar — see “Trimming the clip” below. The button is lit while the bar is open and unlit while it's shut; the kept span is in its tooltip and on the bar itself." },
       ]},
       { h: "Fit a 3D shape (the measurement)", items: [
-        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · 🪃 V / delta · ⬛ Cube · 🔺 Pyramid · ◤ Stealth jet · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · 🎈 Balloon · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
+        { t: "＋ Add object", d: "Opens the shape menu — ● Orb · 🛸 Saucer · 💊 Tic-tac · ▲ Triangle · 🪃 V / delta · ⬛ Cube · 🔺 Pyramid · ◤ Stealth jet · ✈ Jet · 🛩 Small plane · 🚁 Helicopter · 🕊 Bird · 🥚 Egg · 🎈 Balloon · ❖ Drone · 🪼 Jellyfish. Tap one to drop that wireframe on the object; the button then shows the current shape (tap again to change). Not sure? Use ● Orb — it assumes no form and still measures size." },
         { t: "Rotate / move / twist", d: gest("Drag the shape body to tumble it in 3D, tap to move it, drag the centre dot to fine-place, add a second finger to twist (roll).", "Drag the shape body to tumble it in 3D, click to move it, drag the centre dot to fine-place, Alt+drag to twist (roll).") },
         { t: "size", d: "Slider (log scale) that sets the object's on-image size — this drives the angular-size number." },
         { t: "color", d: "Recolours the wireframe (hue slider) so it stands out against the photo." },
-        { t: "aspect / spin / squash / stretch / depth / height / sweep / notch / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), depth for the cube’s footprint thickness against its fixed width — thin a box into a rectangular slab or monolith; the mono readout beside that slider shows the proportions with the thinnest side as 1, so a specific ratio can be dialled exactly (the classic monolith is 1 : 4 : 9 — depth 0.25 + stretch 2.25), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
+        { t: "aspect / spin / squash / stretch / depth / height / sweep / notch / elongation / taper / string / wingspan / wing angle / tendrils", d: "Shape-specific sliders — tic-tac length:width, flat-craft spin, cube→diamond squash (the middle of that slider is a truncated gem), stretch for the cube/diamond\u2019s height against a fixed footprint (a box, a column, a slab, a tall gem or a flat lozenge), depth for the cube’s footprint thickness against its fixed width — thin a box into a rectangular slab or monolith; the mono readout beside that slider shows the proportions with the thinnest side as 1, so a specific ratio can be dialled exactly (the classic monolith is 1 : 4 : 9 — depth 0.25 + stretch 2.25), the pyramid\u2019s height (shallow cap → spire), the V’s sweep (how far the tips trail back) and notch (a solid delta at one end of that slider, two thin arms at the other), the egg’s elongation and taper (taper 0 is a symmetric ellipsoid — the asymmetry between a blunt end and a tighter one is what makes it read as an egg rather than an orb, and elongation sets the width against a length that stays put, so reshaping never resizes the measurement), the balloon’s string length (0 = no string), bird wing width & the angle the wings make with the body (aft for a stoop, forward for a soar), jellyfish tendril length." },
         { t: "✕ remove shape", d: "Deletes the fitted shape." },
         { t: "Measured angular size", d: "The amber readout at the bottom — e.g. 0.42° (0.9× full-moon width). This is what step 3 and the fix use." },
         { t: "In your words (optional)", d: "A free-text witness statement — shape, colour, motion, sound, how it ended. It's shown in the report as this observer's account, in a \"Witness accounts\" section." },
@@ -2898,6 +2898,23 @@ function MediaMeasure({ src, update, wizard, viewOnly }) {
                     </span>
                     <input type="range" min={0} max={1} step={0.02} value={src.shapeFit.notch ?? 0.7}
                       onChange={(e) => { const nsf = { ...src.shapeFit, notch: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                </>
+              )}
+              {src.shapeFit.kind === "egg" && (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>elongation {(src.shapeFit.elong ?? 1.35).toFixed(2)}×</span>
+                    <input type="range" min={1.02} max={2.4} step={0.02} value={src.shapeFit.elong ?? 1.35}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, elong: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    {/* 0 is a symmetric ellipsoid; the taper is what makes it an egg */}
+                    <span className="microlabel" style={{ marginBottom: 0, minWidth: 88 }}>
+                      taper {(src.shapeFit.taper ?? 0.5) < 0.02 ? "even" : (src.shapeFit.taper ?? 0.5).toFixed(2)}
+                    </span>
+                    <input type="range" min={0} max={1} step={0.02} value={src.shapeFit.taper ?? 0.5}
+                      onChange={(e) => { const nsf = { ...src.shapeFit, taper: +e.target.value }; syncShape(nsf); shapeLoupeFor(nsf); }} style={{ flex: 1 }} />
                   </div>
                 </>
               )}
@@ -13461,6 +13478,7 @@ const SHAPE_VIEWS = {
   cube: [["Side", "x", "z", "width", "height"], ["Top", "x", "y", "width", "depth"]],
   pyr: [["Side", "x", "z", "base width", "height"], ["Top", "x", "y", "base width", "base depth"]],
   stealth: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
+  egg: [["Side", "x", "z", "width", "length"], ["End", "x", "y", "diameter", "diameter"]],
   balloon: [["Side", "x", "z", "width", "height"], ["Top", "x", "y", "diameter", "diameter"]],
   plane: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
   prop: [["Top", "x", "y", "length", "wingspan"], ["Side", "x", "z", "length", "height"], ["Front", "y", "z", "wingspan", "height"]],
